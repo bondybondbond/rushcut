@@ -1,7 +1,7 @@
 # PRD: RushCut — Rushes to a Cut — One-Click Web Video Editor
 
 > **Product:** RushCut — *From your rushes to a cut. In minutes.*
-> **Version:** 0.3 (updated March 2026)
+> **Version:** 0.4 (updated March 2026)
 > **Author:** Manasak
 > **Status:** Draft — reassessed after founder validation session
 
@@ -101,20 +101,22 @@ This is the core technical decision — knowing which features require AI vs. ca
 ```
 STEP 1 — UPLOAD
   User uploads all raw clips (drag & drop, bulk select)
-  Free: up to 10 clips, 1GB | Paid: 25 clips, 2GB
+  Free: up to 20 clips, no duration cap | Paid: up to 50 clips
 
 STEP 2 — CONFIGURE (optional, single screen)
   - Order: auto (filename/time) or drag to reorder
   - AI tier: optional prompt → "Vacation in Bali — starts at airport, then hotel, beach, sunset"
-  - Style: select transition style (dissolve / dip to black / cut)
-  - Music: select from library (free: 5 tracks | paid: full library)
+  - Style: select transition style (crossfade / dip to black / hard cut / whip / fade to white)
+  - Music: select from library (free: ~20 tracks | paid: full library)
   - Intro card: title text (optional)
   - End card: title text (optional)
 
 STEP 3 — ONE CLICK → FIRST DRAFT
-  App generates draft preview (no full render yet — low-res proxy)
-  AI tier: proposes key moments, zoom points, clip order on screen
-  User sees: timeline strip with proposed cuts + zoom markers
+  App generates draft preview via a separate low-memory server-side Lambda job (360p).
+  Draft proxy is NOT client-side blob stitching — it runs actual FFmpeg transitions, music,
+  and zoom on the server at 360p. User sees real transitions/music/zoom in preview, not a simulation.
+  AI tier: proposes key moments, zoom points, clip order on screen.
+  User sees: timeline strip with proposed cuts + zoom markers.
 
 STEP 4 — REVIEW & CONFIRM
   User can:
@@ -131,12 +133,14 @@ STEP 5 — FINAL RENDER
   Download link valid 24h
 ```
 
+> ✅ **Confirmed:** Draft proxy is a separate low-memory Lambda job (360p), not client-side blob stitching. User sees actual FFmpeg transitions/music/zoom in preview — not a simulated preview.
+
 > ✅ **Confirmed:** DJI LightCut does auto-adjust music — it detects beat markers and aligns cuts to rhythm automatically. RushCut does the same via `librosa` BPM detection (no AI cost).
 
 ### Why a draft-then-confirm step?
 - Avoids wasting a full 4K render on a version the user rejects
 - Gives the user editorial control without forcing them into a full timeline editor
-- Proxy draft is fast (low-res, browser-renderable) — full render only on confirmation
+- Proxy draft is fast (low-res, server-rendered at 360p) — full render only on confirmation
 - Zoom/music adjustments are applied to final confirmed version, not draft
 
 ---
@@ -144,32 +148,33 @@ STEP 5 — FINAL RENDER
 ## 6. Feature Scope
 
 ### v1 — Free Tier (PoC)
-- [ ] Bulk upload up to 10 clips, 1GB total
+- [ ] Unlimited projects
+- [ ] Up to 20 clips per project, no duration cap
 - [ ] Auto-combine in upload/timestamp order
 - [ ] Silence + stillness detection → auto-remove dead sections (FFmpeg)
 - [ ] Clip trim (in/out handles per clip, no timeline)
-- [ ] Crossfade or dip-to-black transitions (auto-applied, style picker)
+- [ ] 5 transition styles: crossfade, dip to black, hard cut, whip, fade to white (auto-applied, style picker)
 - [ ] Generic centre-frame zoom at clip midpoint (FFmpeg `zoompan`)
-- [ ] 5 royalty-free music tracks (Pixabay/ccMixter), auto-fitted to duration
+- [ ] ~20 royalty-free music tracks (Pixabay/ccMixter), auto-fitted to duration
 - [ ] Volume normalisation (FFmpeg `loudnorm`)
-- [ ] Intro card + end card (text + background colour)
+- [ ] 5 basic text/title styles — intro card + end card only
 - [ ] Draft preview → confirm → final render
-- [ ] Export: 1080p MP4, **no watermark**
+- [ ] Export: **1080p MP4, no watermark, ever**
 - [ ] Download link valid 24h (auto-deleted from R2)
-- [ ] 3 exports/month
+- [ ] **No export count limit**
 
-### v2 — Paid AI Tier (£4.99/mo or £39.99/yr)
+### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
+- [ ] Up to 50 clips per project
+- [ ] **4K export** (primary upgrade trigger)
 - [ ] Context prompt: user describes video ("vacation in Bali, starts at airport...")
 - [ ] AI scene scoring: detects action peaks, motion, faces → smart clip trimming
 - [ ] Boring clip filtering: skips low-motion, low-content segments
 - [ ] Smart zoom: face detection + action moment zoom (not generic centre)
 - [ ] Beat-sync cutting via `librosa` BPM
-- [ ] Full licensed music library (Epidemic Sound or Artlist — see open questions)
-- [ ] Premium transitions + title styles
+- [ ] Full licensed music library (Epidemic Sound — gated to paid tier)
+- [ ] 15+ transition styles
+- [ ] 15+ text/title styles (animated options: fade in, slide up, etc.)
 - [ ] Video stabilisation (`ffmpeg-vidstab`)
-- [ ] 25 clips / 2GB per project
-- [ ] Export: 4K MP4
-- [ ] Unlimited exports
 - [ ] Project save + re-edit
 
 ### Permanently Out of Scope
@@ -187,10 +192,10 @@ STEP 5 — FINAL RENDER
 | Layer | Tool | Rationale |
 |---|---|---|
 | Frontend | Next.js (App Router) | Fast, Vercel-deployable |
-| UI | Tailwind + shadcn/ui | Rapid prototyping |
+| UI | Tailwind + shadcn/ui | Rapid prototyping — responsive by default; "best on desktop" banner shown on mobile; no special mobile flow at MVP |
 | Auth + DB | Supabase | Free tier covers PoC |
 | File storage | Cloudflare R2 | Zero egress fees — critical for large video files |
-| Proxy preview | FFmpeg (low-res, client Lambda) | Fast draft without full render cost |
+| Proxy preview | FFmpeg (server-side 360p Lambda, separate low-memory job) | Real FFmpeg output at low res — not client blob stitching |
 | Full render | FFmpeg on AWS Lambda (containerised) | Serverless, scales to zero, pay-per-export |
 | Silence detection | FFmpeg `silencedetect` | Free, no AI |
 | Stillness detection | FFmpeg frame diff (Python script) | Free, no AI |
@@ -266,16 +271,18 @@ User confirms draft
 
 ## 9. Pricing
 
-| Tier | Price | Exports | Clips | Resolution | AI Auto-Edit | Music | Watermark |
+| Tier | Price | Projects | Clips/Project | Resolution | AI Auto-Edit | Music | Watermark |
 |---|---|---|---|---|---|---|---|
-| **Free** | £0 | 3/mo | 10, 1GB | 1080p | ❌ | 5 free tracks | ❌ Never |
-| **Creator** | £4.99/mo or £39.99/yr | Unlimited | 25, 2GB | 4K | ✅ | Full library | ❌ Never |
+| **Free** | £0 | Unlimited | 20, no duration cap | 1080p | ❌ | ~20 free tracks (Pixabay/ccMixter) | ❌ Never |
+| **Creator** | £4.99/mo or £39.99/yr | Unlimited | 50 | 4K | ✅ | Full licensed library (Epidemic Sound) | ❌ Never |
+
+> **Conversion model note:** Resolution (1080p vs 4K) is the primary conversion lever — not project count or watermarks. Modelled on Clipchamp's approach: generous free tier builds habit; 4K paywall is unbypassable regardless of multi-account abuse.
 
 ---
 
 ## 10. Competitive Positioning
 
-**Clipchamp is the primary competitor to beat** — not CapCut or Filmora. It's pre-installed on every Windows PC, free at 1080p, web-first, and has no watermarks. The reason it doesn't win: it's still a timeline editor. Users still face the blank canvas problem. RushCut's advantage is directional automation — you don't start from nothing.
+**Clipchamp is the primary competitor to beat** — not CapCut or Filmora. It's pre-installed on every Windows PC, free at 1080p, web-first, and has no watermarks. Clipchamp allows 99 clips/project on free with no watermark and unlimited exports at 1080p. RushCut differentiates not on generosity but on auto-compile and direction power — Clipchamp is still a blank timeline.
 
 | Tool | Web-first | Windows | Auto-compile | Direction Power | Watermark | Price |
 |---|---|---|---|---|---|---|
@@ -315,7 +322,7 @@ User confirms draft
 - [ ] `ffmpeg-vidstab` stabilisation
 - [ ] Context prompt (Gemini 2.0 Flash)
 - [ ] 4K Lambda export (higher memory config)
-- [ ] Licensed music library integration
+- [ ] Licensed music library integration (Epidemic Sound)
 
 **Timeline philosophy:** No rush. Each phase must genuinely work before moving on. The author's own filming sessions are the real-world test loop.
 
@@ -330,7 +337,7 @@ User confirms draft
 | Lambda cold start slows export UX | Medium | Medium | Provisioned concurrency for paid tier; show progress indicator |
 | Google Video Intelligence cost spikes | Medium | High | Cap AI processing time per project; meter at 5 min max |
 | 4K file uploads time out | Medium | Medium | R2 presigned direct upload from browser (bypasses server) |
-| Users don't convert free → paid | Medium | High | Hard 3 export/month free cap from day 1, not later |
+| Free tier too generous → low conversion | Medium | Medium | 4K wall is unbypassable; AI features must feel genuinely magical in v2 or upgrade motivation weakens |
 | Music licensing dispute | Low | High | Start with Pixabay/ccMixter; add Epidemic Sound only after revenue |
 | xfade transitions fail on mixed codecs/fps | High | Medium | Normalise all clips to consistent codec/fps on upload (FFmpeg pre-pass) — must be solved in Week 2 |
 
@@ -340,11 +347,11 @@ User confirms draft
 
 ## 13. Open Questions
 
-1. **Music licensing:** Pixabay/ccMixter (free) → Epidemic Sound ($15/mo) when? Gate licensed library to paid tier from day 1
-2. **Draft proxy quality:** How low-res is acceptable for the "confirm before final render" step? (360p likely fine)
-3. **Export free limit:** Is 3 exports/month tight enough without frustrating free users? Consider 5/month
-4. **Stabilisation:** `ffmpeg-vidstab` is free but slow — benchmark Lambda cost before committing to paid tier feature
-5. **Mobile web:** At MVP, should mobile just trigger upload + configure, with render happening async and notified via email?
+1. **Music licensing:** ~~Pixabay/ccMixter (free) → Epidemic Sound ($15/mo) when?~~ **RESOLVED:** ~20 Pixabay/ccMixter tracks on free tier; Epidemic Sound gated to paid tier from day 1.
+2. **Draft proxy quality:** ~~How low-res is acceptable for the "confirm before final render" step?~~ **RESOLVED:** Server-side 360p Lambda job. Real FFmpeg output — not a simulation.
+3. **Export free limit:** ~~Is 3 exports/month tight enough without frustrating free users?~~ **RESOLVED:** Unlimited exports on free tier. 1080p resolution wall is the only hard limit.
+4. **Mobile web:** ~~At MVP, should mobile just trigger upload + configure, with render happening async and notified via email?~~ **RESOLVED:** Tailwind responsive by default. "Best on desktop" banner shown on mobile. No special mobile flow at MVP.
+5. **Stabilisation:** `ffmpeg-vidstab` is free but slow — benchmark Lambda cost before committing to paid tier feature.
 
 ---
 

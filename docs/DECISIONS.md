@@ -33,6 +33,7 @@
 **Date:** March 2026
 **Decision:** Generate 360p proxy draft first, full render only on user confirmation.
 **Reason:** Avoid wasting full Lambda compute ($0.024 for 4K) on a version the user will reject. Draft is fast, browser-previewable, and gives editorial control without a full timeline editor.
+**Implementation detail:** Draft proxy is a separate low-memory server-side Lambda job — not client-side blob stitching. Runs real FFmpeg transitions/music/zoom at 360p so the preview reflects actual output.
 **Trade-off:** Extra Lambda invocation per project. Cost negligible at low resolution.
 
 ---
@@ -41,7 +42,7 @@
 **Date:** March 2026
 **Decision:** No watermarks ever, including free tier.
 **Reason:** Kapwing, CapCut, and others use watermarks as conversion levers. Users resent this. Removing the friction is a positioning choice — every video shared by a free user is organic marketing without a watermark tax.
-**Trade-off:** Slightly lower urgency to upgrade. Mitigated by hard 3 export/month free cap.
+**Trade-off:** Slightly lower urgency to upgrade. Mitigated by 4K resolution wall (see DEC-009).
 
 ---
 
@@ -67,6 +68,15 @@
 
 ## DEC-008 — Git (private repo) over Notion for project docs
 **Date:** March 2026
-**Decision:** All PRD, architecture, and decision docs live in this Git repo as Markdown.
+**Decision:** All PRD, architecture, and decision logs live in this Git repo as Markdown.
 **Reason:** Claude Code and other AI assistants read MD files natively from repo context. One source of truth for both human and AI readers. Version history free. Notion is better for human stakeholder presentation — no stakeholders here.
 **Trade-off:** Less visual than Notion. Irrelevant for a solo project.
+
+---
+
+## DEC-009 — Pricing model: resolution-as-paywall (not export count)
+**Date:** March 2026
+**Decision:** Free tier is unlimited projects, unlimited exports, 1080p only. 4K is the sole hard upgrade trigger.
+**Reason:** Clipchamp model — generous free tier builds habit (Hooked principle: reduce friction to form the habit loop). Resolution is unbypassable even with fake/multiple accounts — you cannot work around a render cap with account abuse. Cost per free 1080p export is ~$0.006, so volume at PoC scale is not a concern.
+**Rejected alternative:** 3 exports/month cap — creates friction before users form the habit, and is bypassable with multiple accounts anyway.
+**Trade-off:** Free tier too generous → potential low conversion rate. Mitigated by: (a) 4K wall is a genuine unbypassable hard limit, (b) AI features in v2 must feel genuinely magical or upgrade motivation weakens — this is a product quality bet, not a paywall bet.
