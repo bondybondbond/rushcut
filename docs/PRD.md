@@ -1,7 +1,7 @@
 # PRD: RushCut — Rushes to a Cut — One-Click Web Video Editor
 
 > **Product:** RushCut — *From your rushes to a cut. In minutes.*
-> **Version:** 0.4 (updated March 2026)
+> **Version:** 0.5 (updated March 2026)
 > **Author:** Manasak
 > **Status:** Draft — reassessed after founder validation session
 
@@ -78,19 +78,19 @@ This is the core technical decision — knowing which features require AI vs. ca
 | **Silence/stillness removal** | ❌ No | FFmpeg `silencedetect` + frame-diff motion score — pure signal processing |
 | **Auto-add transitions** (crossfade, dip to black) | ❌ No | FFmpeg `xfade` filter — applied at every clip join point automatically |
 | **Auto-fit music to video duration** | ❌ No | FFmpeg cuts/fades audio track to exact output duration |
-| **Beat-sync music cutting** | ❌ No | `librosa` (open-source Python) — BPM detection + cut-point alignment |
+| **Beat-sync music cutting** | ❌ No | `librosa` open-source Python — free, included on free tier |
 | **Zoom effect (generic, centre-frame)** | ❌ No | FFmpeg `zoompan` filter — auto-applied at clip midpoints |
 | **Zoom on faces / people** | ✅ Yes | Requires face detection (e.g. Google Vision API or OpenCV) |
 | **Zoom on key action moments** | ✅ Yes | Requires motion + scene scoring (Google Video Intelligence API) |
 | **Smart clip trimming** (best N seconds per clip) | ✅ Yes | Motion scoring + saliency detection per clip |
-| **Context-aware ordering** ("start at flight, then hotel...") | ✅ Yes | Multimodal LLM (Gemini 2.0 Flash) reads user prompt + video metadata |
-| **Boring clip filtering** | ✅ Yes | Action/motion scoring to rank clips, skip low-score segments |
+| **Context-aware ordering** (\"start at flight, then hotel...\") | ⚠️ Free (basic) | Gemini 2.0 Flash ~$0.001/export — included on free tier |
+| **Boring clip filtering** | ❌ No (basic) | FFmpeg frame-diff motion score — free tier; Google Video Intelligence = paid upgrade |
 | **Stabilisation** | ✅ Yes (or FFmpeg vidstab) | `ffmpeg-vidstab` plugin = no AI, but compute-heavy → paid tier |
 | **Volume normalisation** | ❌ No | FFmpeg `loudnorm` filter — free |
 
 **Summary rule:**
-- 🆓 Free tier: FFmpeg-only pipeline. Silence/stillness detection + basic trim + crossfade transitions + music duration-fit + generic centre-zoom
-- 💰 Paid AI tier: Smart clip scoring, action-aware zoom, boring clip skipping, beat-sync, context prompt, face zoom, stabilisation, licensed music library
+- 🆓 Free tier: FFmpeg + librosa + Gemini Flash. Silence/stillness detection + basic trim + crossfade transitions + beat-sync music + generic centre-zoom + basic motion filter + context prompt (vibe/order) — near-zero AI cost (~$0.001/export)
+- 💰 Paid AI tier: Smart clip scoring (Google Video Intelligence), action-aware zoom, boring clip filtering, face zoom (Google Vision), stabilisation, licensed music library, 4K export, project saves
 
 ---
 
@@ -162,15 +162,16 @@ STEP 5 — FINAL RENDER
 - [ ] Export: **1080p MP4, no watermark, ever**
 - [ ] Download link valid 24h (auto-deleted from R2)
 - [ ] **No export count limit**
+- [ ] Beat-sync music cuts via `librosa` BPM detection
+- [ ] Context prompt: user describes vibe/order ("adventure", "starts at airport then beach") — Gemini 2.0 Flash (~$0.001/export)
+- [ ] Basic boring clip filtering (FFmpeg motion score — removes near-static clips automatically)
 
 ### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
 - [ ] Up to 50 clips per project
 - [ ] **4K export** (primary upgrade trigger)
-- [ ] Context prompt: user describes video ("vacation in Bali, starts at airport...")
-- [ ] AI scene scoring: detects action peaks, motion, faces → smart clip trimming
-- [ ] Boring clip filtering: skips low-motion, low-content segments
-- [ ] Smart zoom: face detection + action moment zoom (not generic centre)
-- [ ] Beat-sync cutting via `librosa` BPM
+- [ ] Smart clip scoring: Google Video Intelligence — action peaks + motion intensity → ranks best moments (upgrade over free basic motion filter)
+- [ ] Smart zoom: face detection + action moment zoom via Google Vision (upgrade over free generic centre zoom)
+- [ ] Advanced context ordering: AI scene labelling via Google Video Intelligence (upgrade over free vibe prompt)
 - [ ] Full licensed music library (Epidemic Sound — gated to paid tier)
 - [ ] 15+ transition styles
 - [ ] 15+ text/title styles (animated options: fade in, slide up, etc.)
@@ -205,7 +206,7 @@ STEP 5 — FINAL RENDER
 | Zoom (generic) | FFmpeg `zoompan` | Free, no AI |
 | Zoom (smart, faces) | OpenCV or Google Vision API | AI — paid tier only |
 | Scene scoring | Google Video Intelligence API | AI — paid tier only |
-| Context prompt | Gemini 2.0 Flash | AI — paid tier only |
+| Context prompt | Gemini 2.0 Flash | AI — free tier (basic vibe prompt) |
 | Stabilisation | `ffmpeg-vidstab` plugin | Compute-heavy — paid tier only |
 | Payments | Stripe | Standard |
 
@@ -235,16 +236,17 @@ User confirms draft
 
 | Component | Free 1080p | Paid 4K + AI |
 |---|---|---|
-| Lambda FFmpeg (splice + transitions + music) | ~$0.006 | ~$0.024 |
-| Lambda librosa beat-sync | $0 | ~$0.001 |
-| Lambda vidstab stabilisation (if used) | $0 | ~$0.010 |
+| Lambda FFmpeg | ~$0.006 | ~$0.024 |
+| `librosa` beat-sync | ~$0 | ~$0 |
+| Gemini 2.0 Flash (context prompt) | ~$0.001 | ~$0.001 |
+| Basic motion filter (FFmpeg frame-diff) | ~$0 | ~$0 |
+| Lambda vidstab (if used) | $0 | ~$0.010 |
 | R2 storage (temp 24h) | ~$0.000005 | ~$0.000018 |
-| Google Video Intelligence (shot + label, 2 min) | $0 | ~$0.20 (post free tier) |
-| Google Vision API (face detection, per clip) | $0 | ~$0.014 (10 clips × $0.0014) |
-| Gemini 2.0 Flash (context prompt) | $0 | ~$0.001 |
-| **Total per export** | **~$0.006 (£0.005)** | **~$0.25 (£0.20)** |
+| Google Video Intelligence (2 min) | $0 | ~$0.20 (post free tier) |
+| Google Vision (face detection, 10 clips) | $0 | ~$0.014 |
+| **Total per export** | **~$0.007 (£0.006)** | **~$0.25 (£0.20)** |
 
-> ✅ Google Video Intelligence: first 1,000 min/month free. At 2 min per project = **500 free AI exports/month** before any AI cost. Covers the entire PoC phase at zero AI cost.
+> ✅ Free tier AI cost is ~$0.001/export (Gemini Flash only). Negligible at scale. Google Video Intelligence 1,000 min/month free = 500 paid AI exports/month at zero cost during PoC. During development, use FFmpeg-only pipeline for testing — only run full AI stack for genuine validation sessions to avoid cost burn.
 
 ### Monthly Fixed Infrastructure
 
@@ -271,12 +273,12 @@ User confirms draft
 
 ## 9. Pricing
 
-| Tier | Price | Projects | Clips/Project | Resolution | AI Auto-Edit | Music | Watermark |
+| Tier | Price | Clips | Resolution | AI Auto-Edit | Direction Power | Music | Watermark |
 |---|---|---|---|---|---|---|---|
-| **Free** | £0 | Unlimited | 20, no duration cap | 1080p | ❌ | ~20 free tracks (Pixabay/ccMixter) | ❌ Never |
-| **Creator** | £4.99/mo or £39.99/yr | Unlimited | 50 | 4K | ✅ | Full licensed library (Epidemic Sound) | ❌ Never |
+| **Free** | £0 | 20 | 1080p | ✅ Basic (beat-sync, vibe prompt, motion filter) | ✅ | ~20 free tracks | ❌ Never |
+| **Creator** | £4.99/mo or £39.99/yr | 50 | 4K | ✅ Smart (scene scoring, face/action zoom) | ✅ Advanced | Epidemic Sound | ❌ Never |
 
-> **Conversion model note:** Resolution (1080p vs 4K) is the primary conversion lever — not project count or watermarks. Modelled on Clipchamp's approach: generous free tier builds habit; 4K paywall is unbypassable regardless of multi-account abuse.
+> **Conversion model note:** Free tier includes genuine AI auto-edit — better than Clipchamp's free tier by design. Paid upgrades sell *smarter* AI decisions (scene scoring, face/action zoom) + 4K + project saves + premium music. Hook: free gets you a great first film; paid gets you a better film with zero extra effort.
 
 ---
 
@@ -302,29 +304,31 @@ User confirms draft
 
 **Context:** Third personal dev project. Previous: SpellWiz game (success — daughter uses daily), Chrome extension (shipped, launching on Product Hunt). First paid-tier ambition. Using Claude Code as primary coding assistant. No fixed deadline — solve the personal problem first, validate commercial potential second.
 
-### Phase 1 — PoC Free Tier (personal validation first)
+### Phase 1 — Build for Yourself (Full Pipeline, Personal Validation)
+
+> Goal: Produce one real YouTube video faster than DaVinci Resolve using only RushCut.
+
 - [ ] **Step 1:** Next.js scaffold, Supabase auth, Cloudflare R2 presigned upload working
 - [ ] **Step 2:** FFmpeg Lambda — silence removal → clip splice → `xfade` transitions → `loudnorm`
-- [ ] **Step 3:** Music auto-fit, generic `zoompan` zoom, intro/end card, draft preview flow
-- [ ] **Step 4:** 1080p export pipeline end-to-end → **author self-tests with own DJI footage**
+- [ ] **Step 3:** `librosa` beat-sync + FFmpeg motion filter (basic boring clip removal)
+- [ ] **Step 4:** Gemini 2.0 Flash context prompt (vibe/order direction)
+- [ ] **Step 5:** 1080p export end-to-end → author self-tests with own DJI footage
+- [ ] **Step 6:** Google Video Intelligence scene scoring + clip ranking
+- [ ] **Step 7:** Google Vision face detection → smart zoom target
+- [ ] **Step 8:** `ffmpeg-vidstab` stabilisation
+- [ ] **Step 9:** Full AI pipeline self-test — does it produce a noticeably better first draft than FFmpeg-only?
 
-> ✅ Gate: Author produces one YouTube video using only RushCut. If it's usable, proceed to real users.
+> ✅ Gate 1: Author produces one YouTube video using only RushCut. Genuinely faster than DaVinci?
+> ✅ Gate 2: AI version produces a better first draft than FFmpeg-only version with no extra user effort?
 
-### Phase 2 — Validate & Charge (5 strangers before anything else)
-- [ ] Fix top 3 issues from real user feedback (find via DJI forums, r/dji, r/gopro)
-- [ ] Add Stripe, annual Creator tier only first
-- [ ] Target: 5 paying strangers before building AI anything
+⚠️ Cost discipline: Use FFmpeg-only pipeline for all dev testing. Only run full AI stack for genuine validation sessions.
 
-### Phase 3 — AI Tier (only post Phase 2 validation)
-- [ ] Google Video Intelligence shot/action scoring + clip ranking
-- [ ] Google Vision face detection → smart zoom target
-- [ ] `librosa` beat-sync cuts
-- [ ] `ffmpeg-vidstab` stabilisation
-- [ ] Context prompt (Gemini 2.0 Flash)
-- [ ] 4K Lambda export (higher memory config)
-- [ ] Licensed music library integration (Epidemic Sound)
+### Phase 2 — Validate & Charge (5 Strangers Before Anything Else)
+- [ ] Fix top 3 issues from real user feedback (DJI forums, r/dji, r/gopro)
+- [ ] Add Stripe — Creator tier (4K + smart AI)
+- [ ] Target: 5 paying strangers before any further feature work
 
-**Timeline philosophy:** No rush. Each phase must genuinely work before moving on. The author's own filming sessions are the real-world test loop.
+**Timeline philosophy:** No rush. Each gate must be genuinely passed before moving on. The author's own DJI filming sessions are the real-world test loop.
 
 ---
 
