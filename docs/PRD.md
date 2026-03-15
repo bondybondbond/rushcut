@@ -1,7 +1,7 @@
 # PRD: RushCut — Rushes to a Cut — One-Click Web Video Editor
 
 > **Product:** RushCut — *From your rushes to a cut. In minutes.*
-> **Version:** 0.7 (updated March 2026)
+> **Version:** 0.8 (updated March 2026)
 > **Author:** Manasak
 > **Status:** Draft — reassessed after founder validation session
 
@@ -182,7 +182,7 @@ STEP 5 — FINAL RENDER
 ### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
 - [ ] Up to 50 clips per project
 - [ ] **Hard cap: 1GB per file, 10GB per project total** (enforced pre-upload)
-- [ ] **Fair usage: max 10 final exports per month** (see Section 8 — cost safety rule)
+- [ ] **Fair usage: max 5 final exports per month** (see Section 8 — real economics after Stripe + VAT)
 - [ ] **4K export** (primary upgrade trigger)
 - [ ] Smart clip scoring: Google Video Intelligence — action peaks + motion intensity → ranks best moments (upgrade over free basic motion filter)
 - [ ] **Google Video Intelligence capped at 5 min of footage scored per export** (cost protection — see Section 8)
@@ -240,18 +240,31 @@ User confirms draft
 
 ## 8. Cost Model (Realistic, Bootstrapped)
 
+### Real Economics Per Subscriber
+
+The £4.99 headline price is not what lands in the bank. Real budget per paying user:
+
+| Scenario | Gross | Stripe fee (1.5% + 25p) | Net to bank |
+|---|---|---|---|
+| Pre-VAT registration | £4.99 | £0.325 | **£4.665** |
+| VAT registered (£4.99 inc VAT) | £4.165 net | £0.312 | **£3.853** |
+
+> **VAT registration threshold (UK):** £90,000 turnover. At £4.99/mo, that's ~18,000 subscribers before mandatory VAT registration. Pre-registration, £4.665 is the real budget. Post-registration, £3.853. Plan for the lower figure from day one.
+
+> **AWS/Google invoice VAT:** If VAT registered, you can reclaim input VAT on AWS/Google costs. If not, infra costs are ~20% higher in real terms on those bills.
+
 ### File Size Hard Caps
 
-These caps are non-negotiable constraints — they exist to ensure per-export cost can never exceed the subscription value.
+These caps are non-negotiable constraints — they exist to ensure per-export infrastructure cost never exceeds real subscription revenue after fees.
 
 | Tier | Max per file | Max per project | Max exports/month |
 |---|---|---|---|
 | Free | 500MB | 5GB | Unlimited |
-| Paid Creator | 1GB | 10GB | 10 (fair usage) |
+| Paid Creator | 1GB | 10GB | **5 (fair usage)** |
 
-> **Why 10 exports/month on paid?** At worst-case 10GB input, paid tier costs ~£0.56–0.70 per export. At 10 exports = ~£5.60–7.00 infra cost vs £4.99 revenue. The limit keeps typical users (2–4 exports/month) firmly profitable. The 10-export wall is a safety ceiling, not an expected usage pattern — most hobbyists do 1–2 large projects per month.
+> **Why 5 exports/month (not 10)?** After Stripe fees, real budget is £4.665 pre-VAT. At a typical 5GB project, paid tier costs ~£0.56/export. 5 exports = £2.80 infra — leaving ~£1.86 actual margin (~40%). At 10 exports = £5.60 infra, which exceeds the £4.665 net revenue. 5 is the safe, profitable ceiling. Typical hobbyist (1–2 exports/month) never gets close.
 
-> **Why unlimited on free?** Free tier cost at 5GB input is ~£0.03/export. 10 exports/month = £0.30 infra. Negligible. No cap needed.
+> **Why unlimited on free?** Free tier at 5GB costs ~£0.025/export. 20 exports/month = £0.50. Still negligible vs. fixed infra costs.
 
 ### Cost Assumptions (Corrected for Large Projects)
 
@@ -278,17 +291,29 @@ These caps are non-negotiable constraints — they exist to ensure per-export co
 | Google Vision face detection (34 clips) | $0 | ~$0.143 |
 | **Total per export (10GB input)** | **~$0.061 (£0.049)** | **~$0.879 (£0.703)** |
 
-> ⚠️ Without the 5 min GVI cap, paid AI cost hits ~$2.38/export (£1.90) on a 10GB project — well over the sub revenue. The cap is **mandatory** and must be enforced in the Lambda pipeline, not just documented.
+> ⚠️ Without the 5 min GVI cap, paid AI cost hits ~$2.38/export (£1.90) on a 10GB project — well over net sub revenue. The cap is **mandatory** and must be enforced in the Lambda pipeline.
 
 ### Per-Export Cost at Typical Project Sizes
 
-| Project size | Free cost | Paid cost (capped) | Paid exports within £4.99 |
+| Project size | Free cost | Paid cost (capped) | Safe exports within £4.665 net (20% buffer) |
 |---|---|---|---|
-| 3GB (light) | ~£0.015 | ~£0.51 | ~9.8 |
-| 5GB (typical) | ~£0.025 | ~£0.56 | ~8.9 |
-| 10GB (max) | ~£0.049 | ~£0.70 | ~7.1 |
+| 3GB (light) | ~£0.015 | ~£0.510 | ~7 |
+| 5GB (typical) | ~£0.025 | ~£0.560 | ~6 |
+| 10GB (max) | ~£0.049 | ~£0.703 | ~5 |
 
-> **Safe operating zone:** At 1–4 exports/month (realistic hobbyist pattern), paid tier margin is ~72–86% even at max project size. The 10 export/month cap is a hard ceiling that prevents any single user from making the service unprofitable.
+> **Cap set at 5** to be safe at worst-case (10GB) project size with ~20% margin buffer built in.
+
+### If Introducing Pay-Per-Export (Top-Up Credits)
+
+For users who hit the 5/month cap and want more, a credit top-up avoids forcing a tier upgrade:
+
+| Project size | Infra cost | Price per extra export (20% margin + Stripe) |
+|---|---|---|
+| ~3GB | £0.49 | ~£0.88 |
+| ~5GB | £0.55 | ~£0.95 |
+| ~10GB | £0.70 | ~£1.15 |
+
+> **Simplest implementation:** Flat £1.00 per extra export (covers all project sizes with margin). Sell in packs of 5 (£5.00) via Stripe. This is a Phase 2+ feature — do not build at MVP.
 
 ### Monthly Fixed Infrastructure
 
@@ -301,13 +326,13 @@ These caps are non-negotiable constraints — they exist to ensure per-export co
 | **Total: 0–200 users** | **~$0** | — |
 | **Total: 200–1,000 users** | — | **~$30–80/mo** |
 
-### Revenue vs. Cost at Paid Tier (Corrected)
+### Revenue vs. Cost at Paid Tier (Real Net)
 
-| Paying Users | Revenue (£4.99/mo) | Est. Infra (avg 5GB project, 2 exports/mo) | Gross Margin |
+| Paying Users | Net revenue after Stripe (£4.665/mo) | Est. infra (5GB project, 2 exports/mo) | Real margin |
 |---|---|---|---|
-| 10 | £49.90 | ~£11 | ~78% |
-| 50 | £249.50 | ~£56 | ~78% |
-| 200 | £998 | ~£224 | ~78% |
+| 10 | £46.65 | ~£11 | ~76% |
+| 50 | £233.25 | ~£56 | ~76% |
+| 200 | £933 | ~£224 | ~76% |
 
 > ⚠️ Music licensing is the wildcard. Epidemic Sound API: ~$15/mo for indie devs. Artlist: ~$200/yr. Pixabay/ccMixter: free. Start free, add licensed library as paid-only upgrade.
 
@@ -318,11 +343,11 @@ These caps are non-negotiable constraints — they exist to ensure per-export co
 | Tier | Price | Clips | Max file | Max project | Resolution | AI Auto-Edit | Exports/mo | Music | Watermark |
 |---|---|---|---|---|---|---|---|---|---|
 | **Free** | £0 | 20 | 500MB | 5GB | 1080p | ✅ Basic (beat-sync, vibe prompt, motion filter) | Unlimited | ~20 free tracks | ❌ Never |
-| **Creator** | £4.99/mo or £39.99/yr | 50 | 1GB | 10GB | 4K | ✅ Smart (scene scoring, face/action zoom) | 10/mo | Epidemic Sound | ❌ Never |
+| **Creator** | £4.99/mo or £39.99/yr | 50 | 1GB | 10GB | 4K | ✅ Smart (scene scoring, face/action zoom) | 5/mo | Epidemic Sound | ❌ Never |
 
 > **Conversion model note:** Free tier includes genuine AI auto-edit — better than Clipchamp's free tier by design. Paid upgrades sell *smarter* AI decisions (scene scoring, face/action zoom) + 4K + larger project capacity + premium music. Hook: free gets you a great first film; paid gets you a better film with zero extra effort.
 
-> **Fair usage note (paid):** 10 exports/month is a safety ceiling. Typical hobbyist uses 1–4/month. The limit will be shown transparently in the UI with a monthly reset counter. If a user hits 10 exports regularly, that's a signal to revisit pricing — not to punish the user.
+> **Fair usage note (paid):** 5 exports/month is a safety ceiling based on real net revenue after Stripe fees. Typical hobbyist uses 1–2/month — this limit is never felt. Shown transparently in UI as a counter. Extra exports available at £1.00 each (Phase 2+).
 
 ---
 
@@ -371,8 +396,9 @@ These caps are non-negotiable constraints — they exist to ensure per-export co
 ### Phase 2 — Validate & Charge (5 Strangers Before Anything Else)
 - [ ] Fix top 3 issues from real user feedback (DJI forums, r/dji, r/gopro)
 - [ ] Add Stripe — Creator tier (4K + smart AI)
-- [ ] Implement export counter in Supabase — enforce 10/month cap for paid users, reset on billing cycle
+- [ ] Implement export counter in Supabase — enforce 5/month cap for paid users, reset on billing cycle
 - [ ] Target: 5 paying strangers before any further feature work
+- [ ] Phase 2+ only: flat £1.00 per extra export credit pack (5 for £5.00)
 
 **Timeline philosophy:** No rush. Each gate must be genuinely passed before moving on. The author's own DJI filming sessions are the real-world test loop.
 
@@ -386,7 +412,9 @@ These caps are non-negotiable constraints — they exist to ensure per-export co
 | DJI ships LightCut for Windows | Low | Very High | This is the nuclear scenario — monitor DJI roadmap; if they ship, pivot to cross-device (DJI + GoPro + iPhone) mixing which they'll never prioritise |
 | Lambda cold start slows export UX | Medium | Medium | Provisioned concurrency for paid tier; show progress indicator |
 | Google Video Intelligence cost spikes | Medium | High | **Hard cap at 5 min footage scored per export — enforced in Lambda, not just config** |
-| Paid user hits 10 export limit and churns | Low | Medium | Show counter transparently; message as "fair usage" not a punishment; typical user never gets close |
+| Paid user hits 5 export limit and churns | Low | Medium | Show counter transparently; offer £1 top-up credits (Phase 2+); typical user never hits the cap |
+| Stripe fee erosion at higher volume | Low | Low | At scale, negotiate Stripe pricing or switch to Stripe Billing optimised plans |
+| VAT registration triggered at scale | Low | Medium | Price is £4.99 inc VAT from day one — absorb until registration, then reclaim on costs |
 | 4K file uploads time out | Medium | Medium | R2 presigned direct upload from browser (bypasses server) |
 | Free tier too generous → low conversion | Medium | Medium | 4K wall + project size wall (5GB vs 10GB) are unbypassable; AI features must feel genuinely magical in v2 |
 | Music licensing dispute | Low | High | Start with Pixabay/ccMixter; add Epidemic Sound only after revenue |
@@ -406,7 +434,8 @@ These caps are non-negotiable constraints — they exist to ensure per-export co
 4. **Mobile web:** ~~At MVP, should mobile just trigger upload + configure, with render happening async and notified via email?~~ **RESOLVED:** Tailwind responsive by default. "Best on desktop" banner shown on mobile. No special mobile flow at MVP.
 5. **Stabilisation:** `ffmpeg-vidstab` is free but slow — benchmark Lambda cost before committing to paid tier feature.
 6. **Respin latency:** Single-clip re-cut at 360p must complete in <10s to preserve director feeling. Benchmark this in Phase 1 Step 2.
-7. **Export counter UX:** How to surface the 10/month paid cap without feeling punitive? **Open** — consider a subtle persistent counter ("4 of 10 exports used this month") in the dashboard header.
+7. **Export counter UX:** How to surface the 5/month paid cap without feeling punitive? **Open** — consider a subtle persistent counter ("2 of 5 exports used this month") in the dashboard header. Extra exports available at £1.00 each.
+8. **Price point review:** At scale, if 76% gross margin is stable after real Stripe+infra costs, consider whether £4.99 leaves headroom or if £6.99 is more defensible. Do not revisit until 50 paying users.
 
 ---
 
