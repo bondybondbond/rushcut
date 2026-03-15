@@ -1,9 +1,9 @@
 # PRD: RushCut — Rushes to a Cut — One-Click Web Video Editor
 
 > **Product:** RushCut — *Your clips. Edited.*
-> **Version:** 0.9 (updated March 2026)
+> **Version:** 0.10 (updated March 2026 — Batch 2 session)
 > **Author:** Manasak
-> **Status:** Draft — updated after Batch 1 UX/flow session
+> **Status:** Draft — updated after Batch 2 infrastructure session
 
 ---
 
@@ -55,6 +55,10 @@ Hobbyist videographers (DJI drone, GoPro, iPhone) who want to produce shareable 
 **User quote (founder, validated):**
 > *"I use DaVinci Resolve but spend hours on each 3-min clip I produce for YouTube to show family — it makes little sense. If I could genuinely help people avoid that, they could focus on the fun part — making video."*
 
+**Real footage baseline (founder's own DJI session):**
+- 62 clips, 19.6GB total, largest single clip = 1.4GB (4K 30fps, 3 min duration)
+- This validates the 2GB per-file limit and the need for aggressive post-render R2 cleanup
+
 ---
 
 ## 3. Product Vision
@@ -63,7 +67,7 @@ Hobbyist videographers (DJI drone, GoPro, iPhone) who want to produce shareable 
 
 Web-first (desktop browser primary, Windows PC workflow). No download. No watermarks on any tier. No AI generation gimmicks.
 
-**The positioning bet:** In a market obsessing over AI features, RushCut wins by doing one thing exceptionally well — auto-compiling footage into a watchable film with smart structure, transitions, and music. The differentiator is *simplicity and editorial direction*, not features.
+**The positioning bet:** In a market obsessing over AI features, RushCut wins by doing one thing exceptionally well — compile your clips into a watchable film with good transitions, music, and structure. The differentiator is *simplicity and editorial direction*, not features.
 
 **Design principle:** Every screen should feel like you're making creative choices, not managing software.
 
@@ -114,7 +118,7 @@ SCREEN 0 — LANDING
 SCREEN 1 — SELECT CLIPS  (/upload)
   Step indicator: Upload highlighted
   Heading:    "Select your clips"
-  Subhead:    "Up to 20 clips. MP4, MOV or MKV, up to 1 GB each."
+  Subhead:    "Up to 20 clips. MP4, MOV or MKV, up to 2 GB each."
   Upload zone: drag and drop or click to browse
   Clip list:   clips appear below upload zone
   Optional brief: short text input → "e.g. fast cuts, upbeat, travel feel"
@@ -190,7 +194,7 @@ Free tier: 1 included re-render per project.
 ### v1 — Free Tier (PoC)
 - [ ] Unlimited projects
 - [ ] Up to 20 clips per project (**always 20 — never write 10 anywhere**)
-- [ ] **Hard cap: 500MB per file, 5GB per project total** (enforced pre-upload)
+- [ ] **Hard cap: 2GB per file, 10GB per project total** (enforced pre-upload — validated against real DJI 4K footage at 1.4GB/clip)
 - [ ] Auto-combine in upload/timestamp order
 - [ ] Silence + stillness detection → auto-remove dead sections (FFmpeg)
 - [ ] Clip trim (in/out handles per clip, no timeline)
@@ -211,7 +215,7 @@ Free tier: 1 included re-render per project.
 
 ### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
 - [ ] Up to 50 clips per project
-- [ ] **Hard cap: 1GB per file, 10GB per project total** (enforced pre-upload)
+- [ ] **Hard cap: 4GB per file, 20GB per project total**
 - [ ] **Fair usage: max 5 final exports per month** (see Section 8 — real economics after Stripe + VAT)
 - [ ] **4K export** (primary upgrade trigger)
 - [ ] Smart clip scoring: Google Video Intelligence — action peaks + motion intensity → ranks best moments
@@ -267,6 +271,17 @@ User confirms draft
   → Download available in library
 ```
 
+### R2 Storage Lifecycle (Batch 4 — implement with Lambda)
+```
+Upload complete    → raw clips in R2
+Lambda finishes    → DELETE raw clips immediately (do not wait for user action)
+Draft available    → only the 360p draft file persists
+User confirms      → final 1080p written to R2
+User downloads     → raw clips already gone; final file persists 30 days
+30 days elapsed    → daily cleanup job deletes final file
+```
+> **Why aggressive cleanup?** R2 free tier is 10GB live storage (not monthly allowance — it is live disk usage at any moment). 20 concurrent users each uploading 5GB would exceed free tier. Deleting raw clips post-render keeps live storage near zero at all times.
+
 ---
 
 ## 8. Cost Model (Realistic, Bootstrapped)
@@ -286,10 +301,26 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 | Tier | Max per file | Max per project | Max exports/month |
 |---|---|---|---|
-| Free | 500MB | 5GB | Unlimited |
-| Paid Creator | 1GB | 10GB | **5 (fair usage)** |
+| Free | 2GB | 10GB | Unlimited |
+| Paid Creator | 4GB | 20GB | **5 (fair usage)** |
+
+> **Why 2GB per file?** Validated against real DJI footage: 4K 30fps clips at 3 min duration reach 1.4GB. The previous 500MB/1GB cap was too restrictive for the actual target user.
 
 > **Why 5 exports/month?** After Stripe fees, real budget is £4.665 pre-VAT. At a typical 5GB project, paid tier costs ~£0.56/export. 5 exports = £2.80 infra — leaving ~£1.86 actual margin (~40%). At 10 exports = £5.60 infra, which exceeds the £4.665 net revenue.
+
+### Cloudflare R2 Pricing Reference
+
+| Monthly live storage | Cost |
+|---|---|
+| Under 10GB | Free |
+| 50GB | ~$0.60/mo |
+| 100GB | ~$1.35/mo |
+| 500GB | ~$7.35/mo |
+| 1TB | ~$14.85/mo |
+
+> Pricing: $0.015/GB over the free 10GB. Zero egress fees. Class A ops: 1M free then $4.50/million. Class B ops: 10M free then $0.36/million. At PoC scale (solo dev + early users) cost is effectively $0. At 500GB–1TB you have hundreds of active concurrent users and revenue to cover it.
+
+> **R2 is live disk usage, not a rolling monthly data transfer allowance.** Aggressive post-render cleanup (delete raw clips immediately after Lambda completes) keeps live storage near zero regardless of throughput.
 
 ### Per-Export Cost at 10GB Input
 
@@ -313,7 +344,7 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 |---|---|---|
 | Vercel | Free (hobby) | $20/mo at scale |
 | Supabase | Free (500MB DB) | $25/mo at 8GB+ |
-| Cloudflare R2 | 10GB-mo free, $0 egress | $0.015/GB storage after |
+| Cloudflare R2 | 10GB live storage free, $0 egress | $0.015/GB after |
 | AWS Lambda | 400,000 GB-s free/mo | $0.0000167/GB-s after |
 | **Total: 0–200 users** | **~$0** | — |
 | **Total: 200–1,000 users** | — | **~$30–80/mo** |
@@ -324,8 +355,8 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 | Tier | Price | Clips | Max file | Max project | Resolution | AI Auto-Edit | Exports/mo | Music | Watermark |
 |---|---|---|---|---|---|---|---|---|---|
-| **Free** | £0 | 20 | 500MB | 5GB | 1080p | ✅ Basic (beat-sync, vibe prompt, motion filter) | Unlimited | ~20 free tracks | ❌ Never |
-| **Creator** | £4.99/mo or £39.99/yr | 50 | 1GB | 10GB | 4K | ✅ Smart (scene scoring, face/action zoom) | 5/mo | Epidemic Sound | ❌ Never |
+| **Free** | £0 | 20 | 2GB | 10GB | 1080p | ✅ Basic (beat-sync, vibe prompt, motion filter) | Unlimited | ~20 free tracks | ❌ Never |
+| **Creator** | £4.99/mo or £39.99/yr | 50 | 4GB | 20GB | 4K | ✅ Smart (scene scoring, face/action zoom) | 5/mo | Epidemic Sound | ❌ Never |
 
 ---
 
@@ -352,15 +383,16 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 > Goal: Produce one real YouTube video faster than DaVinci Resolve using only RushCut.
 
 - [ ] **Batch 0:** FFmpeg pipeline spike — confirmed working ✅
-- [ ] **Batch 1:** Next.js scaffold + all skeleton pages (navigable shells, no logic)
-- [ ] **Batch 2:** Supabase auth, Cloudflare R2 presigned upload, file size validation
+- [ ] **Batch 1:** Next.js scaffold + all skeleton pages (navigable shells, no logic) ✅
+- [ ] **Batch 2:** Supabase + Cloudflare R2 setup, presigned upload, ffprobe metadata, clip list wired
 - [ ] **Batch 3:** FFmpeg Lambda — silence removal → clip splice → `xfade` transitions → `loudnorm` → 360p proxy
-- [ ] **Batch 4:** `librosa` beat-sync + FFmpeg motion filter + Gemini 2.0 Flash context prompt
-- [ ] **Batch 5:** 1080p final export end-to-end → author self-tests with own DJI footage
-- [ ] **Batch 6:** Google Video Intelligence scene scoring + clip ranking (5 min cap)
-- [ ] **Batch 7:** Google Vision face detection → smart zoom target
-- [ ] **Batch 8:** `ffmpeg-vidstab` stabilisation
-- [ ] **Batch 9:** Full AI pipeline self-test
+- [ ] **Batch 4:** Lambda integration + job queue + polling + R2 cleanup post-render (delete raw clips)
+- [ ] **Batch 5:** `librosa` beat-sync + FFmpeg motion filter + Gemini 2.0 Flash context prompt
+- [ ] **Batch 6:** 1080p final export end-to-end → author self-tests with own DJI footage
+- [ ] **Batch 7:** Google Video Intelligence scene scoring + clip ranking (5 min cap)
+- [ ] **Batch 8:** Google Vision face detection → smart zoom target
+- [ ] **Batch 9:** `ffmpeg-vidstab` stabilisation
+- [ ] **Batch 10:** Full AI pipeline self-test
 
 > ✅ Gate 1: Author produces one YouTube video using only RushCut. Genuinely faster than DaVinci?
 > ✅ Gate 2: AI version produces a better first draft than FFmpeg-only with no extra user effort?
@@ -389,6 +421,7 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 | Director feeling lost if Respin loop is slow | Medium | High | Respin must complete in <10s at 360p |
 | Lambda /tmp overflow on large projects | Medium | High | Process clips sequentially/streamed — never load full project into memory |
 | Unlimited re-renders break unit economics | Medium | High | Two-tier change model (DEC-013) — cheap vs expensive changes |
+| R2 storage overrun from concurrent users | Low | Medium | Delete raw clips immediately post-render; 30-day cleanup job for final files |
 
 ---
 
@@ -396,7 +429,7 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 1. **Music licensing:** ~20 Pixabay/ccMixter tracks on free tier; Epidemic Sound gated to paid tier. ✅ Resolved.
 2. **Draft proxy quality:** Server-side 360p Lambda job. Real FFmpeg output. ✅ Resolved.
-3. **Export free limit:** Unlimited exports on free tier. 1080p + 5GB project cap are the only hard limits. ✅ Resolved.
+3. **Export free limit:** Unlimited exports on free tier. 1080p + 10GB project cap are the only hard limits. ✅ Resolved.
 4. **Mobile web:** "Best on desktop" banner on mobile. No special mobile flow at MVP. ✅ Resolved.
 5. **Stabilisation:** Benchmark `ffmpeg-vidstab` Lambda cost before committing to paid tier.
 6. **Respin latency:** Single-clip re-cut at 360p must complete in <10s. Benchmark in Phase 1 Batch 3.
@@ -406,7 +439,22 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 ---
 
-## 14. Strategic Clarity
+## 14. Pending Strategic Decisions
+
+These need a decision before the relevant batch — flag when approaching each one:
+
+| # | Decision | Needed by | Options |
+|---|---|---|---|
+| **SD-001** | **R2 cleanup trigger** — delete raw clips immediately when Lambda finishes, or only after user confirms draft? | Batch 4 | (a) Delete on Lambda complete — saves storage, user cannot re-render from original; (b) Delete on user confirm — keeps raw clips available for respin but costs more storage |
+| **SD-002** | **30-day retention scope** — does the 30-day library apply to free users or paid only? | Batch 4 | (a) All users authenticated → all get 30 days; (b) Free users get 24h link, paid get 30 days (stronger upgrade incentive) |
+| **SD-003** | **Concurrent user queuing** — what does a user see when the system is busy? | Batch 4 | (a) Show estimated wait time ("~3 mins"); (b) Silent queue, notify when ready; (c) Hard limit concurrent jobs and show "try again later" |
+| **SD-004** | **File size enforcement on paid tier** — 4GB per file cap. Real DJI 4K footage at 3 min = 1.4GB, so this is generous. Revisit if users hit it. | Phase 2 | Monitor usage data before changing |
+| **SD-005** | **Respin scope** — single clip re-cut only, or allow full re-render from respin? | Batch 5 | PRD says single clip only; if Lambda complexity too high, fall back to full re-render as only correction path |
+| **SD-006** | **Auth timing** — PRD says login gate fires at "Make my edit" CTA. Does PoC (no auth) need a placeholder for this gate, or skip entirely? | Batch 2/3 | Currently PoC uses localStorage projectId with no auth — decide when to wire Supabase Auth |
+
+---
+
+## 15. Strategic Clarity
 
 **What this is:** LightCut UX + Clipchamp's web-first delivery + slightly more editing control than either. That's the whole product.
 
@@ -418,4 +466,4 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 ---
 
-*Next step: Complete Batch 1 scaffold. Get all 5 pages navigable locally. Then Batch 2: auth + upload.*
+*Last updated: March 2026 — Batch 2 infrastructure session. Next step: complete .env.local setup, then Claude Code implements Batch 2 wiring.*
