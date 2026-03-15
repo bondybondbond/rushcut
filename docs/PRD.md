@@ -1,9 +1,9 @@
 # PRD: RushCut — Rushes to a Cut — One-Click Web Video Editor
 
-> **Product:** RushCut — *From your rushes to a cut. In minutes.*
-> **Version:** 0.8 (updated March 2026)
+> **Product:** RushCut — *Your clips. Edited.*
+> **Version:** 0.9 (updated March 2026)
 > **Author:** Manasak
-> **Status:** Draft — reassessed after founder validation session
+> **Status:** Draft — updated after Batch 1 UX/flow session
 
 ---
 
@@ -89,7 +89,7 @@ This is the core technical decision — knowing which features require AI vs. ca
 | **Zoom on faces / people** | ✅ Yes | Requires face detection (e.g. Google Vision API or OpenCV) |
 | **Zoom on key action moments** | ✅ Yes | Requires motion + scene scoring (Google Video Intelligence API) |
 | **Smart clip trimming** (best N seconds per clip) | ✅ Yes | Motion scoring + saliency detection per clip |
-| **Context-aware ordering** (\"start at flight, then hotel...\") | ⚠️ Free (basic) | Gemini 2.0 Flash ~$0.001/export — included on free tier |
+| **Context-aware ordering** ("start at flight, then hotel...") | ⚠️ Free (basic) | Gemini 2.0 Flash ~$0.001/export — included on free tier |
 | **Boring clip filtering** | ❌ No (basic) | FFmpeg frame-diff motion score — free tier; Google Video Intelligence = paid upgrade |
 | **Stabilisation** | ✅ Yes (or FFmpeg vidstab) | `ffmpeg-vidstab` plugin = no AI, but compute-heavy → paid tier |
 | **Volume normalisation** | ❌ No | FFmpeg `loudnorm` filter — free |
@@ -100,53 +100,76 @@ This is the core technical decision — knowing which features require AI vs. ca
 
 ---
 
-## 5. Production Flow (Updated)
+## 5. Production Flow
 
-### One-click ideal (confirmed flow)
+### User flow (screen by screen)
 
 ```
-STEP 1 — UPLOAD
-  User uploads all raw clips (drag & drop, bulk select)
-  Free: up to 20 clips, max 500MB per file, max 5GB per project
-  Paid: up to 50 clips, max 1GB per file, max 10GB per project
-  Hard limits enforced client-side (pre-upload validation) AND server-side (reject oversized uploads).
+SCREEN 0 — LANDING
+  Headline:   "Your clips. Edited."
+  Subhead:    "Upload your footage. Get a cut in minutes."
+  CTA:        "Get started" → /upload
+  No login required.
 
-STEP 2 — CONFIGURE (optional, single screen)
-  - Order: auto (filename/time) or drag to reorder
-  - AI tier: optional prompt → "Vacation in Bali — starts at airport, then hotel, beach, sunset"
-  - Style: select transition style (crossfade / dip to black / hard cut / whip / fade to white)
-  - Music: select from library (free: ~20 tracks | paid: full library)
-  - Intro card: title text (optional)
-  - End card: title text (optional)
+SCREEN 1 — SELECT CLIPS  (/upload)
+  Step indicator: Upload highlighted
+  Heading:    "Select your clips"
+  Subhead:    "Up to 20 clips. MP4, MOV or MKV, up to 1 GB each."
+  Upload zone: drag and drop or click to browse
+  Clip list:   clips appear below upload zone
+  Optional brief: short text input → "e.g. fast cuts, upbeat, travel feel"
+                  helper: "We will use this as a starting point. You can always adjust."
+  CTA:        "Continue" → /configure/[projectId]
+  NOTE: No login. No server cost. Local state only.
 
-STEP 3 — ONE CLICK → FIRST DRAFT
-  App generates draft preview via a separate low-memory server-side Lambda job (360p).
-  Draft proxy is NOT client-side blob stitching — it runs actual FFmpeg transitions, music,
-  and zoom on the server at 360p. User sees real transitions/music/zoom in preview, not a simulation.
-  AI tier: proposes key moments, zoom points, clip order on screen.
-  User sees: film plays through with a clip strip below — not a timeline editor.
+SCREEN 2 — CONFIGURE  (/configure/[projectId])
+  Step indicator: Configure highlighted
+  Heading:    "Your edit settings"
+  Subhead:    "Defaults are already set. Change anything before we start."
+  Panel 1 — Order:       Drag to reorder. Default: upload/timestamp order.
+  Panel 2 — Music:       Auto / No music / Choose track. Default: auto.
+  Panel 3 — Title card:  On / Off. Default: on, auto-generated.
+  Panel 4 — Style:       Auto / Fast cuts / Slow and cinematic. Default: auto.
+  Small note: "Heavy changes like reordering after render will use one of your included re-renders."
+  CTA:        "Make my edit" → triggers LOGIN GATE → upload + draft render
+  NOTE: All fields have defaults. User can click CTA without touching anything.
+  NOTE: Login/signup gate fires at this CTA — before any server cost is incurred.
 
-STEP 4 — REVIEW & CONFIRM ("Does this feel right?")
-  The user reviews the film as a viewer, not an editor. Three actions only:
-  - "Looks great → Export" — proceed to final render
-  - Tap a clip in the strip → "Try a different moment from this clip" (Respin)
-    → Lambda re-cuts just that one clip, no full re-render
-  - "Change the vibe" → respin the whole film with a different style/music selection
-  No frame-level controls. No accept/reject zoom UI. No timeline.
-  User clicks "Looks good — produce final"
+SCREEN 3 — PREVIEW  (/preview/[jobId])
+  Step indicator: Preview highlighted
+  Heading:    "Does this feel right?"
+  Subhead:    "Watch your draft. Confirm it or go back and adjust."
+  Video area: draft preview player (360p proxy)
+  Secondary actions:
+    "Edit settings"       → /configure/[projectId]   (cheap: no re-render)
+    "Re-render preview"   (expensive: consumes 1 re-render allowance)
+  Primary CTA: "Export final edit" → /download/[jobId]
+  Small note: "1 re-render included. Additional re-renders may use credits."
 
-STEP 5 — FINAL RENDER
-  Full-quality render triggered (server-side Lambda)
-  Music track auto-fitted/beat-synced to final approved duration
-  Download MP4: 1080p (free) | 4K (paid)
-  Download link valid 24h
+SCREEN 4 — DOWNLOAD  (/download/[jobId])
+  Step indicator: Download highlighted
+  STATE A — Processing:
+    Heading:    "Your edit is being processed"
+    Subhead:    "This usually takes a few minutes."
+    Progress bar (animated, fun — not a plain bar)
+    Note:       "You can close this tab. We will save it to your library."
+  STATE B — Ready:
+    Heading:    "Your edit is ready"
+    Subhead:    "Your 1080p file is ready to download."
+    Badges:     [1080p]  [4K — upgrade]
+    CTA:        "Download edit"
+  Always visible: "Saved to your library for 30 days."
 ```
 
 > ✅ **Confirmed:** Draft proxy is a separate low-memory Lambda job (360p), not client-side blob stitching. User sees actual FFmpeg transitions/music/zoom in preview — not a simulated preview.
 
 > ✅ **Confirmed:** DJI LightCut does auto-adjust music — it detects beat markers and aligns cuts to rhythm automatically. RushCut does the same via `librosa` BPM detection (no AI cost).
 
-> ✅ **Confirmed:** Step 4 is a film review, not an editing session. The Respin mechanic (per-clip re-cut) avoids the Magisto trap of either too much or too little control — user nudges, not rebuilds.
+> ✅ **Confirmed:** Step 3 (Preview) is a film review, not an editing session. The Respin mechanic (per-clip re-cut) avoids the Magisto trap of either too much or too little control — user nudges, not rebuilds.
+
+> ✅ **Confirmed:** Login gate fires at "Make my edit" CTA on Configure screen — not before. No server cost incurred before authentication.
+
+> ✅ **Confirmed:** Download retention is 30 days in library (not 24-hour link). See DEC-015.
 
 ### Why a draft-then-confirm step?
 - Avoids wasting a full 4K render on a version the user rejects
@@ -154,13 +177,19 @@ STEP 5 — FINAL RENDER
 - Proxy draft is fast (low-res, server-rendered at 360p) — full render only on confirmation
 - Zoom/music adjustments are applied to final confirmed version, not draft
 
+### Re-render cost control (two-tier model)
+See DEC-013. Changes after first draft are split:
+- **Cheap (no re-render):** Music swap, title card text, style label — metadata only
+- **Expensive (re-render):** Clip reorder, transition change, trim changes — alters video timeline
+Free tier: 1 included re-render per project.
+
 ---
 
 ## 6. Feature Scope
 
 ### v1 — Free Tier (PoC)
 - [ ] Unlimited projects
-- [ ] Up to 20 clips per project
+- [ ] Up to 20 clips per project (**always 20 — never write 10 anywhere**)
 - [ ] **Hard cap: 500MB per file, 5GB per project total** (enforced pre-upload)
 - [ ] Auto-combine in upload/timestamp order
 - [ ] Silence + stillness detection → auto-remove dead sections (FFmpeg)
@@ -172,27 +201,29 @@ STEP 5 — FINAL RENDER
 - [ ] 5 basic text/title styles — intro card + end card only
 - [ ] Draft preview → confirm → final render
 - [ ] Export: **1080p MP4, no watermark, ever**
-- [ ] Download link valid 24h (auto-deleted from R2)
+- [ ] **Saved to library for 30 days** (not 24-hour link — all users are authenticated)
 - [ ] **No export count limit** (cost per export ~£0.03 max at 5GB — sustainable)
 - [ ] Beat-sync music cuts via `librosa` BPM detection
-- [ ] Context prompt: user describes vibe/order ("adventure", "starts at airport then beach") — Gemini 2.0 Flash (~$0.001/export)
+- [ ] Optional brief: short text hint → sets defaults only (vibe/order direction via Gemini 2.0 Flash ~$0.001/export)
 - [ ] Basic boring clip filtering (FFmpeg motion score — removes near-static clips automatically)
 - [ ] **Respin per clip** — tap clip in preview strip → Lambda re-cuts just that clip (no full re-render)
+- [ ] **1 included re-render per project** (expensive changes only; see DEC-013)
 
 ### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
 - [ ] Up to 50 clips per project
 - [ ] **Hard cap: 1GB per file, 10GB per project total** (enforced pre-upload)
 - [ ] **Fair usage: max 5 final exports per month** (see Section 8 — real economics after Stripe + VAT)
 - [ ] **4K export** (primary upgrade trigger)
-- [ ] Smart clip scoring: Google Video Intelligence — action peaks + motion intensity → ranks best moments (upgrade over free basic motion filter)
-- [ ] **Google Video Intelligence capped at 5 min of footage scored per export** (cost protection — see Section 8)
-- [ ] Smart zoom: face detection + action moment zoom via Google Vision (upgrade over free generic centre zoom)
-- [ ] Advanced context ordering: AI scene labelling via Google Video Intelligence (upgrade over free vibe prompt)
+- [ ] Smart clip scoring: Google Video Intelligence — action peaks + motion intensity → ranks best moments
+- [ ] **Google Video Intelligence capped at 5 min of footage scored per export** (cost protection)
+- [ ] Smart zoom: face detection + action moment zoom via Google Vision
+- [ ] Advanced context ordering: AI scene labelling via Google Video Intelligence
 - [ ] Full licensed music library (Epidemic Sound — gated to paid tier)
 - [ ] 15+ transition styles
 - [ ] 15+ text/title styles (animated options: fade in, slide up, etc.)
 - [ ] Video stabilisation (`ffmpeg-vidstab`)
 - [ ] Project save + re-edit
+- [ ] Open-ended AI direction (free-text "describe your film") — see DEC-014
 
 ### Permanently Out of Scope
 - AI video generation (text-to-video)
@@ -222,7 +253,7 @@ STEP 5 — FINAL RENDER
 | Zoom (generic) | FFmpeg `zoompan` | Free, no AI |
 | Zoom (smart, faces) | OpenCV or Google Vision API | AI — paid tier only |
 | Scene scoring | Google Video Intelligence API | AI — paid tier only; hard-capped at 5 min/export |
-| Context prompt | Gemini 2.0 Flash | AI — free tier (basic vibe prompt) |
+| Context prompt | Gemini 2.0 Flash | AI — free tier (basic vibe prompt / defaults only) |
 | Stabilisation | `ffmpeg-vidstab` plugin | Compute-heavy — paid tier only |
 | Payments | Stripe | Standard |
 
@@ -232,8 +263,8 @@ User confirms draft
   → API triggers AWS Lambda (FFmpeg container)
   → Lambda fetches clips from R2
   → Runs: silence removal → trim → xfade transitions → music fit → zoom → normalise
-  → Output written to R2 (temp 24h signed URL)
-  → Download link returned to frontend
+  → Output written to R2 (retained 30 days for authenticated user)
+  → Download available in library
 ```
 
 ---
@@ -251,31 +282,14 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 > **VAT registration threshold (UK):** £90,000 turnover. At £4.99/mo, that's ~18,000 subscribers before mandatory VAT registration. Pre-registration, £4.665 is the real budget. Post-registration, £3.853. Plan for the lower figure from day one.
 
-> **AWS/Google invoice VAT:** If VAT registered, you can reclaim input VAT on AWS/Google costs. If not, infra costs are ~20% higher in real terms on those bills.
-
 ### File Size Hard Caps
-
-These caps are non-negotiable constraints — they exist to ensure per-export infrastructure cost never exceeds real subscription revenue after fees.
 
 | Tier | Max per file | Max per project | Max exports/month |
 |---|---|---|---|
 | Free | 500MB | 5GB | Unlimited |
 | Paid Creator | 1GB | 10GB | **5 (fair usage)** |
 
-> **Why 5 exports/month (not 10)?** After Stripe fees, real budget is £4.665 pre-VAT. At a typical 5GB project, paid tier costs ~£0.56/export. 5 exports = £2.80 infra — leaving ~£1.86 actual margin (~40%). At 10 exports = £5.60 infra, which exceeds the £4.665 net revenue. 5 is the safe, profitable ceiling. Typical hobbyist (1–2 exports/month) never gets close.
-
-> **Why unlimited on free?** Free tier at 5GB costs ~£0.025/export. 20 exports/month = £0.50. Still negligible vs. fixed infra costs.
-
-### Cost Assumptions (Corrected for Large Projects)
-
-- **Realistic project:** 10GB raw input → 5 min compiled output
-- Lambda config: 3,008MB RAM
-- Lambda pricing: $0.0000000333/GB-ms
-- Processing time (10GB input): ~8–12 min Lambda job (codec normalise + silence removal + zoompan)
-- 4K render = ~3.5× the 1080p Lambda time
-- R2: $0.015/GB storage, $0 egress
-- Google Video Intelligence: $0.10/min — **hard cap: 5 min of footage scored per export**
-- Google Vision face detection: $0.0014/image × 3 frames × up to 34 clips
+> **Why 5 exports/month?** After Stripe fees, real budget is £4.665 pre-VAT. At a typical 5GB project, paid tier costs ~£0.56/export. 5 exports = £2.80 infra — leaving ~£1.86 actual margin (~40%). At 10 exports = £5.60 infra, which exceeds the £4.665 net revenue.
 
 ### Per-Export Cost at 10GB Input
 
@@ -286,34 +300,12 @@ These caps are non-negotiable constraints — they exist to ensure per-export in
 | Gemini 2.0 Flash (context prompt) | ~$0.001 | ~$0.001 |
 | Basic motion filter (FFmpeg frame-diff) | ~$0 | ~$0 |
 | Lambda vidstab (if used) | $0 | ~$0.025 |
-| R2 storage (temp 24h) | ~$0 | ~$0 |
+| R2 storage (30-day retention) | ~$0.0075 | ~$0.015 |
 | Google Video Intelligence (**5 min cap**) | $0 | ~$0.50 |
 | Google Vision face detection (34 clips) | $0 | ~$0.143 |
 | **Total per export (10GB input)** | **~$0.061 (£0.049)** | **~$0.879 (£0.703)** |
 
-> ⚠️ Without the 5 min GVI cap, paid AI cost hits ~$2.38/export (£1.90) on a 10GB project — well over net sub revenue. The cap is **mandatory** and must be enforced in the Lambda pipeline.
-
-### Per-Export Cost at Typical Project Sizes
-
-| Project size | Free cost | Paid cost (capped) | Safe exports within £4.665 net (20% buffer) |
-|---|---|---|---|
-| 3GB (light) | ~£0.015 | ~£0.510 | ~7 |
-| 5GB (typical) | ~£0.025 | ~£0.560 | ~6 |
-| 10GB (max) | ~£0.049 | ~£0.703 | ~5 |
-
-> **Cap set at 5** to be safe at worst-case (10GB) project size with ~20% margin buffer built in.
-
-### If Introducing Pay-Per-Export (Top-Up Credits)
-
-For users who hit the 5/month cap and want more, a credit top-up avoids forcing a tier upgrade:
-
-| Project size | Infra cost | Price per extra export (20% margin + Stripe) |
-|---|---|---|
-| ~3GB | £0.49 | ~£0.88 |
-| ~5GB | £0.55 | ~£0.95 |
-| ~10GB | £0.70 | ~£1.15 |
-
-> **Simplest implementation:** Flat £1.00 per extra export (covers all project sizes with margin). Sell in packs of 5 (£5.00) via Stripe. This is a Phase 2+ feature — do not build at MVP.
+> ⚠️ Without the 5 min GVI cap, paid AI cost hits ~$2.38/export (£1.90) on a 10GB project — well over net sub revenue. The cap is **mandatory**.
 
 ### Monthly Fixed Infrastructure
 
@@ -326,16 +318,6 @@ For users who hit the 5/month cap and want more, a credit top-up avoids forcing 
 | **Total: 0–200 users** | **~$0** | — |
 | **Total: 200–1,000 users** | — | **~$30–80/mo** |
 
-### Revenue vs. Cost at Paid Tier (Real Net)
-
-| Paying Users | Net revenue after Stripe (£4.665/mo) | Est. infra (5GB project, 2 exports/mo) | Real margin |
-|---|---|---|---|
-| 10 | £46.65 | ~£11 | ~76% |
-| 50 | £233.25 | ~£56 | ~76% |
-| 200 | £933 | ~£224 | ~76% |
-
-> ⚠️ Music licensing is the wildcard. Epidemic Sound API: ~$15/mo for indie devs. Artlist: ~$200/yr. Pixabay/ccMixter: free. Start free, add licensed library as paid-only upgrade.
-
 ---
 
 ## 9. Pricing
@@ -345,15 +327,11 @@ For users who hit the 5/month cap and want more, a credit top-up avoids forcing 
 | **Free** | £0 | 20 | 500MB | 5GB | 1080p | ✅ Basic (beat-sync, vibe prompt, motion filter) | Unlimited | ~20 free tracks | ❌ Never |
 | **Creator** | £4.99/mo or £39.99/yr | 50 | 1GB | 10GB | 4K | ✅ Smart (scene scoring, face/action zoom) | 5/mo | Epidemic Sound | ❌ Never |
 
-> **Conversion model note:** Free tier includes genuine AI auto-edit — better than Clipchamp's free tier by design. Paid upgrades sell *smarter* AI decisions (scene scoring, face/action zoom) + 4K + larger project capacity + premium music. Hook: free gets you a great first film; paid gets you a better film with zero extra effort.
-
-> **Fair usage note (paid):** 5 exports/month is a safety ceiling based on real net revenue after Stripe fees. Typical hobbyist uses 1–2/month — this limit is never felt. Shown transparently in UI as a counter. Extra exports available at £1.00 each (Phase 2+).
-
 ---
 
 ## 10. Competitive Positioning
 
-**Clipchamp is the primary competitor to beat** — not CapCut or Filmora. It's pre-installed on every Windows PC, free at 1080p, web-first, and has no watermarks. Clipchamp allows 99 clips/project on free with no watermark and unlimited exports at 1080p. RushCut differentiates not on generosity but on auto-compile and direction power — Clipchamp is still a blank timeline.
+**Clipchamp is the primary competitor to beat** — not CapCut or Filmora. It's pre-installed on every Windows PC, free at 1080p, web-first, and has no watermarks.
 
 | Tool | Web-first | Windows | Auto-compile | Direction Power | Watermark | Price |
 |---|---|---|---|---|---|---|
@@ -365,42 +343,33 @@ For users who hit the 5/month cap and want more, a credit top-up avoids forcing 
 | CapCut | ⚠️ | ⚠️ | ✅ | ⚠️ | ✅ free tier | £64.99/yr |
 | DaVinci Resolve | ❌ | ✅ | ❌ | ❌ | ❌ | Free/£270 |
 
-**The real white space:** DJI LightCut's UX on a desktop browser, with slightly more editing control. That's the entire product brief.
-
 ---
 
 ## 11. Build Plan (Solo Dev, No-Rush, Claude Code Assisted)
-
-**Context:** Third personal dev project. Previous: SpellWiz game (success — daughter uses daily), Chrome extension (shipped, launching on Product Hunt). First paid-tier ambition. Using Claude Code as primary coding assistant. No fixed deadline — solve the personal problem first, validate commercial potential second.
 
 ### Phase 1 — Build for Yourself (Full Pipeline, Personal Validation)
 
 > Goal: Produce one real YouTube video faster than DaVinci Resolve using only RushCut.
 
-- [ ] **Step 1:** Next.js scaffold, Supabase auth, Cloudflare R2 presigned upload working
-- [ ] **Step 1b:** File size validation — reject uploads exceeding per-file and per-project caps at the client AND server
-- [ ] **Step 2:** FFmpeg Lambda — silence removal → clip splice → `xfade` transitions → `loudnorm`
-- [ ] **Step 3:** `librosa` beat-sync + FFmpeg motion filter (basic boring clip removal)
-- [ ] **Step 4:** Gemini 2.0 Flash context prompt (vibe/order direction)
-- [ ] **Step 5:** 1080p export end-to-end → author self-tests with own DJI footage
-- [ ] **Step 6:** Google Video Intelligence scene scoring + clip ranking — **implement 5 min footage cap here**
-- [ ] **Step 7:** Google Vision face detection → smart zoom target
-- [ ] **Step 8:** `ffmpeg-vidstab` stabilisation
-- [ ] **Step 9:** Full AI pipeline self-test — does it produce a noticeably better first draft than FFmpeg-only?
+- [ ] **Batch 0:** FFmpeg pipeline spike — confirmed working ✅
+- [ ] **Batch 1:** Next.js scaffold + all skeleton pages (navigable shells, no logic)
+- [ ] **Batch 2:** Supabase auth, Cloudflare R2 presigned upload, file size validation
+- [ ] **Batch 3:** FFmpeg Lambda — silence removal → clip splice → `xfade` transitions → `loudnorm` → 360p proxy
+- [ ] **Batch 4:** `librosa` beat-sync + FFmpeg motion filter + Gemini 2.0 Flash context prompt
+- [ ] **Batch 5:** 1080p final export end-to-end → author self-tests with own DJI footage
+- [ ] **Batch 6:** Google Video Intelligence scene scoring + clip ranking (5 min cap)
+- [ ] **Batch 7:** Google Vision face detection → smart zoom target
+- [ ] **Batch 8:** `ffmpeg-vidstab` stabilisation
+- [ ] **Batch 9:** Full AI pipeline self-test
 
 > ✅ Gate 1: Author produces one YouTube video using only RushCut. Genuinely faster than DaVinci?
-> ✅ Gate 2: AI version produces a better first draft than FFmpeg-only version with no extra user effort?
+> ✅ Gate 2: AI version produces a better first draft than FFmpeg-only with no extra user effort?
 
-⚠️ Cost discipline: Use FFmpeg-only pipeline for all dev testing. Only run full AI stack for genuine validation sessions.
-
-### Phase 2 — Validate & Charge (5 Strangers Before Anything Else)
-- [ ] Fix top 3 issues from real user feedback (DJI forums, r/dji, r/gopro)
+### Phase 2 — Validate & Charge
+- [ ] Fix top 3 issues from real user feedback
 - [ ] Add Stripe — Creator tier (4K + smart AI)
-- [ ] Implement export counter in Supabase — enforce 5/month cap for paid users, reset on billing cycle
+- [ ] Implement export counter — enforce 5/month cap, reset on billing cycle
 - [ ] Target: 5 paying strangers before any further feature work
-- [ ] Phase 2+ only: flat £1.00 per extra export credit pack (5 for £5.00)
-
-**Timeline philosophy:** No rush. Each gate must be genuinely passed before moving on. The author's own DJI filming sessions are the real-world test loop.
 
 ---
 
@@ -408,47 +377,45 @@ For users who hit the 5/month cap and want more, a credit top-up avoids forcing 
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Clipchamp adds auto-compile feature | Medium | High | Own the action/drone niche and "direction power" framing; Clipchamp is a Microsoft product unlikely to move fast on this |
-| DJI ships LightCut for Windows | Low | Very High | This is the nuclear scenario — monitor DJI roadmap; if they ship, pivot to cross-device (DJI + GoPro + iPhone) mixing which they'll never prioritise |
-| Lambda cold start slows export UX | Medium | Medium | Provisioned concurrency for paid tier; show progress indicator |
-| Google Video Intelligence cost spikes | Medium | High | **Hard cap at 5 min footage scored per export — enforced in Lambda, not just config** |
-| Paid user hits 5 export limit and churns | Low | Medium | Show counter transparently; offer £1 top-up credits (Phase 2+); typical user never hits the cap |
-| Stripe fee erosion at higher volume | Low | Low | At scale, negotiate Stripe pricing or switch to Stripe Billing optimised plans |
-| VAT registration triggered at scale | Low | Medium | Price is £4.99 inc VAT from day one — absorb until registration, then reclaim on costs |
-| 4K file uploads time out | Medium | Medium | R2 presigned direct upload from browser (bypasses server) |
-| Free tier too generous → low conversion | Medium | Medium | 4K wall + project size wall (5GB vs 10GB) are unbypassable; AI features must feel genuinely magical in v2 |
-| Music licensing dispute | Low | High | Start with Pixabay/ccMixter; add Epidemic Sound only after revenue |
-| xfade transitions fail on mixed codecs/fps | High | Medium | Normalise all clips to consistent codec/fps on upload (FFmpeg pre-pass) — must be solved in Week 2 |
-| "Director feeling" lost if Respin loop is too slow | Medium | High | Respin must feel instant — Lambda re-cut of single clip should complete in <10s at 360p; gate this in Phase 1 testing |
-| Lambda /tmp overflow on large projects | Medium | High | Process clips sequentially/streamed — never load full project into Lambda memory at once. Default /tmp = 512MB; max = 10GB but must be explicitly configured |
-
-**Founder floor:** If commercial validation fails, the tool still solves the author's own DaVinci Resolve time problem. That's a valid floor — no sunk cost pressure.
+| Clipchamp adds auto-compile | Medium | High | Own the action/drone niche and direction power framing |
+| DJI ships LightCut for Windows | Low | Very High | Pivot to cross-device mixing (DJI + GoPro + iPhone) |
+| Lambda cold start slows UX | Medium | Medium | Provisioned concurrency for paid tier; progress indicator |
+| Google Video Intelligence cost spikes | Medium | High | Hard cap at 5 min footage scored per export |
+| Paid user hits 5 export limit and churns | Low | Medium | Show counter transparently; offer £1 top-up credits (Phase 2+) |
+| 4K file uploads time out | Medium | Medium | R2 presigned direct upload from browser |
+| Free tier too generous → low conversion | Medium | Medium | 4K wall + project size wall are unbypassable |
+| Music licensing dispute | Low | High | Start with Pixabay/ccMixter; Epidemic Sound only after revenue |
+| xfade transitions fail on mixed codecs/fps | High | Medium | Normalise all clips to consistent codec/fps on upload |
+| Director feeling lost if Respin loop is slow | Medium | High | Respin must complete in <10s at 360p |
+| Lambda /tmp overflow on large projects | Medium | High | Process clips sequentially/streamed — never load full project into memory |
+| Unlimited re-renders break unit economics | Medium | High | Two-tier change model (DEC-013) — cheap vs expensive changes |
 
 ---
 
 ## 13. Open Questions
 
-1. **Music licensing:** ~~Pixabay/ccMixter (free) → Epidemic Sound ($15/mo) when?~~ **RESOLVED:** ~20 Pixabay/ccMixter tracks on free tier; Epidemic Sound gated to paid tier from day 1.
-2. **Draft proxy quality:** ~~How low-res is acceptable for the "confirm before final render" step?~~ **RESOLVED:** Server-side 360p Lambda job. Real FFmpeg output — not a simulation.
-3. **Export free limit:** ~~Is 3 exports/month tight enough without frustrating free users?~~ **RESOLVED:** Unlimited exports on free tier. 1080p + 5GB project cap are the only hard limits.
-4. **Mobile web:** ~~At MVP, should mobile just trigger upload + configure, with render happening async and notified via email?~~ **RESOLVED:** Tailwind responsive by default. "Best on desktop" banner shown on mobile. No special mobile flow at MVP.
-5. **Stabilisation:** `ffmpeg-vidstab` is free but slow — benchmark Lambda cost before committing to paid tier feature.
-6. **Respin latency:** Single-clip re-cut at 360p must complete in <10s to preserve director feeling. Benchmark this in Phase 1 Step 2.
-7. **Export counter UX:** How to surface the 5/month paid cap without feeling punitive? **Open** — consider a subtle persistent counter ("2 of 5 exports used this month") in the dashboard header. Extra exports available at £1.00 each.
-8. **Price point review:** At scale, if 76% gross margin is stable after real Stripe+infra costs, consider whether £4.99 leaves headroom or if £6.99 is more defensible. Do not revisit until 50 paying users.
+1. **Music licensing:** ~20 Pixabay/ccMixter tracks on free tier; Epidemic Sound gated to paid tier. ✅ Resolved.
+2. **Draft proxy quality:** Server-side 360p Lambda job. Real FFmpeg output. ✅ Resolved.
+3. **Export free limit:** Unlimited exports on free tier. 1080p + 5GB project cap are the only hard limits. ✅ Resolved.
+4. **Mobile web:** "Best on desktop" banner on mobile. No special mobile flow at MVP. ✅ Resolved.
+5. **Stabilisation:** Benchmark `ffmpeg-vidstab` Lambda cost before committing to paid tier.
+6. **Respin latency:** Single-clip re-cut at 360p must complete in <10s. Benchmark in Phase 1 Batch 3.
+7. **Export counter UX:** Subtle persistent counter ("2 of 5 exports used") in dashboard header. Extra exports at £1.00 each (Phase 2+).
+8. **Price point review:** Do not revisit until 50 paying users.
+9. **AI direction (open-ended):** Deferred to v2 paid tier. v1 brief is a short hint only (DEC-014).
 
 ---
 
-## 14. Strategic Clarity (v0.3 additions)
+## 14. Strategic Clarity
 
-**What this is:** LightCut UX + Clipchamp's web-first delivery + slightly more editing control than either. That's the whole product. Don't let scope drift from this.
+**What this is:** LightCut UX + Clipchamp's web-first delivery + slightly more editing control than either. That's the whole product.
 
-**What "direction power" means in practice:** User uploads clips, picks a vibe (adventure / relaxed / cinematic), picks music, clicks compile. Gets a 90% film. Tweaks the 10%. That interaction model is the core IP — not any specific feature.
+**What "direction power" means in practice:** User uploads clips, picks a vibe (adventure / relaxed / cinematic), picks music, clicks compile. Gets a 90% film. Tweaks the 10%.
 
 **The honest moat:** The market is full of tools that either do too little or too much. RushCut's moat is restraint — knowing what to leave out. That's a product design moat, not a technical one.
 
-**The Magisto lesson:** Their AI engine *was* the product. When Vimeo stripped it out post-acquisition, the "director feeling" disappeared and users left immediately. Never let the execution layer become a commodity — it is the product.
+**The Magisto lesson:** Their AI engine *was* the product. When Vimeo stripped it out post-acquisition, the "director feeling" disappeared and users left immediately. Never let the execution layer become a commodity.
 
 ---
 
-*Next step: Build the Lambda pipeline locally in Docker. Feed it 5 real DJI clips. Get one exported MP4 out. If that works, everything else is solvable.*
+*Next step: Complete Batch 1 scaffold. Get all 5 pages navigable locally. Then Batch 2: auth + upload.*
