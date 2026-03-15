@@ -41,3 +41,7 @@ src/test-clips/
 *.mov
 *.MP4
 *.MOV
+
+# Spike working files
+spike/tmp/
+spike/output*
