@@ -45,3 +45,6 @@ src/test-clips/
 # Spike working files
 spike/tmp/
 spike/output*
+
+# Next.js build info
+tsconfig.tsbuildinfo

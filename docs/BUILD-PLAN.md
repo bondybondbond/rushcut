@@ -53,8 +53,9 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ---
 
-## Batch 1 — Environment Setup & Project Scaffold
+## Batch 1 — Environment Setup & Project Scaffold ✅ DONE (skeleton UI + copy/flow)
 *Goal: Working dev environment, running Next.js app, verified tooling.*
+*Completed 2026-03-15. Deviations from plan: (1) Flow changed to draft-first — Upload CTA goes direct to Preview, Configure demoted to optional drawer reachable from Preview only. (2) StepIndicator trimmed to 3 steps: Upload / Preview / Download (Configure removed as mandatory step). (3) Copy locked and iterated in-session — final copy differs from original plan placeholders. (4) Download page has explicit STATE A (processing, default) / STATE B (ready) structure with own H1 per state, ready for Batch 2 conditional wiring.*
 
 ### Steps
 

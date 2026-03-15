@@ -19,3 +19,11 @@
 - Spike-first validated the hardest unknown (FFmpeg pipeline on DJI footage) in ~1 session before touching any infrastructure
 - Draft render (360p CRF35 ultrafast) is genuinely useful for reviewing cuts/transitions — don't skip it
 - Silence detection on DJI clips shows lots of near-silent sections (camera handling noise) — threshold tuning will be needed in Batch 3
+
+## 2026-03-15 — Batch 1 (skeleton UI + copy/flow)
+
+### UX / Flow
+- **Draft-first, configure-optional**: showing the first render before any configuration is the highest-value UX move. Mandatory configure screens before a draft add friction at the worst moment — before the product has proved itself. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.
+- **Lock copy before handing pages to Claude**: if copy isn't locked in the prompt, Claude invents its own. A copy-locked prompt (exact strings, no paraphrase) prevents copy drift across pages and saves multiple correction rounds.
+- **Step indicator reflects actual user path, not technical structure**: StepIndicator should show the mandatory steps only. Optional/secondary pages (e.g. Configure as a drawer) must not appear as steps — they signal mandatory work that doesn't exist.
+- **Re-render cost warnings belong at point-of-action**: showing "1 re-render included" on the Preview page (peak excitement moment) creates anxiety. Move it to the Configure page where the user is actually about to trigger a re-render.

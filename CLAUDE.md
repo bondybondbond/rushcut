@@ -16,6 +16,13 @@
 - Windows console (cp1252): avoid Unicode arrows `→` and emoji `✅❌` in print() — causes encoding errors. Use `->`, `[PASS]`, `[FAIL]`
 - DJI OsmoPocket3 clips contain an embedded MJPEG thumbnail as a second video stream — ffprobe will report two video streams per file; the real stream is `hevc` stream 0
 
+## UX / flow decisions (locked — do not revert)
+- **Draft-first flow**: Upload CTA goes direct to Preview (`/preview/demo-job-id`). Do NOT add a Configure step between Upload and Preview.
+- **Configure is optional**: reachable only via "Edit settings" button on the Preview page. It is not a mandatory step and does not appear in the StepIndicator.
+- **StepIndicator**: 3 steps only — Upload / Preview / Download. Configure is excluded.
+- **Next.js 15 async params**: `params` in App Router dynamic pages is a Promise — `params.jobId` / `params.projectId` may render empty in shells until properly awaited. Batch 2 concern, not a Batch 1 bug.
+- **Copy is locked**: see `docs/CHANGELOG.md` v0.4 for the canonical string for every heading, subhead, CTA, and note across all 5 pages.
+
 ## Efficiency notes
 - Specify "Windows environment" at session start — avoids back-and-forth on path separators, encoding, and console issues
 - Put test clips in a path with NO SPACES (e.g. `C:\clips\`) — spaces in paths require careful quoting and caused the first failed run
