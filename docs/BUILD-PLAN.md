@@ -16,16 +16,17 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ---
 
-## Batch 0 — Pipeline Spike (local, no infra) ⚡
+## Batch 0 — Pipeline Spike (local, no infra) ✅ DONE
 *Goal: Confirm FFmpeg produces a watchable output from real DJI footage BEFORE touching Next.js. ~2 hours. Highest-risk unknown — fail fast.*
+*Completed 2026-03-15. Deviations: `xfade=crossfade` not implemented in FFmpeg 8 — use `fade`. Scale must go inside filter_complex. Output → `C:\clips\processed\`. See LEARNINGS.md.*
 
 ### Steps
 
-1. **Install FFmpeg locally**
+1. [x] **Install FFmpeg locally**
    - Windows: `winget install ffmpeg` or download static build from https://www.gyan.dev/ffmpeg/builds/
    - Verify: `ffmpeg -version`
 
-2. **Write `spike/render.py`** — bare-bones script, no Lambda wiring
+2. [x] **Write `spike/render.py`** — bare-bones script, no Lambda wiring
    ```python
    # spike/render.py
    # Usage: python render.py clip1.mp4 clip2.mp4 clip3.mp4
@@ -38,11 +39,11 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    d. Overlay one test music track (`ffmpeg -i video -i music -shortest -af "afade=t=out:st=X:d=3"`)
    e. Output `spike/output_draft.mp4` at 360p, CRF 35, fast preset
 
-3. **Run against 3 real DJI clips**
+3. [x] **Run against 3 real DJI clips**
    - `python spike/render.py DJI_001.MP4 DJI_002.MP4 DJI_003.MP4`
    - Open output in VLC or browser
 
-4. **Verification gate**
+4. [x] **Verification gate**
    - Output plays without codec errors
    - xfade crossfade visible at join points
    - No audio sync drift
