@@ -5,6 +5,36 @@
 
 ---
 
+## [0.5] — 2026-03-15 — Batch 2 upload & storage
+
+### Added
+- `src/lib/supabase.ts` — browser client + server (service role) client implemented
+- `src/lib/r2.ts` — S3-compatible R2 wrapper: `getPresignedPutUrl`, `getPresignedGetUrl`, `deleteObject`
+- `src/utils/execFileNoThrow.ts` — safe `execFile` wrapper, never throws, returns `{ stdout, stderr, code }`
+- `src/app/api/upload/presign/route.ts` — validates filename/size/type, creates project + clip rows, returns presigned PUT URL
+- `src/app/api/clips/probe/route.ts` — ffprobe via `@ffprobe-installer/ffprobe`, parses `r_frame_rate` fraction + `duration`, updates clip row; skips exec on Vercel (binary too large for Hobby plan)
+- `src/app/api/clips/[clipId]/route.ts` — DELETE: removes R2 object then DB row
+- `src/app/api/clips/reorder/route.ts` — PATCH: batch-updates `order` column
+- `src/app/api/jobs/create/route.ts` — inserts job row (status=queued, mode=draft), returns `jobId`
+- `src/types/ffprobe-installer.d.ts` — TS module declaration for `@ffprobe-installer/ffprobe`
+- `UploadZone.tsx` — wired: hidden file input, drag/drop, sequential upload flow (presign → XHR PUT → probe), per-clip progress bars
+- `ClipList.tsx` — wired: dnd-kit sortable reorder, delete, duration/resolution display, "Make my edit" CTA
+- `src/app/upload/page.tsx` — clips state, localStorage `projectId`, navigation to real `/preview/[jobId]`
+- Supabase `jobs` table created (schema per BUILD-PLAN §Batch 2)
+
+### Fixed
+- `next.config.ts`: added `serverExternalPackages: ['@ffprobe-installer/ffprobe']` — Turbopack was failing with `Unknown module type` on the bundled README.md
+
+### Changed
+- Upload CTA now navigates to `/preview/[real-jobId]` — `demo-job-id` hardcode removed
+- Client-side size guard changed to **per-file** 1GB (was ambiguous "1GB total")
+
+### Known limitations (deferred)
+- Probe skipped on Vercel Hobby (ffprobe binary ~70MB exceeds 50MB function limit); `probe_skipped` flag used in UI instead; Lambda will backfill metadata in Batch 4
+- `projectId` in `localStorage` — orphaned R2 objects if tab closed mid-upload; resume-draft flow deferred to Batch 3
+
+---
+
 ## [0.4] — 2026-03-15 — Batch 1 skeleton UI + copy/flow
 
 ### Added

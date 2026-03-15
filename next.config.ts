@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  serverExternalPackages: ['@ffprobe-installer/ffprobe'],
 };
 
 export default nextConfig;

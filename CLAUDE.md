@@ -16,8 +16,14 @@
 - Windows console (cp1252): avoid Unicode arrows `→` and emoji `✅❌` in print() — causes encoding errors. Use `->`, `[PASS]`, `[FAIL]`
 - DJI OsmoPocket3 clips contain an embedded MJPEG thumbnail as a second video stream — ffprobe will report two video streams per file; the real stream is `hevc` stream 0
 
+## Next.js / Turbopack quirks (Batch 2+)
+- `@ffprobe-installer/ffprobe` must be in `serverExternalPackages` in `next.config.ts` — Turbopack can't handle the bundled README.md and throws `Unknown module type` 500
+- Vercel Hobby plan: 50MB serverless function limit — ffprobe binary (~70MB) exceeds this. Probe route checks `process.env.VERCEL` and returns `{ skipped: true }` instead of running exec. Lambda will backfill in Batch 4.
+- Do NOT install `@supabase/ssr` or `@supabase/auth-helpers-nextjs` — the project uses plain `@supabase/supabase-js` createClient directly. Wrong wrapper breaks existing lib/supabase.ts signatures.
+- Supabase schema cache does not auto-refresh after CREATE TABLE — new tables return `PGRST205` until Dashboard → API Settings → Reload schema is clicked.
+
 ## UX / flow decisions (locked — do not revert)
-- **Draft-first flow**: Upload CTA goes direct to Preview (`/preview/demo-job-id`). Do NOT add a Configure step between Upload and Preview.
+- **Draft-first flow**: Upload CTA goes direct to Preview (`/preview/[jobId]`). Do NOT add a Configure step between Upload and Preview.
 - **Configure is optional**: reachable only via "Edit settings" button on the Preview page. It is not a mandatory step and does not appear in the StepIndicator.
 - **StepIndicator**: 3 steps only — Upload / Preview / Download. Configure is excluded.
 - **Next.js 15 async params**: `params` in App Router dynamic pages is a Promise — `params.jobId` / `params.projectId` may render empty in shells until properly awaited. Batch 2 concern, not a Batch 1 bug.

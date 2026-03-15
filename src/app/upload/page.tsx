@@ -1,9 +1,28 @@
-import Link from "next/link";
+"use client";
+
+import { useState } from "react";
 import { StepIndicator } from "@/components/StepIndicator";
 import { UploadZone } from "@/components/upload/UploadZone";
 import { ClipList } from "@/components/upload/ClipList";
+import type { Clip } from "@/types/project";
+
+type ClipWithProbeFlag = Clip & { probe_skipped?: boolean };
 
 export default function UploadPage() {
+  const [clips, setClips] = useState<ClipWithProbeFlag[]>([]);
+
+  function handleClipsAdded(newClips: ClipWithProbeFlag[]) {
+    setClips((prev) => [...prev, ...newClips]);
+  }
+
+  function handleDelete(clipId: string) {
+    setClips((prev) => prev.filter((c) => c.id !== clipId));
+  }
+
+  function handleReorder(reordered: ClipWithProbeFlag[]) {
+    setClips(reordered);
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-6 py-10">
       <div className="mb-8">
@@ -15,9 +34,13 @@ export default function UploadPage() {
       <p className="text-[#a3a3a3] mb-8">
         Up to 20 clips. MP4, MOV or MKV, up to 1 GB each.
       </p>
-      <UploadZone />
+      <UploadZone onClipsAdded={handleClipsAdded} />
       <div className="mt-6">
-        <ClipList />
+        <ClipList
+          clips={clips}
+          onDelete={handleDelete}
+          onReorder={handleReorder}
+        />
       </div>
       <div className="mt-6">
         <p className="text-[#a3a3a3] text-sm mb-2">Optional — describe your edit</p>
@@ -29,14 +52,6 @@ export default function UploadPage() {
         <p className="text-[#555555] text-xs mt-2">
           We will use this as a starting point. You can always adjust.
         </p>
-      </div>
-      <div className="mt-8 flex justify-end">
-        <Link
-          href="/preview/demo-job-id"
-          className="inline-flex items-center px-5 py-2.5 bg-[#e5e5e5] text-[#0a0a0a] font-medium rounded-md hover:bg-white transition-all duration-200"
-        >
-          Make my edit
-        </Link>
       </div>
     </div>
   );

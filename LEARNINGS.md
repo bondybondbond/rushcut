@@ -20,6 +20,20 @@
 - Draft render (360p CRF35 ultrafast) is genuinely useful for reviewing cuts/transitions — don't skip it
 - Silence detection on DJI clips shows lots of near-silent sections (camera handling noise) — threshold tuning will be needed in Batch 3
 
+## 2026-03-15 — Batch 2 (upload & storage)
+
+### Next.js / Turbopack
+- `@ffprobe-installer/ffprobe` includes a README.md that Turbopack can't bundle — causes `Unknown module type` 500 on the first API call. Fix: add `serverExternalPackages: ['@ffprobe-installer/ffprobe']` to `next.config.ts`.
+- Supabase PostgREST schema cache does NOT auto-refresh when a new table is added via SQL editor — `PGRST205` errors until you reload the cache (Dashboard → API Settings → Reload) or the table is simply not there.
+
+### Cloudflare R2 + AWS SDK
+- R2 presign works with `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` using region `'auto'` and the full `https://{accountId}.r2.cloudflarestorage.com` endpoint. No custom endpoint middleware needed.
+
+### ffprobe on DJI clips via presigned URL
+- Using `-select_streams v:0` is sufficient to skip the embedded MJPEG thumbnail (stream 1) — no need to filter by codec name when running via presigned URL. `r_frame_rate` returns a fraction string (`"30000/1001"`) — must split on `/` and divide; it is never a decimal float.
+
+---
+
 ## 2026-03-15 — Batch 1 (skeleton UI + copy/flow)
 
 ### UX / Flow

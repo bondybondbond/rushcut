@@ -113,8 +113,9 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ---
 
-## Batch 2 — Upload & Storage
+## Batch 2 — Upload & Storage ✅ DONE
 *Goal: User can drag-drop clips → land in Cloudflare R2 → Supabase records clips with duration metadata.*
+*Completed 2026-03-15. Deviations: (1) Client-side guard is per-file 1GB (not total) — consistent with presign validation. (2) Probe skipped on Vercel Hobby (ffprobe binary ~70MB > 50MB limit) — `probe_skipped` flag used; Lambda will backfill metadata in Batch 4. (3) `next.config.ts` required `serverExternalPackages: ['@ffprobe-installer/ffprobe']` — Turbopack can't bundle the package's README.md. (4) Supabase `jobs` table created ahead of schedule (needed for Batch 2 CTA → `/preview/[jobId]`).*
 
 ### Steps
 
