@@ -1,7 +1,7 @@
 # PRD: RushCut — Rushes to a Cut — One-Click Web Video Editor
 
 > **Product:** RushCut — *Your clips. Edited.*
-> **Version:** 0.10 (updated March 2026 — Batch 2 session)
+> **Version:** 0.11 (updated March 2026 — Batch 2 session)
 > **Author:** Manasak
 > **Status:** Draft — updated after Batch 2 infrastructure session
 
@@ -77,6 +77,22 @@ RushCut's core UX principle: the user is always making *creative decisions*, nev
 
 The magic of feeling like a director must never be lost. What gets outsourced is the tedious execution: clip-by-clip assembly, deciding where transitions start and stop, animating text, applying zooms. What stays with the user is intent and creative direction. This is the exact positioning lesson from Magisto's failure — when Vimeo stripped out the AI engine, the "director feeling" disappeared and users left immediately. The AI engine *is* the product.
 
+### The Moment Extraction Mental Model
+
+**This is the core of what RushCut does — and what separates it from every other tool.**
+
+RushCut does not simply aggregate clips and splice them together. Any timeline editor (DaVinci, Clipchamp) can do that — it still requires hours of manual work. The product value is **moment extraction**: finding the best 3–15 seconds within each clip, discarding the dead parts (landing shots, walking to subject, camera shake, silence, static frames), and keeping only the peak moment.
+
+From 62 raw clips:
+- Perhaps 50 contribute something worth keeping
+- Each contributes 3–15 seconds of their best moment (not the whole clip)
+- Output: a 3–6 minute film of ~50 micro-cuts, music-synced, with transitions
+- The user never decided which frames to keep — the system did
+
+**This is harder than clip selection (keep/discard entire clips).** It requires understanding where the interesting moment is *within* each clip — the frame where the drone crests the mountain, not the 8 seconds of ascent before it. FFmpeg `silencedetect` + motion frame-diff handles obvious dead sections. Google Video Intelligence handles the subtler editorial judgement at the frame level.
+
+**The product mantra:** *Not “edit your clips” — “capture your moments.”*
+
 ---
 
 ## 4. What Needs AI vs. What's Free (FFmpeg)
@@ -92,15 +108,15 @@ This is the core technical decision — knowing which features require AI vs. ca
 | **Zoom effect (generic, centre-frame)** | ❌ No | FFmpeg `zoompan` filter — auto-applied at clip midpoints |
 | **Zoom on faces / people** | ✅ Yes | Requires face detection (e.g. Google Vision API or OpenCV) |
 | **Zoom on key action moments** | ✅ Yes | Requires motion + scene scoring (Google Video Intelligence API) |
-| **Smart clip trimming** (best N seconds per clip) | ✅ Yes | Motion scoring + saliency detection per clip |
+| **Moment extraction** (best 3–15s within each clip) | ✅ Yes (full) / ❌ Partial | FFmpeg frame-diff removes dead sections (free); GVI identifies peak moments within clips (paid) |
 | **Context-aware ordering** ("start at flight, then hotel...") | ⚠️ Free (basic) | Gemini 2.0 Flash ~$0.001/export — included on free tier |
 | **Boring clip filtering** | ❌ No (basic) | FFmpeg frame-diff motion score — free tier; Google Video Intelligence = paid upgrade |
 | **Stabilisation** | ✅ Yes (or FFmpeg vidstab) | `ffmpeg-vidstab` plugin = no AI, but compute-heavy → paid tier |
 | **Volume normalisation** | ❌ No | FFmpeg `loudnorm` filter — free |
 
 **Summary rule:**
-- 🆓 Free tier: FFmpeg + librosa + Gemini Flash. Silence/stillness detection + basic trim + crossfade transitions + beat-sync music + generic centre-zoom + basic motion filter + context prompt (vibe/order) — near-zero AI cost (~$0.001/export)
-- 💰 Paid AI tier: Smart clip scoring (Google Video Intelligence), action-aware zoom, boring clip filtering, face zoom (Google Vision), stabilisation, licensed music library, 4K export, project saves
+- 🆓 Free tier: FFmpeg + librosa + Gemini Flash. Silence/stillness removal + basic moment extraction (dead section removal) + crossfade transitions + beat-sync music + generic centre-zoom + context prompt — near-zero AI cost (~$0.001/export)
+- 💰 Paid AI tier: Full moment extraction (GVI frame-level peak detection), smart zoom, face detection, stabilisation, licensed music, 4K export
 
 ---
 
@@ -196,7 +212,7 @@ Free tier: 1 included re-render per project.
 - [ ] Up to 20 clips per project (**always 20 — never write 10 anywhere**)
 - [ ] **Hard cap: 2GB per file, 10GB per project total** (enforced pre-upload — validated against real DJI 4K footage at 1.4GB/clip)
 - [ ] Auto-combine in upload/timestamp order
-- [ ] Silence + stillness detection → auto-remove dead sections (FFmpeg)
+- [ ] Silence + stillness detection → auto-remove dead sections (FFmpeg) — basic moment extraction
 - [ ] Clip trim (in/out handles per clip, no timeline)
 - [ ] 5 transition styles: crossfade, dip to black, hard cut, whip, fade to white (auto-applied, style picker)
 - [ ] Generic centre-frame zoom at clip midpoint (FFmpeg `zoompan`)
@@ -212,13 +228,14 @@ Free tier: 1 included re-render per project.
 - [ ] Basic boring clip filtering (FFmpeg motion score — removes near-static clips automatically)
 - [ ] **Respin per clip** — tap clip in preview strip → Lambda re-cuts just that clip (no full re-render)
 - [ ] **1 included re-render per project** (expensive changes only; see DEC-013)
+- [ ] **Target output length: default 3 mins** — see SD-007
 
 ### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
 - [ ] Up to 50 clips per project
 - [ ] **Hard cap: 4GB per file, 20GB per project total**
 - [ ] **Fair usage: max 5 final exports per month** (see Section 8 — real economics after Stripe + VAT)
 - [ ] **4K export** (primary upgrade trigger)
-- [ ] Smart clip scoring: Google Video Intelligence — action peaks + motion intensity → ranks best moments
+- [ ] Smart clip scoring: Google Video Intelligence — action peaks + motion intensity → frame-level moment extraction
 - [ ] **Google Video Intelligence capped at 5 min of footage scored per export** (cost protection)
 - [ ] Smart zoom: face detection + action moment zoom via Google Vision
 - [ ] Advanced context ordering: AI scene labelling via Google Video Intelligence
@@ -228,6 +245,7 @@ Free tier: 1 included re-render per project.
 - [ ] Video stabilisation (`ffmpeg-vidstab`)
 - [ ] Project save + re-edit
 - [ ] Open-ended AI direction (free-text "describe your film") — see DEC-014
+- [ ] **Target output length: user-selectable** (3 min / 5 min / 10 min / 15 min) — see SD-007
 
 ### Permanently Out of Scope
 - AI video generation (text-to-video)
@@ -256,7 +274,7 @@ Free tier: 1 included re-render per project.
 | Beat-sync | `librosa` Python (Lambda) | Free, open-source |
 | Zoom (generic) | FFmpeg `zoompan` | Free, no AI |
 | Zoom (smart, faces) | OpenCV or Google Vision API | AI — paid tier only |
-| Scene scoring | Google Video Intelligence API | AI — paid tier only; hard-capped at 5 min/export |
+| Scene scoring + moment extraction | Google Video Intelligence API | AI — paid tier only; hard-capped at 5 min/export |
 | Context prompt | Gemini 2.0 Flash | AI — free tier (basic vibe prompt / defaults only) |
 | Stabilisation | `ffmpeg-vidstab` plugin | Compute-heavy — paid tier only |
 | Payments | Stripe | Standard |
@@ -266,7 +284,7 @@ Free tier: 1 included re-render per project.
 User confirms draft
   → API triggers AWS Lambda (FFmpeg container)
   → Lambda fetches clips from R2
-  → Runs: silence removal → trim → xfade transitions → music fit → zoom → normalise
+  → Runs: silence removal → moment extraction → trim → xfade transitions → music fit → zoom → normalise
   → Output written to R2 (retained 30 days for authenticated user)
   → Download available in library
 ```
@@ -355,8 +373,8 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 | Tier | Price | Clips | Max file | Max project | Resolution | AI Auto-Edit | Exports/mo | Music | Watermark |
 |---|---|---|---|---|---|---|---|---|---|
-| **Free** | £0 | 20 | 2GB | 10GB | 1080p | ✅ Basic (beat-sync, vibe prompt, motion filter) | Unlimited | ~20 free tracks | ❌ Never |
-| **Creator** | £4.99/mo or £39.99/yr | 50 | 4GB | 20GB | 4K | ✅ Smart (scene scoring, face/action zoom) | 5/mo | Epidemic Sound | ❌ Never |
+| **Free** | £0 | 20 | 2GB | 10GB | 1080p | ✅ Basic (beat-sync, vibe prompt, dead section removal) | Unlimited | ~20 free tracks | ❌ Never |
+| **Creator** | £4.99/mo or £39.99/yr | 50 | 4GB | 20GB | 4K | ✅ Smart (GVI frame-level moment extraction, face/action zoom) | 5/mo | Epidemic Sound | ❌ Never |
 
 ---
 
@@ -364,13 +382,13 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 **Clipchamp is the primary competitor to beat** — not CapCut or Filmora. It's pre-installed on every Windows PC, free at 1080p, web-first, and has no watermarks.
 
-| Tool | Web-first | Windows | Auto-compile | Direction Power | Watermark | Price |
+| Tool | Web-first | Windows | Auto-compile | Moment Extraction | Watermark | Price |
 |---|---|---|---|---|---|---|
-| **RushCut** | ✅ | ✅ | ✅ | ✅ | ❌ Never | £4.99/mo |
-| DJI LightCut | ❌ mobile only | ❌ | ✅ | ✅ | ❌ | Free |
-| GoPro Quik | ❌ mobile only | ❌ | ✅ | ⚠️ | ❌ | Free |
+| **RushCut** | ✅ | ✅ | ✅ | ✅ (paid: GVI) | ❌ Never | £4.99/mo |
+| DJI LightCut | ❌ mobile only | ❌ | ✅ | ⚠️ basic | ❌ | Free |
+| GoPro Quik | ❌ mobile only | ❌ | ✅ | ⚠️ basic | ❌ | Free |
 | Clipchamp | ✅ | ✅ | ❌ | ❌ | ❌ | Free/M365 |
-| Kapwing | ✅ | ✅ | ⚠️ prompt | ⚠️ | ✅ free tier | $16/mo |
+| Kapwing | ✅ | ✅ | ⚠️ prompt | ❌ | ✅ free tier | $16/mo |
 | CapCut | ⚠️ | ⚠️ | ✅ | ⚠️ | ✅ free tier | £64.99/yr |
 | DaVinci Resolve | ❌ | ✅ | ❌ | ❌ | ❌ | Free/£270 |
 
@@ -385,17 +403,17 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 - [ ] **Batch 0:** FFmpeg pipeline spike — confirmed working ✅
 - [ ] **Batch 1:** Next.js scaffold + all skeleton pages (navigable shells, no logic) ✅
 - [ ] **Batch 2:** Supabase + Cloudflare R2 setup, presigned upload, ffprobe metadata, clip list wired
-- [ ] **Batch 3:** FFmpeg Lambda — silence removal → clip splice → `xfade` transitions → `loudnorm` → 360p proxy
+- [ ] **Batch 3:** FFmpeg Lambda — silence removal → moment extraction (basic) → clip splice → `xfade` transitions → `loudnorm` → 360p proxy
 - [ ] **Batch 4:** Lambda integration + job queue + polling + R2 cleanup post-render (delete raw clips)
 - [ ] **Batch 5:** `librosa` beat-sync + FFmpeg motion filter + Gemini 2.0 Flash context prompt
 - [ ] **Batch 6:** 1080p final export end-to-end → author self-tests with own DJI footage
-- [ ] **Batch 7:** Google Video Intelligence scene scoring + clip ranking (5 min cap)
+- [ ] **Batch 7:** Google Video Intelligence — frame-level moment extraction + clip ranking (5 min cap)
 - [ ] **Batch 8:** Google Vision face detection → smart zoom target
 - [ ] **Batch 9:** `ffmpeg-vidstab` stabilisation
 - [ ] **Batch 10:** Full AI pipeline self-test
 
 > ✅ Gate 1: Author produces one YouTube video using only RushCut. Genuinely faster than DaVinci?
-> ✅ Gate 2: AI version produces a better first draft than FFmpeg-only with no extra user effort?
+> ✅ Gate 2: AI version extracts better moments than FFmpeg-only with no extra user effort?
 
 ### Phase 2 — Validate & Charge
 - [ ] Fix top 3 issues from real user feedback
@@ -409,19 +427,20 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Clipchamp adds auto-compile | Medium | High | Own the action/drone niche and direction power framing |
+| Clipchamp adds auto-compile | Medium | High | Own the action/drone niche and moment extraction framing |
 | DJI ships LightCut for Windows | Low | Very High | Pivot to cross-device mixing (DJI + GoPro + iPhone) |
 | Lambda cold start slows UX | Medium | Medium | Provisioned concurrency for paid tier; progress indicator |
 | Google Video Intelligence cost spikes | Medium | High | Hard cap at 5 min footage scored per export |
 | Paid user hits 5 export limit and churns | Low | Medium | Show counter transparently; offer £1 top-up credits (Phase 2+) |
 | 4K file uploads time out | Medium | Medium | R2 presigned direct upload from browser |
-| Free tier too generous → low conversion | Medium | Medium | 4K wall + project size wall are unbypassable |
+| Free tier too generous → low conversion | Medium | Medium | 4K wall + project size wall + GVI moment extraction wall are unbypassable |
 | Music licensing dispute | Low | High | Start with Pixabay/ccMixter; Epidemic Sound only after revenue |
 | xfade transitions fail on mixed codecs/fps | High | Medium | Normalise all clips to consistent codec/fps on upload |
 | Director feeling lost if Respin loop is slow | Medium | High | Respin must complete in <10s at 360p |
 | Lambda /tmp overflow on large projects | Medium | High | Process clips sequentially/streamed — never load full project into memory |
 | Unlimited re-renders break unit economics | Medium | High | Two-tier change model (DEC-013) — cheap vs expensive changes |
 | R2 storage overrun from concurrent users | Low | Medium | Delete raw clips immediately post-render; 30-day cleanup job for final files |
+| Output length mismatch — user gets 8 min when they wanted 3 | Medium | Medium | Default to 3 min; surface length control early (see SD-007) |
 
 ---
 
@@ -451,14 +470,17 @@ These need a decision before the relevant batch — flag when approaching each o
 | **SD-004** | **File size enforcement on paid tier** — 4GB per file cap. Real DJI 4K footage at 3 min = 1.4GB, so this is generous. Revisit if users hit it. | Phase 2 | Monitor usage data before changing |
 | **SD-005** | **Respin scope** — single clip re-cut only, or allow full re-render from respin? | Batch 5 | PRD says single clip only; if Lambda complexity too high, fall back to full re-render as only correction path |
 | **SD-006** | **Auth timing** — PRD says login gate fires at "Make my edit" CTA. Does PoC (no auth) need a placeholder for this gate, or skip entirely? | Batch 2/3 | Currently PoC uses localStorage projectId with no auth — decide when to wire Supabase Auth |
+| **SD-007** | **Target output length** — should users be able to set their desired film duration? | Batch 3 | (a) Fixed default 3 min for all users — simplest, opinionated; (b) Free tier locked to 3 min, paid tier unlocks 5/10/15 min (upgrade incentive); (c) All users get a simple slider (1–15 min) — most flexible but adds UI complexity. Founder baseline: 3 min is right for hobbyist/YouTube. Vloggers needing 15 min are a different user segment. |
 
 ---
 
 ## 15. Strategic Clarity
 
-**What this is:** LightCut UX + Clipchamp's web-first delivery + slightly more editing control than either. That's the whole product.
+**What this is:** LightCut UX + Clipchamp's web-first delivery + frame-level moment extraction that neither offers. That's the whole product.
 
-**What "direction power" means in practice:** User uploads clips, picks a vibe (adventure / relaxed / cinematic), picks music, clicks compile. Gets a 90% film. Tweaks the 10%.
+**What "direction power" means in practice:** User uploads 62 clips from their vacation. Picks a vibe. Clicks compile. Gets a 3-minute film of the best moments — not a 3-hour editing session. Tweaks the 10% that feels off.
+
+**The product mantra:** *Not “edit your clips” — “capture your moments.”*
 
 **The honest moat:** The market is full of tools that either do too little or too much. RushCut's moat is restraint — knowing what to leave out. That's a product design moat, not a technical one.
 
