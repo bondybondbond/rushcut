@@ -1,7 +1,7 @@
 # PRD: RushCut — Rushes to a Cut — One-Click Web Video Editor
 
 > **Product:** RushCut — *From your rushes to a cut. In minutes.*
-> **Version:** 0.5 (updated March 2026)
+> **Version:** 0.6 (updated March 2026)
 > **Author:** Manasak
 > **Status:** Draft — reassessed after founder validation session
 
@@ -67,6 +67,12 @@ Web-first (desktop browser primary, Windows PC workflow). No download. No waterm
 
 **Design principle:** Every screen should feel like you're making creative choices, not managing software.
 
+### Director, not Editor
+
+RushCut's core UX principle: the user is always making *creative decisions*, never *technical ones*. They say "make it cinematic, start with the mountain shots" — RushCut handles clip selection, trim points, transition timing, zoom in/out animation, and text animation style. The user never touches a timeline. They review a film, not a sequence of clips.
+
+The magic of feeling like a director must never be lost. What gets outsourced is the tedious execution: clip-by-clip assembly, deciding where transitions start and stop, animating text, applying zooms. What stays with the user is intent and creative direction. This is the exact positioning lesson from Magisto's failure — when Vimeo stripped out the AI engine, the "director feeling" disappeared and users left immediately. The AI engine *is* the product.
+
 ---
 
 ## 4. What Needs AI vs. What's Free (FFmpeg)
@@ -116,14 +122,15 @@ STEP 3 — ONE CLICK → FIRST DRAFT
   Draft proxy is NOT client-side blob stitching — it runs actual FFmpeg transitions, music,
   and zoom on the server at 360p. User sees real transitions/music/zoom in preview, not a simulation.
   AI tier: proposes key moments, zoom points, clip order on screen.
-  User sees: timeline strip with proposed cuts + zoom markers.
+  User sees: film plays through with a clip strip below — not a timeline editor.
 
-STEP 4 — REVIEW & CONFIRM
-  User can:
-  - Adjust in/out trim per clip (drag handles)
-  - Accept/reject proposed zoom moments
-  - Swap music track
-  - Accept/reject AI-proposed clip order
+STEP 4 — REVIEW & CONFIRM ("Does this feel right?")
+  The user reviews the film as a viewer, not an editor. Three actions only:
+  - "Looks great → Export" — proceed to final render
+  - Tap a clip in the strip → "Try a different moment from this clip" (Respin)
+    → Lambda re-cuts just that one clip, no full re-render
+  - "Change the vibe" → respin the whole film with a different style/music selection
+  No frame-level controls. No accept/reject zoom UI. No timeline.
   User clicks "Looks good — produce final"
 
 STEP 5 — FINAL RENDER
@@ -136,6 +143,8 @@ STEP 5 — FINAL RENDER
 > ✅ **Confirmed:** Draft proxy is a separate low-memory Lambda job (360p), not client-side blob stitching. User sees actual FFmpeg transitions/music/zoom in preview — not a simulated preview.
 
 > ✅ **Confirmed:** DJI LightCut does auto-adjust music — it detects beat markers and aligns cuts to rhythm automatically. RushCut does the same via `librosa` BPM detection (no AI cost).
+
+> ✅ **Confirmed:** Step 4 is a film review, not an editing session. The Respin mechanic (per-clip re-cut) avoids the Magisto trap of either too much or too little control — user nudges, not rebuilds.
 
 ### Why a draft-then-confirm step?
 - Avoids wasting a full 4K render on a version the user rejects
@@ -165,6 +174,7 @@ STEP 5 — FINAL RENDER
 - [ ] Beat-sync music cuts via `librosa` BPM detection
 - [ ] Context prompt: user describes vibe/order ("adventure", "starts at airport then beach") — Gemini 2.0 Flash (~$0.001/export)
 - [ ] Basic boring clip filtering (FFmpeg motion score — removes near-static clips automatically)
+- [ ] **Respin per clip** — tap clip in preview strip → Lambda re-cuts just that clip (no full re-render)
 
 ### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
 - [ ] Up to 50 clips per project
@@ -344,6 +354,7 @@ User confirms draft
 | Free tier too generous → low conversion | Medium | Medium | 4K wall is unbypassable; AI features must feel genuinely magical in v2 or upgrade motivation weakens |
 | Music licensing dispute | Low | High | Start with Pixabay/ccMixter; add Epidemic Sound only after revenue |
 | xfade transitions fail on mixed codecs/fps | High | Medium | Normalise all clips to consistent codec/fps on upload (FFmpeg pre-pass) — must be solved in Week 2 |
+| "Director feeling" lost if Respin loop is too slow | Medium | High | Respin must feel instant — Lambda re-cut of single clip should complete in <10s at 360p; gate this in Phase 1 testing |
 
 **Founder floor:** If commercial validation fails, the tool still solves the author's own DaVinci Resolve time problem. That's a valid floor — no sunk cost pressure.
 
@@ -356,6 +367,7 @@ User confirms draft
 3. **Export free limit:** ~~Is 3 exports/month tight enough without frustrating free users?~~ **RESOLVED:** Unlimited exports on free tier. 1080p resolution wall is the only hard limit.
 4. **Mobile web:** ~~At MVP, should mobile just trigger upload + configure, with render happening async and notified via email?~~ **RESOLVED:** Tailwind responsive by default. "Best on desktop" banner shown on mobile. No special mobile flow at MVP.
 5. **Stabilisation:** `ffmpeg-vidstab` is free but slow — benchmark Lambda cost before committing to paid tier feature.
+6. **Respin latency:** Single-clip re-cut at 360p must complete in <10s to preserve director feeling. Benchmark this in Phase 1 Step 2.
 
 ---
 
@@ -366,6 +378,8 @@ User confirms draft
 **What "direction power" means in practice:** User uploads clips, picks a vibe (adventure / relaxed / cinematic), picks music, clicks compile. Gets a 90% film. Tweaks the 10%. That interaction model is the core IP — not any specific feature.
 
 **The honest moat:** The market is full of tools that either do too little or too much. RushCut's moat is restraint — knowing what to leave out. That's a product design moat, not a technical one.
+
+**The Magisto lesson:** Their AI engine *was* the product. When Vimeo stripped it out post-acquisition, the "director feeling" disappeared and users left immediately. Never let the execution layer become a commodity — it is the product.
 
 ---
 
