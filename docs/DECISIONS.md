@@ -138,3 +138,18 @@
 **Reason:** Since login is required before any processing (DEC-011), all users with exports are authenticated. A 30-day library retention is more user-friendly and consistent with product expectations. 24 hours creates anxiety and support burden.
 **R2 cost implication:** A 1080p export at ~500MB retained for 30 days costs ~$0.0075 in R2 storage — negligible.
 **Rule:** UI copy must say "Saved to your library for 30 days." Never "link valid for 24 hours" unless explicitly building an anonymous share link feature.
+
+---
+
+## DEC-016 — AI model selection: Gemini 2.0 Flash (current), evaluate 2.5 Flash-Lite at Batch 5
+**Date:** March 2026
+**Decision:** Keep Gemini 2.0 Flash as the context prompt model for now. Evaluate swapping to Gemini 2.5 Flash-Lite at Batch 5 when the call is actually wired.
+**Reason:** Gemini 2.0 Flash was chosen as a free-tier-friendly, stable, GA model with generous rate limits at time of planning. Its only job in RushCut is one task: parse the optional free-text vibe brief ("fast cuts, upbeat, travel feel") into defaults. Cost is ~$0.001/export — essentially zero. Changing models now would save fractions of a penny and introduce implementation risk before the feature is even built.
+**Why not 2.5 Flash-Lite immediately?** Gemini 2.5 Flash-Lite is newer, cheaper, and likely the better long-term default — but it should be validated at implementation time (Batch 5), not assumed in advance.
+**Real cost drivers are elsewhere:** GVI (~$0.50/export on paid tier) and Lambda ($0.06–$0.21) are the numbers that matter. The LLM call is not a cost concern at any realistic volume.
+**Model tier guidance (for Batch 5 implementation):**
+- **Gemini 2.5 Flash-Lite** — use for cheap backend tasks: brief parsing, tagging, defaults inference. Lowest cost, sufficient quality for structured JSON output.
+- **Gemini 2.5 Flash** — use for anything user-visible or creative: future AI direction (v2), scene labelling, open-ended brief interpretation.
+- **Do not use Gemini 2.0 Flash** for new tasks — it is the old default, not the best current option.
+**Action at Batch 5:** Benchmark Gemini 2.5 Flash-Lite as a drop-in swap for the brief parsing call. If output quality matches (structured JSON, correct defaults), swap and update PRD cost model accordingly. If rate limits become a friction point on the free tier, move to paid-tier Flash-Lite.
+**Trade-off:** Slight model staleness until Batch 5. Acceptable — the call is not yet wired and cost impact is negligible.
