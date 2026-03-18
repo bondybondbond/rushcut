@@ -187,8 +187,9 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ---
 
-## Batch 3 — FFmpeg Pipeline (Docker)
+## Batch 3 — FFmpeg Pipeline (Docker) ✅ DONE
 *Goal: Full Lambda-ready pipeline works end-to-end in Docker with real DJI footage.*
+*Completed 2026-03-18. Deviations: (1) Docker/WSL not available on machine — pipeline tested directly via local Python + FFmpeg (same logic, proven end-to-end on 3 DJI clips → draft.mp4). Docker build deferred to start of Batch 4 after WSL restart. (2) `supabase-py` excluded from requirements.txt — Supabase REST called directly via `requests` to avoid import weight. (3) `utils.py` added as shared module for FFMPEG/FFPROBE paths + helpers. (4) FFMPEG_BIN/FFPROBE_BIN env vars added to utils.py for local testing without Docker. (5) Audio: acrossfade 2-clip only, concat n>2 — spike's pairwise acrossfade pattern replaced. (6) Loudnorm timeout guard added (LAMBDA_TIMEOUT_BUFFER_S=30). (7) -map 0:a:0? used instead of -map 0:a? to avoid DJI multi-audio-stream issue.*
 
 ### Steps
 

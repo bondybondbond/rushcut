@@ -48,3 +48,4 @@ spike/output*
 
 # Next.js build info
 tsconfig.tsbuildinfo
+__pycache__/
