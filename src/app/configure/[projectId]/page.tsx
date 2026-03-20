@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ConfigurePanel } from "@/components/configure/ConfigurePanel";
 import { JobConfig } from "@/types/project";
@@ -17,8 +17,9 @@ const DEFAULT_CONFIG: JobConfig = {
 export default function ConfigurePage({
   params,
 }: {
-  params: { projectId: string };
+  params: Promise<{ projectId: string }>;
 }) {
+  const { projectId } = use(params);
   const router = useRouter();
   const [config, setConfig] = useState<JobConfig>(DEFAULT_CONFIG);
   const [loading, setLoading] = useState(false);
@@ -31,7 +32,7 @@ export default function ConfigurePage({
       const resp = await fetch("/api/jobs/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: params.projectId, config }),
+        body: JSON.stringify({ projectId, config }),
       });
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));
@@ -53,7 +54,7 @@ export default function ConfigurePage({
       <p className="text-[#a3a3a3] mb-8">
         Adjust anything. We will re-render your cut.
       </p>
-      <ConfigurePanel projectId={params.projectId} onConfigChange={setConfig} />
+      <ConfigurePanel projectId={projectId} onConfigChange={setConfig} />
       {error && (
         <p className="mt-4 text-red-400 text-sm">{error}</p>
       )}
