@@ -40,6 +40,18 @@
 - Docker requires WSL 2 on Windows — `wsl --install --no-distribution` + **restart** before Docker Desktop will start. Check state: `"C:/Program Files/Docker/Docker/resources/bin/docker.exe" info 2>&1 | grep wslUpdateRequired`.
 - `docker build -t rushcut-lambda ./lambda` — first step of Batch 4 (after WSL restart).
 
+## AWS / Docker quirks (Batch 4+)
+
+- **Docker Desktop v4.65.0 is permanently broken** on this machine — `dockerInference` Unix socket crash on every startup, no config fix works. Use WSL2 Ubuntu Docker Engine instead for all Docker operations:
+  ```
+  wsl -d Ubuntu-24.04 -u root -- bash -c "service docker start && docker ..."
+  ```
+- **Lambda image must use `--provenance=false`** — `docker buildx build --platform linux/arm64` without this flag produces an OCI manifest list which Lambda rejects ("media type not supported"). Always: `docker build --platform linux/arm64 --provenance=false -t rushcut-lambda ./lambda`
+- **AWS CLI not in bash PATH** — installed at `C:\Program Files\Amazon\AWSCLIV2\aws.exe`. In PowerShell: `aws` works after install. In bash (Claude tools): use `powershell.exe -Command "aws ..."` or `wsl -d Ubuntu-24.04 -u root -- aws ...`
+- **`rushcut-cli` IAM user cannot create IAM roles** — `AWSLambda_FullAccess` excludes `iam:CreateRole`. Use AWS CloudShell in the browser (runs as root account) for any IAM operations.
+- **ECR URI**: `459338751297.dkr.ecr.eu-west-2.amazonaws.com/rushcut-lambda` — region eu-west-2, account 459338751297
+- **Lambda function name**: `rushcut-lambda` — ARM64, 3008MB, 900s, eu-west-2. All env vars already set.
+
 ## Efficiency notes
 
 - Specify "Windows environment" at session start — avoids back-and-forth on path separators, encoding, and console issues
