@@ -39,7 +39,7 @@ export interface JobStatusResponse extends Job {
 
 export interface JobConfig {
   transition: "crossfade" | "dip_to_black";
-  music_track: string | null;
+  music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic";
   silence_removal: boolean;
   zoom: boolean;
   intro_card: { enabled: boolean; text: string; color: string } | null;

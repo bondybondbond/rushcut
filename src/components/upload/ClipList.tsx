@@ -19,7 +19,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
 
-type ClipWithProbeFlag = Clip & { probe_skipped?: boolean };
+type ClipWithProbeFlag = Clip & { probe_skipped?: boolean; probe_error?: string };
 
 interface ClipListProps {
   clips: ClipWithProbeFlag[];
@@ -56,47 +56,54 @@ function SortableClipRow({ clip, onDelete }: SortableClipRowProps) {
     <div
       ref={setNodeRef}
       style={style}
-      className="flex items-center gap-3 px-4 py-3 border border-white/10 rounded-lg bg-white/5"
+      className={`flex flex-col border rounded-lg bg-white/5 ${
+        clip.probe_error ? "border-red-500/40" : "border-white/10"
+      }`}
     >
-      {/* Drag handle */}
-      <button
-        {...attributes}
-        {...listeners}
-        className="text-[#555555] hover:text-[#a3a3a3] cursor-grab active:cursor-grabbing shrink-0"
-        aria-label="Drag to reorder"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <rect x="3" y="3" width="10" height="2" rx="1" />
-          <rect x="3" y="7" width="10" height="2" rx="1" />
-          <rect x="3" y="11" width="10" height="2" rx="1" />
-        </svg>
-      </button>
+      <div className="flex items-center gap-3 px-4 py-3">
+        {/* Drag handle */}
+        <button
+          {...attributes}
+          {...listeners}
+          className="text-[#555555] hover:text-[#a3a3a3] cursor-grab active:cursor-grabbing shrink-0"
+          aria-label="Drag to reorder"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="3" y="3" width="10" height="2" rx="1" />
+            <rect x="3" y="7" width="10" height="2" rx="1" />
+            <rect x="3" y="11" width="10" height="2" rx="1" />
+          </svg>
+        </button>
 
-      {/* Filename */}
-      <span className="text-[#e5e5e5] text-sm truncate flex-1">{clip.filename}</span>
+        {/* Filename */}
+        <span className="text-[#e5e5e5] text-sm truncate flex-1">{clip.filename}</span>
 
-      {/* Duration */}
-      <span className="text-[#a3a3a3] text-xs shrink-0 w-14 text-right">
-        {formatDuration(clip.duration_ms, clip.probe_skipped)}
-      </span>
-
-      {/* Resolution badge */}
-      {clip.width && clip.height && (
-        <span className="text-[#555555] text-xs shrink-0">
-          {clip.width}×{clip.height}
+        {/* Duration */}
+        <span className="text-[#a3a3a3] text-xs shrink-0 w-14 text-right">
+          {formatDuration(clip.duration_ms, clip.probe_skipped)}
         </span>
-      )}
 
-      {/* Delete */}
-      <button
-        onClick={() => onDelete(clip.id)}
-        className="text-[#555555] hover:text-red-400 transition-colors shrink-0"
-        aria-label={`Delete ${clip.filename}`}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M6 2a1 1 0 0 0-1 1v.5H3.5a.5.5 0 0 0 0 1H4v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-8h.5a.5.5 0 0 0 0-1H11V3a1 1 0 0 0-1-1H6zm0 1h4v.5H6V3zm-1 2h6v8H5V5zm2 1a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 1 0v-5A.5.5 0 0 0 7 6zm2 0a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 1 0v-5A.5.5 0 0 0 9 6z" />
-        </svg>
-      </button>
+        {/* Resolution badge */}
+        {clip.width && clip.height && (
+          <span className="text-[#555555] text-xs shrink-0">
+            {clip.width}×{clip.height}
+          </span>
+        )}
+
+        {/* Delete */}
+        <button
+          onClick={() => onDelete(clip.id)}
+          className="text-[#555555] hover:text-red-400 transition-colors shrink-0"
+          aria-label={`Delete ${clip.filename}`}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M6 2a1 1 0 0 0-1 1v.5H3.5a.5.5 0 0 0 0 1H4v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-8h.5a.5.5 0 0 0 0-1H11V3a1 1 0 0 0-1-1H6zm0 1h4v.5H6V3zm-1 2h6v8H5V5zm2 1a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 1 0v-5A.5.5 0 0 0 7 6zm2 0a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 1 0v-5A.5.5 0 0 0 9 6z" />
+          </svg>
+        </button>
+      </div>
+      {clip.probe_error && (
+        <p className="px-4 pb-3 text-red-400 text-xs">{clip.probe_error}</p>
+      )}
     </div>
   );
 }
@@ -110,7 +117,9 @@ export function ClipList({ clips, onDelete, onReorder }: ClipListProps) {
 
   const allReady =
     clips.length >= 1 &&
-    clips.every((c) => c.duration_ms !== null || c.probe_skipped === true);
+    clips.every(
+      (c) => !c.probe_error && (c.duration_ms !== null || c.probe_skipped === true)
+    );
 
   async function handleDelete(clipId: string) {
     try {

@@ -215,11 +215,12 @@ def run_pipeline(
         ffmpeg_run(cmd)
 
     # 6. Mix music
-    music_track = config.get("music_track")
-    if music_track:
-        log.info("[render] Step 6: mix music")
+    music_mood = config.get("music_mood", "none")
+    music_filename = f"{music_mood}.mp3" if music_mood and music_mood != "none" else None
+    if music_filename:
+        log.info("[render] Step 6: mix music (%s)", music_mood)
         music_out = tmp / "with_music.mp4"
-        output = mix_music(output, sum(durations), music_track, MUSIC_DIR, music_out)
+        output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out)
     else:
         log.info("[render] Step 6: music skipped")
 
@@ -263,7 +264,7 @@ def run_local(clips_dir: str, output_dir: str) -> None:
         "mode": "draft",
         "config": {
             "transition": "crossfade",
-            "music_track": None,
+            "music_mood": "none",
             "silence_removal": False,
             "zoom": False,
             "intro_card": {"enabled": False, "text": "", "color": "black"},

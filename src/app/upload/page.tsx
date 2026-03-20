@@ -32,9 +32,9 @@ export default function UploadPage() {
         Select your clips
       </h2>
       <p className="text-[#a3a3a3] mb-8">
-        Up to 20 clips. MP4, MOV or MKV, up to 1 GB each.
+        Up to 10 clips. MP4, MOV or MKV, up to 1 GB each.
       </p>
-      <UploadZone onClipsAdded={handleClipsAdded} />
+      <UploadZone onClipsAdded={handleClipsAdded} currentCount={clips.length} />
       <div className="mt-6">
         <ClipList
           clips={clips}

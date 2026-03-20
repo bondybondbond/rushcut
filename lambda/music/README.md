@@ -1,9 +1,24 @@
 # Music Tracks
 
-Place 5 royalty-free .mp3 tracks here before Batch 4 deploy.
+## Phase 1 (current)
 
-Filenames must match `JobConfig.music_track` values in `src/types/project.ts`.
+Place MP3 files here named by mood:
 
-Suggested naming convention: `track_01.mp3`, `track_02.mp3`, etc.
+| `music_mood` value | filename required |
+|--------------------|-------------------|
+| `none`             | skip (no music mixed) |
+| `cinematic`        | `cinematic.mp3`   |
+| `upbeat`           | `upbeat.mp3`      |
+| `chill`            | `chill.mp3`       |
+| `electronic`       | `electronic.mp3`  |
 
-Until tracks are added, `music_track: null` in the job config will skip music mixing (no-op path in `pipeline/music.py`).
+Source royalty-free tracks from Pixabay or ccMixter.
+Rebuild Lambda image after adding files (see MEMORY.md for WSL2 build commands).
+
+If a file is missing, the pipeline skips music silently (no-op path in `pipeline/music.py`).
+
+## Phase 2 (planned)
+
+`music_mood` will be passed to the Loudly or Soundraw commercial API.
+The API generates a unique, copyright-cleared track at render time.
+No MP3s in the repo will be needed. No schema migration required — same `music_mood` field.

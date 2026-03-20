@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
 import { invokeLambdaAsync } from "@/lib/lambda";
+import { JobConfig } from "@/types/project";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { projectId } = body;
+    const { projectId, config } = body as { projectId: string; config?: JobConfig | null };
 
     if (!projectId) {
       return NextResponse.json({ error: "projectId is required" }, { status: 400 });
@@ -15,7 +16,7 @@ export async function POST(req: NextRequest) {
 
     const { data: job, error: jobError } = await supabase
       .from("jobs")
-      .insert({ project_id: projectId, status: "queued", mode: "draft" })
+      .insert({ project_id: projectId, status: "queued", mode: "draft", config: config ?? null })
       .select("id")
       .single();
 

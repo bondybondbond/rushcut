@@ -4,11 +4,13 @@ import { useRef, useState, DragEvent, ChangeEvent } from "react";
 import type { Clip } from "@/types/project";
 
 const MAX_FILE_SIZE = 1073741824; // 1 GB
+const MAX_CLIPS = 10;
 
-type ClipWithProbeFlag = Clip & { probe_skipped?: boolean };
+type ClipWithProbeFlag = Clip & { probe_skipped?: boolean; probe_error?: string };
 
 interface UploadZoneProps {
   onClipsAdded: (clips: ClipWithProbeFlag[]) => void;
+  currentCount?: number;
 }
 
 interface PerClipProgress {
@@ -17,7 +19,7 @@ interface PerClipProgress {
   error?: string;
 }
 
-export function UploadZone({ onClipsAdded }: UploadZoneProps) {
+export function UploadZone({ onClipsAdded, currentCount = 0 }: UploadZoneProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [perClipProgress, setPerClipProgress] = useState<Record<string, PerClipProgress>>({});
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -41,8 +43,21 @@ export function UploadZone({ onClipsAdded }: UploadZoneProps) {
     setGlobalError(null);
     const fileArray = Array.from(files);
 
+    // Client-side clip count guard
+    const remaining = MAX_CLIPS - currentCount;
+    if (remaining <= 0) {
+      setGlobalError(`Maximum ${MAX_CLIPS} clips reached.`);
+      return;
+    }
+    const toProcess = fileArray.slice(0, remaining);
+    if (toProcess.length < fileArray.length) {
+      setGlobalError(
+        `Only ${remaining} clip${remaining === 1 ? "" : "s"} added — maximum ${MAX_CLIPS} clips per project.`
+      );
+    }
+
     // Client-side size guard
-    const oversized = fileArray.filter((f) => f.size > MAX_FILE_SIZE);
+    const oversized = toProcess.filter((f) => f.size > MAX_FILE_SIZE);
     if (oversized.length > 0) {
       setGlobalError(
         `These files exceed the 1 GB limit: ${oversized.map((f) => f.name).join(", ")}`
@@ -50,10 +65,12 @@ export function UploadZone({ onClipsAdded }: UploadZoneProps) {
       return;
     }
 
+    const fileArray2 = toProcess;
+
     const completedClips: ClipWithProbeFlag[] = [];
 
     // Sequential uploads — await each before starting next
-    for (const file of fileArray) {
+    for (const file of fileArray2) {
       const tempId = `${file.name}-${Date.now()}`;
       updateProgress(tempId, { filename: file.name, progress: 0 });
 
@@ -110,6 +127,7 @@ export function UploadZone({ onClipsAdded }: UploadZoneProps) {
 
         // Step 3: Probe
         let probeSkipped = false;
+        let probeError: string | undefined;
         let duration_ms: number | null = null;
         let width: number | null = null;
         let height: number | null = null;
@@ -132,9 +150,12 @@ export function UploadZone({ onClipsAdded }: UploadZoneProps) {
               height = probeData.height ?? null;
               fps = probeData.fps ?? null;
             }
+          } else {
+            // Probe ran but returned an error (corrupt / unreadable file)
+            probeError = "This clip couldn't be read — try re-exporting from your camera app";
           }
         } catch {
-          // Non-fatal — probe failure doesn't block the upload flow
+          // Network failure — treat as skipped, not corrupt
           probeSkipped = true;
         }
 
@@ -151,6 +172,7 @@ export function UploadZone({ onClipsAdded }: UploadZoneProps) {
           fps,
           created_at: new Date().toISOString(),
           probe_skipped: probeSkipped,
+          probe_error: probeError,
         };
 
         completedClips.push(clip);
@@ -199,7 +221,7 @@ export function UploadZone({ onClipsAdded }: UploadZoneProps) {
           Drag clips here, or click to browse
         </p>
         <p className="text-[#555555] text-xs mt-2">
-          MP4 &middot; MOV &middot; MKV &middot; up to 1 GB per file &middot; max 20 clips
+          MP4 &middot; MOV &middot; MKV &middot; up to 1 GB per file &middot; max 10 clips
         </p>
       </div>
 
