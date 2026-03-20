@@ -329,51 +329,35 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ## Batch 5 — End-to-End Polish & Self-Validation
 *Goal: Author produces one real YouTube video using RushCut. Phase 1 gateway cleared.*
+*Status: Code complete as of 2026-03-20. Remaining steps are manual/infra only.*
 
-### Steps
+### Deviations from original plan
+- Music schema pivoted: `music_track: string | null` → `music_mood: 'none'|'cinematic'|'upbeat'|'chill'|'electronic'` — enables Phase 2 commercial API (Loudly/Soundraw) without migration
+- Music picker guarded by `NEXT_PUBLIC_MUSIC_ENABLED` flag (default false) — renders "Coming soon" until MP3s are in Lambda and flag is set
+- Respin single clip deferred to Phase 2 (Lambda complexity too high for Phase 1 gate)
+- Free tier limit: **20 clips** (not 10) — confirmed free tier allowance
+- CRC32 checksum bug fixed: AWS SDK v3.1009+ adds checksum by default; disabled via `requestChecksumCalculation: "WHEN_REQUIRED"` in r2.ts
+- `params` in Next.js 15 client pages must be unwrapped with `React.use()` — fixed in configure page
 
-1. **Error states (all surfaces)**
-   - Upload: per-clip error with retry, total size exceeded message
-   - Probe failure (corrupt file): "This clip couldn't be read — try re-exporting from your camera app"
-   - Job failed: error message from Supabase `jobs.error` field + "Start over" option
-   - Network errors: toast notifications via shadcn `useToast`
+### Code completed ✅
+1. **Configure panel** — full state + all controls wired (transition, music mood, silence/zoom toggles, intro/end card with text + 3-color swatch)
+2. **Configure → job create flow** — CTA POSTs config to `/api/jobs/create`, navigates to `/preview/[jobId]`
+3. **`/api/jobs/create`** — accepts and persists `config: JobConfig` JSONB
+4. **Error states** — probe failures surfaced per-clip, 20-clip guard enforced
+5. **Lambda** — `music_mood` → filename mapping in `render.py`
 
-2. **Configure panel wiring** (`configure/[projectId]/page.tsx`)
-   - Transition picker: crossfade / dip-to-black (radio, default crossfade)
-   - Music picker: 5 royalty-free tracks with 15s preview on hover
-   - Toggles: silence removal (on by default), zoom (off by default for speed)
-   - Intro card: title text input + colour swatch (3 options), toggle on/off
-   - End card: same controls, toggle on/off
-   - All config stored in `jobs.config` JSONB, passed to Lambda
-
-3. **Respin single clip** (basic implementation)
-   - Clip strip shown below video player in preview — each clip tappable
-   - "Respin" on a clip: calls `POST /api/jobs/[jobId]/respin` with `clipId`
-   - Lambda re-runs `detect.py` + `trim.py` on that clip only, patches the assembled video
-   - *If Lambda complexity too high in Phase 1: defer respin to Phase 2, ship "Change the vibe" (full re-render) as the only correction path*
-
-4. **Free tier limits (clip/size only — no export cap)**
-   - Max 10 clips: enforced in UploadZone (UI blocks 11th upload)
-   - Max 1GB total: tracked in React state during upload session
-   - ~~3 exports/month~~: **removed — not in PRD v0.6, do not build**
-
-5. **Minimal UX uplift**
-   - `#0a0a0a` background, `#e5e5e5` primary text, `#a3a3a3` secondary text
-   - shadcn `Card`, `Button`, `Progress`, `Badge`, `Separator` throughout
-   - Step indicator: Upload → Configure → Preview → Download (current step highlighted)
-   - No custom animations — Tailwind `transition-all duration-200` only
-
-6. **Deployment**
-   - Deploy Next.js to Vercel (free tier), connect GitHub repo
-   - Set all env vars in Vercel dashboard
-   - Production smoke test: full flow on Vercel URL with real DJI clips
-
-7. **Self-validation test (Phase 1 gateway)**
-   - Author uploads 5–8 real DJI clips
-   - Picks music, crossfade, adds intro/end card
-   - Draft 360p plays correctly in browser
-   - Confirms → final 1080p downloads and is watchable
-   - **Publishes output as a real YouTube video → Phase 1 gate cleared ✅**
+### Remaining manual steps ⬜
+1. **R2 CORS** (Cloudflare Dashboard → R2 → `rushcut-uploads` → Settings → CORS Policy):
+   ```json
+   [{"AllowedOrigins":["http://localhost:3000","http://localhost:3001","https://*.vercel.app"],"AllowedMethods":["GET","PUT","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":3000}]
+   ```
+2. **Vercel** — connect GitHub repo, set env vars:
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
+   `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT`,
+   `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `LAMBDA_FUNCTION_NAME`,
+   `NEXT_PUBLIC_MUSIC_ENABLED=false`
+3. **Music tracks** (optional, when ready) — drop `cinematic.mp3`, `upbeat.mp3`, `chill.mp3`, `electronic.mp3` into `lambda/music/`, rebuild Lambda image, set `NEXT_PUBLIC_MUSIC_ENABLED=true` in Vercel
+4. **Self-validation** — upload 5–8 real DJI clips on prod URL → draft → final → publish to YouTube → **Phase 1 gate cleared ✅**
 
 ---
 
