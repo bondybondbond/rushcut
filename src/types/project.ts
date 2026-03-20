@@ -32,6 +32,11 @@ export interface Job {
   updated_at: string;
 }
 
+export interface JobStatusResponse extends Job {
+  draftUrl?: string;
+  finalUrl?: string;
+}
+
 export interface JobConfig {
   transition: "crossfade" | "dip_to_black";
   music_track: string | null;

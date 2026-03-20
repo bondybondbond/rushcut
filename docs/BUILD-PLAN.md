@@ -260,8 +260,9 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ---
 
-## Batch 4 — AWS Lambda Deploy & Job Queue
+## Batch 4 — AWS Lambda Deploy & Job Queue ✅ DONE
 *Goal: Next.js triggers Lambda, polls job status, plays draft in browser, downloads final.*
+*Completed 2026-03-19. Deviations: (1) Docker Desktop v4.65.0 broken on Windows — `dockerInference` Unix socket bug; bypassed by installing Docker Engine natively in WSL2 Ubuntu-24.04. (2) Image built with `--platform linux/arm64 --provenance=false` to produce Lambda-compatible single-arch manifest (manifest list rejected by Lambda). (3) AWS CLI installed via winget; IAM role created via CloudShell (rushcut-cli lacked iam:CreateRole). (4) End-to-end test passed: 3 DJI clips → draft_ready in 66s.*
 
 ### Steps
 

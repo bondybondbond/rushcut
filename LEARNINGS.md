@@ -1,71 +1,62 @@
 # LEARNINGS.md — rushcut
 
-## 2026-03-15 — Batch 0 (pipeline spike)
-
-### FFmpeg
-
-- `xfade` transition name is `fade` not `crossfade` — `crossfade` raises "Not yet implemented in FFmpeg, patches welcome"
-- `scale` filter must live inside `-filter_complex` when you're already using `-filter_complex`; using `-vf` alongside it causes "Simple and complex filtering cannot be used together for the same stream"
-- Always specify `-c:v libx264 -pix_fmt yuv420p -profile:v main` explicitly in the concat step — omitting `-c:v` after `-filter_complex` can default to HEVC, which Windows can't play without codec packs (error 0x80004005)
-- DJI OsmoPocket3: HEVC Main 10 (`yuv420p10le`), 1728×3072 portrait, 29.97fps — normalise to H.264 `yuv420p` 25fps CFR before any filter operations
-- DJI files embed a 720×1280 MJPEG thumbnail as a second video stream — ffprobe reports two video streams; filter on codec name to get the real one
-- `acrossfade` audio (not `crossfade`) — correct filter name for audio fade between clips in filter_complex
-
-### Python / Windows subprocess
-
-- Avoid Unicode in `print()` on Windows — cp1252 console chokes on `→`, `✅`, `❌`. Use `->`, `[PASS]`, `[FAIL]`
-- `subprocess.run(cmd, check=True)` with list args handles paths-with-spaces correctly — no shell=True needed
-- Run scripts from repo root (`C:\apps\rushcut`) — relative paths like `spike/tmp/` resolve from cwd, not script location
-
-### Workflow
-
-- Spike-first validated the hardest unknown (FFmpeg pipeline on DJI footage) in ~1 session before touching any infrastructure
-- Draft render (360p CRF35 ultrafast) is genuinely useful for reviewing cuts/transitions — don't skip it
-- Silence detection on DJI clips shows lots of near-silent sections (camera handling noise) — threshold tuning will be needed in Batch 3
-
-## 2026-03-15 — Batch 2 (upload & storage)
-
-### Next.js / Turbopack
-
-- `@ffprobe-installer/ffprobe` includes a README.md that Turbopack can't bundle — causes `Unknown module type` 500 on the first API call. Fix: add `serverExternalPackages: ['@ffprobe-installer/ffprobe']` to `next.config.ts`.
-- Supabase PostgREST schema cache does NOT auto-refresh when a new table is added via SQL editor — `PGRST205` errors until you reload the cache (Dashboard → API Settings → Reload) or the table is simply not there.
-
-### Cloudflare R2 + AWS SDK
-
-- R2 presign works with `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` using region `'auto'` and the full `https://{accountId}.r2.cloudflarestorage.com` endpoint. No custom endpoint middleware needed.
-
-### ffprobe on DJI clips via presigned URL
-
-- Using `-select_streams v:0` is sufficient to skip the embedded MJPEG thumbnail (stream 1) — no need to filter by codec name when running via presigned URL. `r_frame_rate` returns a fraction string (`"30000/1001"`) — must split on `/` and divide; it is never a decimal float.
+Pattern library. Organised by topic. Add to existing sections — do NOT add dated/batch headers.
+Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
-## 2026-03-15 — Batch 1 (skeleton UI + copy/flow)
+## FFmpeg — filter_complex
 
-### UX / Flow
+- **xfade transition name is `fade` not `crossfade`** — `crossfade` raises "Not yet implemented in FFmpeg". Use `xfade=transition=fade`. For dip-to-black use `xfade=transition=fadeblack` (native, no custom logic needed).
+- **`scale` must be inside `-filter_complex`** — using `-vf` alongside `-filter_complex` on the same output stream raises "Simple and complex filtering cannot be used together". Append scale as the final step inside the filter chain.
+- **Get durations from trimmed paths, not normalised paths** — xfade offset formula uses per-clip duration; if trim runs before transitions, re-run `get_duration()` on the trimmed files or offsets will be silently wrong.
+- **Pairwise `acrossfade` breaks for 3+ clips** — chained acrossfade overlaps audio incorrectly for N>2. Use `acrossfade` only for exactly 2 clips; for 3+ use `concat=n={N}:v=0:a=1`.
+- **xfade offset formula** (port verbatim from spike): `offset = cumulative + duration[i-1] - xfade_dur * i`
 
-- **Draft-first, configure-optional**: showing the first render before any configuration is the highest-value UX move. Mandatory configure screens before a draft add friction at the worst moment — before the product has proved itself. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.
-- **Lock copy before handing pages to Claude**: if copy isn't locked in the prompt, Claude invents its own. A copy-locked prompt (exact strings, no paraphrase) prevents copy drift across pages and saves multiple correction rounds.
-- **Step indicator reflects actual user path, not technical structure**: StepIndicator should show the mandatory steps only. Optional/secondary pages (e.g. Configure as a drawer) must not appear as steps — they signal mandatory work that doesn't exist.
-- **Re-render cost warnings belong at point-of-action**: showing "1 re-render included" on the Preview page (peak excitement moment) creates anxiety. Move it to the Configure page where the user is actually about to trigger a re-render.
+## FFmpeg — codec / output
 
-## 2026-03-18 — Batch 3 (FFmpeg Lambda pipeline)
+- **Always specify `-c:v libx264 -pix_fmt yuv420p -profile:v main`** — omitting `-c:v` after `-filter_complex` can silently fall back to HEVC, which Windows Photos/Media Player rejects with error 0x80004005.
+- **Single-clip shortcut**: use simple `-vf "scale=-2:360"` without `-filter_complex` — avoids needless complexity and the constraint that scale can't be in both `-vf` and `-filter_complex`.
+- **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams; `0:a?` maps all of them. Always use the indexed form when normalising DJI footage.
 
-### FFmpeg pipeline architecture
+## DJI OsmoPocket3
 
-- **Trim durations must be re-measured post-trim** — `get_duration()` must run on trimmed clip paths before building filter_complex xfade offsets. Using pre-trim durations silently misaligns xfade timing. Pattern: always derive durations from the most recent path list, not from an earlier step.
-- **Pairwise `acrossfade` breaks for 3+ clips** — chained acrossfade overlaps audio incorrectly for N>2. Use `acrossfade` only for exactly 2 clips; for 3+ use `concat=n={N}:v=0:a=1` (hard cuts at audio joins, but correct).
-- **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams. `0:a?` maps all of them; `0:a:0?` pins to the first (optional). Always use the indexed form when normalising DJI footage.
-- **`xfade=transition=fadeblack`** is a native FFmpeg xfade transition — no custom black-fill logic needed. Map `dip_to_black` → `fadeblack`, `crossfade` → `fade`.
-- **Lambda timeout guard for loudnorm** — two-pass loudnorm adds ~2–4x real-time processing. Add `LAMBDA_TIMEOUT_BUFFER_S` env var (default 30s); check `context.get_remaining_time_in_millis()` before running and skip with WARNING if insufficient.
-- **Cards as pre-rendered video segments** — rendering intro/end cards as short H.264 clips before the filter_complex step lets them pass through xfade unchanged. Avoids mixing lavfi sources with real clips inside a single filter_complex.
+- **Dual video streams** — FFmpeg/ffprobe reports two video streams per file. Stream 0 is HEVC (real clip); stream 1 is an embedded MJPEG thumbnail. Use `-map 0:v:0` or `-select_streams v:0` to pin to the real stream.
+- **Source format**: HEVC Main 10 (`yuv420p10le`), portrait (1728×3072), 29.97fps. Normalise to H.264 `yuv420p` 25fps CFR before any filter operations.
+- **ffprobe `r_frame_rate`** returns a fraction string (`"30000/1001"`) — must split on `/` and divide; never a decimal float.
+- **Silence detection**: DJI clips have lots of near-silent sections (camera handling noise). Threshold `-30dB` with `d=0.5` works; may need tuning per footage type.
 
-### Python / Lambda
+## Lambda pipeline
 
-- **`FFMPEG_BIN`/`FFPROBE_BIN` env vars** — hardcoding `/usr/local/bin/ffmpeg` in utils.py blocks local testing without Docker. Read binary paths from env vars with Lambda-path defaults; this also makes CI/CD flexible.
-- **Supabase REST from Lambda via `requests`** — use raw REST API with service role key in headers (`apikey` + `Authorization: Bearer`); skip supabase-py to avoid import weight and version conflicts. PATCH needs `Prefer: return=minimal` header.
-- **`run_local()` safe defaults** — synthetic job dicts in local test functions must default all boolean config flags to `False` explicitly. Missing keys cause KeyError deep in the pipeline, not at entry point.
+- **Cards as pre-rendered video segments** — render intro/end cards as short H.264 clips before filter_complex. Avoids mixing lavfi sources with real clips inside a single filter_complex; cards pass through xfade unchanged.
+- **Loudnorm timeout guard** — two-pass loudnorm adds ~2–4x real-time. Add `LAMBDA_TIMEOUT_BUFFER_S` env var (default 30s); check `context.get_remaining_time_in_millis()` before running and skip with WARNING if insufficient.
+- **`run_local()` safe defaults** — synthetic job dicts must default all boolean config flags to `False` explicitly. Missing keys cause KeyError deep in the pipeline, not at the entry point.
+- **Supabase REST from Lambda via `requests`** — use raw REST API with service role key (`apikey` + `Authorization: Bearer` headers); skip supabase-py. PATCH requires `Prefer: return=minimal` header.
 
-### Docker / WSL (Windows)
+## Python / tooling
 
-- **Docker Desktop on Windows requires WSL 2** — fresh install will report `wslUpdateRequired: true` and fail to start the engine. Run `wsl --install --no-distribution` first; requires a Windows restart to take effect. Plan for this before any session where Docker is needed.
+- **`FFMPEG_BIN`/`FFPROBE_BIN` env vars** — hardcoding `/usr/local/bin/ffmpeg` blocks local testing without Docker. Read from env vars with Lambda-path as default; also makes CI flexible.
+- **Windows console encoding** — `print()` on cp1252 chokes on `→`, `✅`, `❌`. Use `->`, `[PASS]`, `[FAIL]`.
+- **`subprocess.run(cmd, check=True)` with list args** handles paths with spaces correctly; no `shell=True` needed.
+
+## Next.js / Turbopack
+
+- **`@ffprobe-installer/ffprobe` needs `serverExternalPackages`** — the package bundles a README.md that Turbopack can't handle, causing `Unknown module type` 500 on first API call. Fix: add `serverExternalPackages: ['@ffprobe-installer/ffprobe']` to `next.config.ts`.
+- **Supabase schema cache doesn't auto-refresh** — after `CREATE TABLE`, new tables return `PGRST205` until you manually reload: Dashboard → API Settings → Reload Schema.
+
+## Cloudflare R2
+
+- **R2 presign with AWS SDK** — use `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` with `region: 'auto'` and `endpoint: 'https://{accountId}.r2.cloudflarestorage.com'`. No custom middleware needed.
+
+## Docker / WSL (Windows)
+
+- **Docker Desktop requires WSL 2** — fresh install reports `wslUpdateRequired: true` and fails to start. Run `wsl --install --no-distribution` first, then **restart Windows**. Check state: `docker info 2>&1 | grep wslUpdateRequired`. Plan for the restart before any session where Docker is needed.
+- **Docker Desktop v4.65.0 `dockerInference` socket crash** — confirmed unfixed bug. On every startup Docker tries to `remove()` a Unix socket file (`AppData\Local\Docker\run\dockerInference`); Windows rejects this and Docker crashes. `EnableInference: false` in `settings-store.json` does not suppress it. **Workaround**: install Docker Engine natively in WSL2 (`wsl --install -d Ubuntu-24.04 --no-launch`, set root as default, `curl -fsSL https://get.docker.com | sh`). All Docker commands run as: `wsl -d Ubuntu-24.04 -u root -- bash -c "service docker start && docker ..."`.
+- **Lambda rejects OCI manifest lists** — `docker buildx build --platform linux/arm64` produces an OCI manifest list by default; Lambda returns "image manifest media type not supported". Fix: add `--provenance=false`. Always build Lambda images with `docker build --platform linux/arm64 --provenance=false`.
+- **IAM role creation requires explicit permission** — `AWSLambda_FullAccess` does not include `iam:CreateRole`. Workaround: use AWS CloudShell (full IAM access as root account) to create the Lambda execution role; use the scoped CLI user for everything else.
+
+## UX / product decisions (locked)
+
+- **Draft-first, configure-optional** — show the first render before any configuration. Mandatory configure screens before a draft add friction at the worst moment. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.
+- **StepIndicator = mandatory steps only** — optional pages (e.g. Configure as a drawer) must not appear as steps; they signal mandatory work that doesn't exist.
+- **Lock copy before prompting Claude** — if copy isn't in the prompt, Claude invents it. Copy drift across pages wastes multiple correction rounds.
