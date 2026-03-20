@@ -10,6 +10,10 @@ function getS3Client(): S3Client {
       accessKeyId: process.env.R2_ACCESS_KEY_ID!,
       secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
     },
+    // Disable default CRC32 checksums — browser XHR won't send the checksum
+    // header, causing R2 to reject the presigned PUT request.
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
   });
 }
 

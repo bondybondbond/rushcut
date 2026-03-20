@@ -4,7 +4,7 @@ import { useRef, useState, DragEvent, ChangeEvent } from "react";
 import type { Clip } from "@/types/project";
 
 const MAX_FILE_SIZE = 1073741824; // 1 GB
-const MAX_CLIPS = 10;
+const MAX_CLIPS = 20;
 
 type ClipWithProbeFlag = Clip & { probe_skipped?: boolean; probe_error?: string };
 
@@ -221,7 +221,7 @@ export function UploadZone({ onClipsAdded, currentCount = 0 }: UploadZoneProps) 
           Drag clips here, or click to browse
         </p>
         <p className="text-[#555555] text-xs mt-2">
-          MP4 &middot; MOV &middot; MKV &middot; up to 1 GB per file &middot; max 10 clips
+          MP4 &middot; MOV &middot; MKV &middot; up to 1 GB per file &middot; max 20 clips
         </p>
       </div>
 
