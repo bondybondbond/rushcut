@@ -30,12 +30,24 @@ export default function PreviewPage() {
       {poll.phase === "polling" && (
         <>
           <p className="text-[#e5e5e5] text-base mb-8">
-            {PROGRESS_LABELS[poll.status]} — this usually takes 1–3 minutes.
+            {PROGRESS_LABELS[poll.status]} — this usually takes 2–4 minutes.
           </p>
           <div className="aspect-video bg-[#111111] rounded-lg border border-white/10 flex items-center justify-center">
-            <div className="flex flex-col items-center gap-3">
+            <div className="flex flex-col items-center gap-4 w-full max-w-xs px-6">
               <div className="w-6 h-6 border-2 border-white/20 border-t-[#FF8A65] rounded-full animate-spin" />
               <p className="text-[#a3a3a3] text-base">{PROGRESS_LABELS[poll.status]}</p>
+              {/* Progress bar — shown when Lambda reports progress_pct */}
+              {poll.progressPct != null && (
+                <div className="w-full">
+                  <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#FF8A65] rounded-full transition-all duration-700 ease-out"
+                      style={{ width: `${poll.progressPct}%` }}
+                    />
+                  </div>
+                  <p className="text-[#a3a3a3] text-xs mt-1.5 text-center">{poll.progressPct}%</p>
+                </div>
+              )}
             </div>
           </div>
         </>

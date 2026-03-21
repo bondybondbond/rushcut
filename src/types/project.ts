@@ -28,6 +28,7 @@ export interface Job {
   draft_r2_key: string | null;
   final_r2_key: string | null;
   error: string | null;
+  progress_pct: number | null;
   created_at: string;
   updated_at: string;
 }

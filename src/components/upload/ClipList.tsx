@@ -187,7 +187,7 @@ function SortableClipCard({ clip, index, onDelete }: SortableClipCardProps) {
         <p className="text-[#a3a3a3] text-xs mt-0.5">
           {clip.duration_ms !== null
             ? formatDuration(clip.duration_ms)
-            : <span className="text-[#22c55e]">Uploaded</span>
+            : <span className="text-[#22c55e]">Ready</span>
           }
           {clip.width && clip.height && (
             <span className="ml-2 text-[#555555]">{clip.width}×{clip.height}</span>

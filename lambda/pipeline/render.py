@@ -82,15 +82,17 @@ def run_pipeline(
     clips: list[dict],
     clip_paths: list[Path],
     context=None,
+    on_progress=None,
 ) -> Path:
     """
     Run the full render pipeline for a job.
 
     Args:
-        job:        Job row dict (id, mode, config).
-        clips:      Clip row dicts (used for metadata if needed).
-        clip_paths: Ordered list of downloaded clip Paths.
-        context:    Lambda context (for loudnorm timeout guard). None in local mode.
+        job:         Job row dict (id, mode, config).
+        clips:       Clip row dicts (used for metadata if needed).
+        clip_paths:  Ordered list of downloaded clip Paths.
+        context:     Lambda context (for loudnorm timeout guard). None in local mode.
+        on_progress: Callback(pct: int) to report progress (0-100). None in local mode.
 
     Returns:
         Path to the final output file (in /tmp/{job_id}/).
@@ -99,15 +101,24 @@ def run_pipeline(
     mode = job.get("mode", "draft")            # "draft" | "final"
     config = job.get("config") or {}
 
+    def report(pct: int) -> None:
+        if on_progress:
+            try:
+                on_progress(pct)
+            except Exception:
+                log.warning("[render] Failed to report progress %d%%", pct)
+
     tmp = TMP_BASE / str(job_id)
     tmp.mkdir(parents=True, exist_ok=True)
     log.info("[render] Job %s | mode=%s | %d clips", job_id, mode, len(clip_paths))
 
     # 1. Normalise
     log.info("[render] Step 1: normalise")
-    current_paths = normalise(clip_paths, tmp)
+    report(10)
+    current_paths = normalise(clip_paths, tmp, mode=mode)
 
     # 2. Silence detect + trim (IMPORTANT: get_duration() is called on trimmed paths below)
+    report(25)
     if config.get("silence_removal", False):
         log.info("[render] Step 2: silence trim")
         trimmed = []
@@ -121,6 +132,7 @@ def run_pipeline(
         log.info("[render] Step 2: silence trim skipped")
 
     # 3. Zoom (per-clip, before transitions)
+    report(35)
     if config.get("zoom", False):
         log.info("[render] Step 3: zoom")
         current_paths = [
@@ -159,6 +171,7 @@ def run_pipeline(
 
     # 5. Build filter_complex + render
     # CRITICAL: durations from current_paths (post-trim), NOT original clip durations
+    report(50)
     log.info("[render] Step 5: render with xfade")
     output = tmp / "render.mp4"
     durations = [get_duration(p) for p in current_paths]
@@ -215,6 +228,7 @@ def run_pipeline(
         ffmpeg_run(cmd)
 
     # 6. Mix music
+    report(75)
     music_mood = config.get("music_mood", "none")
     music_filename = f"{music_mood}.mp3" if music_mood and music_mood != "none" else None
     if music_filename:
@@ -224,11 +238,16 @@ def run_pipeline(
     else:
         log.info("[render] Step 6: music skipped")
 
-    # 7. Loudnorm
-    log.info("[render] Step 7: loudnorm")
-    final_out = tmp / "final.mp4"
-    output = loudnorm(output, final_out, context=context)
+    # 7. Loudnorm (final only — two-pass is too slow for draft on Lambda)
+    report(85)
+    if mode != "draft":
+        log.info("[render] Step 7: loudnorm")
+        final_out = tmp / "final.mp4"
+        output = loudnorm(output, final_out, context=context)
+    else:
+        log.info("[render] Step 7: loudnorm skipped (draft mode)")
 
+    report(95)
     log.info("[render] Pipeline complete: %s", output)
     return output
 

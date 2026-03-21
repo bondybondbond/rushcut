@@ -28,8 +28,8 @@ const TERMINAL_STATUSES: RenderStatus[] = [
 // pollJobStatus
 // ---------------------------------------------------------------------------
 
-const POLL_INTERVAL_MS = 3_000;
-const POLL_MAX_ATTEMPTS = 20; // 60s total at 3s interval
+const POLL_INTERVAL_MS = 5_000;
+const POLL_MAX_ATTEMPTS = 120; // 600s (10 min) total at 5s interval
 
 /**
  * Poll /api/jobs/[jobId]/status until the job reaches a terminal state.

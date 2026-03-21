@@ -84,12 +84,16 @@ def fetch_job_and_clips(job_id: str) -> tuple[dict, list[dict]]:
     job = rows[0]
 
     project_id = job["project_id"]
+    job_created = job["created_at"]  # ISO 8601 timestamp
 
-    # Fetch clips ordered by `order` column
+    # Fetch clips ordered by `order` column.
+    # Filter: only clips created before the job was created (excludes orphans
+    # from later sessions that reuse the same project_id).
     resp = requests.get(
         f"{SUPABASE_URL}/rest/v1/clips",
         params={
             "project_id": f"eq.{project_id}",
+            "created_at": f"lte.{job_created}",
             "order": "order.asc",
             "select": "*",
         },
@@ -199,9 +203,13 @@ def lambda_handler(event: dict, context) -> dict:
 
         # 2. Download clips from R2
         clip_paths = download_clips(clips)
+        update_job(job_id, progress_pct=5)
 
         # 3. Run pipeline (context passed for loudnorm timeout guard)
-        output_path = run_pipeline(job, clips, clip_paths, context=context)
+        def on_progress(pct: int) -> None:
+            update_job(job_id, progress_pct=pct)
+
+        output_path = run_pipeline(job, clips, clip_paths, context=context, on_progress=on_progress)
 
         # 4. Upload to R2
         r2_key = upload_output(job, output_path)

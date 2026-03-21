@@ -24,12 +24,23 @@ export default function DownloadPage() {
             {PROGRESS_LABELS[poll.status]} — full quality takes 2–5 min.
           </p>
           <div className="border border-white/10 rounded-lg p-6 mb-6">
-            {/* Animated indeterminate green bar */}
-            <div className="h-2 bg-white/10 rounded-full overflow-hidden relative">
-              <div className="progress-indeterminate absolute top-0 bottom-0 bg-[#22c55e] rounded-full" />
-            </div>
+            {/* Progress bar — real % when available, indeterminate otherwise */}
+            {poll.progressPct != null ? (
+              <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#22c55e] rounded-full transition-all duration-700 ease-out"
+                  style={{ width: `${poll.progressPct}%` }}
+                />
+              </div>
+            ) : (
+              <div className="h-2 bg-white/10 rounded-full overflow-hidden relative">
+                <div className="progress-indeterminate absolute top-0 bottom-0 bg-[#22c55e] rounded-full" />
+              </div>
+            )}
             <p className="text-[#a3a3a3] text-sm mt-4">
-              You can safely leave this tab open — we will let you know when it is done.
+              {poll.progressPct != null
+                ? `${poll.progressPct}% — you can safely leave this tab open.`
+                : "You can safely leave this tab open — we will let you know when it is done."}
             </p>
           </div>
         </>
