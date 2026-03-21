@@ -21,6 +21,7 @@ from pathlib import Path
 
 import boto3
 import requests
+from botocore.exceptions import ClientError
 
 from pipeline.render import run_pipeline
 
@@ -136,8 +137,18 @@ def download_clips(clips: list[dict]) -> list[Path]:
         dest = TMP_CLIPS / f"{clip_id}.mp4"
 
         log.info("Downloading clip %s from R2: %s", clip_id, r2_key)
-        s3.download_file(R2_BUCKET, r2_key, str(dest))
-        clip_paths.append(dest)
+        try:
+            s3.download_file(R2_BUCKET, r2_key, str(dest))
+            clip_paths.append(dest)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("404", "NoSuchKey"):
+                log.warning("Clip %s not found in R2 (skipping): %s", clip_id, r2_key)
+            else:
+                raise
+
+    if not clip_paths:
+        raise RuntimeError("No clips could be downloaded — all files missing from R2")
 
     return clip_paths
 

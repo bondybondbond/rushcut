@@ -23,17 +23,19 @@ export default function PreviewPage() {
         <StepIndicator currentStep="preview" />
       </div>
 
-      <h2 className="text-2xl font-semibold text-[#e5e5e5] mb-2">
+      <h2 className="text-3xl font-semibold text-[#FF8A65] mb-2">
         Does this feel right?
       </h2>
 
       {poll.phase === "polling" && (
         <>
-          <p className="text-[#a3a3a3] mb-8">{PROGRESS_LABELS[poll.status]}</p>
+          <p className="text-[#e5e5e5] text-base mb-8">
+            {PROGRESS_LABELS[poll.status]} — this usually takes 1–3 minutes.
+          </p>
           <div className="aspect-video bg-[#111111] rounded-lg border border-white/10 flex items-center justify-center">
             <div className="flex flex-col items-center gap-3">
-              <div className="w-5 h-5 border-2 border-white/20 border-t-[#e5e5e5] rounded-full animate-spin" />
-              <p className="text-[#555555] text-sm">{PROGRESS_LABELS[poll.status]}</p>
+              <div className="w-6 h-6 border-2 border-white/20 border-t-[#FF8A65] rounded-full animate-spin" />
+              <p className="text-[#a3a3a3] text-base">{PROGRESS_LABELS[poll.status]}</p>
             </div>
           </div>
         </>
@@ -41,17 +43,17 @@ export default function PreviewPage() {
 
       {poll.phase === "timeout" && (
         <>
-          <p className="text-[#a3a3a3] mb-8">
-            Still rendering — this can take a few minutes for longer clips.
+          <p className="text-[#e5e5e5] text-base mb-8">
+            Still rendering — longer clips can take a few minutes.
           </p>
           <div className="aspect-video bg-[#111111] rounded-lg border border-white/10 flex items-center justify-center">
             <div className="flex flex-col items-center gap-4">
-              <p className="text-[#555555] text-sm text-center max-w-xs">
-                Your render is still in progress. Give it a moment and try again.
+              <p className="text-[#a3a3a3] text-base text-center max-w-xs">
+                Your render is still in progress. Give it a moment and check again.
               </p>
               <button
                 onClick={poll.retry}
-                className="px-4 py-2 border border-white/20 text-[#e5e5e5] text-sm rounded-md hover:border-white/40 transition-all duration-200"
+                className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
               >
                 Check again
               </button>
@@ -62,13 +64,13 @@ export default function PreviewPage() {
 
       {poll.phase === "failed" && (
         <>
-          <p className="text-red-400 mb-8 text-sm">{poll.error}</p>
+          <p className="text-red-400 mb-8 text-base">{poll.error}</p>
           <div className="aspect-video bg-[#111111] rounded-lg border border-white/10 flex items-center justify-center">
             <div className="flex flex-col items-center gap-4">
-              <p className="text-[#555555] text-sm">Something went wrong with your render.</p>
+              <p className="text-[#a3a3a3] text-base">Something went wrong with your render.</p>
               <a
                 href="/upload"
-                className="px-4 py-2 border border-white/20 text-[#e5e5e5] text-sm rounded-md hover:border-white/40 transition-all duration-200"
+                className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
               >
                 Start over
               </a>
@@ -79,21 +81,24 @@ export default function PreviewPage() {
 
       {poll.phase === "ready" && poll.job.draftUrl && (
         <>
-          <p className="text-[#a3a3a3] mb-8">Your first cut is ready.</p>
+          <p className="text-[#e5e5e5] text-base mb-6">Your first cut is ready.</p>
           <VideoPlayer src={poll.job.draftUrl} />
 
-          <div className="mt-6 flex gap-3 justify-end">
+          <div className="mt-6 flex gap-3 justify-end items-center">
+            <p className="text-[#a3a3a3] text-sm mr-auto">
+              Not happy with it? Adjust settings and re-render.
+            </p>
             <button
               onClick={() => router.push(`/configure/${poll.job.project_id}`)}
-              className="inline-flex items-center px-5 py-2.5 border border-white/20 text-[#e5e5e5] text-sm font-medium rounded-md hover:border-white/40 transition-all duration-200"
+              className="inline-flex items-center px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base font-medium rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
             >
-              Edit settings
+              Adjust settings
             </button>
             <button
               onClick={handleExport}
-              className="inline-flex items-center px-5 py-2.5 bg-[#e5e5e5] text-[#0a0a0a] font-medium rounded-md hover:bg-white transition-all duration-200 text-sm"
+              className="inline-flex items-center px-6 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base"
             >
-              Export full quality
+              Export final edit
             </button>
           </div>
         </>

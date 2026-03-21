@@ -59,9 +59,9 @@ export function ConfigurePanel({ onConfigChange }: Props) {
     }
   }
 
-  const row = "border border-white/10 rounded-lg p-4";
-  const label = "text-[#e5e5e5] text-sm font-medium mb-1";
-  const sublabel = "text-[#a3a3a3] text-xs mb-3";
+  const row = "border border-white/15 rounded-lg p-5";
+  const label = "text-[#e5e5e5] text-base font-medium mb-1";
+  const sublabel = "text-[#a3a3a3] text-sm mb-3";
 
   function Chip({
     active,
@@ -76,10 +76,10 @@ export function ConfigurePanel({ onConfigChange }: Props) {
       <button
         type="button"
         onClick={onClick}
-        className={`text-xs rounded px-2.5 py-1 border transition-all duration-200 ${
+        className={`text-sm rounded-md px-3.5 py-1.5 border transition-all duration-200 font-medium ${
           active
-            ? "border-[#e5e5e5] text-[#e5e5e5] bg-white/5"
-            : "border-white/20 text-[#a3a3a3] hover:border-white/40"
+            ? "border-[#FF8A65] text-[#FF8A65] bg-[#FF8A65]/10"
+            : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
         }`}
       >
         {children}
@@ -100,13 +100,13 @@ export function ConfigurePanel({ onConfigChange }: Props) {
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ${
-          checked ? "bg-[#e5e5e5]" : "bg-white/20"
+        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${
+          checked ? "bg-[#FF8A65]" : "bg-white/25"
         }`}
       >
         <span
-          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-[#0a0a0a] transition-transform duration-200 ${
-            checked ? "translate-x-4" : "translate-x-1"
+          className={`inline-block h-4 w-4 transform rounded-full bg-[#0a0a0a] transition-transform duration-200 ${
+            checked ? "translate-x-6" : "translate-x-1"
           }`}
         />
       </button>

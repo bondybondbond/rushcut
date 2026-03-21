@@ -127,3 +127,13 @@
     @apply font-sans;
   }
 }
+
+/* Indeterminate progress bar animation */
+@keyframes progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(450%); }
+}
+.progress-indeterminate {
+  animation: progress-slide 1.4s ease-in-out infinite;
+  width: 30%;
+}

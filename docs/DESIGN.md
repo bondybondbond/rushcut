@@ -1,0 +1,112 @@
+# RushCut Design System
+
+> Lock this down before any UI work. All colours, sizes, and component patterns here are canonical.
+
+---
+
+## Colours
+
+| Token | Hex | Usage |
+|---|---|---|
+| `--rc-bg` | `#0a0a0a` | Page background (forced dark) |
+| `--rc-surface` | `rgba(255,255,255,0.05)` | Card / row surfaces |
+| `--rc-border` | `rgba(255,255,255,0.15)` | Default borders |
+| `--rc-border-strong` | `rgba(255,255,255,0.35)` | Hover / active borders |
+| `--rc-text-primary` | `#e5e5e5` | Body text, labels |
+| `--rc-text-secondary` | `#a3a3a3` | Subtext, descriptions |
+| `--rc-text-muted` | `#555555` | Placeholder, de-emphasised |
+| **`--rc-peach`** | `#FF8A65` | **Headings, primary CTA, active state** |
+| `--rc-peach-hover` | `#ff9e7a` | CTA hover |
+| `--rc-green` | `#22c55e` | Progress bars (upload + render) |
+| `--rc-red` | red-400 Tailwind | Errors, probe failures |
+
+---
+
+## Typography
+
+All sizes are 2 steps above base Tailwind defaults (i.e. never use `text-xs` for readable content).
+
+| Role | Class | Size |
+|---|---|---|
+| Page heading | `text-3xl font-semibold text-[#FF8A65]` | 30px, peach |
+| Section heading | `text-xl font-medium text-[#e5e5e5]` | 20px |
+| Body / labels | `text-base text-[#e5e5e5]` | 16px |
+| Secondary text | `text-base text-[#a3a3a3]` | 16px |
+| Small label | `text-sm text-[#a3a3a3]` | 14px |
+| Muted / hint | `text-sm text-[#555555]` | 14px |
+
+---
+
+## Buttons
+
+### Primary CTA (peach)
+```tsx
+className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base disabled:opacity-40 disabled:cursor-not-allowed"
+```
+
+### Secondary (outlined)
+```tsx
+className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
+```
+
+---
+
+## Progress Bars
+
+Always **green** (`#22c55e`), never white/grey.
+
+```tsx
+{/* Determinate (upload per-file) */}
+<div className="h-1 bg-white/10 rounded-full overflow-hidden">
+  <div className="h-full bg-[#22c55e] transition-all duration-300" style={{ width: `${pct}%` }} />
+</div>
+
+{/* Indeterminate (render polling) — uses globals.css .progress-indeterminate */}
+<div className="h-2 bg-white/10 rounded-full overflow-hidden relative">
+  <div className="progress-indeterminate absolute top-0 bottom-0 bg-[#22c55e] rounded-full" />
+</div>
+
+{/* Complete */}
+<div className="h-2 bg-white/10 rounded-full overflow-hidden">
+  <div className="h-full w-full bg-[#22c55e] rounded-full" />
+</div>
+```
+
+---
+
+## Configure Panel Chips
+
+```tsx
+{/* Active */}
+"border-[#FF8A65] text-[#FF8A65] bg-[#FF8A65]/10"
+
+{/* Inactive */}
+"border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+```
+
+Toggle: ON = `bg-[#FF8A65]`, OFF = `bg-white/25`.
+
+---
+
+## Upload Flow UX Rules
+
+1. Files appear in the list **immediately** when selected — before upload starts.
+2. Counter shows `X of Y clips uploaded` while in progress.
+3. Pending clips show a green progress bar (0–100%).
+4. Completed clips show a drag handle + order number — drag to reorder.
+5. "Continue" button (not "Make my edit") — peach CTA, disabled until all uploaded + no errors.
+6. Order note appears when 2+ clips: *"Clips will edit in this order. Drag to rearrange."*
+7. Drop zone highlights in peach on drag-over.
+
+---
+
+## Key Copy Decisions
+
+| Old | New | Reason |
+|---|---|---|
+| "Make my edit" | "Continue" | Clearer next action |
+| "Export full quality" | "Export final edit" | Matches user mental model |
+| "Edit settings" | "Adjust settings" | More descriptive |
+| "Re-render with changes" | "Re-render with changes" (disabled if no change) | Lean — avoids wasted Lambda invocations |
+| "processing…" in clip duration | "—" | "processing" confused users; no ETA available |
+| "Saved to your library for 30 days" | "Saved for 30 days" | Concise; no auth in Phase 1 |
