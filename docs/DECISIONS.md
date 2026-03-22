@@ -164,3 +164,33 @@
 **Why Clipchamp feels instant:** Clipchamp does all processing locally via WebCodecs + WebGL and never uploads until export. RushCut's server-side Lambda model is architecturally different — the trade-off is simplicity + server capability (silence removal, loudnorm, complex transitions) at the cost of an upfront upload.
 **Trigger for revisit:** When per-clip in/out handles land on the timeline. At that point the segment boundaries are known pre-upload and the lazy model becomes viable without a full architecture rethink.
 **Trade-off:** Phase 1 users upload full raw clips even if only 30s of a 2-min clip is used. Acceptable for PoC — R2 aggressive cleanup (raw clips deleted post-render, see DEC-001) limits storage cost impact.
+
+---
+
+## DEC-018 — Phase 2 entry gate: self-validation over external metrics
+**Date:** March 2026
+**Decision:** Phase 2 exit gate is "I used RushCut to produce a video from a real 60+ clip DJI session that I was proud to publish" — not "5 paying strangers" and not user testing scores.
+**Reason:** The 5-paying-strangers gate was written assuming the AI intelligence layer would exist. Without it the product is a clip stitcher with no lock-in. The founder's own validated experience is the right gate at this stage — the product was built to solve a specific personal pain point first.
+**Trade-off:** Slower commercial signal. Acceptable — commercial validation is Phase 3 territory.
+
+---
+
+## DEC-019 — Competitive research scope: web-only
+**Date:** March 2026
+**Decision:** Competitive analysis covers web versions only (Clipchamp Web, Kapwing, WeVideo, FlexClip, LightCut Web if it exists). Desktop apps (DaVinci, Clipchamp Desktop) are explicitly excluded.
+**Reason:** RushCut is web-first. Desktop apps use local rendering — the latency and capability profile is fundamentally different. Only web competitors reflect the actual competitive landscape. Focus: how many clicks to a rendered film, what does auto-edit look like, clip selection UX.
+
+---
+
+## DEC-020 — Payment gate deferred until AI layer ships
+**Date:** March 2026
+**Decision:** Stripe integration and pricing tier are Phase 3. Phase 2 is entirely free-tier, auth required but no payment wall.
+**Reason:** Charging for an FFmpeg concat + silence detection pipeline has zero lock-in and no defensible differentiation. The paid tier only makes sense when the AI intelligence layer (Gemini ordering + GVI frame scoring) exists, because that's what users can't replicate elsewhere cheaply.
+
+---
+
+## DEC-021 — Positioning: "in the middle" — direction power, not full AI auto-edit
+**Date:** March 2026
+**Decision:** RushCut is not LightCut (full auto-edit, no control) and not Clipchamp (full manual timeline). The product gives *direction power* — user sets intent, tool executes, user reviews and nudges. This is the confirmed design stance going into Phase 2.
+**Reason:** LightCut's 4-step confirm model is the benchmark for simplicity but it's editorially shallow — no Windows support, limited customisation. Clipchamp's timeline is too manual for the target user. The gap is a tool that feels like giving direction to an editor, not operating editing software.
+**Implication:** Every Phase 2 UI decision should be tested against this: "does this feel like directing, or does it feel like editing?"
