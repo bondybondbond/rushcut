@@ -327,9 +327,9 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ---
 
-## Batch 5 — End-to-End Polish & Self-Validation
+## Batch 5 — End-to-End Polish & Self-Validation ✅ DONE
 *Goal: Author produces one real YouTube video using RushCut. Phase 1 gateway cleared.*
-*Status: Code complete as of 2026-03-20. Remaining steps are manual/infra only.*
+*E2E confirmed 2026-03-22: 3 DJI clips uploaded → editor → render → film watched. Outro card timing fixed (3s confirmed). Progress bar smoothing confirmed.*
 
 ### Deviations from original plan
 - Music schema pivoted: `music_track: string | null` → `music_mood: 'none'|'cinematic'|'upbeat'|'chill'|'electronic'` — enables Phase 2 commercial API (Loudly/Soundraw) without migration
@@ -416,6 +416,12 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 
 ---
 
+## Refactoring Backlog
+
+- [ ] **`thumbnail_data` for pre-existing clips** — clips uploaded before this session have `thumbnail_data = NULL` in Supabase; the editor falls back to presigned-URL video seek for those. Once all test clips are re-uploaded the fallback path is moot, but a one-off backfill script would clean it up. Priority: Low.
+- [ ] **`cards.py` text overlay** — intro/end cards render as solid colour only; text entered in ConfigurePanel is silently ignored because `drawtext` is unavailable in the ARM64 static FFmpeg build. Fix via Pillow: generate a PNG frame with text baked in, loop it to a 3s video. Priority: Med (user-visible gap).
+- [ ] **UX flow label drift** — CLAUDE.md still says "UX Flow: Upload → Preview → Download" but the live app routes are `upload → editor → output`. Update the CLAUDE.md flow description to match actual routes before next batch. Priority: Low.
+
 ## Phase 2 Preview (not in scope now)
 
 - Supabase Auth (user accounts)
@@ -424,3 +430,4 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 - AI tier: Google Video Intelligence, face detection, Gemini context prompt, beat-sync
 - Fix top 3 issues from self-validation
 - Target: 5 paying strangers
+- **Lazy / deferred upload** — see DEC-017. Only upload trimmed segments (not raw clips). Trigger: when timeline scrubber with in/out handles is added and exact segment boundaries are known client-side before upload.

@@ -16,6 +16,7 @@ export interface Clip {
   width: number | null;
   height: number | null;
   fps: number | null;
+  thumbnail_data: string | null; // base64 JPEG data URL — persisted at upload time
   created_at: string;
 }
 

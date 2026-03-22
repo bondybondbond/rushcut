@@ -153,3 +153,14 @@
 - **Do not use Gemini 2.0 Flash** for new tasks — it is the old default, not the best current option.
 **Action at Batch 5:** Benchmark Gemini 2.5 Flash-Lite as a drop-in swap for the brief parsing call. If output quality matches (structured JSON, correct defaults), swap and update PRD cost model accordingly. If rate limits become a friction point on the free tier, move to paid-tier Flash-Lite.
 **Trade-off:** Slight model staleness until Batch 5. Acceptable — the call is not yet wired and cost impact is negligible.
+
+---
+
+## DEC-017 — Lazy / deferred upload: deferred to Phase 2
+**Date:** March 2026
+**Decision:** Upload full raw clips to R2 immediately on selection. Do not implement segment-scoped or deferred upload in Phase 1.
+**Reason:** Lambda needs files in R2 before it can render. A lazy upload model (upload only trimmed segments) requires knowing the exact in/out boundaries client-side *before* the upload — which only becomes possible when a timeline scrubber with per-clip handles is added. That feature is Phase 2.
+**What lazy upload would look like in Phase 2:** Browser extracts trim points locally (WebCodecs or client-side FFmpeg WASM) → uploads only the trimmed segment bytes → Lambda receives pre-trimmed files and skips the trim step. Net result: shorter upload time, less R2 storage consumed, faster Lambda run.
+**Why Clipchamp feels instant:** Clipchamp does all processing locally via WebCodecs + WebGL and never uploads until export. RushCut's server-side Lambda model is architecturally different — the trade-off is simplicity + server capability (silence removal, loudnorm, complex transitions) at the cost of an upfront upload.
+**Trigger for revisit:** When per-clip in/out handles land on the timeline. At that point the segment boundaries are known pre-upload and the lazy model becomes viable without a full architecture rethink.
+**Trade-off:** Phase 1 users upload full raw clips even if only 30s of a 2-min clip is used. Acceptable for PoC — R2 aggressive cleanup (raw clips deleted post-render, see DEC-001) limits storage cost impact.

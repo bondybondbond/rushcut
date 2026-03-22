@@ -28,7 +28,6 @@ interface ClipListProps {
   onDelete: (clipId: string) => void;
   onDismissFailed?: (tempId: string) => void;
   onReorder: (clips: ClipWithProbeFlag[]) => void;
-  brief?: string;
 }
 
 function formatDuration(ms: number | null): string {
@@ -37,6 +36,15 @@ function formatDuration(ms: number | null): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function getResolutionLabel(width: number | null, height: number | null): { label: string; is4K: boolean } | null {
+  if (!width || !height) return null;
+  const long = Math.max(width, height);
+  if (long >= 3840) return { label: "4K", is4K: true };
+  if (long >= 2560) return { label: "2.7K", is4K: true };
+  if (long >= 1920) return { label: "FHD", is4K: false };
+  return null;
 }
 
 // Generic video icon shown when no thumbnail could be generated
@@ -162,26 +170,20 @@ function SortableClipCard({ clip, index, onDelete }: SortableClipCardProps) {
           {index + 1}
         </div>
 
-        {/* Uploaded tick — top right, shown on hover reveals delete */}
-        <div className="absolute top-1.5 right-1.5 group">
-          {/* Tick (default) */}
-          <div className="bg-black/70 rounded p-1 text-[#22c55e] group-hover:hidden">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
-            </svg>
-          </div>
-          {/* Delete (shown on hover) */}
-          <button
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); onDelete(clip.id); }}
-            className="hidden group-hover:block bg-black/70 rounded p-1 text-[#a3a3a3] hover:text-red-400 hover:bg-black/90 transition-colors"
-            aria-label={`Delete ${clip.filename}`}
-          >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
-            </svg>
-          </button>
-        </div>
+        {/* Delete button — always visible top-right */}
+        <button
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onDelete(clip.id); }}
+          className="absolute top-1.5 right-1.5 bg-black/70 rounded p-1 text-[#a3a3a3] hover:text-red-400 hover:bg-black/90 transition-colors"
+          aria-label={`Delete ${clip.filename}`}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+            <path d="M10 11v6M14 11v6"/>
+            <path d="M9 6V4h6v2"/>
+          </svg>
+        </button>
 
         {/* Error overlay */}
         {clip.probe_error && (
@@ -196,23 +198,25 @@ function SortableClipCard({ clip, index, onDelete }: SortableClipCardProps) {
         <p className="text-[#e5e5e5] text-sm truncate" title={clip.filename}>
           {clip.filename}
         </p>
-        <p className="text-[#a3a3a3] text-xs mt-0.5">
-          {clip.duration_ms !== null
-            ? formatDuration(clip.duration_ms)
-            : <span className="text-[#22c55e]">Ready</span>
-          }
-          {clip.width && clip.height && (
-            <span className="ml-2 text-[#555555]">{clip.width}×{clip.height}</span>
-          )}
+        <p className="text-[#e5e5e5] text-xs mt-0.5 flex items-center gap-1.5">
+          <span>{formatDuration(clip.duration_ms)}</span>
+          {(() => {
+            const res = getResolutionLabel(clip.width, clip.height);
+            if (!res) return null;
+            return (
+              <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${res.is4K ? "bg-[#C9A96E]/20 text-[#C9A96E]" : "bg-white/10 text-[#a3a3a3]"}`}>
+                {res.label}
+              </span>
+            );
+          })()}
         </p>
       </div>
     </div>
   );
 }
 
-export function ClipList({ clips, pendingUploads = [], onDelete, onDismissFailed, onReorder, brief = "" }: ClipListProps) {
+export function ClipList({ clips, pendingUploads = [], onDelete, onDismissFailed, onReorder }: ClipListProps) {
   const router = useRouter();
-  const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [jobError, setJobError] = useState<string | null>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -243,44 +247,44 @@ export function ClipList({ clips, pendingUploads = [], onDelete, onDismissFailed
     }).catch(console.error);
   }
 
-  async function handleContinue() {
+  function handleContinue() {
     setJobError(null);
-    setIsCreatingJob(true);
-    try {
-      const projectId = localStorage.getItem("rushcut_project_id");
-      if (!projectId) { setJobError("No project found — please upload clips first."); return; }
-
-      const res = await fetch("/api/jobs/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, brief }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        setJobError(err.error ?? "Failed to create job");
-        return;
-      }
-
-      const { jobId } = await res.json();
-      // Clear stored project ID so the next session starts fresh (no orphaned clips)
-      localStorage.removeItem("rushcut_project_id");
-      router.push(`/preview/${jobId}`);
-    } catch (err: unknown) {
-      setJobError((err as Error).message);
-    } finally {
-      setIsCreatingJob(false);
+    const projectId = localStorage.getItem("rushcut_project_id");
+    if (!projectId) {
+      setJobError("Something went wrong — please refresh and re-upload your clips.");
+      return;
     }
+    router.push(`/editor/${projectId}`);
   }
 
   if (clips.length === 0 && pendingUploads.length === 0) return null;
+
+  const has4K = clips.some((c) => {
+    const res = getResolutionLabel(c.width, c.height);
+    return res?.is4K;
+  });
 
   return (
     <div className="space-y-4">
       {/* Order hint */}
       {totalCount >= 2 && (
-        <p className="text-[#a3a3a3] text-sm">
+        <p className="text-[#e5e5e5] text-sm">
           Clips will edit in this order. Drag to rearrange.
+        </p>
+      )}
+
+      {/* 4K downscale notice */}
+      {has4K && (
+        <p className="text-[#C9A96E] text-sm flex items-center gap-1.5">
+          Your clips will be processed at 1080p.
+          <span
+            title="4K and 2.7K footage is scaled to 1080p HD during render. Higher resolution output is on the roadmap."
+            className="cursor-help inline-flex items-center"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" className="text-[#C9A96E]/60">
+              <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/>
+            </svg>
+          </span>
         </p>
       )}
 
@@ -307,13 +311,10 @@ export function ClipList({ clips, pendingUploads = [], onDelete, onDismissFailed
       <div className="flex justify-end pt-2">
         <button
           onClick={handleContinue}
-          disabled={!allReady || isCreatingJob}
+          disabled={!allReady}
           className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed text-base"
         >
-          {isCreatingJob && (
-            <span className="w-4 h-4 border-2 border-[#0a0a0a]/30 border-t-[#0a0a0a] rounded-full animate-spin" />
-          )}
-          {isCreatingJob ? "Starting…" : "Continue"}
+          Continue
         </button>
       </div>
     </div>

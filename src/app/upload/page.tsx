@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { StepIndicator } from "@/components/StepIndicator";
 import { UploadZone, PendingUpload } from "@/components/upload/UploadZone";
 import { ClipList } from "@/components/upload/ClipList";
@@ -11,7 +11,12 @@ type ClipWithProbeFlag = Clip & { probe_skipped?: boolean; probe_error?: string 
 export default function UploadPage() {
   const [clips, setClips] = useState<ClipWithProbeFlag[]>([]);
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
-  const [brief, setBrief] = useState("");
+
+  // Always start a fresh project on the upload page — no leftover state from prior sessions.
+  // Auth-gated project resumption can be added in Phase 2 when user accounts land.
+  useEffect(() => {
+    localStorage.removeItem("rushcut_project_id");
+  }, []);
 
   // Ref-based thumbnail store — avoids stale closure when reading thumbnail in handleFileComplete
   const thumbnailsRef = useRef<Map<string, string>>(new Map());
@@ -40,6 +45,18 @@ export default function UploadPage() {
     const withThumb = { ...clip, thumbnail };
     setPendingUploads((prev) => prev.filter((p) => p.tempId !== tempId));
     setClips((prev) => [...prev, withThumb]);
+
+    // Persist thumbnail to Supabase so the editor can display it without re-decoding the video
+    // (DJI clips are HEVC — Chrome can't decode them without the H.265 extension)
+    if (thumbnail && clip.id) {
+      fetch(`/api/clips/${clip.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thumbnail_data: thumbnail }),
+      }).catch(() => {
+        // Non-fatal — editor falls back to presigned URL video seek
+      });
+    }
   }
 
   function handleFileError(tempId: string, error: string) {
@@ -69,12 +86,9 @@ export default function UploadPage() {
         <StepIndicator currentStep="upload" />
       </div>
 
-      <h2 className="text-3xl font-semibold text-[#FF8A65] mb-2">
+      <h2 className="text-3xl font-semibold text-[#FF8A65] mb-6">
         Select your clips
       </h2>
-      <p className="text-[#e5e5e5] text-base mb-8">
-        Up to 20 clips. MP4, MOV or MKV, up to 1 GB each.
-      </p>
 
       <UploadZone
         onFilesQueued={handleFilesQueued}
@@ -86,7 +100,7 @@ export default function UploadPage() {
 
       {/* Upload counter — shown while any uploads are in progress */}
       {isUploading && (
-        <p className="text-[#a3a3a3] text-sm mt-4">
+        <p className="text-[#e5e5e5] text-sm mt-4">
           {clips.length} of {totalCount} clip{totalCount !== 1 ? "s" : ""} uploaded…
         </p>
       )}
@@ -98,25 +112,8 @@ export default function UploadPage() {
           onDelete={handleDelete}
           onDismissFailed={handleDismissFailed}
           onReorder={handleReorder}
-          brief={brief}
         />
       </div>
-
-      {(clips.length > 0 || pendingUploads.length > 0) && (
-        <div className="mt-6">
-          <p className="text-[#e5e5e5] text-sm mb-2">Optional — describe your edit</p>
-          <input
-            type="text"
-            value={brief}
-            onChange={(e) => setBrief(e.target.value)}
-            placeholder="e.g. fast cuts, upbeat, travel feel"
-            className="w-full bg-transparent border border-white/20 rounded-md px-4 py-3 text-[#e5e5e5] placeholder-[#555555] text-base focus:outline-none focus:border-white/40"
-          />
-          <p className="text-[#a3a3a3] text-sm mt-2">
-            We will use this as a starting point. You can always adjust.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

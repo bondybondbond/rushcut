@@ -6,7 +6,11 @@ import { JobConfig } from "@/types/project";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { projectId, config } = body as { projectId: string; config?: JobConfig | null };
+    const { projectId, config, mode } = body as {
+      projectId: string;
+      config?: JobConfig | null;
+      mode?: "draft" | "final";
+    };
 
     if (!projectId) {
       return NextResponse.json({ error: "projectId is required" }, { status: 400 });
@@ -16,7 +20,7 @@ export async function POST(req: NextRequest) {
 
     const { data: job, error: jobError } = await supabase
       .from("jobs")
-      .insert({ project_id: projectId, status: "queued", mode: "draft", config: config ?? null })
+      .insert({ project_id: projectId, status: "queued", mode: mode ?? "final", config: config ?? null })
       .select("id")
       .single();
 

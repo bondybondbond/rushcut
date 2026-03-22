@@ -86,13 +86,21 @@ def build_filter_complex(
         return "; ".join(video_parts), v_out, ""
 
     if n == 2:
-        # Two-clip case: use acrossfade
+        # Two-clip case: use acrossfade — audio duration already matches video
         audio_parts = [f"[0:a][1:a]acrossfade=d={xfade_dur}[aout]"]
     else:
-        # Three+ clips: concat filter (hard audio cuts at joins)
-        # acrossfade chaining for 3+ clips produces misaligned audio overlaps
+        # Three+ clips: concat filter (hard audio cuts at joins).
+        # acrossfade chaining for 3+ clips produces misaligned audio overlaps.
+        # IMPORTANT: concat gives sum(durations) but video is (n-1)*xfade_dur shorter
+        # due to xfade overlaps. Trim audio to match video exactly, otherwise the
+        # player freezes on the last frame (end card) for the duration of the mismatch.
+        total_dur = sum(durations) - (n - 1) * xfade_dur
         inputs = "".join(f"[{i}:a]" for i in range(n))
-        audio_parts = [f"{inputs}concat=n={n}:v=0:a=1[aout]"]
+        audio_parts = [
+            f"{inputs}concat=n={n}:v=0:a=1,"
+            f"atrim=end={total_dur:.4f},"
+            f"asetpts=PTS-STARTPTS[aout]"
+        ]
 
     a_out = "[aout]"
     all_parts = video_parts + audio_parts

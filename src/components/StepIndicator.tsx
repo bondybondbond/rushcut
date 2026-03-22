@@ -1,9 +1,9 @@
-type Step = "upload" | "preview" | "download";
+type Step = "upload" | "edit" | "render";
 
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "Upload" },
-  { key: "preview", label: "Preview" },
-  { key: "download", label: "Download" },
+  { key: "edit", label: "Edit" },
+  { key: "render", label: "Render" },
 ];
 
 export function StepIndicator({ currentStep }: { currentStep: Step }) {

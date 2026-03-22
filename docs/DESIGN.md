@@ -17,8 +17,14 @@
 | `--rc-text-muted` | `#555555` | Placeholder, de-emphasised |
 | **`--rc-peach`** | `#FF8A65` | **Headings, primary CTA, active state** |
 | `--rc-peach-hover` | `#ff9e7a` | CTA hover |
+| **`--rc-sand`** | `#C9A96E` | **Upload zone border, secondary accents (warm layer under peach)** |
 | `--rc-green` | `#22c55e` | Progress bars (upload + render) |
 | `--rc-red` | red-400 Tailwind | Errors, probe failures |
+
+### Text colour rules
+- **Never use `#555555` (`--rc-text-muted`) for visible readable content** — it is too dim on dark backgrounds. Use only for purely decorative / placeholder text.
+- **Never use grey (`text-gray-*`, `text-[#808080]` etc.) anywhere** — use `#e5e5e5` (primary) or `#a3a3a3` (secondary) only.
+- Minimum readable text colour: `#a3a3a3`.
 
 ---
 

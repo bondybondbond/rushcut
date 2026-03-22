@@ -1,60 +1,45 @@
-# CLAUDE.md — rushcut project notes
+## 🎨 Design Rules (always follow — override any defaults)
 
-## Key file paths
+- **Follow `docs/DESIGN.md` strictly.** It is the canonical design system. Do not invent new colours or patterns.
+- **Always white text on dark backgrounds. Never use grey for readable text.** Background is `#0a0a0a`. Use `#e5e5e5` (primary readable text) or `#a3a3a3` (secondary/metadata — timestamps, subtitles, helper text). `#555555` is decorative/placeholder ONLY — empty states, disabled icons — never for any text a user needs to read. When in doubt, go whiter.
+- **Two accent colours:**
+  - **Peach `#FF8A65`** — headings, CTAs, active button states, success states.
+  - **Sand `#C9A96E`** — upload zone border, 4K badges, info notices, secondary highlights, contextual warnings. Use this wherever a softer accent is needed below the primary peach layer.
+- **No duplicate copy.** If text appears in the page heading, do not repeat it inside the component below.
+- **No emojis in rendered UI or console output.** ASCII only (`->`, `[i]`, `[PASS]`, `[FAIL]`). Emojis break cp1252 encoding on Windows and look inconsistent in the UI.
 
-- `spike/render.py` — Batch 0 throwaway spike; confirms FFmpeg pipeline works end-to-end
-- `C:\clips\` — test DJI source clips (dji_01/02/03.mp4); not in repo
-- `C:\clips\processed\` — spike output destination; gitignored, safe from accidental upload
-- `spike/tmp/` — normalised intermediate clips; gitignored, auto-cleaned by script
-- `docs/BUILD-PLAN.md` — canonical phase plan; tick off batches here as they complete
-- `.gitignore` — includes `spike/tmp/` and `spike/output*`
+## 🏗️ Architecture & Core Rules
 
-## Env & tool quirks (Windows)
+- **Stack:** Next.js 15 (App Router), plain `@supabase/supabase-js` ONLY (do NOT install SSR wrappers).
 
-- FFmpeg installed via winget (Gyan.FFmpeg); auto-discovered by render.py — no PATH change needed
-- FFmpeg 8.0.1: `xfade` transition name is `fade` NOT `crossfade` (crossfade not implemented — returns "Not yet implemented in FFmpeg")
-- `scale=-2:360` must go INSIDE `-filter_complex` when xfade is used — cannot mix `-vf` (simple filtergraph) and `-filter_complex` on the same output stream
-- Default codec without `-c:v libx264` when using filter_complex falls through to HEVC — Windows Photos/Media Player error 0x80004005. Always specify `-c:v libx264 -pix_fmt yuv420p -profile:v main` explicitly
-- Windows console (cp1252): avoid Unicode arrows `→` and emoji `✅❌` in print() — causes encoding errors. Use `->`, `[PASS]`, `[FAIL]`
-- DJI OsmoPocket3 clips contain an embedded MJPEG thumbnail as a second video stream — ffprobe will report two video streams per file; the real stream is `hevc` stream 0
+- **UX Flow:** strictly Upload → Preview → Download. "Configure" is a hidden optional step, not part of the main StepIndicator.
 
-## Next.js / Turbopack quirks (Batch 2+)
+- **Copy & Planning:** Canonical copy is locked in `docs/CHANGELOG.md v0.4`. Canonical task list is `docs/BUILD-PLAN.md`.
 
-- `@ffprobe-installer/ffprobe` must be in `serverExternalPackages` in `next.config.ts` — Turbopack can't handle the bundled README.md and throws `Unknown module type` 500
-- Vercel Hobby plan: 50MB serverless function limit — ffprobe binary (~70MB) exceeds this. Probe route checks `process.env.VERCEL` and returns `{ skipped: true }` instead of running exec. Lambda will backfill in Batch 4.
-- Do NOT install `@supabase/ssr` or `@supabase/auth-helpers-nextjs` — the project uses plain `@supabase/supabase-js` createClient directly. Wrong wrapper breaks existing lib/supabase.ts signatures.
-- Supabase schema cache does not auto-refresh after CREATE TABLE — new tables return `PGRST205` until Dashboard → API Settings → Reload schema is clicked.
+- **Vercel Limits:** `ffprobe` exceeds Hobby 50MB limit. Skip `ffprobe` execution in serverless routes.
 
-## UX / flow decisions (locked — do not revert)
+## 💻 Windows 11 Local Dev
 
-- **Draft-first flow**: Upload CTA goes direct to Preview (`/preview/[jobId]`). Do NOT add a Configure step between Upload and Preview.
-- **Configure is optional**: reachable only via "Edit settings" button on the Preview page. It is not a mandatory step and does not appear in the StepIndicator.
-- **StepIndicator**: 3 steps only — Upload / Preview / Download. Configure is excluded.
-- **Next.js 15 async params**: `params` in App Router dynamic pages is a Promise — `params.jobId` / `params.projectId` may render empty in shells until properly awaited. Batch 2 concern, not a Batch 1 bug.
-- **Copy is locked**: see `docs/CHANGELOG.md` v0.4 for the canonical string for every heading, subhead, CTA, and note across all 5 pages.
+- **Console Output:** Use ASCII only (`->`, `[PASS]`, `[FAIL]`). Never print Unicode arrows or emojis (breaks cp1252 encoding).
 
-## Lambda pipeline (Batch 3+)
+- **Paths:** Run all scripts from `C:\apps\rushcut`. Source test clips strictly from `C:\clips\` (no spaces). Output to `C:\clips\processed\`.
 
-- `lambda/pipeline/utils.py` — FFMPEG/FFPROBE paths read from `FFMPEG_BIN`/`FFPROBE_BIN` env vars (default `/usr/local/bin/ffmpeg`). Set these to test locally without Docker.
-- Local pipeline test (no Docker needed): `cd lambda && python3 -c "import os,shutil,sys; sys.path.insert(0,'.'); os.environ['FFMPEG_BIN']=shutil.which('ffmpeg'); os.environ['FFPROBE_BIN']=shutil.which('ffprobe'); from pipeline.render import run_local; run_local('C:/clips','C:/clips/processed')"`
-- Docker requires WSL 2 on Windows — `wsl --install --no-distribution` + **restart** before Docker Desktop will start. Check state: `"C:/Program Files/Docker/Docker/resources/bin/docker.exe" info 2>&1 | grep wslUpdateRequired`.
-- `docker build -t rushcut-lambda ./lambda` — first step of Batch 4 (after WSL restart).
+- **AWS CLI & IAM:** Run via PowerShell or `wsl -d Ubuntu-24.04 -u root -- aws`. IAM role creation must be done manually via browser CloudShell.
 
-## AWS / Docker quirks (Batch 4+)
+- **Supabase:** Manually hit "Reload schema" in Dashboard API Settings after `CREATE TABLE` to clear PGRST205 errors.
 
-- **Docker Desktop v4.65.0 is permanently broken** on this machine — `dockerInference` Unix socket crash on every startup, no config fix works. Use WSL2 Ubuntu Docker Engine instead for all Docker operations:
-  ```
-  wsl -d Ubuntu-24.04 -u root -- bash -c "service docker start && docker ..."
-  ```
-- **Lambda image must use `--provenance=false`** — `docker buildx build --platform linux/arm64` without this flag produces an OCI manifest list which Lambda rejects ("media type not supported"). Always: `docker build --platform linux/arm64 --provenance=false -t rushcut-lambda ./lambda`
-- **AWS CLI not in bash PATH** — installed at `C:\Program Files\Amazon\AWSCLIV2\aws.exe`. In PowerShell: `aws` works after install. In bash (Claude tools): use `powershell.exe -Command "aws ..."` or `wsl -d Ubuntu-24.04 -u root -- aws ...`
-- **`rushcut-cli` IAM user cannot create IAM roles** — `AWSLambda_FullAccess` excludes `iam:CreateRole`. Use AWS CloudShell in the browser (runs as root account) for any IAM operations.
-- **ECR URI**: `459338751297.dkr.ecr.eu-west-2.amazonaws.com/rushcut-lambda` — region eu-west-2, account 459338751297
-- **Lambda function name**: `rushcut-lambda` — ARM64, 3008MB, 900s, eu-west-2. All env vars already set.
+## 🎬 FFmpeg Quirks (v8.0.1)
 
-## Efficiency notes
+- **DJI Osmo Pocket 3:** The real video is HEVC stream `0` (stream `1` is an embedded MJPEG thumbnail).
 
-- Specify "Windows environment" at session start — avoids back-and-forth on path separators, encoding, and console issues
-- Put test clips in a path with NO SPACES (e.g. `C:\clips\`) — spaces in paths require careful quoting and caused the first failed run
-- Output files for testing should go to `C:\clips\processed\` or a gitignored subfolder — not inside the repo where they risk being committed or staged
-- Run the script from `C:\apps\rushcut` (repo root), not from the clips folder — relative paths in render.py (spike/tmp, spike/output*) resolve from cwd
+- **Encoding:** Always explicitly use `-c:v libx264 -pix_fmt yuv420p -profile:v main` to ensure Windows playback compatibility.
+
+- **Filters:** Use `fade` (not `crossfade`). `scale` must go INSIDE `-filter_complex` when combining streams; do not mix with `-vf`.
+
+## 🐳 Docker & Lambda
+
+- **Daemon:** Docker Desktop is broken. Always run via WSL2: `wsl -d Ubuntu-24.04 -u root -- bash -c "service docker start && docker ..."`
+
+- **Build Command:** Lambda rejects standard builds. ALWAYS use: `docker build --platform linux/arm64 --provenance=false -t rushcut-lambda ./lambda`
+
+- **Target Details:** ECR `459338751297.dkr.ecr.eu-west-2.amazonaws.com/rushcut-lambda`. Function `rushcut-lambda` (ARM64, 3008MB).

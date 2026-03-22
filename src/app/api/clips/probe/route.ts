@@ -4,15 +4,29 @@ import { getPresignedGetUrl } from "@/lib/r2";
 import { execFileNoThrow } from "@/utils/execFileNoThrow";
 
 export async function POST(req: NextRequest) {
-  // Vercel Hobby: binary size limit — skip ffprobe
+  const body = await req.json();
+  const { clipId, duration_ms: clientDuration_ms } = body as {
+    clipId: string;
+    duration_ms?: number | null;
+  };
+
+  // Vercel Hobby: binary size limit — skip ffprobe, but store client-supplied duration
   if (process.env.VERCEL) {
-    return NextResponse.json({ skipped: true });
+    if (clipId && clientDuration_ms != null) {
+      try {
+        const supabase = createServerClient();
+        await supabase
+          .from("clips")
+          .update({ duration_ms: clientDuration_ms })
+          .eq("id", clipId);
+      } catch {
+        // Non-fatal — duration will just be null in DB
+      }
+    }
+    return NextResponse.json({ skipped: true, duration_ms: clientDuration_ms ?? null });
   }
 
   try {
-    const body = await req.json();
-    const { clipId } = body;
-
     if (!clipId) {
       return NextResponse.json({ error: "clipId is required" }, { status: 400 });
     }

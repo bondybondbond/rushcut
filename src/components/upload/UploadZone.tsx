@@ -2,6 +2,7 @@
 
 import { useRef, useState, DragEvent, ChangeEvent } from "react";
 import type { Clip } from "@/types/project";
+import { generateThumbnail } from "@/utils/thumbnail";
 
 const MAX_FILE_SIZE = 1073741824; // 1 GB
 const MAX_CLIPS = 20;
@@ -23,64 +24,6 @@ interface UploadZoneProps {
   onFileComplete: (tempId: string, clip: ClipWithProbeFlag) => void;
   onFileError: (tempId: string, error: string) => void;
   currentCount?: number;
-}
-
-// Capture a centered-square JPEG thumbnail from a local File without uploading it.
-// Returns null if the browser cannot decode the video (e.g. HEVC without codec).
-async function generateThumbnail(file: File): Promise<string | null> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement("video");
-    let done = false;
-
-    function finish(result: string | null) {
-      if (done) return;
-      done = true;
-      URL.revokeObjectURL(url);
-      resolve(result);
-    }
-
-    const timer = setTimeout(() => finish(null), 6000);
-
-    video.addEventListener("loadedmetadata", () => {
-      // Seek slightly in so we don't get a black first frame
-      video.currentTime = Math.min(1.5, video.duration * 0.08 || 1.5);
-    });
-
-    video.addEventListener("seeked", () => {
-      try {
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        if (!vw || !vh) { clearTimeout(timer); finish(null); return; }
-
-        const canvas = document.createElement("canvas");
-        const SIZE = 160;
-        canvas.width = SIZE;
-        canvas.height = SIZE;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) { clearTimeout(timer); finish(null); return; }
-
-        // Center-crop to square
-        const side = Math.min(vw, vh);
-        const sx = (vw - side) / 2;
-        const sy = (vh - side) / 2;
-        ctx.drawImage(video, sx, sy, side, side, 0, 0, SIZE, SIZE);
-
-        clearTimeout(timer);
-        finish(canvas.toDataURL("image/jpeg", 0.65));
-      } catch {
-        clearTimeout(timer);
-        finish(null);
-      }
-    });
-
-    video.addEventListener("error", () => { clearTimeout(timer); finish(null); });
-
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "metadata";
-    video.src = url;
-  });
 }
 
 export function UploadZone({
@@ -116,15 +59,15 @@ export function UploadZone({
       return;
     }
 
-    // Generate thumbnails from local files in parallel — no network needed
-    const thumbnails = await Promise.all(toProcess.map(generateThumbnail));
+    // Generate thumbnails + client-side durations from local files in parallel
+    const thumbResults = await Promise.all(toProcess.map((f) => generateThumbnail(f)));
 
     // Queue ALL files immediately — they appear in the grid right now
     const queuedFiles = toProcess.map((file, i) => ({
       tempId: `${file.name}-${Date.now()}-${i}`,
       filename: file.name,
       size: file.size,
-      thumbnail: thumbnails[i] ?? undefined,
+      thumbnail: thumbResults[i].thumbnail ?? undefined,
     }));
     onFilesQueued(queuedFiles);
 
@@ -202,11 +145,16 @@ export function UploadZone({
         });
 
         // Step 3: Probe — with 12s timeout so we never hang locally
+        // Client-side metadata extracted from <video> element — fallback when ffprobe unavailable
+        const thumbResult = thumbResults[toProcess.indexOf(file)];
+        const clientDuration_ms = thumbResult?.duration_ms ?? null;
+        const clientWidth = thumbResult?.width ?? null;
+        const clientHeight = thumbResult?.height ?? null;
         let probeSkipped = false;
         let probeError: string | undefined;
-        let duration_ms: number | null = null;
-        let width: number | null = null;
-        let height: number | null = null;
+        let duration_ms: number | null = clientDuration_ms;
+        let width: number | null = clientWidth;
+        let height: number | null = clientHeight;
         let fps: number | null = null;
 
         try {
@@ -216,7 +164,7 @@ export function UploadZone({
           const probeRes = await fetch("/api/clips/probe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ clipId }),
+            body: JSON.stringify({ clipId, duration_ms: clientDuration_ms }),
             signal: controller.signal,
           });
           clearTimeout(probeTimer);
@@ -225,10 +173,11 @@ export function UploadZone({
             const probeData = await probeRes.json();
             if (probeData.skipped) {
               probeSkipped = true;
+              // duration_ms/width/height already set to client-measured values above
             } else {
-              duration_ms = probeData.duration_ms ?? null;
-              width = probeData.width ?? null;
-              height = probeData.height ?? null;
+              duration_ms = probeData.duration_ms ?? clientDuration_ms;
+              width = probeData.width ?? clientWidth;
+              height = probeData.height ?? clientHeight;
               fps = probeData.fps ?? null;
             }
           } else {
@@ -251,6 +200,7 @@ export function UploadZone({
           width,
           height,
           fps,
+          thumbnail_data: null, // persisted via PATCH after onFileComplete fires
           created_at: new Date().toISOString(),
           probe_skipped: probeSkipped,
           probe_error: probeError,
@@ -290,14 +240,14 @@ export function UploadZone({
       <label
         htmlFor="clip-file-input"
         className={`block border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-all duration-200 ${
-          isDragOver ? "border-[#FF8A65]/60 bg-[#FF8A65]/5" : "border-white/25 hover:border-white/40"
+          isDragOver ? "border-[#FF8A65]/60 bg-[#FF8A65]/5" : "border-[#C9A96E]/50 hover:border-[#C9A96E]/80"
         }`}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <p className="text-[#e5e5e5] text-base">Drag clips here, or click to browse</p>
-        <p className="text-[#a3a3a3] text-sm mt-2">
+        <p className="text-[#e5e5e5] text-base">Drag clips here, or browse files</p>
+        <p className="text-[#e5e5e5] text-sm mt-2 opacity-60">
           MP4 · MOV · MKV · up to 1 GB per file · max {MAX_CLIPS} clips
         </p>
       </label>
