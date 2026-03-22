@@ -268,12 +268,12 @@ export function UploadZone({
     );
   }
 
-  function onDragOver(e: DragEvent<HTMLDivElement>) {
+  function onDragOver(e: DragEvent<HTMLElement>) {
     e.preventDefault();
     setIsDragOver(true);
   }
   function onDragLeave() { setIsDragOver(false); }
-  function onDrop(e: DragEvent<HTMLDivElement>) {
+  function onDrop(e: DragEvent<HTMLElement>) {
     e.preventDefault();
     setIsDragOver(false);
     if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
