@@ -11,6 +11,7 @@ Key constraints (from CLAUDE.md):
 """
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from .utils import FFMPEG, ffmpeg_run
@@ -18,7 +19,12 @@ from .utils import FFMPEG, ffmpeg_run
 log = logging.getLogger(__name__)
 
 
-def normalise(clip_paths: list[Path], tmp_dir: Path, mode: str = "draft") -> list[Path]:
+def normalise(
+    clip_paths: list[Path],
+    tmp_dir: Path,
+    mode: str = "draft",
+    on_clip_done: "Callable[[int, int], None] | None" = None,
+) -> list[Path]:
     """
     Normalise each clip to H.264/yuv420p/25fps/AAC 128k.
     draft mode: 360p + ultrafast preset (fast Lambda turnaround).
@@ -54,6 +60,8 @@ def normalise(clip_paths: list[Path], tmp_dir: Path, mode: str = "draft") -> lis
         ])
 
         norm_paths.append(out)
+        if on_clip_done:
+            on_clip_done(i + 1, len(clip_paths))
 
     log.info("[normalise] Done — %d clips normalised", len(norm_paths))
     return norm_paths

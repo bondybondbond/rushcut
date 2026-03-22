@@ -93,7 +93,12 @@ export default function PreviewPage() {
 
       {poll.phase === "ready" && poll.job.draftUrl && (
         <>
-          <p className="text-[#e5e5e5] text-base mb-6">Your first cut is ready.</p>
+          <div className="flex items-center gap-3 mb-6">
+            <p className="text-[#e5e5e5] text-base">Your first cut is ready.</p>
+            <span className="text-xs font-medium bg-white/10 text-[#a3a3a3] rounded px-2 py-0.5">
+              Draft · 360p
+            </span>
+          </div>
           <VideoPlayer src={poll.job.draftUrl} />
 
           <div className="mt-6 flex gap-3 justify-end items-center">

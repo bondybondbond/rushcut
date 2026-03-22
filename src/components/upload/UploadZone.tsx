@@ -287,11 +287,11 @@ export function UploadZone({
 
   return (
     <div>
-      <div
-        className={`border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-all duration-200 ${
+      <label
+        htmlFor="clip-file-input"
+        className={`block border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-all duration-200 ${
           isDragOver ? "border-[#FF8A65]/60 bg-[#FF8A65]/5" : "border-white/25 hover:border-white/40"
         }`}
-        onClick={() => fileInputRef.current?.click()}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
@@ -300,9 +300,9 @@ export function UploadZone({
         <p className="text-[#a3a3a3] text-sm mt-2">
           MP4 · MOV · MKV · up to 1 GB per file · max {MAX_CLIPS} clips
         </p>
-      </div>
+      </label>
 
-      <input ref={fileInputRef} type="file" accept="video/*" multiple className="hidden" onChange={onInputChange} />
+      <input id="clip-file-input" ref={fileInputRef} type="file" accept="video/*" multiple className="hidden" onChange={onInputChange} />
       {globalError && <p className="text-red-400 text-sm mt-3">{globalError}</p>}
     </div>
   );

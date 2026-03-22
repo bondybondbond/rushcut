@@ -112,10 +112,13 @@ def run_pipeline(
     tmp.mkdir(parents=True, exist_ok=True)
     log.info("[render] Job %s | mode=%s | %d clips", job_id, mode, len(clip_paths))
 
-    # 1. Normalise
+    # 1. Normalise — report per-clip so progress doesn't appear stuck
     log.info("[render] Step 1: normalise")
     report(10)
-    current_paths = normalise(clip_paths, tmp, mode=mode)
+    n_clips = len(clip_paths)
+    def _normalise_progress(done: int, total: int) -> None:
+        report(10 + int(done / total * 15))  # 10% → 25%
+    current_paths = normalise(clip_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
 
     # 2. Silence detect + trim (IMPORTANT: get_duration() is called on trimmed paths below)
     report(25)
