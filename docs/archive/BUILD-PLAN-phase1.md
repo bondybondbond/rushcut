@@ -17,21 +17,25 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 ---
 
 ## Batch 0 — Pipeline Spike (local, no infra) ✅ DONE
+
 *Goal: Confirm FFmpeg produces a watchable output from real DJI footage BEFORE touching Next.js. ~2 hours. Highest-risk unknown — fail fast.*
 *Completed 2026-03-15. Deviations: `xfade=crossfade` not implemented in FFmpeg 8 — use `fade`. Scale must go inside filter_complex. Output → `C:\clips\processed\`. See LEARNINGS.md.*
 
 ### Steps
 
 1. [x] **Install FFmpeg locally**
+   
    - Windows: `winget install ffmpeg` or download static build from https://www.gyan.dev/ffmpeg/builds/
    - Verify: `ffmpeg -version`
 
 2. [x] **Write `spike/render.py`** — bare-bones script, no Lambda wiring
+   
    ```python
    # spike/render.py
    # Usage: python render.py clip1.mp4 clip2.mp4 clip3.mp4
    # Output: spike/output_draft.mp4
    ```
+   
    Steps to run inline:
    a. Normalise each input clip → H.264/AAC/25fps/1080p (resolves DJI H.265 / GoPro H.264 mismatch)
    b. `silencedetect` pass on each normalised clip — print detected silent ranges
@@ -40,10 +44,12 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    e. Output `spike/output_draft.mp4` at 360p, CRF 35, fast preset
 
 3. [x] **Run against 3 real DJI clips**
+   
    - `python spike/render.py DJI_001.MP4 DJI_002.MP4 DJI_003.MP4`
    - Open output in VLC or browser
 
 4. [x] **Verification gate**
+   
    - Output plays without codec errors
    - xfade crossfade visible at join points
    - No audio sync drift
@@ -54,12 +60,14 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 ---
 
 ## Batch 1 — Environment Setup & Project Scaffold ✅ DONE (skeleton UI + copy/flow)
+
 *Goal: Working dev environment, running Next.js app, verified tooling.*
 *Completed 2026-03-15. Deviations from plan: (1) Flow changed to draft-first — Upload CTA goes direct to Preview, Configure demoted to optional drawer reachable from Preview only. (2) StepIndicator trimmed to 3 steps: Upload / Preview / Download (Configure removed as mandatory step). (3) Copy locked and iterated in-session — final copy differs from original plan placeholders. (4) Download page has explicit STATE A (processing, default) / STATE B (ready) structure with own H1 per state, ready for Batch 2 conditional wiring.*
 
 ### Steps
 
 1. **Verify & install remaining prerequisites**
+   
    - Confirm Node ≥ 20 (`node -v`)
    - Install pnpm globally (`npm i -g pnpm`)
    - Install Docker Desktop (required for FFmpeg Lambda container local testing)
@@ -67,15 +75,18 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - FFmpeg already installed from Batch 0 ✓
 
 2. **Scaffold Next.js app**
+   
    - `pnpm create next-app@latest rushcut --typescript --tailwind --app --src-dir --import-alias "@/*"`
    - `pnpm dlx shadcn@latest init` — select **dark** theme, neutral base
    - Install core deps:
+     
      ```
      pnpm add @supabase/supabase-js @aws-sdk/client-s3 lucide-react zod react-hook-form @hookform/resolvers @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities
      ```
    - **dnd-kit only** — do not use react-beautiful-dnd (deprecated, React 18+ issues)
 
 3. **Project structure** (upload and configure are separate pages — not merged)
+   
    ```
    src/
      app/
@@ -98,6 +109,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    ```
 
 4. **Skeleton UI pages** — dark layout, no logic, navigable
+   
    - Landing: headline ("From your rushes to a cut. In minutes."), single CTA
    - Upload: drag-and-drop zone + clip list placeholder, "Continue →" button
    - Configure: 4 panels (order/reorder, transitions, music, intro+end card), "Make my film →" button
@@ -107,6 +119,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - Step indicator across all pages: Upload → Configure → Preview → Download
 
 5. **Verification**
+   
    - `pnpm dev` runs without errors
    - All 5 pages render and are navigable
    - `pnpm tsc --noEmit` passes
@@ -114,14 +127,17 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 ---
 
 ## Batch 2 — Upload & Storage ✅ DONE
+
 *Goal: User can drag-drop clips → land in Cloudflare R2 → Supabase records clips with duration metadata.*
 *Completed 2026-03-15. Deviations: (1) Client-side guard is per-file 1GB (not total) — consistent with presign validation. (2) Probe skipped on Vercel Hobby (ffprobe binary ~70MB > 50MB limit) — `probe_skipped` flag used; Lambda will backfill metadata in Batch 4. (3) `next.config.ts` required `serverExternalPackages: ['@ffprobe-installer/ffprobe']` — Turbopack can't bundle the package's README.md. (4) Supabase `jobs` table created ahead of schedule (needed for Batch 2 CTA → `/preview/[jobId]`).*
 
 ### Steps
 
 1. **Supabase setup**
+   
    - Create project at supabase.com (free tier)
    - Schema:
+     
      ```sql
      projects (
        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -145,18 +161,21 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - `src/lib/supabase.ts`: browser client + server client (service role for all API routes in PoC)
 
 2. **Cloudflare R2 setup**
+   
    - Create R2 bucket `rushcut-uploads` (private)
    - Create R2 API token with Object Read & Write
    - `.env.local`: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT`
    - `src/lib/r2.ts`: S3 client wrapper — `getPresignedPutUrl()`, `getPresignedGetUrl()`, `deleteObject()`
 
 3. **Upload API route** (`/api/upload/presign/route.ts`)
+   
    - Validates: filename, size ≤ 1GB per file, type (`video/mp4`, `video/quicktime`, `video/x-msvideo`, `video/x-matroska`)
    - Creates `project` row on first clip of a session (project ID stored in client `localStorage`)
    - Creates `clip` row (duration_ms/width/height/fps NULL until probe runs)
    - Returns: `{ uploadUrl, clipId, projectId }`
 
 4. **UploadZone component**
+   
    - Drag-and-drop + click-to-browse (`accept="video/*"`)
    - Client-side guard: max 10 clips, 1GB total across all clips
    - Per clip: validate type + size → presign → PUT directly to R2 (no server proxy)
@@ -164,9 +183,11 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - On complete: call `/api/clips/probe` with `clipId`
 
 5. **Clip probe route** (`/api/clips/probe/route.ts`) — **critical gap fix**
+   
    - Receives `clipId`
    - Fetches clip's R2 key → generates presigned GET URL
    - Runs `ffprobe` (Node child_process) against the R2 URL directly:
+     
      ```
      ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of json <presigned_url>
      ```
@@ -175,11 +196,13 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - **Catches corrupt/unreadable files early** — surface error to user before Lambda ever runs
 
 6. **ClipList component**
+   
    - Shows each clip: filename, duration (from probe), resolution badge, delete button
    - Drag-to-reorder via `@dnd-kit/sortable` — persists order to Supabase `clips."order"`
    - "Continue to configure →" enabled once ≥ 1 clip uploaded and all probes complete
 
 7. **Verification**
+   
    - Upload 3 test clips → confirm objects in R2 dashboard
    - Probe runs → `clips` rows show `duration_ms`, `width`, `height`, `fps`
    - Drag reorder persists (refresh page → order maintained)
@@ -188,12 +211,14 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 ---
 
 ## Batch 3 — FFmpeg Pipeline (Docker) ✅ DONE
+
 *Goal: Full Lambda-ready pipeline works end-to-end in Docker with real DJI footage.*
 *Completed 2026-03-18. Deviations: (1) Docker/WSL not available on machine — pipeline tested directly via local Python + FFmpeg (same logic, proven end-to-end on 3 DJI clips → draft.mp4). Docker build deferred to start of Batch 4 after WSL restart. (2) `supabase-py` excluded from requirements.txt — Supabase REST called directly via `requests` to avoid import weight. (3) `utils.py` added as shared module for FFMPEG/FFPROBE paths + helpers. (4) FFMPEG_BIN/FFPROBE_BIN env vars added to utils.py for local testing without Docker. (5) Audio: acrossfade 2-clip only, concat n>2 — spike's pairwise acrossfade pattern replaced. (6) Loudnorm timeout guard added (LAMBDA_TIMEOUT_BUFFER_S=30). (7) -map 0:a:0? used instead of -map 0:a? to avoid DJI multi-audio-stream issue.*
 
 ### Steps
 
 1. **Lambda container scaffold**
+   
    ```
    lambda/
      Dockerfile
@@ -214,9 +239,11 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    ```
 
 2. **FFmpeg binary — pinned version**
+   
    - **Pin to `ffmpeg-release-6.1-amd64-static`** (xfade filter stable since 4.3; pin prevents silent breakage on Docker rebuild)
    - ARM64 build for Lambda: `ffmpeg-release-arm64-static` (same version)
    - Dockerfile excerpt:
+     
      ```dockerfile
      FROM public.ecr.aws/lambda/python:3.12
      ARG FFMPEG_VERSION=6.1
@@ -225,6 +252,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
      ```
 
 3. **Pipeline implementation (in execution order)**
+   
    - `normalise.py` — transcode all clips → H.264/AAC/25fps/1080p. **Must run first** — prevents xfade codec mismatch (DEC-006). Accepts DJI H.265, GoPro H.264, iPhone HEVC.
    - `detect.py` — `silencedetect` filter + motion vector frame diff → returns `{clip_id, trim_start_ms, trim_end_ms}[]`
    - `trim.py` — apply detected or user-specified in/out points via `-ss` / `-to`
@@ -236,10 +264,12 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - `render.py` — orchestrates all above; accepts job JSON from `handler.py`
 
 4. **Draft vs final modes**
+   
    - Draft: `-vf scale=-2:360` CRF 35 `-preset ultrafast` — ~30–60s per 3 clips, browser playable
    - Final: `-vf scale=-2:1080` CRF 22 `-preset slow` — full quality for download
 
 5. **Local Docker test**
+   
    ```bash
    docker build -t rushcut-lambda ./lambda
    docker run --rm \
@@ -252,6 +282,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    ```
 
 6. **Verification**
+   
    - Docker build succeeds, ffmpeg 6.1 confirmed (`ffmpeg -version` in container)
    - 360p draft plays in browser from 3 DJI clips
    - Crossfade visible at joins, no codec errors
@@ -261,18 +292,21 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 ---
 
 ## Batch 4 — AWS Lambda Deploy & Job Queue ✅ DONE
+
 *Goal: Next.js triggers Lambda, polls job status, plays draft in browser, downloads final.*
 *Completed 2026-03-19. Deviations: (1) Docker Desktop v4.65.0 broken on Windows — `dockerInference` Unix socket bug; bypassed by installing Docker Engine natively in WSL2 Ubuntu-24.04. (2) Image built with `--platform linux/arm64 --provenance=false` to produce Lambda-compatible single-arch manifest (manifest list rejected by Lambda). (3) AWS CLI installed via winget; IAM role created via CloudShell (rushcut-cli lacked iam:CreateRole). (4) End-to-end test passed: 3 DJI clips → draft_ready in 66s.*
 
 ### Steps
 
 1. **AWS setup**
+   
    - Create ECR private repo `rushcut-lambda` in chosen region (e.g. `eu-west-2`)
    - Lambda function config: 3 GB RAM, 15min timeout, **ARM64** architecture
    - IAM execution role: `AWSLambdaBasicExecutionRole` + inline policy for R2 (S3-compatible PutObject, GetObject on `rushcut-uploads/*`)
    - `.env.local`: `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `LAMBDA_FUNCTION_NAME`
 
 2. **Build & push ARM64 container**
+   
    ```bash
    docker buildx build --platform linux/arm64 -t rushcut-lambda ./lambda
    aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_URI
@@ -282,6 +316,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    ```
 
 3. **Supabase `jobs` table**
+   
    ```sql
    jobs (
      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -296,14 +331,17 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
      updated_at TIMESTAMPTZ DEFAULT now()
    )
    ```
+   
    - Lambda writes status updates via Supabase REST API (service role key in Lambda env vars)
 
 4. **Next.js API routes**
+   
    - `POST /api/jobs/create` — inserts job row, invokes Lambda async (`InvocationType: Event`), returns `jobId`
    - `GET /api/jobs/[jobId]/status` — reads job row, returns `{ status, draftUrl?, finalUrl? }` (presigned GET URLs generated on demand when keys are present)
    - `POST /api/jobs/[jobId]/finalise` — creates new job row for `mode: final`, invokes Lambda async
 
 5. **Preview page polling — with hard timeout**
+   
    - Poll `GET /api/jobs/[jobId]/status` every 3s
    - **Hard cap: max 20 polls (60s total)**
    - Progress labels: "Normalising clips…" → "Detecting silence…" → "Assembling film…" → "Draft ready ✓"
@@ -312,6 +350,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - **On timeout (20 polls exhausted, still `processing`):** show "Still working — this can take up to 5 minutes for longer clips. [Refresh status]" with manual refresh button (does not auto-poll further)
 
 6. **"Does this feel right?" confirm panel**
+   
    - Three options visible after draft plays:
      - "Looks great → Export full quality" → triggers finalise
      - "Respin this clip" → highlights clip strip, triggers single-clip re-cut (deferred to Batch 5)
@@ -320,6 +359,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
    - On `final_ready`: show download button (presigned GET, 24h expiry)
 
 7. **Verification**
+   
    - Upload 3 DJI clips → configure → trigger draft → draft 360p plays in browser
    - Confirm → final 1080p downloads and plays in VLC
    - Lambda CloudWatch logs show each pipeline step
@@ -328,10 +368,12 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 ---
 
 ## Batch 5 — End-to-End Polish & Self-Validation ✅ DONE
+
 *Goal: Author produces one real YouTube video using RushCut. Phase 1 gateway cleared.*
 *E2E confirmed 2026-03-22: 3 DJI clips uploaded → editor → render → film watched. Outro card timing fixed (3s confirmed). Progress bar smoothing confirmed.*
 
 ### Deviations from original plan
+
 - Music schema pivoted: `music_track: string | null` → `music_mood: 'none'|'cinematic'|'upbeat'|'chill'|'electronic'` — enables Phase 2 commercial API (Loudly/Soundraw) without migration
 - Music picker guarded by `NEXT_PUBLIC_MUSIC_ENABLED` flag (default false) — renders "Coming soon" until MP3s are in Lambda and flag is set
 - Respin single clip deferred to Phase 2 (Lambda complexity too high for Phase 1 gate)
@@ -340,6 +382,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 - `params` in Next.js 15 client pages must be unwrapped with `React.use()` — fixed in configure page
 
 ### Code completed ✅
+
 1. **Configure panel** — full state + all controls wired (transition, music mood, silence/zoom toggles, intro/end card with text + 3-color swatch)
 2. **Configure → job create flow** — CTA POSTs config to `/api/jobs/create`, navigates to `/preview/[jobId]`
 3. **`/api/jobs/create`** — accepts and persists `config: JobConfig` JSONB
@@ -347,7 +390,9 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 5. **Lambda** — `music_mood` → filename mapping in `render.py`
 
 ### Remaining manual steps ⬜
+
 1. **R2 CORS** (Cloudflare Dashboard → R2 → `rushcut-uploads` → Settings → CORS Policy):
+   
    ```json
    [{"AllowedOrigins":["http://localhost:3000","http://localhost:3001","https://*.vercel.app"],"AllowedMethods":["GET","PUT","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":3000}]
    ```
@@ -364,6 +409,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 ## Critical Files (to be created)
 
 **Next.js app**
+
 - `src/app/page.tsx`
 - `src/app/upload/page.tsx`
 - `src/app/configure/[projectId]/page.tsx`  ← split from upload
@@ -382,6 +428,7 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 - `src/types/project.ts`
 
 **Lambda**
+
 - `lambda/Dockerfile`                        ← ffmpeg 6.1 pinned
 - `lambda/requirements.txt`
 - `lambda/handler.py`
@@ -396,23 +443,24 @@ RushCut is a web-first video compiler targeting the Windows desktop gap DJI Ligh
 - `lambda/pipeline/render.py`
 
 **Spike (pre-Batch 1, throwaway)**
+
 - `spike/render.py`
 
 ---
 
 ## Decisions Locked In This Plan
 
-| # | Decision | Rationale |
-|---|----------|-----------|
-| D1 | Batch 0 pipeline spike before any frontend | Highest-risk unknown; 2 hours to validate before building around it |
-| D2 | Upload and Configure are separate pages | Cleaner navigation, easier "back" from preview, honours PRD flow |
-| D3 | FFmpeg pinned to 6.1 static | xfade stable since 4.3; prevents silent breakage on future Docker rebuilds |
-| D4 | dnd-kit only (no react-beautiful-dnd) | react-beautiful-dnd is abandoned with React 18+ issues |
-| D5 | `/api/clips/probe` runs ffprobe post-upload | Catches corrupt files early; populates duration/resolution for UX |
-| D6 | Polling hard cap: 20 polls / 60s then manual refresh | Prevents infinite spinner on silent Lambda failure |
-| D7 | No export cap (unlimited) | PRD v0.6 removed 3/month limit; do not build enforcement for removed feature |
-| D8 | Schema has `user_id UUID NULL` now | Avoids Phase 2 migration when Supabase Auth is added; no RLS in PoC |
-| D9 | Respin single clip: attempt in Batch 5, defer to Phase 2 if too complex | PRD "Director, not Editor" principle requires it; but don't block Phase 1 gate on it |
+| #   | Decision                                                                | Rationale                                                                            |
+| --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| D1  | Batch 0 pipeline spike before any frontend                              | Highest-risk unknown; 2 hours to validate before building around it                  |
+| D2  | Upload and Configure are separate pages                                 | Cleaner navigation, easier "back" from preview, honours PRD flow                     |
+| D3  | FFmpeg pinned to 6.1 static                                             | xfade stable since 4.3; prevents silent breakage on future Docker rebuilds           |
+| D4  | dnd-kit only (no react-beautiful-dnd)                                   | react-beautiful-dnd is abandoned with React 18+ issues                               |
+| D5  | `/api/clips/probe` runs ffprobe post-upload                             | Catches corrupt files early; populates duration/resolution for UX                    |
+| D6  | Polling hard cap: 20 polls / 60s then manual refresh                    | Prevents infinite spinner on silent Lambda failure                                   |
+| D7  | No export cap (unlimited)                                               | PRD v0.6 removed 3/month limit; do not build enforcement for removed feature         |
+| D8  | Schema has `user_id UUID NULL` now                                      | Avoids Phase 2 migration when Supabase Auth is added; no RLS in PoC                  |
+| D9  | Respin single clip: attempt in Batch 5, defer to Phase 2 if too complex | PRD "Director, not Editor" principle requires it; but don't block Phase 1 gate on it |
 
 ---
 

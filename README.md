@@ -41,13 +41,13 @@ rushcut/
 
 ## Tech stack (summary)
 
-| Layer | Tool |
-|---|---|
-| Frontend | Next.js (App Router) + Tailwind + shadcn/ui |
-| Auth + DB | Supabase |
-| File storage | Cloudflare R2 |
-| Video processing | FFmpeg on AWS Lambda (containerised) |
-| Payments | Stripe |
+| Layer            | Tool                                        |
+| ---------------- | ------------------------------------------- |
+| Frontend         | Next.js (App Router) + Tailwind + shadcn/ui |
+| Auth + DB        | Supabase                                    |
+| File storage     | Cloudflare R2                               |
+| Video processing | FFmpeg on AWS Lambda (containerised)        |
+| Payments         | Stripe                                      |
 
 Full stack rationale in `docs/ARCHITECTURE.md`.
 

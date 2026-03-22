@@ -27,11 +27,13 @@ Hobbyist videographers (DJI drone, GoPro, iPhone) who want to produce shareable 
 - **CapCut, Filmora, Kapwing:** AI-obsessed UX, watermarks on free tiers, expensive for casual use, bloated with features most users never touch.
 
 **The real gap — validated by founder's own experience:**
+
 > DJI LightCut's "auto-film" UX is the gold standard — but it's mobile-only and editorially shallow. DaVinci gives full control but costs hours. Nothing in between gives you *direction power* (tell it what kind of film you want, get a solid first draft) without forcing you into micro-managing every 2-second clip.
 
 **The bet:** A focused web tool that does *one job exceptionally* — compile your clips into a watchable film with good transitions, music, and structure — and lets you tweak the result, not rebuild it from scratch. No AI gimmicks. No watermarks. No bloat.
 
 **Why web-first matters for this audience:**
+
 - DJI drone users are predominantly Windows desktop users who transfer footage via cable/SD card
 - Workflow is: film → import to PC → edit → export. Mobile editing is a friction point, not a feature
 - DJI's own failure to ship a Windows LightCut version despite years of demand = validated unserved market
@@ -40,22 +42,24 @@ Hobbyist videographers (DJI drone, GoPro, iPhone) who want to produce shareable 
 
 ## 2. Target User
 
-| Attribute | Description |
-|---|---|
-| **Primary** | Hobbyist action/drone/travel videographers |
-| **Device** | Shoots on DJI drone, GoPro, iPhone — transfers to Windows PC |
-| **Destination** | YouTube (family/friends), Instagram, personal archive |
-| **Core pain** | The gap between "I want a shareable film" and "I just spent 3 hours in DaVinci on a 3-min clip" |
-| **Current workaround** | Either tolerating mobile-only tools (LightCut) or suffering through timeline editors (DaVinci, Resolve) |
-| **What they want** | *Direction power* — tell the tool the vibe, get a solid first draft, tweak only what matters |
-| **What they don't want** | Timeline micro-management, AI gimmicks, watermarks, subscriptions for features they never use |
-| **Willingness to pay** | £4–8/mo to reclaim 2+ hours per video — or more honestly, to *want to edit at all* |
-| **Tech comfort** | Beginner–intermediate; has used Clipchamp but found it still too manual |
+| Attribute                | Description                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------- |
+| **Primary**              | Hobbyist action/drone/travel videographers                                                              |
+| **Device**               | Shoots on DJI drone, GoPro, iPhone — transfers to Windows PC                                            |
+| **Destination**          | YouTube (family/friends), Instagram, personal archive                                                   |
+| **Core pain**            | The gap between "I want a shareable film" and "I just spent 3 hours in DaVinci on a 3-min clip"         |
+| **Current workaround**   | Either tolerating mobile-only tools (LightCut) or suffering through timeline editors (DaVinci, Resolve) |
+| **What they want**       | *Direction power* — tell the tool the vibe, get a solid first draft, tweak only what matters            |
+| **What they don't want** | Timeline micro-management, AI gimmicks, watermarks, subscriptions for features they never use           |
+| **Willingness to pay**   | £4–8/mo to reclaim 2+ hours per video — or more honestly, to *want to edit at all*                      |
+| **Tech comfort**         | Beginner–intermediate; has used Clipchamp but found it still too manual                                 |
 
 **User quote (founder, validated):**
+
 > *"I use DaVinci Resolve but spend hours on each 3-min clip I produce for YouTube to show family — it makes little sense. If I could genuinely help people avoid that, they could focus on the fun part — making video."*
 
 **Real footage baseline (founder's own DJI session):**
+
 - 62 clips, 19.6GB total, largest single clip = 1.4GB (4K 30fps, 3 min duration)
 - This validates the 2GB per-file limit and the need for aggressive post-render R2 cleanup
 
@@ -84,6 +88,7 @@ The magic of feeling like a director must never be lost. What gets outsourced is
 RushCut does not simply aggregate clips and splice them together. Any timeline editor (DaVinci, Clipchamp) can do that — it still requires hours of manual work. The product value is **moment extraction**: finding the best 3–15 seconds within each clip, discarding the dead parts (landing shots, walking to subject, camera shake, silence, static frames), and keeping only the peak moment.
 
 From 62 raw clips:
+
 - Perhaps 50 contribute something worth keeping
 - Each contributes 3–15 seconds of their best moment (not the whole clip)
 - Output: a 3–6 minute film of ~50 micro-cuts, music-synced, with transitions
@@ -99,22 +104,23 @@ From 62 raw clips:
 
 This is the core technical decision — knowing which features require AI vs. can run on pure FFmpeg determines tier gating and cost.
 
-| Feature | Needs AI? | How |
-|---|---|---|
-| **Silence/stillness removal** | ❌ No | FFmpeg `silencedetect` + frame-diff motion score — pure signal processing |
-| **Auto-add transitions** (crossfade, dip to black) | ❌ No | FFmpeg `xfade` filter — applied at every clip join point automatically |
-| **Auto-fit music to video duration** | ❌ No | FFmpeg cuts/fades audio track to exact output duration |
-| **Beat-sync music cutting** | ❌ No | `librosa` open-source Python — free, included on free tier |
-| **Zoom effect (generic, centre-frame)** | ❌ No | FFmpeg `zoompan` filter — auto-applied at clip midpoints |
-| **Zoom on faces / people** | ✅ Yes | Requires face detection (e.g. Google Vision API or OpenCV) |
-| **Zoom on key action moments** | ✅ Yes | Requires motion + scene scoring (Google Video Intelligence API) |
-| **Moment extraction** (best 3–15s within each clip) | ✅ Yes (full) / ❌ Partial | FFmpeg frame-diff removes dead sections (free); GVI identifies peak moments within clips (paid) |
-| **Context-aware ordering** ("start at flight, then hotel...") | ⚠️ Free (basic) | Gemini 2.0 Flash ~$0.001/export — included on free tier |
-| **Boring clip filtering** | ❌ No (basic) | FFmpeg frame-diff motion score — free tier; Google Video Intelligence = paid upgrade |
-| **Stabilisation** | ✅ Yes (or FFmpeg vidstab) | `ffmpeg-vidstab` plugin = no AI, but compute-heavy → paid tier |
-| **Volume normalisation** | ❌ No | FFmpeg `loudnorm` filter — free |
+| Feature                                                       | Needs AI?                 | How                                                                                             |
+| ------------------------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
+| **Silence/stillness removal**                                 | ❌ No                      | FFmpeg `silencedetect` + frame-diff motion score — pure signal processing                       |
+| **Auto-add transitions** (crossfade, dip to black)            | ❌ No                      | FFmpeg `xfade` filter — applied at every clip join point automatically                          |
+| **Auto-fit music to video duration**                          | ❌ No                      | FFmpeg cuts/fades audio track to exact output duration                                          |
+| **Beat-sync music cutting**                                   | ❌ No                      | `librosa` open-source Python — free, included on free tier                                      |
+| **Zoom effect (generic, centre-frame)**                       | ❌ No                      | FFmpeg `zoompan` filter — auto-applied at clip midpoints                                        |
+| **Zoom on faces / people**                                    | ✅ Yes                     | Requires face detection (e.g. Google Vision API or OpenCV)                                      |
+| **Zoom on key action moments**                                | ✅ Yes                     | Requires motion + scene scoring (Google Video Intelligence API)                                 |
+| **Moment extraction** (best 3–15s within each clip)           | ✅ Yes (full) / ❌ Partial  | FFmpeg frame-diff removes dead sections (free); GVI identifies peak moments within clips (paid) |
+| **Context-aware ordering** ("start at flight, then hotel...") | ⚠️ Free (basic)           | Gemini 2.0 Flash ~$0.001/export — included on free tier                                         |
+| **Boring clip filtering**                                     | ❌ No (basic)              | FFmpeg frame-diff motion score — free tier; Google Video Intelligence = paid upgrade            |
+| **Stabilisation**                                             | ✅ Yes (or FFmpeg vidstab) | `ffmpeg-vidstab` plugin = no AI, but compute-heavy → paid tier                                  |
+| **Volume normalisation**                                      | ❌ No                      | FFmpeg `loudnorm` filter — free                                                                 |
 
 **Summary rule:**
+
 - 🆓 Free tier: FFmpeg + librosa + Gemini Flash. Silence/stillness removal + basic moment extraction (dead section removal) + crossfade transitions + beat-sync music + generic centre-zoom + context prompt — near-zero AI cost (~$0.001/export)
 - 💰 Paid AI tier: Full moment extraction (GVI frame-level peak detection), smart zoom, face detection, stabilisation, licensed music, 4K export
 
@@ -192,22 +198,26 @@ SCREEN 4 — DOWNLOAD  (/download/[jobId])
 > ✅ **Confirmed:** Download retention is 30 days in library (not 24-hour link). See DEC-015.
 
 ### Why a draft-then-confirm step?
+
 - Avoids wasting a full 4K render on a version the user rejects
 - Gives the user editorial control without forcing them into a full timeline editor
 - Proxy draft is fast (low-res, server-rendered at 360p) — full render only on confirmation
 - Zoom/music adjustments are applied to final confirmed version, not draft
 
 ### Re-render cost control (two-tier model)
+
 See DEC-013. Changes after first draft are split:
+
 - **Cheap (no re-render):** Music swap, title card text, style label — metadata only
 - **Expensive (re-render):** Clip reorder, transition change, trim changes — alters video timeline
-Free tier: 1 included re-render per project.
+  Free tier: 1 included re-render per project.
 
 ---
 
 ## 6. Feature Scope
 
 ### v1 — Free Tier (PoC)
+
 - [ ] Unlimited projects
 - [ ] Up to 20 clips per project (**always 20 — never write 10 anywhere**)
 - [ ] **Hard cap: 2GB per file, 10GB per project total** (enforced pre-upload — validated against real DJI 4K footage at 1.4GB/clip)
@@ -231,6 +241,7 @@ Free tier: 1 included re-render per project.
 - [ ] **Target output length: default 3 mins** — see SD-007
 
 ### v2 — Paid Creator Tier (£4.99/mo or £39.99/yr)
+
 - [ ] Up to 50 clips per project
 - [ ] **Hard cap: 4GB per file, 20GB per project total**
 - [ ] **Fair usage: max 5 final exports per month** (see Section 8 — real economics after Stripe + VAT)
@@ -248,6 +259,7 @@ Free tier: 1 included re-render per project.
 - [ ] **Target output length: user-selectable** (3 min / 5 min / 10 min / 15 min) — see SD-007
 
 ### Permanently Out of Scope
+
 - AI video generation (text-to-video)
 - Multi-track timeline editor
 - Colour grading
@@ -259,27 +271,29 @@ Free tier: 1 included re-render per project.
 ## 7. Technical Architecture
 
 ### Stack
-| Layer | Tool | Rationale |
-|---|---|---|
-| Frontend | Next.js (App Router) | Fast, Vercel-deployable |
-| UI | Tailwind + shadcn/ui | Rapid prototyping — responsive by default; "best on desktop" banner shown on mobile; no special mobile flow at MVP |
-| Auth + DB | Supabase | Free tier covers PoC |
-| File storage | Cloudflare R2 | Zero egress fees — critical for large video files |
-| Proxy preview | FFmpeg (server-side 360p Lambda, separate low-memory job) | Real FFmpeg output at low res — not client blob stitching |
-| Full render | FFmpeg on AWS Lambda (containerised) | Serverless, scales to zero, pay-per-export |
-| Silence detection | FFmpeg `silencedetect` | Free, no AI |
-| Stillness detection | FFmpeg frame diff (Python script) | Free, no AI |
-| Transitions | FFmpeg `xfade` | Free, no AI |
-| Music fit | FFmpeg audio trim + fade | Free, no AI |
-| Beat-sync | `librosa` Python (Lambda) | Free, open-source |
-| Zoom (generic) | FFmpeg `zoompan` | Free, no AI |
-| Zoom (smart, faces) | OpenCV or Google Vision API | AI — paid tier only |
-| Scene scoring + moment extraction | Google Video Intelligence API | AI — paid tier only; hard-capped at 5 min/export |
-| Context prompt | Gemini 2.0 Flash | AI — free tier (basic vibe prompt / defaults only) |
-| Stabilisation | `ffmpeg-vidstab` plugin | Compute-heavy — paid tier only |
-| Payments | Stripe | Standard |
+
+| Layer                             | Tool                                                      | Rationale                                                                                                          |
+| --------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Frontend                          | Next.js (App Router)                                      | Fast, Vercel-deployable                                                                                            |
+| UI                                | Tailwind + shadcn/ui                                      | Rapid prototyping — responsive by default; "best on desktop" banner shown on mobile; no special mobile flow at MVP |
+| Auth + DB                         | Supabase                                                  | Free tier covers PoC                                                                                               |
+| File storage                      | Cloudflare R2                                             | Zero egress fees — critical for large video files                                                                  |
+| Proxy preview                     | FFmpeg (server-side 360p Lambda, separate low-memory job) | Real FFmpeg output at low res — not client blob stitching                                                          |
+| Full render                       | FFmpeg on AWS Lambda (containerised)                      | Serverless, scales to zero, pay-per-export                                                                         |
+| Silence detection                 | FFmpeg `silencedetect`                                    | Free, no AI                                                                                                        |
+| Stillness detection               | FFmpeg frame diff (Python script)                         | Free, no AI                                                                                                        |
+| Transitions                       | FFmpeg `xfade`                                            | Free, no AI                                                                                                        |
+| Music fit                         | FFmpeg audio trim + fade                                  | Free, no AI                                                                                                        |
+| Beat-sync                         | `librosa` Python (Lambda)                                 | Free, open-source                                                                                                  |
+| Zoom (generic)                    | FFmpeg `zoompan`                                          | Free, no AI                                                                                                        |
+| Zoom (smart, faces)               | OpenCV or Google Vision API                               | AI — paid tier only                                                                                                |
+| Scene scoring + moment extraction | Google Video Intelligence API                             | AI — paid tier only; hard-capped at 5 min/export                                                                   |
+| Context prompt                    | Gemini 2.0 Flash                                          | AI — free tier (basic vibe prompt / defaults only)                                                                 |
+| Stabilisation                     | `ffmpeg-vidstab` plugin                                   | Compute-heavy — paid tier only                                                                                     |
+| Payments                          | Stripe                                                    | Standard                                                                                                           |
 
 ### Export Pipeline
+
 ```
 User confirms draft
   → API triggers AWS Lambda (FFmpeg container)
@@ -290,6 +304,7 @@ User confirms draft
 ```
 
 ### R2 Storage Lifecycle (Batch 4 — implement with Lambda)
+
 ```
 Upload complete    → raw clips in R2
 Lambda finishes    → DELETE raw clips immediately (do not wait for user action)
@@ -298,6 +313,7 @@ User confirms      → final 1080p written to R2
 User downloads     → raw clips already gone; final file persists 30 days
 30 days elapsed    → daily cleanup job deletes final file
 ```
+
 > **Why aggressive cleanup?** R2 free tier is 10GB live storage (not monthly allowance — it is live disk usage at any moment). 20 concurrent users each uploading 5GB would exceed free tier. Deleting raw clips post-render keeps live storage near zero at all times.
 
 ---
@@ -308,19 +324,19 @@ User downloads     → raw clips already gone; final file persists 30 days
 
 The £4.99 headline price is not what lands in the bank. Real budget per paying user:
 
-| Scenario | Gross | Stripe fee (1.5% + 25p) | Net to bank |
-|---|---|---|---|
-| Pre-VAT registration | £4.99 | £0.325 | **£4.665** |
-| VAT registered (£4.99 inc VAT) | £4.165 net | £0.312 | **£3.853** |
+| Scenario                       | Gross      | Stripe fee (1.5% + 25p) | Net to bank |
+| ------------------------------ | ---------- | ----------------------- | ----------- |
+| Pre-VAT registration           | £4.99      | £0.325                  | **£4.665**  |
+| VAT registered (£4.99 inc VAT) | £4.165 net | £0.312                  | **£3.853**  |
 
 > **VAT registration threshold (UK):** £90,000 turnover. At £4.99/mo, that's ~18,000 subscribers before mandatory VAT registration. Pre-registration, £4.665 is the real budget. Post-registration, £3.853. Plan for the lower figure from day one.
 
 ### File Size Hard Caps
 
-| Tier | Max per file | Max per project | Max exports/month |
-|---|---|---|---|
-| Free | 2GB | 10GB | Unlimited |
-| Paid Creator | 4GB | 20GB | **5 (fair usage)** |
+| Tier         | Max per file | Max per project | Max exports/month  |
+| ------------ | ------------ | --------------- | ------------------ |
+| Free         | 2GB          | 10GB            | Unlimited          |
+| Paid Creator | 4GB          | 20GB            | **5 (fair usage)** |
 
 > **Why 2GB per file?** Validated against real DJI footage: 4K 30fps clips at 3 min duration reach 1.4GB. The previous 500MB/1GB cap was too restrictive for the actual target user.
 
@@ -328,13 +344,13 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 ### Cloudflare R2 Pricing Reference
 
-| Monthly live storage | Cost |
-|---|---|
-| Under 10GB | Free |
-| 50GB | ~$0.60/mo |
-| 100GB | ~$1.35/mo |
-| 500GB | ~$7.35/mo |
-| 1TB | ~$14.85/mo |
+| Monthly live storage | Cost       |
+| -------------------- | ---------- |
+| Under 10GB           | Free       |
+| 50GB                 | ~$0.60/mo  |
+| 100GB                | ~$1.35/mo  |
+| 500GB                | ~$7.35/mo  |
+| 1TB                  | ~$14.85/mo |
 
 > Pricing: $0.015/GB over the free 10GB. Zero egress fees. Class A ops: 1M free then $4.50/million. Class B ops: 10M free then $0.36/million. At PoC scale (solo dev + early users) cost is effectively $0. At 500GB–1TB you have hundreds of active concurrent users and revenue to cover it.
 
@@ -342,39 +358,39 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 ### Per-Export Cost at 10GB Input
 
-| Component | Free 1080p | Paid 4K + AI (capped) |
-|---|---|---|
-| Lambda FFmpeg (10 min job) | ~$0.060 | ~$0.210 (4K, 3.5× time) |
-| `librosa` beat-sync | ~$0 | ~$0 |
-| Gemini 2.0 Flash (context prompt) | ~$0.001 | ~$0.001 |
-| Basic motion filter (FFmpeg frame-diff) | ~$0 | ~$0 |
-| Lambda vidstab (if used) | $0 | ~$0.025 |
-| R2 storage (30-day retention) | ~$0.0075 | ~$0.015 |
-| Google Video Intelligence (**5 min cap**) | $0 | ~$0.50 |
-| Google Vision face detection (34 clips) | $0 | ~$0.143 |
-| **Total per export (10GB input)** | **~$0.061 (£0.049)** | **~$0.879 (£0.703)** |
+| Component                                 | Free 1080p           | Paid 4K + AI (capped)   |
+| ----------------------------------------- | -------------------- | ----------------------- |
+| Lambda FFmpeg (10 min job)                | ~$0.060              | ~$0.210 (4K, 3.5× time) |
+| `librosa` beat-sync                       | ~$0                  | ~$0                     |
+| Gemini 2.0 Flash (context prompt)         | ~$0.001              | ~$0.001                 |
+| Basic motion filter (FFmpeg frame-diff)   | ~$0                  | ~$0                     |
+| Lambda vidstab (if used)                  | $0                   | ~$0.025                 |
+| R2 storage (30-day retention)             | ~$0.0075             | ~$0.015                 |
+| Google Video Intelligence (**5 min cap**) | $0                   | ~$0.50                  |
+| Google Vision face detection (34 clips)   | $0                   | ~$0.143                 |
+| **Total per export (10GB input)**         | **~$0.061 (£0.049)** | **~$0.879 (£0.703)**    |
 
 > ⚠️ Without the 5 min GVI cap, paid AI cost hits ~$2.38/export (£1.90) on a 10GB project — well over net sub revenue. The cap is **mandatory**.
 
 ### Monthly Fixed Infrastructure
 
-| Service | Free tier | Cost beyond |
-|---|---|---|
-| Vercel | Free (hobby) | $20/mo at scale |
-| Supabase | Free (500MB DB) | $25/mo at 8GB+ |
-| Cloudflare R2 | 10GB live storage free, $0 egress | $0.015/GB after |
-| AWS Lambda | 400,000 GB-s free/mo | $0.0000167/GB-s after |
-| **Total: 0–200 users** | **~$0** | — |
-| **Total: 200–1,000 users** | — | **~$30–80/mo** |
+| Service                    | Free tier                         | Cost beyond           |
+| -------------------------- | --------------------------------- | --------------------- |
+| Vercel                     | Free (hobby)                      | $20/mo at scale       |
+| Supabase                   | Free (500MB DB)                   | $25/mo at 8GB+        |
+| Cloudflare R2              | 10GB live storage free, $0 egress | $0.015/GB after       |
+| AWS Lambda                 | 400,000 GB-s free/mo              | $0.0000167/GB-s after |
+| **Total: 0–200 users**     | **~$0**                           | —                     |
+| **Total: 200–1,000 users** | —                                 | **~$30–80/mo**        |
 
 ---
 
 ## 9. Pricing
 
-| Tier | Price | Clips | Max file | Max project | Resolution | AI Auto-Edit | Exports/mo | Music | Watermark |
-|---|---|---|---|---|---|---|---|---|---|
-| **Free** | £0 | 20 | 2GB | 10GB | 1080p | ✅ Basic (beat-sync, vibe prompt, dead section removal) | Unlimited | ~20 free tracks | ❌ Never |
-| **Creator** | £4.99/mo or £39.99/yr | 50 | 4GB | 20GB | 4K | ✅ Smart (GVI frame-level moment extraction, face/action zoom) | 5/mo | Epidemic Sound | ❌ Never |
+| Tier        | Price                 | Clips | Max file | Max project | Resolution | AI Auto-Edit                                                  | Exports/mo | Music           | Watermark |
+| ----------- | --------------------- | ----- | -------- | ----------- | ---------- | ------------------------------------------------------------- | ---------- | --------------- | --------- |
+| **Free**    | £0                    | 20    | 2GB      | 10GB        | 1080p      | ✅ Basic (beat-sync, vibe prompt, dead section removal)        | Unlimited  | ~20 free tracks | ❌ Never   |
+| **Creator** | £4.99/mo or £39.99/yr | 50    | 4GB      | 20GB        | 4K         | ✅ Smart (GVI frame-level moment extraction, face/action zoom) | 5/mo       | Epidemic Sound  | ❌ Never   |
 
 ---
 
@@ -382,15 +398,15 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 **Clipchamp is the primary competitor to beat** — not CapCut or Filmora. It's pre-installed on every Windows PC, free at 1080p, web-first, and has no watermarks.
 
-| Tool | Web-first | Windows | Auto-compile | Moment Extraction | Watermark | Price |
-|---|---|---|---|---|---|---|
-| **RushCut** | ✅ | ✅ | ✅ | ✅ (paid: GVI) | ❌ Never | £4.99/mo |
-| DJI LightCut | ❌ mobile only | ❌ | ✅ | ⚠️ basic | ❌ | Free |
-| GoPro Quik | ❌ mobile only | ❌ | ✅ | ⚠️ basic | ❌ | Free |
-| Clipchamp | ✅ | ✅ | ❌ | ❌ | ❌ | Free/M365 |
-| Kapwing | ✅ | ✅ | ⚠️ prompt | ❌ | ✅ free tier | $16/mo |
-| CapCut | ⚠️ | ⚠️ | ✅ | ⚠️ | ✅ free tier | £64.99/yr |
-| DaVinci Resolve | ❌ | ✅ | ❌ | ❌ | ❌ | Free/£270 |
+| Tool            | Web-first     | Windows | Auto-compile | Moment Extraction | Watermark   | Price     |
+| --------------- | ------------- | ------- | ------------ | ----------------- | ----------- | --------- |
+| **RushCut**     | ✅             | ✅       | ✅            | ✅ (paid: GVI)     | ❌ Never     | £4.99/mo  |
+| DJI LightCut    | ❌ mobile only | ❌       | ✅            | ⚠️ basic          | ❌           | Free      |
+| GoPro Quik      | ❌ mobile only | ❌       | ✅            | ⚠️ basic          | ❌           | Free      |
+| Clipchamp       | ✅             | ✅       | ❌            | ❌                 | ❌           | Free/M365 |
+| Kapwing         | ✅             | ✅       | ⚠️ prompt    | ❌                 | ✅ free tier | $16/mo    |
+| CapCut          | ⚠️            | ⚠️      | ✅            | ⚠️                | ✅ free tier | £64.99/yr |
+| DaVinci Resolve | ❌             | ✅       | ❌            | ❌                 | ❌           | Free/£270 |
 
 ---
 
@@ -416,6 +432,7 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 > ✅ Gate 2: AI version extracts better moments than FFmpeg-only with no extra user effort?
 
 ### Phase 2 — Validate & Charge
+
 - [ ] Fix top 3 issues from real user feedback
 - [ ] Add Stripe — Creator tier (4K + smart AI)
 - [ ] Implement export counter — enforce 5/month cap, reset on billing cycle
@@ -425,22 +442,22 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 ## 12. Risks & Mitigations
 
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Clipchamp adds auto-compile | Medium | High | Own the action/drone niche and moment extraction framing |
-| DJI ships LightCut for Windows | Low | Very High | Pivot to cross-device mixing (DJI + GoPro + iPhone) |
-| Lambda cold start slows UX | Medium | Medium | Provisioned concurrency for paid tier; progress indicator |
-| Google Video Intelligence cost spikes | Medium | High | Hard cap at 5 min footage scored per export |
-| Paid user hits 5 export limit and churns | Low | Medium | Show counter transparently; offer £1 top-up credits (Phase 2+) |
-| 4K file uploads time out | Medium | Medium | R2 presigned direct upload from browser |
-| Free tier too generous → low conversion | Medium | Medium | 4K wall + project size wall + GVI moment extraction wall are unbypassable |
-| Music licensing dispute | Low | High | Start with Pixabay/ccMixter; Epidemic Sound only after revenue |
-| xfade transitions fail on mixed codecs/fps | High | Medium | Normalise all clips to consistent codec/fps on upload |
-| Director feeling lost if Respin loop is slow | Medium | High | Respin must complete in <10s at 360p |
-| Lambda /tmp overflow on large projects | Medium | High | Process clips sequentially/streamed — never load full project into memory |
-| Unlimited re-renders break unit economics | Medium | High | Two-tier change model (DEC-013) — cheap vs expensive changes |
-| R2 storage overrun from concurrent users | Low | Medium | Delete raw clips immediately post-render; 30-day cleanup job for final files |
-| Output length mismatch — user gets 8 min when they wanted 3 | Medium | Medium | Default to 3 min; surface length control early (see SD-007) |
+| Risk                                                        | Likelihood | Impact    | Mitigation                                                                   |
+| ----------------------------------------------------------- | ---------- | --------- | ---------------------------------------------------------------------------- |
+| Clipchamp adds auto-compile                                 | Medium     | High      | Own the action/drone niche and moment extraction framing                     |
+| DJI ships LightCut for Windows                              | Low        | Very High | Pivot to cross-device mixing (DJI + GoPro + iPhone)                          |
+| Lambda cold start slows UX                                  | Medium     | Medium    | Provisioned concurrency for paid tier; progress indicator                    |
+| Google Video Intelligence cost spikes                       | Medium     | High      | Hard cap at 5 min footage scored per export                                  |
+| Paid user hits 5 export limit and churns                    | Low        | Medium    | Show counter transparently; offer £1 top-up credits (Phase 2+)               |
+| 4K file uploads time out                                    | Medium     | Medium    | R2 presigned direct upload from browser                                      |
+| Free tier too generous → low conversion                     | Medium     | Medium    | 4K wall + project size wall + GVI moment extraction wall are unbypassable    |
+| Music licensing dispute                                     | Low        | High      | Start with Pixabay/ccMixter; Epidemic Sound only after revenue               |
+| xfade transitions fail on mixed codecs/fps                  | High       | Medium    | Normalise all clips to consistent codec/fps on upload                        |
+| Director feeling lost if Respin loop is slow                | Medium     | High      | Respin must complete in <10s at 360p                                         |
+| Lambda /tmp overflow on large projects                      | Medium     | High      | Process clips sequentially/streamed — never load full project into memory    |
+| Unlimited re-renders break unit economics                   | Medium     | High      | Two-tier change model (DEC-013) — cheap vs expensive changes                 |
+| R2 storage overrun from concurrent users                    | Low        | Medium    | Delete raw clips immediately post-render; 30-day cleanup job for final files |
+| Output length mismatch — user gets 8 min when they wanted 3 | Medium     | Medium    | Default to 3 min; surface length control early (see SD-007)                  |
 
 ---
 
@@ -462,15 +479,15 @@ The £4.99 headline price is not what lands in the bank. Real budget per paying 
 
 These need a decision before the relevant batch — flag when approaching each one:
 
-| # | Decision | Needed by | Options |
-|---|---|---|---|
-| **SD-001** | **R2 cleanup trigger** — delete raw clips immediately when Lambda finishes, or only after user confirms draft? | Batch 4 | (a) Delete on Lambda complete — saves storage, user cannot re-render from original; (b) Delete on user confirm — keeps raw clips available for respin but costs more storage |
-| **SD-002** | **30-day retention scope** — does the 30-day library apply to free users or paid only? | Batch 4 | (a) All users authenticated → all get 30 days; (b) Free users get 24h link, paid get 30 days (stronger upgrade incentive) |
-| **SD-003** | **Concurrent user queuing** — what does a user see when the system is busy? | Batch 4 | (a) Show estimated wait time ("~3 mins"); (b) Silent queue, notify when ready; (c) Hard limit concurrent jobs and show "try again later" |
-| **SD-004** | **File size enforcement on paid tier** — 4GB per file cap. Real DJI 4K footage at 3 min = 1.4GB, so this is generous. Revisit if users hit it. | Phase 2 | Monitor usage data before changing |
-| **SD-005** | **Respin scope** — single clip re-cut only, or allow full re-render from respin? | Batch 5 | PRD says single clip only; if Lambda complexity too high, fall back to full re-render as only correction path |
-| **SD-006** | **Auth timing** — PRD says login gate fires at "Make my edit" CTA. Does PoC (no auth) need a placeholder for this gate, or skip entirely? | Batch 2/3 | Currently PoC uses localStorage projectId with no auth — decide when to wire Supabase Auth |
-| **SD-007** | **Target output length** — should users be able to set their desired film duration? | Batch 3 | (a) Fixed default 3 min for all users — simplest, opinionated; (b) Free tier locked to 3 min, paid tier unlocks 5/10/15 min (upgrade incentive); (c) All users get a simple slider (1–15 min) — most flexible but adds UI complexity. Founder baseline: 3 min is right for hobbyist/YouTube. Vloggers needing 15 min are a different user segment. |
+| #          | Decision                                                                                                                                       | Needed by | Options                                                                                                                                                                                                                                                                                                                                            |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **SD-001** | **R2 cleanup trigger** — delete raw clips immediately when Lambda finishes, or only after user confirms draft?                                 | Batch 4   | (a) Delete on Lambda complete — saves storage, user cannot re-render from original; (b) Delete on user confirm — keeps raw clips available for respin but costs more storage                                                                                                                                                                       |
+| **SD-002** | **30-day retention scope** — does the 30-day library apply to free users or paid only?                                                         | Batch 4   | (a) All users authenticated → all get 30 days; (b) Free users get 24h link, paid get 30 days (stronger upgrade incentive)                                                                                                                                                                                                                          |
+| **SD-003** | **Concurrent user queuing** — what does a user see when the system is busy?                                                                    | Batch 4   | (a) Show estimated wait time ("~3 mins"); (b) Silent queue, notify when ready; (c) Hard limit concurrent jobs and show "try again later"                                                                                                                                                                                                           |
+| **SD-004** | **File size enforcement on paid tier** — 4GB per file cap. Real DJI 4K footage at 3 min = 1.4GB, so this is generous. Revisit if users hit it. | Phase 2   | Monitor usage data before changing                                                                                                                                                                                                                                                                                                                 |
+| **SD-005** | **Respin scope** — single clip re-cut only, or allow full re-render from respin?                                                               | Batch 5   | PRD says single clip only; if Lambda complexity too high, fall back to full re-render as only correction path                                                                                                                                                                                                                                      |
+| **SD-006** | **Auth timing** — PRD says login gate fires at "Make my edit" CTA. Does PoC (no auth) need a placeholder for this gate, or skip entirely?      | Batch 2/3 | Currently PoC uses localStorage projectId with no auth — decide when to wire Supabase Auth                                                                                                                                                                                                                                                         |
+| **SD-007** | **Target output length** — should users be able to set their desired film duration?                                                            | Batch 3   | (a) Fixed default 3 min for all users — simplest, opinionated; (b) Free tier locked to 3 min, paid tier unlocks 5/10/15 min (upgrade incentive); (c) All users get a simple slider (1–15 min) — most flexible but adds UI complexity. Founder baseline: 3 min is right for hobbyist/YouTube. Vloggers needing 15 min are a different user segment. |
 
 ---
 
