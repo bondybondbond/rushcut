@@ -13,7 +13,6 @@ from .utils import FFMPEG, ffmpeg_run
 log = logging.getLogger(__name__)
 
 DEFAULT_DURATION_S = 3.0
-FONT_SIZE = 64
 
 
 def make_card(
@@ -36,22 +35,14 @@ def make_card(
     Returns:
         out_path
     """
-    # Sanitise text: escape single quotes and backslashes for drawtext
-    safe_text = text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
-
     log.info("[cards] Rendering %s card: '%s' (%s, %.1fs)", color, text, size, duration_s)
 
+    # Note: drawtext is not available in the ARM64 static FFmpeg build on Lambda.
+    # Cards are rendered as solid-colour backgrounds only (no text overlay).
     ffmpeg_run([
         FFMPEG, "-y",
         "-f", "lavfi",
         "-i", f"color=c={color}:s={size}:r=25:d={duration_s:.4f}",
-        "-vf", (
-            f"drawtext=text='{safe_text}'"
-            ":fontcolor=white"
-            f":fontsize={FONT_SIZE}"
-            ":x=(w-text_w)/2"
-            ":y=(h-text_h)/2"
-        ),
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-profile:v", "main",

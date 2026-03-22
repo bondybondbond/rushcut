@@ -26,7 +26,7 @@ from .music import mix_music
 from .normalise import normalise
 from .transitions import build_filter_complex
 from .trim import trim
-from .utils import FFMPEG, ffmpeg_run, get_duration, has_audio
+from .utils import FFMPEG, ffmpeg_run, get_duration, get_frame_size, has_audio
 from .zoom import apply_zoom
 
 log = logging.getLogger(__name__)
@@ -143,7 +143,9 @@ def run_pipeline(
         log.info("[render] Step 3: zoom skipped")
 
     # 4. Cards (pre-render as video segments, prepend/append)
-    card_size = "1920x1080" if mode == "final" else "640x360"
+    # Use actual clip dimensions so xfade size matches — clips may not be 16:9
+    clip_w, clip_h = get_frame_size(current_paths[0])
+    card_size = f"{clip_w}x{clip_h}"
 
     intro_cfg = config.get("intro_card") or {}
     if intro_cfg.get("enabled"):

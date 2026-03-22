@@ -55,6 +55,14 @@ def get_duration(path: str | Path) -> float:
     raise RuntimeError(f"Cannot determine duration for {path}")
 
 
+def get_frame_size(path: str | Path) -> tuple[int, int]:
+    """Return (width, height) of the first video stream."""
+    data = ffprobe_json(["-show_streams", "-select_streams", "v:0", str(path)])
+    for s in data.get("streams", []):
+        return int(s["width"]), int(s["height"])
+    raise RuntimeError(f"Cannot determine frame size for {path}")
+
+
 def has_audio(path: str | Path) -> bool:
     """Return True if the file contains at least one audio stream."""
     result = subprocess.run(
