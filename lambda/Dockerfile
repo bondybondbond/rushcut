@@ -21,5 +21,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY handler.py .
 COPY pipeline/ pipeline/
 COPY music/ music/
+COPY fonts/ fonts/
 
 CMD ["handler.lambda_handler"]
