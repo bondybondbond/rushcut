@@ -7,7 +7,7 @@ const DEFAULT_CONFIG: JobConfig = {
   transition: "crossfade",
   music_mood: "none",
   silence_removal: true,
-  zoom: false,
+  zoom: false,  // zoom not exposed in UI — deferred until AI scene-detection is ready
   intro_card: null,
   end_card: null,
 };
@@ -167,22 +167,6 @@ export function ConfigurePanel({ onConfigChange }: Props) {
           <Toggle
             checked={config.silence_removal}
             onChange={(v) => update({ silence_removal: v })}
-          />
-        </div>
-      </div>
-
-      {/* Zoom */}
-      <div className={row}>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className={label}>Zoom</p>
-            <p className={sublabel + " mb-0"}>
-              Slow push-in on key moments. Applied in final export only.
-            </p>
-          </div>
-          <Toggle
-            checked={config.zoom}
-            onChange={(v) => update({ zoom: v })}
           />
         </div>
       </div>
