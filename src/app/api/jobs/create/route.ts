@@ -26,14 +26,19 @@ export async function POST(req: NextRequest) {
     }
 
     // Invoke Lambda async (fire-and-forget). Non-fatal: job is in DB and can be retried.
+    let lambdaError: string | null = null;
     try {
       await invokeLambdaAsync(job.id);
     } catch (lambdaErr) {
       const e = lambdaErr as Error;
-      console.error("[jobs/create] Lambda invoke failed:", e.name, e.message, "region=", process.env.AWS_REGION, "fn=", process.env.LAMBDA_FUNCTION_NAME, "keyId=", process.env.AWS_ACCESS_KEY_ID?.substring(0, 8));
+      lambdaError = `${e.name}: ${e.message}`;
+      console.error("[jobs/create] Lambda invoke failed:", lambdaError);
     }
 
-    return NextResponse.json({ jobId: job.id });
+    return NextResponse.json({
+      jobId: job.id,
+      _debug: lambdaError ? { lambdaError, region: process.env.AWS_REGION, fn: process.env.LAMBDA_FUNCTION_NAME, keyId: process.env.AWS_ACCESS_KEY_ID?.substring(0, 8) } : null,
+    });
   } catch (err: unknown) {
     const error = err as Error;
     console.error("[jobs/create] unexpected error:", error);
