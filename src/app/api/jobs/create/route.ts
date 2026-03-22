@@ -29,7 +29,8 @@ export async function POST(req: NextRequest) {
     try {
       await invokeLambdaAsync(job.id);
     } catch (lambdaErr) {
-      console.error("[jobs/create] Lambda invoke failed — job queued for retry:", lambdaErr);
+      const e = lambdaErr as Error;
+      console.error("[jobs/create] Lambda invoke failed:", e.name, e.message, "region=", process.env.AWS_REGION, "fn=", process.env.LAMBDA_FUNCTION_NAME, "keyId=", process.env.AWS_ACCESS_KEY_ID?.substring(0, 8));
     }
 
     return NextResponse.json({ jobId: job.id });
