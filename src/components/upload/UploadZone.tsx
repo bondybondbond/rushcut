@@ -4,7 +4,7 @@ import { useRef, useState, DragEvent, ChangeEvent } from "react";
 import type { Clip } from "@/types/project";
 import { generateThumbnail } from "@/utils/thumbnail";
 
-const MAX_FILE_SIZE = 1073741824; // 1 GB
+const MAX_FILE_SIZE = 2147483648; // 2 GB
 const MAX_CLIPS = 20;
 
 type ClipWithProbeFlag = Clip & { probe_skipped?: boolean; probe_error?: string };
@@ -55,7 +55,7 @@ export function UploadZone({
 
     const oversized = toProcess.filter((f) => f.size > MAX_FILE_SIZE);
     if (oversized.length > 0) {
-      setGlobalError(`These files exceed the 1 GB limit: ${oversized.map((f) => f.name).join(", ")}`);
+      setGlobalError(`These files exceed the 2 GB limit: ${oversized.map((f) => f.name).join(", ")}`);
       return;
     }
 
@@ -248,7 +248,7 @@ export function UploadZone({
       >
         <p className="text-[#e5e5e5] text-base">Drag clips here, or browse files</p>
         <p className="text-[#e5e5e5] text-sm mt-2 opacity-60">
-          MP4 · MOV · MKV · up to 1 GB per file · max {MAX_CLIPS} clips
+          MP4 · MOV · MKV · up to 2 GB per file · max {MAX_CLIPS} clips
         </p>
       </label>
 

@@ -9,7 +9,7 @@ const ALLOWED_TYPES = [
   "video/x-matroska",
 ];
 
-const MAX_SIZE = 1073741824; // 1 GB
+const MAX_SIZE = 2147483648; // 2 GB
 
 export async function POST(req: NextRequest) {
   try {
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     // Validate size
     if (typeof size !== "number" || size > MAX_SIZE) {
       return NextResponse.json(
-        { error: "File too large — max 1 GB per file" },
+        { error: "File too large — max 2 GB per file" },
         { status: 400 }
       );
     }
