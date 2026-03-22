@@ -48,6 +48,10 @@ export default function UploadPage() {
     );
   }
 
+  function handleDismissFailed(tempId: string) {
+    setPendingUploads((prev) => prev.filter((p) => p.tempId !== tempId));
+  }
+
   function handleDelete(clipId: string) {
     setClips((prev) => prev.filter((c) => c.id !== clipId));
   }
@@ -92,6 +96,7 @@ export default function UploadPage() {
           clips={clips}
           pendingUploads={pendingUploads}
           onDelete={handleDelete}
+          onDismissFailed={handleDismissFailed}
           onReorder={handleReorder}
           brief={brief}
         />

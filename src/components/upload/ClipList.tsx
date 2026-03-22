@@ -26,6 +26,7 @@ interface ClipListProps {
   clips: ClipWithProbeFlag[];
   pendingUploads?: PendingUpload[];
   onDelete: (clipId: string) => void;
+  onDismissFailed?: (tempId: string) => void;
   onReorder: (clips: ClipWithProbeFlag[]) => void;
   brief?: string;
 }
@@ -48,7 +49,7 @@ function VideoIcon() {
 }
 
 // Pending clip card — shown immediately when files are selected
-function PendingClipCard({ upload }: { upload: PendingUpload }) {
+function PendingClipCard({ upload, onDismiss }: { upload: PendingUpload; onDismiss?: () => void }) {
   const isProbing = upload.progress >= 97;
 
   return (
@@ -81,6 +82,17 @@ function PendingClipCard({ upload }: { upload: PendingUpload }) {
         {upload.error && (
           <div className="absolute inset-0 bg-red-900/40 flex items-center justify-center p-2">
             <p className="text-red-300 text-xs text-center">{upload.error}</p>
+            {onDismiss && (
+              <button
+                onClick={onDismiss}
+                className="absolute top-1.5 right-1.5 bg-black/70 rounded p-1 text-[#a3a3a3] hover:text-red-400 hover:bg-black/90 transition-colors"
+                aria-label={`Dismiss ${upload.filename}`}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+                </svg>
+              </button>
+            )}
           </div>
         )}
 
@@ -198,7 +210,7 @@ function SortableClipCard({ clip, index, onDelete }: SortableClipCardProps) {
   );
 }
 
-export function ClipList({ clips, pendingUploads = [], onDelete, onReorder, brief = "" }: ClipListProps) {
+export function ClipList({ clips, pendingUploads = [], onDelete, onDismissFailed, onReorder, brief = "" }: ClipListProps) {
   const router = useRouter();
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [jobError, setJobError] = useState<string | null>(null);
@@ -280,7 +292,11 @@ export function ClipList({ clips, pendingUploads = [], onDelete, onReorder, brie
               <SortableClipCard key={clip.id} clip={clip} index={idx} onDelete={handleDelete} />
             ))}
             {pendingUploads.map((upload) => (
-              <PendingClipCard key={upload.tempId} upload={upload} />
+              <PendingClipCard
+                key={upload.tempId}
+                upload={upload}
+                onDismiss={upload.error && onDismissFailed ? () => onDismissFailed(upload.tempId) : undefined}
+              />
             ))}
           </div>
         </SortableContext>

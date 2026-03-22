@@ -24,7 +24,7 @@ export async function GET(
     ? await getPresignedGetUrl(job.draft_r2_key, 3600)
     : undefined;
   const finalUrl = job.final_r2_key
-    ? await getPresignedGetUrl(job.final_r2_key, 3600)
+    ? await getPresignedGetUrl(job.final_r2_key, 3600, "rushcut-edit.mp4")
     : undefined;
 
   return NextResponse.json({ ...job, draftUrl, finalUrl });
