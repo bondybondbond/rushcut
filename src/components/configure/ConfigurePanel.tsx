@@ -177,7 +177,7 @@ export function ConfigurePanel({ onConfigChange }: Props) {
           <div>
             <p className={label}>Zoom</p>
             <p className={sublabel + " mb-0"}>
-              Slow push-in on key moments. Adds ~30s to render time.
+              Slow push-in on key moments. Applied in final export only.
             </p>
           </div>
           <Toggle

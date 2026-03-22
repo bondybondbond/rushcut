@@ -135,15 +135,17 @@ def run_pipeline(
         log.info("[render] Step 2: silence trim skipped")
 
     # 3. Zoom (per-clip, before transitions)
+    # Skipped in draft mode — zoompan is CPU-intensive (frame-by-frame) and
+    # easily exceeds the 900s Lambda timeout on multi-clip drafts.
     report(35)
-    if config.get("zoom", False):
+    if config.get("zoom", False) and mode == "final":
         log.info("[render] Step 3: zoom")
         current_paths = [
             apply_zoom(p, tmp / f"zoom_{i}.mp4")
             for i, p in enumerate(current_paths)
         ]
     else:
-        log.info("[render] Step 3: zoom skipped")
+        log.info("[render] Step 3: zoom skipped (mode=%s)", mode)
 
     # 4. Cards (pre-render as video segments, prepend/append)
     # Use actual clip dimensions so xfade size matches — clips may not be 16:9
