@@ -194,3 +194,36 @@
 **Decision:** RushCut is not LightCut (full auto-edit, no control) and not Clipchamp (full manual timeline). The product gives *direction power* — user sets intent, tool executes, user reviews and nudges. This is the confirmed design stance going into Phase 2.
 **Reason:** LightCut's 4-step confirm model is the benchmark for simplicity but it's editorially shallow — no Windows support, limited customisation. Clipchamp's timeline is too manual for the target user. The gap is a tool that feels like giving direction to an editor, not operating editing software.
 **Implication:** Every Phase 2 UI decision should be tested against this: "does this feel like directing, or does it feel like editing?"
+
+---
+
+## DEC-023 — Tauri 2.x desktop app shell (replaces Next.js)
+**Date:** March 2026
+**Decision:** Replace the Next.js/Vercel web app shell with a Tauri 2.x desktop app (React + Vite renderer, Rust backend). Lambda/R2/Vercel are fully retired for Phase 2.
+**Reason:** DEC-022 committed to local-first processing, but keeping Next.js as the shell still required a running dev server and a browser window. The natural completion of local-first is a proper installable desktop app. Tauri chosen over Electron for lighter binary (~10-30 MB vs ~150 MB), faster cold start (~0.5 s vs ~3 s), and lower idle memory — all important for a video tool users will leave open for long sessions.
+**What changes:**
+- Next.js App Router -> React Router v6 (same routes, same components, minimal code change)
+- `fetch("/api/...")` calls -> Tauri `invoke()` IPC calls
+- Lambda invocation -> `wsl -d Ubuntu-24.04 -u root -- python3 pipeline/run.py` child process
+- R2 presigned URLs -> Tauri asset protocol (`asset://`) for local video files
+- Supabase -> SQLite via rusqlite (`%APPDATA%\rushcut\rushcut.db`)
+- HTTP polling (`useJobPoll`) -> Tauri event listeners (`useJobEvents`)
+**What stays the same:** All 9 Python pipeline modules, all React UI components (minimal changes), design system, FFmpeg quirks.
+**`lambda/` directory:** Kept as reference archive. Do not modify it.
+**WSL2 dependency:** Accepted for Phase 2 (personal use). Phase 3 distribution will bundle native Windows Python + FFmpeg binaries to remove this requirement.
+**Trade-off:** Rust learning curve for the thin bridge layer (~200 lines). Accepted — the UI and pipeline are unchanged, so the Rust surface area is small and isolated.
+
+---
+
+## DEC-022 — Full local build for Phase 2 (no cloud upload)
+**Date:** March 2026
+**Decision:** Phase 2 runs entirely on-machine. The pipeline (FFmpeg + Python) runs in WSL2 Ubuntu-24.04 via Next.js child_process spawn. No R2 upload for inputs. No Lambda. No Docker.
+**Reason:** Upload bottleneck is fatal for the target use case. At 30 Mbps upload, a 1.9 GB clip takes ~8 min; the founder's real test session (62 clips, ~19 GB) would take ~84 min to upload before any processing begins. That is not a product — it's a waiting room.
+**Implication:**
+- `pipeline/` (top-level) replaces `lambda/pipeline/` as the active code directory
+- `lambda/` is retained as reference archive; do NOT delete it
+- Upload page becomes a folder-path input + local scan, not a file transfer
+- Output is served via a local `/api/output/[jobId]/video` stream route
+- Supabase still used for job/clip state tracking (unchanged contract)
+- R2 retained idle for Phase 3 cloud share-link feature
+- Phase 3 will reintroduce cloud mode for users who want it (Vercel + Lambda reactivated)
