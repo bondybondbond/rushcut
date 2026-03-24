@@ -18,6 +18,10 @@ out/
 dist/
 build/
 
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+
 # OS
 .DS_Store
 Thumbs.db
