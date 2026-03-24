@@ -16,6 +16,17 @@ pub struct ClipMeta {
     pub width: i64,
     pub height: i64,
     pub has_audio: bool,
+    pub thumbnail_data: Option<String>, // base64 data URI from scan.py
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub clip_count: i64,
+    pub last_job_id: Option<String>,
+    pub last_job_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -269,6 +280,32 @@ pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
             updated_at: row.get(8)?,
         }),
     )
+}
+
+pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare(
+        "SELECT
+            p.id, p.name, p.created_at,
+            (SELECT COUNT(*) FROM clips WHERE project_id = p.id) as clip_count,
+            (SELECT id FROM jobs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) as last_job_id,
+            (SELECT status FROM jobs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) as last_job_status
+         FROM projects p
+         ORDER BY p.created_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ProjectSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+                clip_count: row.get(3)?,
+                last_job_id: row.get(4)?,
+                last_job_status: row.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 // ---------------------------------------------------------------------------

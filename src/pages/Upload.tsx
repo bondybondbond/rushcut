@@ -13,7 +13,7 @@ function metaToClip(meta: ClipMeta, idx: number): Clip {
     id: `scan-${idx}`,
     project_id: "",
     sort_order: idx,
-    thumbnail_data: null,
+    thumbnail_data: meta.thumbnail_data ?? null,
     created_at: new Date().toISOString(),
   };
 }
@@ -73,6 +73,7 @@ export default function Upload() {
         width: c.width,
         height: c.height,
         has_audio: c.has_audio,
+        thumbnail_data: c.thumbnail_data ?? null,
       }));
 
       const projectName = folderPath.split(/[/\\]/).filter(Boolean).pop() ?? "Project";
@@ -100,9 +101,17 @@ export default function Upload() {
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
       <div className="max-w-3xl mx-auto space-y-8">
         {/* Header */}
-        <div>
-          <h1 className="text-2xl font-semibold text-[#e5e5e5]">RushCut</h1>
-          <p className="text-[#a3a3a3] text-sm mt-1">Select a folder of clips to get started.</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-[#e5e5e5]">RushCut</h1>
+            <p className="text-[#a3a3a3] text-sm mt-1">Select a folder of clips to get started.</p>
+          </div>
+          <button
+            onClick={() => navigate("/library")}
+            className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+          >
+            My Projects
+          </button>
         </div>
 
         {/* Folder picker button */}

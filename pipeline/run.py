@@ -45,6 +45,10 @@ def on_progress(pct: int) -> None:
     print(f"PROGRESS:{pct}", flush=True)
 
 
+def on_stage(stage: str) -> None:
+    print(f"STAGE:{stage}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
@@ -62,18 +66,22 @@ def main() -> None:
     settings = manifest.get("settings", {})
     output_path_win = manifest.get("output_path", f"C:\\clips\\processed\\{job_id}.mp4")
 
-    # Build job config dict compatible with render.run_pipeline
+    intro_text = settings.get("intro_text", "")
+    outro_text = settings.get("outro_text", "")
+
+    # Build job dict with nested config matching render.py expectations
     job = {
         "id": job_id,
-        "music_mood": settings.get("music_mood", "none"),
-        "intro_text": settings.get("intro_text", ""),
-        "outro_text": settings.get("outro_text", ""),
-        "zoom": settings.get("zoom", True),
-        # Legacy fields for render.py compatibility
-        "transition": "crossfade",
-        "silence_removal": True,
-        "intro_card": None,
-        "end_card": None,
+        "mode": "final",
+        "config": {
+            "music_mood": settings.get("music_mood", "none"),
+            "zoom": settings.get("zoom", True),
+            "filter_boring": settings.get("filter_boring", False),
+            "transition": "crossfade",
+            "silence_removal": True,
+            "intro_card": {"enabled": bool(intro_text), "text": intro_text, "color": "black"},
+            "end_card":   {"enabled": bool(outro_text), "text": outro_text, "color": "black"},
+        },
     }
 
     # Resolve WSL2 paths from local_path (stored as Windows paths in DB)
@@ -84,10 +92,10 @@ def main() -> None:
     output_wsl.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        sys.path.insert(0, str(Path(__file__).parent))
-        from render import run_pipeline
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from pipeline.render import run_pipeline
 
-        tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress)
+        tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage)
 
         shutil.copy2(str(tmp_output), str(output_wsl))
         print(f"DONE:{output_wsl}", flush=True)

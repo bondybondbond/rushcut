@@ -2,8 +2,8 @@ mod db;
 
 use db::{
     get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
-    update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job,
-    ProjectWithClips,
+    list_projects, update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job,
+    ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader};
@@ -88,7 +88,7 @@ fn create_project(name: String, clips: Vec<ClipMeta>) -> Result<String, String> 
             width: meta.width,
             height: meta.height,
             has_audio: meta.has_audio,
-            thumbnail_data: None,
+            thumbnail_data: meta.thumbnail_data.clone(),
             sort_order: idx as i64,
             created_at: db::now(),
         };
@@ -178,6 +178,12 @@ fn get_job_cmd(job_id: String) -> Result<Job, String> {
     get_job(&job_id).map_err(|e| format!("DB error (get job): {}", e))
 }
 
+/// List all projects with clip count and last job status (for Library page).
+#[tauri::command]
+fn list_projects_cmd() -> Result<Vec<ProjectSummary>, String> {
+    list_projects().map_err(|e| format!("DB error (list projects): {}", e))
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline runner (background)
 // ---------------------------------------------------------------------------
@@ -216,7 +222,12 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
             Err(_) => break,
         };
 
-        if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+        if let Some(stage_name) = line.strip_prefix("STAGE:") {
+            let _ = app.emit(
+                "pipeline-stage",
+                json!({ "jobId": job_id, "stage": stage_name.trim() }),
+            );
+        } else if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
             let pct: i64 = pct_str.trim().parse().unwrap_or(0);
             let _ = update_job_progress(&job_id, pct, "processing");
             let _ = app.emit(
@@ -320,6 +331,7 @@ pub fn run() {
             get_project,
             start_job,
             get_job_cmd,
+            list_projects_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

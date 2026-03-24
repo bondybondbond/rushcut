@@ -37,7 +37,13 @@ Gate: founder's own successful 60+ clip session (DEC-018).
 
 ## In Progress
 
-Nothing in progress. Batch 10 not started.
+**Batch 10 e2e eval — blocked on ffmpeg portrait-orientation render issue**
+
+Two pipeline bugs fixed this session:
+- `pipeline/run.py` import path corrected (`from pipeline.render` not `from render`)
+- FFmpeg installed in WSL2 (was missing; `scan.py` was returning zero durations/thumbnails)
+
+Scan now works on all 3 small clips (DJI_01–03: ~1–11s, 1728x3072 portrait, thumbs OK). Full render via `run.py` with all settings (music=cinematic, zoom, filter_boring, intro/outro) launched but timed out before producing output — likely portrait-mode filter_complex issue. Needs debug in Batch 10 session.
 
 ---
 
@@ -73,5 +79,5 @@ Full decision log: `docs/DECISIONS.md`
 - **Supabase:** PAUSED — data preserved, restorable within 90 days. Not used in Phase 2.
 - **R2:** DELETED — bucket emptied and removed.
 - **Lambda / ECR:** DELETED — do not rebuild.
-- **Local FFmpeg:** WSL2 Ubuntu-24.04, `/usr/bin/ffmpeg` (v7.x)
+- **Local FFmpeg:** WSL2 Ubuntu-24.04, `/usr/bin/ffmpeg` (v6.1.1) — installed via `apt-get install -y --fix-missing ffmpeg`
 - **SQLite:** `%APPDATA%\rushcut\rushcut.db` — created on first `pnpm dev`

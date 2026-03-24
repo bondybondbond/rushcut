@@ -9,6 +9,7 @@ const DEFAULT_CONFIG: JobConfig = {
   intro_text: "",
   outro_text: "",
   zoom: true,
+  filter_boring: false,
 };
 
 export default function Editor() {
@@ -133,6 +134,26 @@ export default function Editor() {
               <span
                 className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
                   config.zoom ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Boring clip filter */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-[#e5e5e5]">Skip Boring Clips</p>
+              <p className="text-xs text-[#555555] mt-0.5">Auto-remove static or frozen shots</p>
+            </div>
+            <button
+              onClick={() => setConfig((c) => ({ ...c, filter_boring: !c.filter_boring }))}
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                config.filter_boring ? "bg-[#22c55e]" : "bg-white/20"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                  config.filter_boring ? "translate-x-5" : "translate-x-0"
                 }`}
               />
             </button>

@@ -16,7 +16,9 @@ Entry points:
 """
 
 import logging
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 from .cards import make_card
@@ -33,6 +35,38 @@ log = logging.getLogger(__name__)
 
 MUSIC_DIR = Path(__file__).parent.parent / "music"
 TMP_BASE = Path("/tmp")
+
+
+# ---------------------------------------------------------------------------
+# Boring clip detection
+# ---------------------------------------------------------------------------
+
+BORING_FREEZE_RATIO = 0.7  # clips where >= 70% of duration is frozen -> boring
+
+
+def is_boring_clip(clip_path: Path, duration_s: float) -> bool:
+    """
+    Return True if the clip is mostly static (frozen frames).
+    Uses ffmpeg freezedetect: clips where >= BORING_FREEZE_RATIO of duration
+    is frozen are considered boring and should be filtered out.
+    """
+    if duration_s <= 0:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                FFMPEG, "-i", str(clip_path),
+                "-vf", "freezedetect=n=-60dB:d=0.5",
+                "-an", "-f", "null", "-",
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        freeze_starts = [float(m) for m in re.findall(r"freeze_start: ([0-9.]+)", result.stderr)]
+        freeze_ends   = [float(m) for m in re.findall(r"freeze_end: ([0-9.]+)", result.stderr)]
+        frozen_time = sum(e - s for s, e in zip(freeze_starts, freeze_ends))
+        return (frozen_time / duration_s) >= BORING_FREEZE_RATIO
+    except Exception:
+        return False  # on error, keep the clip
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +117,7 @@ def run_pipeline(
     clip_paths: list[Path],
     context=None,
     on_progress=None,
+    on_stage=None,
 ) -> Path:
     """
     Run the full render pipeline for a job.
@@ -108,19 +143,46 @@ def run_pipeline(
             except Exception:
                 log.warning("[render] Failed to report progress %d%%", pct)
 
+    def report_stage(stage: str) -> None:
+        if on_stage:
+            try:
+                on_stage(stage)
+            except Exception:
+                pass
+
     tmp = TMP_BASE / str(job_id)
     tmp.mkdir(parents=True, exist_ok=True)
     log.info("[render] Job %s | mode=%s | %d clips", job_id, mode, len(clip_paths))
 
     # 1. Normalise — report per-clip so progress doesn't appear stuck
+    report_stage("normalise")
     log.info("[render] Step 1: normalise")
     report(10)
     n_clips = len(clip_paths)
     def _normalise_progress(done: int, total: int) -> None:
-        report(10 + int(done / total * 15))  # 10% → 25%
+        report(10 + int(done / total * 15))  # 10% -> 25%
     current_paths = normalise(clip_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
 
+    # 1b. Boring clip filter (after normalise so we have consistent format for freezedetect)
+    if config.get("filter_boring", False) and len(current_paths) > 1:
+        report_stage("filter_boring")
+        log.info("[render] Step 1b: boring clip filter")
+        kept = []
+        for p in current_paths:
+            dur = get_duration(p)
+            if is_boring_clip(p, dur):
+                log.info("[render] Dropping boring clip: %s (%.1fs)", p.name, dur)
+            else:
+                kept.append(p)
+        if kept:
+            current_paths = kept
+            log.info("[render] Kept %d/%d clips after boring filter", len(kept), len(clip_paths))
+        else:
+            log.warning("[render] All clips were boring — keeping all to avoid empty render")
+            # current_paths unchanged
+
     # 2. Silence detect + trim (IMPORTANT: get_duration() is called on trimmed paths below)
+    report_stage("silence_trim")
     report(25)
     if config.get("silence_removal", False):
         log.info("[render] Step 2: silence trim")
@@ -135,6 +197,7 @@ def run_pipeline(
         log.info("[render] Step 2: silence trim skipped")
 
     # 3. Zoom (per-clip, before transitions)
+    report_stage("zoom")
     # Skipped in draft mode — zoompan is CPU-intensive (frame-by-frame) and
     # easily exceeds the 900s Lambda timeout on multi-clip drafts.
     report(35)
@@ -148,6 +211,7 @@ def run_pipeline(
         log.info("[render] Step 3: zoom skipped (mode=%s)", mode)
 
     # 4. Cards (pre-render as video segments, prepend/append)
+    report_stage("cards")
     # Use actual clip dimensions so xfade size matches — clips may not be 16:9
     clip_w, clip_h = get_frame_size(current_paths[0])
     card_size = f"{clip_w}x{clip_h}"
@@ -177,6 +241,7 @@ def run_pipeline(
         current_paths = current_paths + [card]
 
     # 5. Build filter_complex + render
+    report_stage("render")
     # CRITICAL: durations from current_paths (post-trim), NOT original clip durations
     report(50)
     log.info("[render] Step 5: render with xfade")
@@ -235,6 +300,7 @@ def run_pipeline(
         ffmpeg_run(cmd)
 
     # 6. Mix music
+    report_stage("music")
     report(75)
     music_mood = config.get("music_mood", "none")
     music_filename = f"{music_mood}.mp3" if music_mood and music_mood != "none" else None
@@ -246,6 +312,7 @@ def run_pipeline(
         log.info("[render] Step 6: music skipped")
 
     # 7. Loudnorm (final only — two-pass is too slow for draft on Lambda)
+    report_stage("loudnorm")
     report(85)
     if mode != "draft":
         log.info("[render] Step 7: loudnorm")

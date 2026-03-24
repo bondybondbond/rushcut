@@ -22,6 +22,7 @@ Each element:
   }
 """
 import argparse
+import base64
 import json
 import subprocess
 import sys
@@ -117,6 +118,37 @@ def has_audio_stream(wsl_path: str) -> bool:
         return False
 
 
+def extract_thumbnail(wsl_path: str) -> str | None:
+    """
+    Extract first frame as a small base64 JPEG (320px wide, quality 5).
+    Uses -map 0:v:0 to skip DJI's embedded MJPEG thumbnail in stream 1.
+    Returns a data URI string, or None on failure.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/ffmpeg",
+                "-ss", "0",
+                "-i", wsl_path,
+                "-map", "0:v:0",
+                "-frames:v", "1",
+                "-q:v", "5",
+                "-vf", "scale=320:-1",
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                "-",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return None
+        encoded = base64.b64encode(result.stdout).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+    except Exception:
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--folder", required=True, help="WSL path to folder to scan")
@@ -135,6 +167,7 @@ def main() -> None:
 
             meta = probe_file(wsl_path)
             audio = has_audio_stream(wsl_path)
+            thumbnail = extract_thumbnail(wsl_path)
 
             clips.append({
                 "filename": f.name,
@@ -144,6 +177,7 @@ def main() -> None:
                 "width": meta.get("width", 0),
                 "height": meta.get("height", 0),
                 "has_audio": audio,
+                "thumbnail_data": thumbnail,
             })
 
     print(json.dumps(clips), flush=True)

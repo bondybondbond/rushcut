@@ -15,6 +15,7 @@ export interface ClipMeta {
   width: number;
   height: number;
   has_audio: boolean;
+  thumbnail_data?: string | null; // base64 data URI from scan.py
 }
 
 export interface Clip extends ClipMeta {
@@ -47,6 +48,16 @@ export interface JobConfig {
   intro_text: string;
   outro_text: string;
   zoom: boolean;
+  filter_boring: boolean;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  clip_count: number;
+  last_job_id: string | null;
+  last_job_status: "pending" | "processing" | "done" | "failed" | null;
 }
 
 // Tauri event payloads

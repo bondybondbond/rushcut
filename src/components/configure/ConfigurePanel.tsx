@@ -6,6 +6,7 @@ const DEFAULT_CONFIG: JobConfig = {
   zoom: true,
   intro_text: "",
   outro_text: "",
+  filter_boring: false,
 };
 
 const MUSIC_MOODS: { label: string; value: JobConfig["music_mood"] }[] = [

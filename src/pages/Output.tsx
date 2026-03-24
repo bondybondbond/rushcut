@@ -4,6 +4,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Job, PipelineProgressEvent } from "@/types/project";
 
+const STAGE_LABELS: Record<string, string> = {
+  normalise:    "Normalising clips...",
+  silence_trim: "Trimming silence...",
+  zoom:         "Applying zoom...",
+  cards:        "Adding title cards...",
+  render:       "Rendering transitions...",
+  music:        "Mixing music...",
+  loudnorm:     "Loudness normalisation...",
+};
+
+function stageLabel(stage: string): string {
+  return STAGE_LABELS[stage] ?? stage;
+}
+
 // Convert a Windows output path to an asset:// URL for Tauri's asset protocol.
 // e.g. C:\clips\processed\abc.mp4 -> asset://localhost/C:/clips/processed/abc.mp4
 function outputPathToAssetUrl(winPath: string): string {
@@ -72,10 +86,19 @@ export default function Output() {
       }
     );
 
+    const unlistenStage = listen<{ jobId: string; stage: string }>(
+      "pipeline-stage",
+      (event) => {
+        if (event.payload.jobId !== jobId) return;
+        setStage(stageLabel(event.payload.stage));
+      }
+    );
+
     return () => {
       unlistenProgress.then((f) => f());
       unlistenDone.then((f) => f());
       unlistenError.then((f) => f());
+      unlistenStage.then((f) => f());
     };
   }, [jobId]);
 
