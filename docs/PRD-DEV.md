@@ -1,8 +1,12 @@
 # RushCut — Phase 2 Build Plan
 
 > **Phase goal:** The founder can upload a full 60+ clip DJI session, have RushCut intelligently filter and compile it into a 3–6 min film with music, card text, zoom, and smart moment selection — a film they're proud enough to publish.
->
+> 
 > **Phase 2 exit gate:** "I used RushCut to produce a video from a real 60+ clip DJI session that I was proud to publish." Not: paying users. Not: user testing scores. (See DEC-018, DEC-020.)
+
+---
+
+> **Competitor research:** See [`docs/COMPETITORS.md`](./COMPETITORS.md) for observations from testing competing products (Clipchamp, etc.) — useful for UX inspiration and feature prioritisation.
 
 ---
 
@@ -10,22 +14,22 @@
 
 Phase 1 delivered a working pipeline end-to-end:
 
-| Feature | Status |
-|---|---|
-| Upload → Editor → Output flow | ✅ Working |
-| Silence/stillness detection | ✅ Working |
-| xfade transitions | ✅ Working |
-| 1080p export | ✅ Working |
-| Thumbnail persistence | ✅ Working |
-| Music | ❌ Flag disabled — no MP3s in Lambda |
-| Card text overlay | ❌ drawtext unavailable on ARM64 static FFmpeg |
-| Zoom | ❌ zoom.py exists but disabled in frontend |
-| Per-clip in/out handles | ❌ Not built |
-| Boring clip filtering | ❌ Not built |
-| Beat-sync music | ❌ Not built |
-| Director intent (Gemini) | ❌ Not built |
-| Auth / accounts | ❌ Not built — localStorage only |
-| >20 clips / real sessions | ❌ Limited to 20 clips, 1GB per file |
+| Feature                       | Status                                        |
+| ----------------------------- | --------------------------------------------- |
+| Upload → Editor → Output flow | ✅ Working                                     |
+| Silence/stillness detection   | ✅ Working                                     |
+| xfade transitions             | ✅ Working                                     |
+| 1080p export                  | ✅ Working                                     |
+| Thumbnail persistence         | ✅ Working                                     |
+| Music                         | ❌ Flag disabled — no MP3s in Lambda           |
+| Card text overlay             | ❌ drawtext unavailable on ARM64 static FFmpeg |
+| Zoom                          | ❌ zoom.py exists but disabled in frontend     |
+| Per-clip in/out handles       | ❌ Not built                                   |
+| Boring clip filtering         | ❌ Not built                                   |
+| Beat-sync music               | ❌ Not built                                   |
+| Director intent (Gemini)      | ❌ Not built                                   |
+| Auth / accounts               | ❌ Not built — localStorage only               |
+| >20 clips / real sessions     | ❌ Limited to 20 clips, 1GB per file           |
 
 **Honest assessment:** Phase 1 is a clip stitcher with silence detection and a nice UI. The "Director, not Editor" principle from the PRD hasn't been delivered yet — the intelligence and scale are Phase 2.
 
@@ -41,6 +45,7 @@ Phase 1 delivered a working pipeline end-to-end:
 `drawtext` is unavailable in the ARM64 johnvansickle static FFmpeg build. Workaround: use Pillow to render a PNG frame with text baked in, then loop it to a 3s video.
 
 **lambda/pipeline/cards.py changes:**
+
 1. Import Pillow (`Pillow` already installable in Lambda — add to `requirements.txt`)
 2. `make_card_frame(text, color, width, height)` → saves `/tmp/card_XXXX.png` using `ImageDraw.text()`
 3. Use a bundled font (`lambda/fonts/Inter-SemiBold.ttf` or system fallback)
@@ -56,6 +61,7 @@ Gate: Film renders with card text visible. If text is empty, card falls back to 
 ### 7b — Music tracks
 
 **lambda/music/:** Upload 4 royalty-free MP3 tracks:
+
 - `cinematic.mp3` — slow, orchestral
 - `upbeat.mp3` — energetic, travel
 - `chill.mp3` — lo-fi, ambient
@@ -98,6 +104,7 @@ Gate: Rendered film shows subtle centre-frame zoom on each clip. No new artefact
 ### Batch 7 verification
 
 Upload 3 DJI clips. Confirm:
+
 - [ ] Card text appears on intro + outro
 - [ ] Music track plays and fades out cleanly
 - [ ] 1.4GB clip accepted
@@ -106,83 +113,106 @@ Upload 3 DJI clips. Confirm:
 
 ---
 
-## Batch 8 — Real Sessions (60+ clips, 10GB+)
+## Batch 8 — Local Pipeline Rebuild (PIVOT)
 
-> **Goal:** The author can throw an entire DJI session (62 clips, 19.6GB) at RushCut. The tool auto-selects the best clips, handles the volume, and produces a film without manual pre-curation.
-> **Estimate:** 1–2 days.
+> **Why the pivot:** At 30 Mbps upload, a 1.9 GB clip takes ~8 min to upload; the 19 GB / 62-clip target session takes ~84 min. Cloud-upload model is unworkable for real sessions. (DEC-022)
+> **New model:** Next.js UI runs locally (`pnpm dev`). Pipeline runs in WSL2 via child_process spawn. No R2 for inputs. No Lambda. No Docker.
+> **Goal:** Throw the full 62-clip / 19 GB DJI session at RushCut, get a watchable film, zero upload wait.
+> **Estimate:** 1-2 days.
 > **This is the batch that makes RushCut actually useful for the founder's real use case.**
 
-### 8a — Per-project total cap: 1GB → 10GB
+### 8a — Pipeline directory: lambda/pipeline/ -> pipeline/
 
-Match the PRD. The 1GB total guard blocks a single DJI session.
+Copy the working Lambda pipeline to a top-level `pipeline/` directory. Remove Lambda-specific wrapper. Add CLI entry point.
 
-`src/app/api/upload/presign/route.ts`: Change project total cap from `1GB` to `10GB`.
-`src/components/upload/UploadZone.tsx`: Update copy. Update client-side guard.
+**Steps:**
+1. Copy `lambda/pipeline/*` -> `pipeline/` (preserves normalise, detect, trim, transitions, cards, music, loudnorm, zoom, render)
+2. Copy `lambda/fonts/` -> `pipeline/fonts/` (DejaVuSans.ttf for Pillow cards)
+3. Copy `lambda/music/` -> `pipeline/music/` (4 bundled MP3s)
+4. Create `pipeline/run.py` -- CLI entry point: reads job + clips from Supabase, runs full pipeline, writes output, updates job status
+5. Update `pipeline/utils.py`: change FFMPEG_PATH to `/usr/bin/ffmpeg` (WSL2 system FFmpeg)
+6. Add `win_to_wsl(path)` helper in utils.py: `C:\clips\foo.mp4` -> `/mnt/c/clips/foo.mp4`
+7. `lambda/` directory kept as reference archive -- do not delete
 
 ---
 
-### 8b — Boring clip filter (FFmpeg motion score)
+### 8b — Upload page -> Folder scan
 
-Before the pipeline runs, score each normalised clip for visual interest. Auto-skip near-static clips.
+Replace file drag-drop upload UI with a local folder path input. No file transfer. No R2.
 
-**lambda/pipeline/detect.py** — add `motion_score(clip_path) -> float`:
+**UI (`/upload`):**
+- Replace UploadZone with a text input: "Enter folder path" (default: `C:\clips\`)
+- On submit: POST to `/api/projects/scan` with `{ folderPath: 'C:\\clips\\' }`
+- Show scanned clip list: filename, size, duration (probed via WSL2 ffprobe)
+
+**API route `POST /api/projects/scan`:**
+- Spawns: `wsl -d Ubuntu-24.04 -- python3 /mnt/c/apps/rushcut/pipeline/scan.py --folder /mnt/c/clips/`
+- `scan.py` outputs JSON array: `[{ filename, local_path, size_bytes, duration_ms, width, height }]`
+- API creates Supabase project + clip rows with `local_path` column (no r2_key)
+- Supabase `clips` table: add `local_path TEXT NULL` column
+
+**`pipeline/scan.py`** -- new file: glob MP4/MOV/MKV in folder, run ffprobe for duration + dimensions, return JSON.
+
+---
+
+### 8c — jobs/create: Lambda invoke -> local process spawn
+
+Replace `invokeLambda()` with a Node.js `child_process` spawn.
+
+**`src/app/api/jobs/create/route.ts`:**
+- Remove `invokeLambda()` call
+- Replace with: `spawn('wsl', ['-d', 'Ubuntu-24.04', '--', 'python3', '/mnt/c/apps/rushcut/pipeline/run.py', '--job-id', jobId])`
+- Fire-and-forget: `run.py` updates Supabase job status as it progresses (same polling contract as before)
+
+**`pipeline/run.py`:**
+- Reads job config + clip local_paths from Supabase
+- Runs full pipeline (normalise -> detect -> trim -> transitions -> cards -> music -> loudnorm)
+- Output: `/mnt/c/clips/processed/[jobId].mp4`
+- Updates job: `status = final_ready`, `local_output_path = 'C:\\clips\\processed\\[jobId].mp4'`
+
+---
+
+### 8d — Output serving via local stream
+
+**Supabase `jobs` table:** Add `local_output_path TEXT NULL` column.
+
+**`src/app/api/output/[jobId]/video/route.ts`** -- new route:
+- Reads `local_output_path` from Supabase
+- Streams the file with range request support (so the video player can seek)
+- Returns `Content-Type: video/mp4`
+
+**Output page:** Replace `finalUrl` (R2 presigned URL) with `/api/output/[jobId]/video`. No other UI changes needed.
+
+---
+
+### 8e — Boring clip filter + smart selection
+
+**`pipeline/detect.py`** -- add `motion_score(clip_path) -> float`:
 ```python
-# Run FFmpeg with select filter to sample N frames, measure inter-frame diff
-# Returns 0.0 (completely static) to 1.0 (high motion)
 ffmpeg -i clip.mp4 -vf "select='gt(scene,0.02)',metadata=print:file=-" -an -f null -
 ```
-Parse scene change scores → average → return.
+Parse scene change scores, return average.
 
-**lambda/pipeline/render.py** — after normalise, before trim:
-```python
-scores = {c: motion_score(path) for c, path in normalised.items()}
-boring = [c for c, s in scores.items() if s < MOTION_THRESHOLD]
-# Log excluded clips to job status for debugging
-```
+**`pipeline/render.py`** -- after normalise, before trim:
+- Score all clips
+- Auto-exclude clips below `MOTION_FILTER_THRESHOLD` (default 0.015, env-configurable)
+- If >20 clips remain, rank by `motion_score * duration_weight`, keep top 20
+- Log excluded clips to Supabase job `excluded_clips JSONB` column
 
-**Threshold:** Start at 0.015 (lab-tested against DJI footage). Configurable via Lambda env `MOTION_FILTER_THRESHOLD`.
-
-This is the "boring clip filtering" feature from PRD Section 6 v1 scope.
-
----
-
-### 8c — Smart clip selection for large sessions
-
-If a project has >20 clips (current pipeline limit), auto-rank and select the best N rather than hard-rejecting.
-
-**lambda/pipeline/render.py:**
-- After motion scoring, rank clips by `motion_score * clip_duration_weight`
-- Select top N clips (default: 20 for free tier, 50 for future paid tier)
-- Log which clips were excluded and why to job status
-
-**Frontend (editor):** When >20 clips uploaded, show a notice: "We selected the X most interesting clips from your Y uploaded. [Show all]"
-
-This removes the manual pre-curation step — the author doesn't need to decide which 20 of 62 clips to keep.
-
----
-
-### 8d — Per-clip in/out handles
-
-The editor currently shows clips but has no way to trim individual clips. This is the prerequisite for Respin (DEC-009) and lazy upload (DEC-017).
-
-**UI:** In the editor timeline, each clip card gets a scrubber with in/out handles. Drag left handle to set trim start, right handle to set trim end. Preview frame at cursor position (thumbnail seek).
-
-**Data:** Store `trim_start_ms` and `trim_end_ms` per clip in Supabase `clips` table. Currently these are set by Lambda's silence detection — override with user-set values when present.
-
-**Lambda:** `trim.py` already reads `trim_start_ms` / `trim_end_ms` from clip metadata. If user-set values exist, use them; otherwise use detect.py values.
-
-**Lazy upload (DEC-017):** Once in/out handles exist, the exact segment boundaries are known before processing. Phase 3 can use this to upload trimmed segments only. Not implemented in Batch 8 — just the UI handles.
+**Frontend editor:** When clips are excluded, show: "We selected X of Y clips based on visual interest."
 
 ---
 
 ### Batch 8 verification
 
-Upload the full DJI session (62 clips):
-- [ ] All 62 clips accepted (total >10GB)
-- [ ] Near-static clips auto-excluded (verify via CloudWatch logs)
-- [ ] Best 20 clips auto-selected — film makes visual sense without manual curation
-- [ ] In/out handles visible on each clip in editor
-- [ ] Trim changes persist to Supabase and are respected by Lambda
+Run the full DJI session (`C:\clips\` -> 62 clips, ~19 GB):
+
+- [ ] Folder scan completes in <30s (no upload wait)
+- [ ] All 62 clips appear in editor with thumbnails
+- [ ] Near-static clips auto-excluded (verify via job status JSON)
+- [ ] Best clips auto-selected -- film makes visual sense without manual curation
+- [ ] Film renders end-to-end, output plays in browser via local stream
+- [ ] Total time from folder scan to watchable film: <10 min
 
 ---
 
@@ -199,6 +229,7 @@ The PRD specifies an optional brief as a starting point. Gemini 2.0 Flash at ~$0
 **ConfigurePanel:** Add a brief text field (already existed in Phase 1 PRD screen spec but was removed). Keep it optional, single line: "e.g. start with the mountain shots, make it feel cinematic"
 
 **lambda/pipeline/render.py** — new `apply_brief(clips_metadata, brief_text) -> clip_order[]`:
+
 ```python
 # Build a prompt: clip list with filename, duration, motion score, timestamp
 # Ask Gemini 2.0 Flash to return a ranked order + style recommendation
@@ -216,6 +247,7 @@ Only fires if `brief` is non-empty. Falls back to timestamp order if Gemini fail
 Instead of silence-detection trim points, also detect musical beat positions in the selected track and prefer clip cuts at beat boundaries.
 
 **lambda/pipeline/music.py** — add `get_beat_times(track_path) -> List[float]` via librosa:
+
 ```python
 import librosa
 y, sr = librosa.load(track_path)
@@ -234,6 +266,7 @@ Gate: Rendered film feels musically timed — cuts arrive on beats, not mid-phra
 The current silence detector finds dead sections at the clip start/end. This finds the *peak moment* within a clip — the 5–10 seconds where the most interesting thing happened.
 
 **lambda/pipeline/detect.py** — add `find_peak_window(clip_path, duration_s=8) -> (start_ms, end_ms)`:
+
 - Sample motion scores at 0.5s intervals across the whole clip
 - Find the `duration_s`-length window with highest average motion score
 - Return start/end of that window as preferred trim points
@@ -249,6 +282,7 @@ Gate: Upload a 3-minute DJI clip where the interesting moment is in the middle. 
 ### Batch 9 verification
 
 Run a real DJI session with brief "fast cuts, start with the landscape shots":
+
 - [ ] Film opens with wide landscape shots (Gemini ordering working)
 - [ ] Cuts align with music beats (librosa working)
 - [ ] Each clip contributes its best 5–10 seconds, not full duration (motion peak working)
@@ -288,6 +322,7 @@ Switch API routes from service role key to Supabase Auth session tokens.
 ### 10d — 30-day retention + cleanup
 
 Supabase scheduled function (pg_cron) or Vercel cron: daily job that:
+
 1. Finds `jobs` rows where `final_r2_key` is set and `updated_at < now() - interval '30 days'`
 2. Deletes R2 objects via API
 3. Marks job `status = 'expired'`
@@ -307,6 +342,7 @@ Supabase scheduled function (pg_cron) or Vercel cron: daily job that:
 **"I used RushCut to produce a video from a real 60+ clip DJI session that I was proud to publish."**
 
 Specific criteria:
+
 - [ ] Uploaded 60+ clips from a real trip (not test clips)
 - [ ] RushCut auto-selected and auto-trimmed without manual pre-curation
 - [ ] Card text, music, zoom all working
@@ -337,6 +373,7 @@ Once boring clip filter + music + zoom work (Batches 7+8 done), recruit 3–5 DJ
 Task: "You just got back from a trip with 30 clips. You have 5 minutes. Make a shareable video."
 
 Append 3 Mom Test questions at the end:
+
 1. "What's the last time you filmed footage you never edited? What stopped you?"
 2. "What tool do you currently use for travel video? What do you wish it did differently?"
 3. "What would 'good enough to share' look like for you?"
@@ -359,6 +396,7 @@ This is a usability + problem-validation hybrid. Do not run before Batches 7+8 �
 
 ## Changelog
 
-| Version | Date | Changes |
-|---|---|---|
-| 0.1 | 2026-03-22 | Phase 2 build plan created from Phase 1 exit state |
+| Version | Date       | Changes                                            |
+| ------- | ---------- | -------------------------------------------------- |
+| 0.2     | 2026-03-24 | Batch 8 complete — Tauri 2.x scaffold, Rust + SQLite backend, pipeline CLI, WSL2 check |
+| 0.1     | 2026-03-22 | Phase 2 build plan created from Phase 1 exit state |

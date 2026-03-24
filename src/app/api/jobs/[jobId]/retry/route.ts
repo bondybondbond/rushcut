@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
-import { invokeLambdaAsync } from "@/lib/lambda";
 
 const STALE_PROCESSING_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -50,13 +49,6 @@ export async function POST(
   if (patchError) {
     console.error("[jobs/retry] failed to reset job status:", patchError);
     return NextResponse.json({ error: patchError.message }, { status: 500 });
-  }
-
-  try {
-    await invokeLambdaAsync(jobId);
-  } catch (lambdaErr) {
-    console.error("[jobs/retry] Lambda invoke failed:", lambdaErr);
-    // Still return ok — job is queued and can be retried again
   }
 
   return NextResponse.json({ ok: true });

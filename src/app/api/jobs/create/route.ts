@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
-import { invokeLambdaAsync } from "@/lib/lambda";
 import { JobConfig } from "@/types/project";
 
 export async function POST(req: NextRequest) {
@@ -27,13 +26,6 @@ export async function POST(req: NextRequest) {
     if (jobError) {
       console.error("[jobs/create] failed to create job:", jobError);
       return NextResponse.json({ error: jobError.message }, { status: 500 });
-    }
-
-    // Invoke Lambda async (fire-and-forget). Non-fatal: job is in DB and can be retried.
-    try {
-      await invokeLambdaAsync(job.id);
-    } catch (lambdaErr) {
-      console.error("[jobs/create] Lambda invoke failed — job queued for retry:", lambdaErr);
     }
 
     return NextResponse.json({ jobId: job.id });

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
-import { getPresignedGetUrl } from "@/lib/r2";
 
 export async function GET(
   _req: NextRequest,
@@ -19,13 +18,5 @@ export async function GET(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Attach presigned URL for each clip so the client can generate thumbnails
-  const clipsWithUrls = await Promise.all(
-    (clips ?? []).map(async (clip) => {
-      const presignedUrl = await getPresignedGetUrl(clip.r2_key, 3600).catch(() => null);
-      return { ...clip, presignedUrl };
-    })
-  );
-
-  return NextResponse.json({ clips: clipsWithUrls });
+  return NextResponse.json({ clips: clips ?? [] });
 }

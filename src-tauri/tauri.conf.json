@@ -1,0 +1,18 @@
+{
+  "identifier": "com.rushcut.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev:vite",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build:vite",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "title": "RushCut", "width": 1280, "height": 800 }],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA\\rushcut\\**", "C:\\clips\\processed\\**"]
+      }
+    }
+  }
+}

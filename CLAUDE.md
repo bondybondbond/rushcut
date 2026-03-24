@@ -38,8 +38,7 @@ Written to `C:\clips\processed\<jobId>.mp4`. Served to the WebView via Tauri ass
 - **Paths:** Run all scripts from `C:\apps\rushcut`. Source clips from any local folder (default `C:\clips\`). Output to `C:\clips\processed\`.
 - **Pipeline:** Always run via WSL2: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/run.py --job-id ...`
 - **FFmpeg in WSL2:** Already installed at `/usr/bin/ffmpeg` (v7.x). Use this — do NOT use the old ARM64 static build path.
-- **Supabase schema reload:** Run `NOTIFY pgrst, 'reload schema';` in the SQL editor after schema changes. The Dashboard "Reload Schema" button has been removed.
-- **Supabase SQL editor (Monaco):** Inject SQL programmatically via `window.monaco.editor.getModels()[0].setValue(sql)` — keyboard shortcuts do not reliably target the editor.
+- **Dev launch:** Run `pnpm dev` from `C:\apps\rushcut`. Requires `cargo` in PATH — Rustup installs to `%USERPROFILE%\.cargo\bin` but only new terminals pick it up. If `cargo not found`, open a fresh terminal (or run `$env:PATH += ";$env:USERPROFILE\.cargo\bin"` once). First Cargo build takes several minutes; subsequent are fast.
 
 ## FFmpeg Quirks (WSL2 local build)
 

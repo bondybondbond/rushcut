@@ -5,32 +5,39 @@
 
 ---
 
+## PIVOT — LOCAL BUILD (decided end of Batch 7)
+
+**Root cause:** 30 Mbps upload -> 1.9 GB clip = ~8 min upload; 19 GB session = ~84 min. Unusable.
+**New model:** Pipeline runs locally via WSL2. No uploads. No Lambda. Browser UI unchanged.
+**Full pivot spec:** See `CLAUDE.md` -> "MAJOR PIVOT" section at the top.
+
+---
+
 ## Current Phase
 
-**Phase 2 — Batch 7 (P1 carry-overs + quick wins)**
+**Phase 2 — Batch 9 (Tauri UX flow)**
 
-Phase 1 is complete and archived. Phase 2 plan is live in `docs/PRD-DEV.md`.
+Batch 8 complete: Tauri 2.x scaffold, Rust backend with SQLite schema, WSL2 check on startup, Python pipeline CLI wired. App launches with `pnpm dev` and shows `[wsl_check] ok`.
 
 ---
 
 ## Immediate Next Task
 
-**Batch 7a — cards.py text overlay via Pillow**
+**Batch 9 — UX flow: Folder picker → Editor → Output**
 
-This is the first task of Phase 2. It's a self-contained Lambda change:
-- Add Pillow to `lambda/requirements.txt`
-- Rewrite card generation in `lambda/pipeline/cards.py` to use PIL instead of drawtext
-- Bundle a font in `lambda/fonts/`
-- Rebuild + deploy Lambda image
-- Test: rendered film shows intro + outro card text
+Build the three Tauri/React pages using the existing UX flow:
 
-Then continue with 7b (music MP3s), 7c (2GB file limit), 7d (enable zoom) before wrapping Batch 7.
+1. **`/upload`** — folder picker (Tauri dialog API), scan MP4/MOV/MKV, insert project + clips to SQLite via Tauri command
+2. **`/editor/:projectId`** — clip timeline, settings panel (music mood, card text, zoom toggle)
+3. **`/output/:jobId`** — progress bar (listen to Tauri events), video player (asset:// protocol)
+
+All state persists to SQLite (`%APPDATA%\rushcut\rushcut.db`). No Supabase. No R2.
 
 ---
 
 ## In Progress
 
-Nothing in progress. Batch 7 not started.
+Nothing in progress. Batch 9 not started.
 
 ---
 
@@ -38,12 +45,12 @@ Nothing in progress. Batch 7 not started.
 
 | Item | Blocked by | Status |
 |---|---|---|
-| Music picker (NEXT_PUBLIC_MUSIC_ENABLED=true) | MP3 files not yet in Lambda | Unblocked when 7b done |
-| Lazy upload (DEC-017) | Per-clip in/out handles (Batch 8d) | Batch 8 |
-| Auth / project library | Phase 1 foundation complete, building in Batch 10 | Batch 10 |
-| Stripe / paid tier | AI intelligence layer not yet built (DEC-020) | Phase 3 |
-| Competitor audit (RT-1) | No blocker — 2h research task | Anytime |
-| User testing (RT-2) | Wait until Batches 7+8+10 done | After Batch 10 |
+| Boring clip filter (motion score) | Local pipeline must exist first | Batch 8 sub-task |
+| Smart clip selection (>20 clips) | Local pipeline must exist first | Batch 8 sub-task |
+| Per-clip in/out handles | Local pipeline + folder scan first | Batch 8 sub-task |
+| Auth / project library | Batch 10 | Batch 10 |
+| Stripe / paid tier | AI layer (DEC-020) | Phase 3 |
+| Cloud mode (Vercel + Lambda) | Phase 3 reintroduction | Phase 3 |
 
 ---
 
@@ -53,6 +60,7 @@ Nothing in progress. Batch 7 not started.
 - **DEC-019:** Competitor research = web-only (desktop apps have different capability/latency profile)
 - **DEC-020:** Stripe deferred until AI layer exists — charging for clip stitching has no lock-in
 - **DEC-021:** "In the middle" positioning confirmed — direction power, not full auto-AI, not manual timeline
+- **DEC-022:** Full local build — upload bottleneck (84 min for 19 GB session at 30 Mbps) makes cloud-upload model unworkable for real sessions. Phase 2 runs entirely on-machine via WSL2.
 
 Full decision log: `docs/DECISIONS.md`
 
@@ -60,7 +68,10 @@ Full decision log: `docs/DECISIONS.md`
 
 ## Live Infra State
 
-- **Vercel:** Deployed, production URL in `reference_vercel_url.md`
-- **Lambda:** `rushcut-lambda` ARM64 3008MB, image `sha256:9c99eafb...`
-- **Supabase:** `clips` table has `thumbnail_data TEXT NULL` (added Batch 6)
-- **R2:** `rushcut-uploads` bucket, CORS configured for localhost + Vercel
+- **Vercel:** Still deployed (git-main URL), but not the active dev target for Phase 2
+- **Lambda:** Idle — retired as processing backend. Do not delete.
+- **Supabase:** PAUSED — data preserved, restorable within 90 days. Not used in Phase 2.
+- **R2:** DELETED — bucket emptied and removed.
+- **Lambda / ECR:** DELETED — do not rebuild.
+- **Local FFmpeg:** WSL2 Ubuntu-24.04, `/usr/bin/ffmpeg` (v7.x)
+- **SQLite:** `%APPDATA%\rushcut\rushcut.db` — created on first `pnpm dev`

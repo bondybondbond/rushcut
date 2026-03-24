@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
-import { getPresignedGetUrl } from "@/lib/r2";
 
 export async function GET(
   _req: NextRequest,
@@ -19,13 +18,5 @@ export async function GET(
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
 
-  // Generate fresh presigned URLs (1h expiry) — generated on each poll so they never go stale
-  const draftUrl = job.draft_r2_key
-    ? await getPresignedGetUrl(job.draft_r2_key, 3600)
-    : undefined;
-  const finalUrl = job.final_r2_key
-    ? await getPresignedGetUrl(job.final_r2_key, 3600, "rushcut-edit.mp4")
-    : undefined;
-
-  return NextResponse.json({ ...job, draftUrl, finalUrl });
+  return NextResponse.json(job);
 }

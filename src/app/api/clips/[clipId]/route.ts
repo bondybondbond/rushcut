@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
-import { deleteObject } from "@/lib/r2";
 
 // PATCH /api/clips/[clipId] — store thumbnail_data after upload
 export async function PATCH(
@@ -42,20 +41,6 @@ export async function DELETE(
     const { clipId } = await params;
 
     const supabase = createServerClient();
-
-    const { data: clip, error: fetchError } = await supabase
-      .from("clips")
-      .select("id, r2_key")
-      .eq("id", clipId)
-      .single();
-
-    if (fetchError) {
-      console.error("[clips/delete] failed to fetch clip:", fetchError);
-      return NextResponse.json({ error: fetchError.message }, { status: 500 });
-    }
-
-    // Delete from R2 first
-    await deleteObject(clip.r2_key);
 
     // Delete from Supabase
     const { error: deleteError } = await supabase
