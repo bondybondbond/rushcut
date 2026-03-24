@@ -1,49 +1,59 @@
+// Local schema types — matches SQLite tables in src-tauri/src/db.rs
+// No R2, no Supabase, no cloud refs.
+
 export interface Project {
   id: string;
-  user_id: string | null;
-  status: "uploading" | "ready" | "processing" | "done";
+  name: string;
   created_at: string;
 }
 
-export interface Clip {
+export interface ClipMeta {
+  filename: string;
+  local_path: string; // Windows path e.g. C:\clips\DJI_01.MP4
+  size_bytes: number;
+  duration_ms: number;
+  width: number;
+  height: number;
+  has_audio: boolean;
+}
+
+export interface Clip extends ClipMeta {
   id: string;
   project_id: string;
-  filename: string;
-  r2_key: string;
-  order: number;
-  duration_ms: number | null;
-  size_bytes: number;
-  width: number | null;
-  height: number | null;
-  fps: number | null;
-  thumbnail_data: string | null; // base64 JPEG data URL — persisted at upload time
+  sort_order: number;
+  thumbnail_data: string | null; // base64 JPEG data URL
   created_at: string;
+}
+
+export interface ProjectWithClips {
+  project: Project;
+  clips: Clip[];
 }
 
 export interface Job {
   id: string;
   project_id: string;
-  status: "queued" | "processing" | "draft_ready" | "final_ready" | "failed";
-  mode: "draft" | "final";
-  config: JobConfig;
-  draft_r2_key: string | null;
-  final_r2_key: string | null;
-  error: string | null;
-  progress_pct: number | null;
+  status: "pending" | "processing" | "done" | "failed";
+  progress_pct: number;
+  local_output_path: string | null;
+  settings_json: string | null;
+  error_message: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface JobStatusResponse extends Job {
-  draftUrl?: string;
-  finalUrl?: string;
+export interface JobConfig {
+  music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic";
+  intro_text: string;
+  outro_text: string;
+  zoom: boolean;
 }
 
-export interface JobConfig {
-  transition: "crossfade" | "dip_to_black";
-  music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic";
-  silence_removal: boolean;
-  zoom: boolean;
-  intro_card: { enabled: boolean; text: string; color: string } | null;
-  end_card: { enabled: boolean; text: string; color: string } | null;
+// Tauri event payloads
+export interface PipelineProgressEvent {
+  jobId: string;
+  stage: string;
+  progress: number;
+  message: string;
+  outputPath: string | null;
 }

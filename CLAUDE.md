@@ -1,4 +1,4 @@
-## Architecture (current — Batch 8+)
+## Architecture (current — Batch 9+)
 
 **This is a Tauri 2.x local desktop app. NOT a Next.js/Vercel/Lambda project.**
 
@@ -16,7 +16,11 @@ Upload bottleneck is fatal: 19 GB / 62-clip session = ~84 min upload before any 
 Folder picker (`/upload`) -> Editor (`/editor/:projectId`) -> Output (`/output/:jobId`)
 
 ### Pipeline invocation
-`wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/run.py --job-id <uuid> --clips-json <base64_json>`
+`wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/run.py --job-id <uuid> --manifest-path <wsl_path>`
+
+Manifest JSON is written to `%TEMP%\rushcut\<job_id>.json` by Rust before spawning. Contains clips array + settings + output_path. WSL path passed to `run.py`.
+
+Folder scan: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/scan.py --folder <wsl_path>`
 
 Progress is read line-by-line from stdout: `PROGRESS:N`, `DONE:/mnt/c/...`, `ERROR:msg`
 
@@ -39,6 +43,9 @@ Written to `C:\clips\processed\<jobId>.mp4`. Served to the WebView via Tauri ass
 - **Pipeline:** Always run via WSL2: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/run.py --job-id ...`
 - **FFmpeg in WSL2:** Already installed at `/usr/bin/ffmpeg` (v7.x). Use this — do NOT use the old ARM64 static build path.
 - **Dev launch:** Run `pnpm dev` from `C:\apps\rushcut`. Requires `cargo` in PATH — Rustup installs to `%USERPROFILE%\.cargo\bin` but only new terminals pick it up. If `cargo not found`, open a fresh terminal (or run `$env:PATH += ";$env:USERPROFILE\.cargo\bin"` once). First Cargo build takes several minutes; subsequent are fast.
+- **Tauri 2.x permissions:** All plugin commands must be declared in `src-tauri/capabilities/default.json`. Missing entries throw `not allowed` at runtime, NOT at compile time. Example: folder picker requires `"dialog:allow-open"` in the permissions array.
+- **Tauri plugin config in tauri.conf.json:** Use `null` for plugins with no options (e.g. `"dialog": null`). Using `{}` throws a deserialization panic at startup.
+- **Tailwind CSS entry point:** `src/globals.css` must contain `@import "tailwindcss"` and be imported in `src/main.tsx`. Do NOT reference `src/app/globals.css` — that path was a Next.js artifact and the directory is deleted.
 
 ## FFmpeg Quirks (WSL2 local build)
 

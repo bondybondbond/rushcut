@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """
-pipeline/run.py — CLI entry point invoked by Rust via:
+pipeline/run.py -- CLI entry point invoked by Rust via:
   wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/run.py \
-      --job-id <uuid> --clips-json <base64_json>
+      --job-id <uuid> --manifest-path <wsl_path>
+
+Manifest JSON (written to %TEMP%\rushcut\<job_id>.json by Rust, passed as WSL path):
+  {
+    "job_id": "...",
+    "clips": [{"id":..., "filename":..., "local_path":"C:\\...", "duration_ms":...,
+               "width":..., "height":..., "has_audio":...}],
+    "settings": {"music_mood":"cinematic","intro_text":"","outro_text":"","zoom":true},
+    "output_path": "C:\\clips\\processed\\<job_id>.mp4"
+  }
 
 Protocol (stdout, line-by-line):
   PROGRESS:<0-100>
@@ -10,7 +19,6 @@ Protocol (stdout, line-by-line):
   ERROR:<message>
 """
 import argparse
-import base64
 import json
 import logging
 import shutil
@@ -40,32 +48,49 @@ def on_progress(pct: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
-    parser.add_argument("--clips-json", required=True)
+    parser.add_argument("--manifest-path", required=True, help="WSL path to manifest JSON")
     args = parser.parse_args()
 
-    payload = json.loads(base64.b64decode(args.clips_json))
-    job = payload["job"]
-    clips = payload["clips"]
+    manifest_path = Path(args.manifest_path)
+    if not manifest_path.exists():
+        print(f"ERROR:Manifest not found: {manifest_path}", flush=True)
+        sys.exit(1)
+
+    manifest = json.loads(manifest_path.read_text())
+    job_id = manifest["job_id"]
+    clips = manifest["clips"]
+    settings = manifest.get("settings", {})
+    output_path_win = manifest.get("output_path", f"C:\\clips\\processed\\{job_id}.mp4")
+
+    # Build job config dict compatible with render.run_pipeline
+    job = {
+        "id": job_id,
+        "music_mood": settings.get("music_mood", "none"),
+        "intro_text": settings.get("intro_text", ""),
+        "outro_text": settings.get("outro_text", ""),
+        "zoom": settings.get("zoom", True),
+        # Legacy fields for render.py compatibility
+        "transition": "crossfade",
+        "silence_removal": True,
+        "intro_card": None,
+        "end_card": None,
+    }
 
     # Resolve WSL2 paths from local_path (stored as Windows paths in DB)
     clip_paths = [Path(win_to_wsl(c["local_path"])) for c in clips]
 
     # Ensure output directory exists
-    output_dir = Path("/mnt/c/clips/processed")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_wsl = Path(win_to_wsl(output_path_win))
+    output_wsl.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        # pipeline/ is in sys.path by default when running from this directory
         sys.path.insert(0, str(Path(__file__).parent))
         from render import run_pipeline
 
         tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress)
 
-        # Copy from /tmp/<jobId>/... to final destination
-        dest = output_dir / f"{args.job_id}.mp4"
-        shutil.copy2(str(tmp_output), str(dest))
-
-        print(f"DONE:{dest}", flush=True)
+        shutil.copy2(str(tmp_output), str(output_wsl))
+        print(f"DONE:{output_wsl}", flush=True)
     except Exception as e:
         print(f"ERROR:{e}", flush=True)
         sys.exit(1)

@@ -398,5 +398,6 @@ This is a usability + problem-validation hybrid. Do not run before Batches 7+8 �
 
 | Version | Date       | Changes                                            |
 | ------- | ---------- | -------------------------------------------------- |
+| 0.3     | 2026-03-24 | Batch 9 complete — full UX flow: folder picker, scan.py, 5 Tauri commands, editor + output pages, manifest-based pipeline invocation |
 | 0.2     | 2026-03-24 | Batch 8 complete — Tauri 2.x scaffold, Rust + SQLite backend, pipeline CLI, WSL2 check |
 | 0.1     | 2026-03-22 | Phase 2 build plan created from Phase 1 exit state |

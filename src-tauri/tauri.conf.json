@@ -14,5 +14,8 @@
         "scope": ["$APPDATA\\rushcut\\**", "C:\\clips\\processed\\**"]
       }
     }
+  },
+  "plugins": {
+    "dialog": null
   }
 }

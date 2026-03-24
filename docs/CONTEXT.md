@@ -15,29 +15,29 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 9 (Tauri UX flow)**
+**Phase 2 — Batch 10 (Director Intelligence)**
 
-Batch 8 complete: Tauri 2.x scaffold, Rust backend with SQLite schema, WSL2 check on startup, Python pipeline CLI wired. App launches with `pnpm dev` and shows `[wsl_check] ok`.
+Batch 9 complete: Full Tauri UX flow wired. Folder picker → scan_folder (scan.py) → editor (clip timeline + settings) → start_job (manifest-based pipeline) → output page (progress events + asset:// video player). App launches, `[wsl_check] ok`, all routes functional. Pipeline produces a dumb stitch (clips in folder order) — no AI selection yet.
 
 ---
 
 ## Immediate Next Task
 
-**Batch 9 — UX flow: Folder picker → Editor → Output**
+**Batch 10 — Director Intelligence**
 
-Build the three Tauri/React pages using the existing UX flow:
+Add the AI layer that makes RushCut more than a clip stitcher:
 
-1. **`/upload`** — folder picker (Tauri dialog API), scan MP4/MOV/MKV, insert project + clips to SQLite via Tauri command
-2. **`/editor/:projectId`** — clip timeline, settings panel (music mood, card text, zoom toggle)
-3. **`/output/:jobId`** — progress bar (listen to Tauri events), video player (asset:// protocol)
+1. **Gemini clip ordering** — score clips by visual interest, reorder before render
+2. **Beat-sync cuts** — use librosa to align cut points to music beats
+3. **Motion peak trimming** — per-clip best 5–10s using motion score rather than full duration
 
-All state persists to SQLite (`%APPDATA%\rushcut\rushcut.db`). No Supabase. No R2.
+Gate: founder's own successful 60+ clip session (DEC-018).
 
 ---
 
 ## In Progress
 
-Nothing in progress. Batch 9 not started.
+Nothing in progress. Batch 10 not started.
 
 ---
 

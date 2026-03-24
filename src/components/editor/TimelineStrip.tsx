@@ -1,6 +1,3 @@
-"use client";
-
-import { useEffect, useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -17,26 +14,14 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Clip, JobConfig } from "@/types/project";
-import { generateThumbnail } from "@/utils/thumbnail";
 
-type ClipWithUrl = Clip & { presignedUrl: string | null };
-
-function formatDuration(ms: number | null): string {
-  if (ms === null) return "—";
+function formatDuration(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-// Shimmer skeleton placeholder shown while thumbnail loads
-function ThumbnailSkeleton() {
-  return (
-    <div className="w-full h-full bg-[#1a1a1a] animate-pulse" />
-  );
-}
-
-// Video icon for clips where thumbnail generation failed
 function VideoIcon() {
   return (
     <div className="w-full h-full bg-[#1a1a1a] flex items-center justify-center">
@@ -47,59 +32,33 @@ function VideoIcon() {
   );
 }
 
-// Transition icon between clips
-function TransitionBadge({ style }: { style: JobConfig["transition"] }) {
+// Text card shown at start/end of timeline
+function CardBlock({ label, text }: { label: string; text: string }) {
+  if (!text) return null;
   return (
-    <div className="flex-shrink-0 flex flex-col items-center justify-center px-1 self-center">
-      <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center" title={style === "crossfade" ? "Crossfade" : "Dip to black"}>
-        {style === "crossfade" ? (
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M1 6 C3 2, 9 2, 11 6 C9 10, 3 10, 1 6Z" stroke="#a3a3a3" strokeWidth="1" fill="none"/>
-          </svg>
-        ) : (
-          <div className="w-2 h-2 rounded-full bg-[#a3a3a3]" />
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Card block shown at start/end of timeline
-function CardBlock({
-  label,
-  card,
-}: {
-  label: string;
-  card: JobConfig["intro_card"] | JobConfig["end_card"];
-}) {
-  if (!card) return null;
-  return (
-    <div
-      className="flex-shrink-0 w-20 h-28 rounded-lg border border-white/20 flex flex-col items-center justify-center p-2 text-center"
-      style={{ backgroundColor: card.color + "33" }}
-    >
-      <div
-        className="w-3 h-3 rounded-full mb-2 border border-white/30"
-        style={{ backgroundColor: card.color }}
-      />
+    <div className="flex-shrink-0 w-20 h-28 rounded-lg border border-white/20 flex flex-col items-center justify-center p-2 text-center bg-white/5">
       <p className="text-[10px] text-[#a3a3a3] font-medium">{label}</p>
-      {card.text && (
-        <p className="text-[9px] text-[#e5e5e5] mt-1 line-clamp-2 break-all">{card.text}</p>
-      )}
+      <p className="text-[9px] text-[#e5e5e5] mt-1 line-clamp-3 break-all">{text}</p>
     </div>
   );
 }
 
-// Individual sortable clip tile
+// Separator between clips
+function TransitionDot() {
+  return (
+    <div className="flex-shrink-0 flex items-center justify-center px-1 self-center">
+      <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
+    </div>
+  );
+}
+
 interface SortableClipTileProps {
-  clip: ClipWithUrl;
+  clip: Clip;
   index: number;
-  thumbnail: string | null;
-  loading: boolean;
   onDelete?: (clipId: string) => void;
 }
 
-function SortableClipTile({ clip, index, thumbnail, loading, onDelete }: SortableClipTileProps) {
+function SortableClipTile({ clip, index, onDelete }: SortableClipTileProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: clip.id });
 
@@ -118,22 +77,15 @@ function SortableClipTile({ clip, index, thumbnail, loading, onDelete }: Sortabl
       {...attributes}
       {...listeners}
     >
-      {/* Thumbnail area — prefer persisted thumbnail_data (JPEG from upload), fall back to video-seek */}
       <div className="relative w-20 h-28 overflow-hidden">
         {clip.thumbnail_data ? (
           <img src={clip.thumbnail_data} alt={clip.filename} className="w-full h-full object-cover" />
-        ) : loading ? (
-          <ThumbnailSkeleton />
-        ) : thumbnail ? (
-          <img src={thumbnail} alt={clip.filename} className="w-full h-full object-cover" />
         ) : (
           <VideoIcon />
         )}
-        {/* Order badge */}
         <div className="absolute top-1 left-1 bg-black/70 rounded px-1 py-0.5 text-[10px] text-[#e5e5e5] font-mono">
           {index + 1}
         </div>
-        {/* Delete button */}
         {onDelete && (
           <button
             onPointerDown={(e) => e.stopPropagation()}
@@ -150,7 +102,6 @@ function SortableClipTile({ clip, index, thumbnail, loading, onDelete }: Sortabl
           </button>
         )}
       </div>
-      {/* Filename + duration */}
       <div className="px-1.5 py-1.5">
         <p className="text-[#e5e5e5] text-[9px] truncate leading-tight" title={clip.filename}>
           {clip.filename}
@@ -164,62 +115,21 @@ function SortableClipTile({ clip, index, thumbnail, loading, onDelete }: Sortabl
 }
 
 interface TimelineStripProps {
-  clips: ClipWithUrl[];
+  clips: Clip[];
   config: JobConfig;
-  onReorder: (clips: ClipWithUrl[]) => void;
+  onReorder: (clips: Clip[]) => void;
   onDelete?: (clipId: string) => void;
 }
 
 export function TimelineStrip({ clips, config, onReorder, onDelete }: TimelineStripProps) {
-  // Per-clip thumbnail state — each fires independently
-  const [thumbnails, setThumbnails] = useState<Record<string, string | null>>({});
-  const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
-
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
-
-  // Trigger thumbnail generation when clip list changes.
-  // Clips with thumbnail_data stored in DB skip this entirely — no video decode needed.
-  // Only falls back to video seek for clips uploaded before thumbnail persistence was added.
-  useEffect(() => {
-    const newIds = clips
-      .filter((c) => !c.thumbnail_data && c.presignedUrl && !(c.id in thumbnails) && !loadingIds.has(c.id))
-      .map((c) => c.id);
-
-    if (newIds.length === 0) return;
-
-    setLoadingIds((prev) => {
-      const next = new Set(prev);
-      newIds.forEach((id) => next.add(id));
-      return next;
-    });
-
-    // Fire all seeks in parallel, independent per-clip
-    clips.forEach((clip) => {
-      if (!newIds.includes(clip.id) || !clip.presignedUrl) return;
-      generateThumbnail(clip.presignedUrl).then(({ thumbnail }) => {
-        setThumbnails((prev) => ({ ...prev, [clip.id]: thumbnail }));
-        setLoadingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(clip.id);
-          return next;
-        });
-      });
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clips]);
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const oldIndex = clips.findIndex((c) => c.id === active.id);
     const newIndex = clips.findIndex((c) => c.id === over.id);
-    const reordered = arrayMove(clips, oldIndex, newIndex);
-    onReorder(reordered);
-    fetch("/api/clips/reorder", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clips: reordered.map((c, idx) => ({ id: c.id, order: idx + 1 })) }),
-    }).catch(console.error);
+    onReorder(arrayMove(clips, oldIndex, newIndex));
   }
 
   if (clips.length === 0) {
@@ -235,32 +145,24 @@ export function TimelineStrip({ clips, config, onReorder, onDelete }: TimelineSt
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={clips.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
           <div className="flex items-stretch gap-1 min-w-max px-1 py-2">
-            {/* Intro card block */}
-            {config.intro_card && (
+            {config.intro_text && (
               <>
-                <CardBlock label="Intro" card={config.intro_card} />
-                <TransitionBadge style={config.transition} />
+                <CardBlock label="Intro" text={config.intro_text} />
+                <TransitionDot />
               </>
             )}
 
             {clips.map((clip, idx) => (
               <div key={clip.id} className="flex items-center">
-                <SortableClipTile
-                  clip={clip}
-                  index={idx}
-                  thumbnail={thumbnails[clip.id] ?? null}
-                  loading={loadingIds.has(clip.id)}
-                  onDelete={onDelete}
-                />
-                {idx < clips.length - 1 && <TransitionBadge style={config.transition} />}
+                <SortableClipTile clip={clip} index={idx} onDelete={onDelete} />
+                {idx < clips.length - 1 && <TransitionDot />}
               </div>
             ))}
 
-            {/* End card block */}
-            {config.end_card && (
+            {config.outro_text && (
               <>
-                <TransitionBadge style={config.transition} />
-                <CardBlock label="End" card={config.end_card} />
+                <TransitionDot />
+                <CardBlock label="Outro" text={config.outro_text} />
               </>
             )}
           </div>

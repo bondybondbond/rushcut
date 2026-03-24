@@ -1,6 +1,9 @@
 import { useEffect } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import Upload from "@/pages/Upload";
+import Editor from "@/pages/Editor";
+import Output from "@/pages/Output";
 
 export default function App() {
   useEffect(() => {
@@ -16,7 +19,10 @@ export default function App() {
 
   return (
     <Routes>
-      <Route path="/" element={<div>RushCut — Batch 8 scaffold</div>} />
+      <Route path="/" element={<Navigate to="/upload" replace />} />
+      <Route path="/upload" element={<Upload />} />
+      <Route path="/editor/:projectId" element={<Editor />} />
+      <Route path="/output/:jobId" element={<Output />} />
     </Routes>
   );
 }
