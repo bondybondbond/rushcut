@@ -63,7 +63,7 @@ export default function Output() {
       (event) => {
         if (event.payload.jobId !== jobId) return;
         setProgress(event.payload.progress);
-        setStage(event.payload.stage || "Rendering...");
+        // Stage label is set exclusively by pipeline-stage events
       }
     );
 

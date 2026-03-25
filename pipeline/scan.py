@@ -7,7 +7,7 @@ Invoked by Rust scan_folder command via:
       --folder /mnt/c/clips/
 
 Stdout: JSON array of clip metadata.
-  local_path is returned as a Windows path (e.g. C:\clips\DJI_01.MP4)
+  local_path is returned as a Windows path (e.g. C:\\clips\\DJI_01.MP4)
   so the Rust/React layer never needs to handle WSL paths.
 
 Each element:
@@ -33,7 +33,7 @@ VIDEO_EXTS = {".mp4", ".MP4", ".mov", ".MOV", ".mkv", ".MKV"}
 
 
 def wsl_to_win(path: str) -> str:
-    """Convert a WSL /mnt/c/... path to a Windows C:\... path."""
+    """Convert a WSL /mnt/c/... path to a Windows C:\\... path."""
     if path.startswith("/mnt/"):
         parts = path[5:]  # strip "/mnt/"
         if parts and len(parts) >= 1:

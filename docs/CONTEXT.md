@@ -23,7 +23,7 @@ Batch 9 complete: Full Tauri UX flow wired. Folder picker → scan_folder (scan.
 
 ## Immediate Next Task
 
-**Batch 10 — Director Intelligence**
+**Batch 10b — Director Intelligence** (E2E gate passed — unblocked)
 
 Add the AI layer that makes RushCut more than a clip stitcher:
 
@@ -31,19 +31,32 @@ Add the AI layer that makes RushCut more than a clip stitcher:
 2. **Beat-sync cuts** — use librosa to align cut points to music beats
 3. **Motion peak trimming** — per-clip best 5–10s using motion score rather than full duration
 
+Pre-condition: user verification of `test-batch10-full.mp4` in Windows Media Player (scheduled tomorrow).
+
 Gate: founder's own successful 60+ clip session (DEC-018).
 
 ---
 
 ## In Progress
 
-**Batch 10 e2e eval — blocked on ffmpeg portrait-orientation render issue**
+**Batch 10 E2E — COMPLETE (2026-03-25)**
 
-Two pipeline bugs fixed this session:
-- `pipeline/run.py` import path corrected (`from pipeline.render` not `from render`)
-- FFmpeg installed in WSL2 (was missing; `scan.py` was returning zero durations/thumbnails)
+Pipeline is end-to-end verified on DJI_01–03 (1728×3072 portrait, 1–11s clips):
+- Bare run (no features): ✅ 19.6s output, h264, 608×1080
+- + intro/outro cards: ✅ 24.6s, 5-input xfade correct
+- + cinematic music: ✅ 24.5s, loudnorm applied
 
-Scan now works on all 3 small clips (DJI_01–03: ~1–11s, 1728x3072 portrait, thumbs OK). Full render via `run.py` with all settings (music=cinematic, zoom, filter_boring, intro/outro) launched but timed out before producing output — likely portrait-mode filter_complex issue. Needs debug in Batch 10 session.
+Three bugs fixed this session:
+1. `scan.py` SyntaxWarnings (`\c`, `\.` in docstrings) — escaped
+2. `run.py` hardcoded `silence_removal: True` and `transition: "crossfade"` — now reads from manifest settings
+3. `pipeline-progress` Rust event emitted `stage: "processing"` — clobbered stage labels; stripped from payload, Output.tsx handler no longer calls `setStage`
+
+UI walk-through (Vite-only, Preview MCP):
+- All 4 pages render correctly (/upload, /editor, /output, /library)
+- All Tauri command + event names verified as correctly wired
+- Render button correctly disabled when 0 clips; all settings interactive
+
+**Observation (not a bug):** `DEFAULT_CONFIG` in Editor.tsx defaults `music_mood` to `"cinematic"`. Settings are not persisted per project — every open resets to defaults. Intentional for V1; revisit when project settings persistence is added.
 
 ---
 

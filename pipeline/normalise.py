@@ -31,6 +31,13 @@ def normalise(
     final mode: 1080p + fast preset (quality output).
     Returns list of normalised clip Paths in tmp_dir (norm_0.mp4, norm_1.mp4, ...).
     """
+    # TODO(landscape): add layout param ("portrait" | "landscape_blur" | "landscape_crop")
+    # landscape_blur requires -filter_complex (not -vf) because it references [0:v] twice:
+    #   [0:v]scale=-2:{h},setsar=1[fg];[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,
+    #   crop={w}:{h},boxblur=20:5[bg];[bg][fg]overlay=(W-w)/2:(H-h)/2
+    # transitions.py must also receive layout and use scale={w}:{h} (exact) for landscape
+    # modes to prevent the -2:height re-scaling from re-introducing portrait dimensions.
+    # detect.py: confirm it handles DJI rotation metadata (ffprobe 'rotate' tag) for portrait.
     if mode == "draft":
         scale_filter = "scale=-2:360,format=yuv420p"
         preset = "ultrafast"

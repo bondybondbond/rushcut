@@ -234,10 +234,7 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
                 "pipeline-progress",
                 json!({
                     "jobId": job_id,
-                    "stage": "processing",
                     "progress": pct,
-                    "message": format!("{}%", pct),
-                    "outputPath": null
                 }),
             );
         } else if let Some(wsl_out) = line.strip_prefix("DONE:") {
