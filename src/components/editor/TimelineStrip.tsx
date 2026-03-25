@@ -25,7 +25,7 @@ function formatDuration(ms: number): string {
 function VideoIcon() {
   return (
     <div className="w-full h-full bg-[#1a1a1a] flex items-center justify-center">
-      <svg className="w-8 h-8 text-[#555555]" viewBox="0 0 24 24" fill="currentColor">
+      <svg className="w-8 h-8 text-[#a3a3a3]" viewBox="0 0 24 24" fill="currentColor">
         <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z" />
       </svg>
     </div>
@@ -135,7 +135,7 @@ export function TimelineStrip({ clips, config, onReorder, onDelete }: TimelineSt
   if (clips.length === 0) {
     return (
       <div className="flex items-center justify-center h-32 border border-white/10 rounded-lg">
-        <p className="text-[#555555] text-sm">No clips found for this project.</p>
+        <p className="text-[#a3a3a3] text-sm">No clips found for this project.</p>
       </div>
     );
   }

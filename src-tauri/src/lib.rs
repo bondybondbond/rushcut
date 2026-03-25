@@ -2,8 +2,8 @@ mod db;
 
 use db::{
     get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
-    list_projects, update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job,
-    ProjectSummary, ProjectWithClips,
+    list_projects, rename_project, update_job_done, update_job_error, update_job_progress,
+    Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader};
@@ -15,6 +15,27 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 const DEFAULT_OUTPUT_DIR: &str = r"C:\clips\processed";
+
+// ---------------------------------------------------------------------------
+// Filename helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a project name to a safe filename slug.
+/// e.g. "My Holiday Trip!" -> "my-holiday-trip"
+fn slugify(name: &str) -> String {
+    let slug: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    // Collapse consecutive hyphens and trim leading/trailing
+    let slug = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() { "project".to_string() } else { slug }
+}
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -60,6 +81,44 @@ fn scan_folder(folder_path: String) -> Result<Vec<ClipMeta>, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("scan.py failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let clips: Vec<ClipMeta> = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("Failed to parse scan.py output: {}\n{}", e, stdout))?;
+
+    Ok(clips)
+}
+
+/// Rename a project.
+#[tauri::command]
+fn rename_project_cmd(project_id: String, name: String) -> Result<(), String> {
+    rename_project(&project_id, &name)
+        .map_err(|e| format!("DB error (rename project): {}", e))
+}
+
+/// Probe a list of individual video files (Windows paths) via scan.py --files.
+/// Returns ClipMeta for each valid video file.
+#[tauri::command]
+fn probe_files(paths: Vec<String>) -> Result<Vec<ClipMeta>, String> {
+    if paths.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let wsl_paths: Vec<String> = paths.iter().map(|p| win_to_wsl(p)).collect();
+
+    let mut cmd = std::process::Command::new("wsl");
+    cmd.args(["-d", "Ubuntu-24.04", "-u", "root", "--", "python3",
+              "/mnt/c/apps/rushcut/pipeline/scan.py", "--files"]);
+    for wp in &wsl_paths {
+        cmd.arg(wp);
+    }
+
+    let output = cmd.output().map_err(|e| format!("Failed to launch scan.py: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("scan.py --files failed: {}", stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -119,8 +178,10 @@ async fn start_job(
     let project_data = get_project_with_clips(&project_id)
         .map_err(|e| format!("DB error (get clips): {}", e))?;
 
-    // Build output path
-    let output_path = format!(r"{}\{}.mp4", DEFAULT_OUTPUT_DIR, job_id);
+    // Build output path — use human-readable project name + short job ID
+    let slug = slugify(&project_data.project.name);
+    let short_id = &job_id[..8];
+    let output_path = format!(r"{}\{}-{}.mp4", DEFAULT_OUTPUT_DIR, slug, short_id);
 
     // Write manifest JSON to Windows TEMP
     let manifest = json!({
@@ -324,7 +385,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             scan_folder,
+            probe_files,
             create_project,
+            rename_project_cmd,
             get_project,
             start_job,
             get_job_cmd,

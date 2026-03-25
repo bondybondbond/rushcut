@@ -382,6 +382,283 @@ This is a usability + problem-validation hybrid. Do not run before Batches 7+8 �
 
 ---
 
+## Batch 11b — Autonomous E2E Testing (tauri-driver)
+
+> **Goal:** Claude can see what the user sees. After every code session, Claude runs a full UI walk-through — upload clips, render, check output — without a human in the loop.
+> **Estimate:** 2–4 hrs setup, then zero ongoing cost.
+> **Why now:** Batch 11 UI changes were verified by TypeScript + build only. Claude could not click buttons or watch the video player. This batch fixes that permanently.
+
+---
+
+### Why the browser preview doesn't work
+
+RushCut renders blank in a standard headless browser because `window.__TAURI_INTERNALS__` is not injected outside the Tauri WebView. `invoke()`, `listen()`, and `convertFileSrc()` all depend on it. The only way to drive the real app is via the compiled Tauri binary.
+
+---
+
+### 11b-1 — Add `data-testid` attributes to key elements
+
+Claude does this in ~30 min before any driver work. Targets:
+
+| Element | `data-testid` |
+|---|---|
+| "Choose Folder" button | `btn-choose-folder` |
+| "Add Files" button | `btn-add-files` |
+| Clip list item | `clip-item` |
+| Continue/Render button | `btn-render` |
+| Project name heading | `project-name` |
+| Hamburger nav button | `btn-nav-open` |
+| Music chip (each mood) | `chip-music-{mood}` |
+| Intro text input | `input-intro-text` |
+| Outro text input | `input-outro-text` |
+| Progress bar | `progress-bar` |
+| Output video player | `video-player` |
+| Output filename label | `output-filename` |
+
+Files to touch: `Upload.tsx`, `Editor.tsx`, `SettingsPanel.tsx`, `Output.tsx`, `NavDrawer.tsx`
+
+---
+
+### 11b-2 — Install tauri-driver + msedgedriver
+
+```powershell
+# From PowerShell (NOT Git Bash — paths get mangled)
+cargo install tauri-driver
+
+# Download msedgedriver matching your Edge version:
+# Edge version: Settings > Help > About. Download from:
+# https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/
+# Drop msedgedriver.exe somewhere in PATH (e.g. C:\tools\)
+```
+
+Add to `package.json`:
+```json
+"scripts": {
+  "test:e2e": "pnpm build && webdriverio run wdio.conf.ts"
+}
+```
+
+Add `wdio.conf.ts` — tauri-driver spawns the real `.exe` and drives it via WebDriver protocol. Claude adapts the community config (already exists on GitHub) to this repo.
+
+**Key config gotcha:** All paths in `wdio.conf.ts` must be Windows-native (`C:\...`). Do not use WSL paths. Run `pnpm test:e2e` from PowerShell only.
+
+---
+
+### 11b-3 — Write smoke test suite
+
+Claude writes the following specs in `e2e/` using WebdriverIO's `$('[data-testid="..."]')` selectors:
+
+**Spec 1 — Upload flow**
+- App opens → upload screen visible
+- Click "Choose Folder" → file dialog appears (or cancel gracefully)
+- Nav drawer opens/closes on hamburger click
+
+**Spec 2 — Editor flow** (requires a pre-seeded test project in SQLite)
+- Project name is editable (click → input appears → blur saves)
+- Music default is "No Music"
+- Zoom toggle is disabled/greyed
+- Card colour swatches appear only after text is entered
+- "← Back" navigates to Library
+
+**Spec 3 — E2E render** (uses the 3 short test clips already in `C:\clips\`)
+- Scan folder → clips appear
+- Click Render → Output screen appears
+- Progress bar increments (poll every 2s, timeout 5 min)
+- Video player `src` is set once done
+- Output filename matches `[slug]-[8chars].mp4` pattern
+
+---
+
+### 11b-4 — Wire into Claude Code hook (optional)
+
+In `.claude/settings.local.json`, add a post-edit hook:
+```json
+"hooks": {
+  "PostToolUse": [{
+    "matcher": "Edit|Write",
+    "hooks": [{ "type": "command", "command": "powershell.exe -Command \"echo '[hook] run pnpm test:e2e to verify'\"" }]
+  }]
+}
+```
+
+Full auto-run on every edit is optional — the 3-min render timeout makes it slow. Recommended: Claude runs it explicitly at end of each session.
+
+---
+
+### Gate
+
+- [ ] `pnpm test:e2e` passes all 3 specs against a fresh app launch
+- [ ] Claude can read pass/fail output and self-diagnose a failing test
+- [ ] No human required to verify UI after a code session
+
+---
+
+## Batch 11c — UX Polish Round 2
+
+> **Goal:** Close remaining UX gaps from second round of post-Batch-11 feedback. All items are UI-only or pipeline config fixes — no new Rust commands needed.
+> **Estimate:** 3–5 hrs. Can run in a single chat session.
+
+### Bugs fixed inline (not deferred)
+- **Card colour hardcoded to black** — `run.py` was ignoring `intro_color`/`outro_color` from settings; fixed in Batch 11 session.
+- **zoom/silence_removal defaulting to True** — corrected to False in `run.py`.
+
+---
+
+### 11c-1 — Mandatory project name prompt
+
+**Problem:** Project name is editable on the Editor screen via a pencil icon, but it's invisible to most users. Without a name, the output file gets an ugly slug like `clips-a3f8bc12.mp4`. Most users will never discover the inline edit.
+
+**Fix:** After user selects clips and clicks Continue (before `create_project` is called), show a **name prompt modal**:
+- Single input: "Name your project" (required, min 2 chars)
+- Placeholder: "e.g. Dolomites Trip, Summer 2026"
+- CTA: "Create Project" (disabled until name entered)
+- Small skip link: "Skip" (uses folder/file name as fallback — same as current behaviour)
+
+The output file will then be `dolomites-trip-a3f8bc12.mp4` from the first render.
+
+**Files:** `Upload.tsx` (add modal state + prompt UI before `navigate()`). No Rust changes needed — `create_project` already accepts `name`.
+
+---
+
+### 11c-2 — Scan loading spinner
+
+**Problem:** After selecting folder/files, app goes grey/unresponsive with no feedback while scan.py runs (can take 5–15s for large folders).
+
+**Fix:** In `Upload.tsx`, show a spinner overlay or animated status line during `scanning` state.
+- Replace the disabled-button greying with an explicit `<ScanningState />` component
+- "Scanning your clips..." with a small spinner animation (CSS only — no library needed)
+- Show clip count as they resolve: "Found 12 clips..."
+
+---
+
+### 11c-2 — Home screen redesign
+
+**Problem:** First screen is a blank upload zone. Not welcoming for recreational users.
+
+**New layout:**
+```
+[RushCut logo / wordmark — centred]
+
+[ START NEW PROJECT         ]   [ RESUME A PROJECT          ]
+[ "Create a film in minutes"]   [ [thumb] Project name      ]
+[ Choose Folder / Add Files ]   [ [thumb] Project name      ]
+[                           ]   [ [thumb] Project name      ]
+[___________________________|   [___________________________|
+```
+
+Two big equal-width cards side by side (or stacked on narrow window):
+- **Left:** peach border, folder icon, "Start New Project" in large font, sub: "Create a film in minutes." Clicking shows the existing folder/file pickers.
+- **Right:** sand border, history icon, "Resume a Project." Shows 3 most recent projects as rows with thumbnail + name. Clicking opens `/editor/:projectId`.
+
+If no previous projects: right card shows "No projects yet" placeholder.
+
+**Files:** `Upload.tsx` (major rewrite of layout), `Library.tsx` (extract recent-project query into a shared hook or inline fetch).
+
+---
+
+### 11c-3 — Remove manual path input entirely
+
+**Problem:** "Paste a folder path..." text input is a power-user feature that confuses recreational users.
+
+**Fix:** Delete the entire `<form>` section from `UploadZone.tsx`. Keep only the drag-drop zone and the two picker buttons ("Choose Folder", "Add Files") from `Upload.tsx`.
+
+The drag-drop zone label can update to: "Or drag a folder here."
+
+---
+
+### 11c-4 — Restore transition picker
+
+**Problem:** The Batch 6 settings panel had crossfade / dip-to-black transition choices. Removed in Phase 2 rewrite. Pipeline (`render.py` line ~290) still reads `config.get("transition", "crossfade")` — the picker just needs to come back to the UI.
+
+**Fix:** Add to `SettingsPanel.tsx`:
+```tsx
+{/* Transition */}
+<div className={row}>
+  <p className={label}>Transition</p>
+  <div className="flex gap-2">
+    <Chip active={config.transition === "crossfade"} onClick={() => update({ transition: "crossfade" })}>Crossfade</Chip>
+    <Chip active={config.transition === "dip_to_black"} onClick={() => update({ transition: "dip_to_black" })}>Dip to black</Chip>
+  </div>
+</div>
+```
+
+Add `transition: "crossfade"` to `JobConfig` type and `DEFAULT_CONFIG`.
+
+---
+
+### 11c-5 — Nav drawer: fixed position + consistent location
+
+**Problem:** Hamburger appears top-left on Upload but moves on other screens. Should be top-left everywhere, same visual weight as a proper button.
+
+**Fix:**
+- Wrap all pages in a shared `<AppShell>` layout component that renders the nav drawer at a fixed top-left position (absolute or sticky `fixed top-4 left-4 z-50`)
+- Give the hamburger more button appearance: `rounded-md border border-white/20 p-2 bg-white/5 hover:bg-white/10`
+- Remove per-page `<NavDrawer />` inline usage — single source in AppShell
+
+**Files:** New `src/components/AppShell.tsx`, update `App.tsx` to wrap routes.
+
+---
+
+### 11c-6 — Download button on Output screen
+
+**Problem:** No obvious way to "save" or "open" the finished film. The video player is embedded but there's no export/download action.
+
+**Fix:** Add a big peach button below the video player on the done state:
+- "Open File" → calls `invoke("open_output_path", { path: outputPath })` which runs `explorer.exe /select,<path>` to reveal the file in Windows Explorer.
+- New Rust command `open_output_path(path: String)` using `std::process::Command::new("explorer").arg(format!("/select,{}", path)).spawn()`.
+
+---
+
+### 11c-7 — Fix rendering screen copy for desktop
+
+**Problem:** "Switch tabs and come back whenever" is browser-only advice — meaningless in a desktop app.
+
+**Fix:** Already partially done in Batch 11. Confirm Output.tsx reads:
+> "1080p renders take 2–5 min."
+
+Remove "switch tabs" entirely.
+
+---
+
+### 11c-8 — "4K coming soon" note on Upload screen
+
+**Problem:** The 4K notice only appears in SettingsPanel (screen 2). Should also appear on the Upload screen.
+
+**Fix:** Add a small muted note below the picker buttons in `Upload.tsx`:
+```tsx
+<p className="text-xs text-[#a3a3a3]">
+  Output: 1080p · <span className="text-[#C9A96E]">4K coming soon</span>
+</p>
+```
+
+---
+
+### Deferred to later batches
+
+| # | Item | Batch |
+|---|------|-------|
+| Silence/boring clip verification | Needs tauri-driver E2E (Batch 11b) | 11b |
+| Delete project from My Projects | Rust `delete_project` cmd + Library UI | 12 |
+| Project name → output filename | Fixed in Batch 11 (`slugify`). Mandatory name prompt (11c-1) closes the edge case. | 11c |
+| Proxy / low-res preview files | **Required for interactive timeline (Batch 13+), not now.** DJI HEVC at source res will stutter during frame-accurate scrubbing in the WebView. Generate H.264 720p proxies on project create (scan.py step); use for editor preview, discard for final render. ~10s/clip in WSL2 FFmpeg. Flag when interactive trim/zoom UI is designed. | 13+ |
+| Music volume vs. clip volume control | Add `music_volume` slider (0–100, default 40) to SettingsPanel → pass to `music.py` as `-filter:a "volume=X"` on the music track before mix | 12 |
+
+---
+
+### Gate
+
+- [ ] Name prompt appears after clip selection; project name is mandatory before editor opens
+- [ ] Scan shows spinner during folder/file processing
+- [ ] Home screen has two-card layout; recent projects visible on right
+- [ ] Manual path input gone
+- [ ] Transition picker (crossfade / dip to black) visible and working
+- [ ] Hamburger is top-left, same position on all 4 screens, looks like a button
+- [ ] Output screen: "Open File" reveals file in Explorer
+- [ ] Rendering copy no longer says "switch tabs"
+- [ ] "4K coming soon" visible on Upload screen
+
+---
+
 ## Phase 3 Preview (not in scope now)
 
 - Stripe (£4.99/mo Creator) — after DEC-020 conditions met

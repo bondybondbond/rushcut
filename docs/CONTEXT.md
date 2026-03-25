@@ -15,48 +15,53 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 10 (Director Intelligence)**
+**Phase 2 — Batch 11 (UI Polish) COMPLETE**
 
-Batch 9 complete: Full Tauri UX flow wired. Folder picker → scan_folder (scan.py) → editor (clip timeline + settings) → start_job (manifest-based pipeline) → output page (progress events + asset:// video player). App launches, `[wsl_check] ok`, all routes functional. Pipeline produces a dumb stitch (clips in folder order) — no AI selection yet.
+Batch 10 E2E verified. Batch 11 (19-item UI feedback pass) complete.
 
 ---
 
 ## Immediate Next Task
 
-**Batch 10b — Director Intelligence** (E2E gate passed — unblocked)
+**Batch 11b — Autonomous E2E via tauri-driver** (new session)
 
-Add the AI layer that makes RushCut more than a clip stitcher:
+Wire up tauri-driver + msedgedriver + WebdriverIO so Claude can run E2E tests against the real Tauri binary autonomously. Spec in `docs/PRD-DEV.md` — Batch 11b section.
 
-1. **Gemini clip ordering** — score clips by visual interest, reorder before render
-2. **Beat-sync cuts** — use librosa to align cut points to music beats
-3. **Motion peak trimming** — per-clip best 5–10s using motion score rather than full duration
+After 11b: **Batch 11c** (9 UI items: mandatory project name prompt, scan spinner, home screen redesign, remove manual path input, transition picker, nav drawer position, download button, copy fixes, 4K notice on upload).
 
-Pre-condition: user verification of `test-batch10-full.mp4` in Windows Media Player (scheduled tomorrow).
-
-Gate: founder's own successful 60+ clip session (DEC-018).
+After 11c: **Director Intelligence** (Gemini clip ordering, beat-sync, motion peak trimming).
 
 ---
 
 ## In Progress
 
-**Batch 10 E2E — COMPLETE (2026-03-25)**
+**Batch 11 — UI Polish COMPLETE (2026-03-25)**
 
-Pipeline is end-to-end verified on DJI_01–03 (1728×3072 portrait, 1–11s clips):
-- Bare run (no features): ✅ 19.6s output, h264, 608×1080
-- + intro/outro cards: ✅ 24.6s, 5-input xfade correct
-- + cinematic music: ✅ 24.5s, loudnorm applied
+19-item feedback pass complete:
+- File picker (individual clips) alongside folder picker (`scan.py --files` + `probe_files` Rust cmd)
+- Inline project name edit (pencil icon → input → `rename_project_cmd`)
+- SettingsPanel: music default None, zoom hidden/"coming soon", card colour swatches (intro/outro)
+- Output: `convertFileSrc` fix (video player now works), job ID removed, human-readable filename
+- NavDrawer: hamburger → collapsible left drawer, Home/My Projects/New Project
+- Back nav from Editor → Library
+- Colour compliance pass across all pages/components
+- Output filename: `<slug>-<shortId>.mp4` (no raw UUID)
+- Card colour bug fixed: `run.py` was hardcoding `"black"`; now reads `intro_color`/`outro_color` from settings
+- `render.py` bridge for Phase 2 flat config format (`intro_text`/`outro_text` vs old `intro_card` object)
 
-Three bugs fixed this session:
-1. `scan.py` SyntaxWarnings (`\c`, `\.` in docstrings) — escaped
-2. `run.py` hardcoded `silence_removal: True` and `transition: "crossfade"` — now reads from manifest settings
-3. `pipeline-progress` Rust event emitted `stage: "processing"` — clobbered stage labels; stripped from payload, Output.tsx handler no longer calls `setStage`
+---
 
-UI walk-through (Vite-only, Preview MCP):
-- All 4 pages render correctly (/upload, /editor, /output, /library)
-- All Tauri command + event names verified as correctly wired
-- Render button correctly disabled when 0 clips; all settings interactive
+## Deferred / Blocked
 
-**Observation (not a bug):** `DEFAULT_CONFIG` in Editor.tsx defaults `music_mood` to `"cinematic"`. Settings are not persisted per project — every open resets to defaults. Intentional for V1; revisit when project settings persistence is added.
+| Item | Status |
+|---|---|
+| Boring clip filter (motion score) | Batch 12+ |
+| Smart clip selection (>20 clips) | Batch 12+ |
+| Per-clip in/out handles | Batch 12+ |
+| Proxy files for HEVC scrubbing | Batch 13+ (interactive timeline) |
+| Auth / project library | Batch 12+ |
+| Stripe / paid tier | Phase 3 |
+| Cloud mode (Vercel + Lambda) | Phase 3 |
 
 ---
 

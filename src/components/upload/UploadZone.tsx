@@ -57,7 +57,7 @@ export function UploadZone({ onFolderPath, disabled = false }: UploadZoneProps) 
           type="text"
           value={manualPath}
           onChange={(e) => setManualPath(e.target.value)}
-          placeholder="e.g. C:\clips\"
+          placeholder="Paste a folder path..."
           disabled={disabled}
           className="flex-1 bg-[#111111] border border-white/10 rounded-md px-3 py-2 text-[#e5e5e5] text-sm placeholder:text-[#555555] focus:outline-none focus:border-[#C9A96E]/50 disabled:opacity-50"
         />

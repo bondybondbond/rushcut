@@ -216,24 +216,34 @@ def run_pipeline(
     clip_w, clip_h = get_frame_size(current_paths[0])
     card_size = f"{clip_w}x{clip_h}"
 
-    intro_cfg = config.get("intro_card") or {}
-    if intro_cfg.get("enabled"):
+    # Phase 2 format: intro_text / intro_color / outro_text / outro_color
+    # (Legacy Phase 1 format intro_card/end_card also handled as fallback)
+    intro_text = config.get("intro_text") or (config.get("intro_card") or {}).get("text", "")
+    intro_color = (
+        config.get("intro_color")
+        or (config.get("intro_card") or {}).get("color", "#000000")
+    )
+    if intro_text:
         log.info("[render] Step 4: intro card")
         card = make_card(
-            text=intro_cfg.get("text", ""),
-            color=intro_cfg.get("color", "black"),
+            text=intro_text,
+            color=intro_color,
             duration_s=3.0,
             out_path=tmp / "intro_card.mp4",
             size=card_size,
         )
         current_paths = [card] + current_paths
 
-    end_cfg = config.get("end_card") or {}
-    if end_cfg.get("enabled"):
-        log.info("[render] Step 4: end card")
+    outro_text = config.get("outro_text") or (config.get("end_card") or {}).get("text", "")
+    outro_color = (
+        config.get("outro_color")
+        or (config.get("end_card") or {}).get("color", "#000000")
+    )
+    if outro_text:
+        log.info("[render] Step 4: outro card")
         card = make_card(
-            text=end_cfg.get("text", ""),
-            color=end_cfg.get("color", "black"),
+            text=outro_text,
+            color=outro_color,
             duration_s=3.0,
             out_path=tmp / "end_card.mp4",
             size=card_size,

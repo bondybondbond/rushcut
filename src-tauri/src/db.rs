@@ -139,6 +139,15 @@ pub fn insert_project(name: &str, project_id: &str) -> Result<(), rusqlite::Erro
     Ok(())
 }
 
+pub fn rename_project(project_id: &str, name: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "UPDATE projects SET name = ?1 WHERE id = ?2",
+        params![name, project_id],
+    )?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Clip helpers
 // ---------------------------------------------------------------------------

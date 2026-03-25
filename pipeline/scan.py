@@ -149,36 +149,47 @@ def extract_thumbnail(wsl_path: str) -> str | None:
         return None
 
 
+def probe_single(wsl_path: str) -> dict:
+    """Probe one file and return a full clip metadata dict (Windows local_path)."""
+    f = Path(wsl_path)
+    win_path = wsl_to_win(wsl_path)
+    meta = probe_file(wsl_path)
+    audio = has_audio_stream(wsl_path)
+    thumbnail = extract_thumbnail(wsl_path)
+    return {
+        "filename": f.name,
+        "local_path": win_path,
+        "size_bytes": meta.get("size_bytes", f.stat().st_size if f.exists() else 0),
+        "duration_ms": meta.get("duration_ms", 0),
+        "width": meta.get("width", 0),
+        "height": meta.get("height", 0),
+        "has_audio": audio,
+        "thumbnail_data": thumbnail,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--folder", required=True, help="WSL path to folder to scan")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--folder", help="WSL path to folder to scan")
+    group.add_argument("--files", nargs="+", help="WSL paths of individual files to probe")
     args = parser.parse_args()
 
-    folder = Path(args.folder)
-    if not folder.exists() or not folder.is_dir():
-        print(f"[]", flush=True)  # empty array, not an error
-        sys.exit(0)
-
     clips = []
-    for f in sorted(folder.iterdir()):
-        if f.is_file() and f.suffix in VIDEO_EXTS:
-            wsl_path = str(f)
-            win_path = wsl_to_win(wsl_path)
 
-            meta = probe_file(wsl_path)
-            audio = has_audio_stream(wsl_path)
-            thumbnail = extract_thumbnail(wsl_path)
-
-            clips.append({
-                "filename": f.name,
-                "local_path": win_path,
-                "size_bytes": meta.get("size_bytes", f.stat().st_size),
-                "duration_ms": meta.get("duration_ms", 0),
-                "width": meta.get("width", 0),
-                "height": meta.get("height", 0),
-                "has_audio": audio,
-                "thumbnail_data": thumbnail,
-            })
+    if args.folder:
+        folder = Path(args.folder)
+        if not folder.exists() or not folder.is_dir():
+            print("[]", flush=True)
+            sys.exit(0)
+        for f in sorted(folder.iterdir()):
+            if f.is_file() and f.suffix in VIDEO_EXTS:
+                clips.append(probe_single(str(f)))
+    else:
+        for wsl_path in args.files:
+            f = Path(wsl_path)
+            if f.is_file() and f.suffix in VIDEO_EXTS:
+                clips.append(probe_single(wsl_path))
 
     print(json.dumps(clips), flush=True)
 

@@ -75,12 +75,14 @@ def main() -> None:
         "mode": "final",
         "config": {
             "music_mood": settings.get("music_mood", "none"),
-            "zoom": settings.get("zoom", True),
+            "zoom": settings.get("zoom", False),
             "filter_boring": settings.get("filter_boring", False),
             "transition": settings.get("transition", "crossfade"),
-            "silence_removal": settings.get("silence_removal", True),
-            "intro_card": {"enabled": bool(intro_text), "text": intro_text, "color": "black"},
-            "end_card":   {"enabled": bool(outro_text), "text": outro_text, "color": "black"},
+            "silence_removal": settings.get("silence_removal", False),
+            "intro_color": settings.get("intro_color", "#000000"),
+            "intro_text": intro_text,
+            "outro_color": settings.get("outro_color", "#000000"),
+            "outro_text": outro_text,
         },
     }
 

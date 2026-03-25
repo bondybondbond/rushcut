@@ -21,11 +21,12 @@ Folder picker (`/upload`) -> Editor (`/editor/:projectId`) -> Output (`/output/:
 Manifest JSON is written to `%TEMP%\rushcut\<job_id>.json` by Rust before spawning. Contains clips array + settings + output_path. WSL path passed to `run.py`.
 
 Folder scan: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/scan.py --folder <wsl_path>`
+Individual file scan (file picker): `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/scan.py --files <wsl_path1> <wsl_path2> ...`
 
 Progress is read line-by-line from stdout: `STAGE:name`, `PROGRESS:N`, `DONE:/mnt/c/...`, `ERROR:msg`
 
 ### Output
-Written to `C:\clips\processed\<jobId>.mp4`. Served to the WebView via Tauri asset protocol (`asset://`).
+Written to `C:\clips\processed\<slug>-<shortId>.mp4` (e.g. `my-project-a1b2c3d4.mp4`). Served via `convertFileSrc(path)` from `@tauri-apps/api/core` — do NOT construct `asset://localhost/...` URLs manually; `convertFileSrc` outputs `https://asset.localhost/...` on Windows.
 
 ---
 
@@ -53,6 +54,9 @@ Written to `C:\clips\processed\<jobId>.mp4`. Served to the WebView via Tauri ass
 - **Tauri 2.x permissions:** All plugin commands must be declared in `src-tauri/capabilities/default.json`. Missing entries throw `not allowed` at runtime, NOT at compile time. Example: folder picker requires `"dialog:allow-open"` in the permissions array.
 - **Tauri plugin config in tauri.conf.json:** Use `null` for plugins with no options (e.g. `"dialog": null`). Using `{}` throws a deserialization panic at startup.
 - **Tailwind CSS entry point:** `src/globals.css` must contain `@import "tailwindcss"` and be imported in `src/main.tsx`. Do NOT reference `src/app/globals.css` — that path was a Next.js artifact and the directory is deleted.
+- **Asset URLs in WebView:** Always use `convertFileSrc(winPath)` from `@tauri-apps/api/core` to get playable `https://asset.localhost/...` URLs. Manual `asset://localhost/C:/...` construction fails silently — video element shows nothing.
+- **`run.py` config completeness:** All settings fields must be explicitly read from `settings.get(key, default)` in `run.py`. Any field omitted from the config dict sent to `run_pipeline()` silently falls back to wrong pipeline defaults (e.g. zoom/silence_removal used to default True). Add every new `JobConfig` field to `run.py` the moment it's added to the TypeScript type.
+- **Output filename format:** `<slug>-<shortId>.mp4` where slug = `slugify(project.name)` (Rust, lowercased, spaces→hyphens, non-alphanum stripped) and shortId = first 8 chars of job UUID. Never raw UUID in output filename.
 
 ## FFmpeg Quirks (WSL2 local build)
 
@@ -64,7 +68,7 @@ Written to `C:\clips\processed\<jobId>.mp4`. Served to the WebView via Tauri ass
 
 ## Docker & Lambda (RETIRED for local build)
 
-- Lambda is retired as the processing backend. Do NOT rebuild or redeploy Lambda for Phase 2.
+- Lambda, ECR, IAM role, and IAM user are all DELETED. Do NOT rebuild.
 - Docker Desktop is still broken — irrelevant now.
-- AWS credentials / ECR / Lambda function remain live but idle. Do not delete them (Phase 3 cloud mode will reuse).
+- AWS account (459338751297) still exists with no monthly cost. Supabase project paused (restorable 90 days).
 - The `lambda/` directory is kept as reference only. Active pipeline code lives in `pipeline/` (top-level).

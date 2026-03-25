@@ -1,14 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { Clip, JobConfig, ProjectWithClips } from "@/types/project";
 import { TimelineStrip } from "@/components/editor/TimelineStrip";
+import { SettingsPanel } from "@/components/editor/SettingsPanel";
+import { NavDrawer } from "@/components/NavDrawer";
 
 const DEFAULT_CONFIG: JobConfig = {
-  music_mood: "cinematic",
+  music_mood: "none",
   intro_text: "",
+  intro_color: "#000000",
   outro_text: "",
-  zoom: true,
+  outro_color: "#000000",
+  zoom: false,
   filter_boring: false,
 };
 
@@ -21,7 +25,12 @@ export default function Editor() {
   const [loading, setLoading] = useState(true);
   const [rendering, setRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Project name inline edit
   const [projectName, setProjectName] = useState("");
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -29,16 +38,34 @@ export default function Editor() {
       .then((data) => {
         setClips(data.clips);
         setProjectName(data.project.name);
+        setNameInput(data.project.name);
       })
       .catch((e) => setError(`Failed to load project: ${e}`))
       .finally(() => setLoading(false));
   }, [projectId]);
 
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.focus();
+  }, [editingName]);
+
+  async function commitNameEdit() {
+    const trimmed = nameInput.trim();
+    setEditingName(false);
+    if (!trimmed || trimmed === projectName || !projectId) return;
+    setProjectName(trimmed);
+    try {
+      await invoke("rename_project_cmd", { projectId, name: trimmed });
+    } catch {
+      // revert on failure
+      setProjectName(projectName);
+      setNameInput(projectName);
+    }
+  }
+
   async function handleRender() {
     if (!projectId || clips.length === 0) return;
     setRendering(true);
     setError(null);
-
     try {
       const jobId = await invoke<string>("start_job", {
         projectId,
@@ -68,123 +95,77 @@ export default function Editor() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] flex flex-col">
-      {/* Top bar */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-white/10">
-        <div>
-          <h1 className="text-lg font-semibold text-[#e5e5e5]">{projectName || "Editor"}</h1>
-          <p className="text-xs text-[#555555]">{clips.length} clip{clips.length !== 1 ? "s" : ""}</p>
-        </div>
-        <button
-          onClick={handleRender}
-          disabled={rendering || clips.length === 0}
-          className="px-6 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {rendering ? "Starting..." : "Render"}
-        </button>
-      </header>
+    <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
+      <div className="max-w-3xl mx-auto space-y-6">
 
-      {/* Timeline */}
-      <div className="px-6 pt-6 pb-4 border-b border-white/10">
-        <TimelineStrip
-          clips={clips}
-          config={config}
-          onReorder={handleReorder}
-          onDelete={handleDelete}
-        />
-      </div>
-
-      {/* Settings panel */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <h2 className="text-sm font-semibold text-[#a3a3a3] uppercase tracking-wider mb-4">Settings</h2>
-
-        <div className="space-y-6 max-w-md">
-          {/* Music mood */}
+        {/* Header */}
+        <div className="flex items-center justify-between">
           <div>
-            <label className="block text-sm text-[#e5e5e5] mb-2">Music</label>
-            <div className="flex flex-wrap gap-2">
-              {(["none", "cinematic", "upbeat", "chill", "electronic"] as JobConfig["music_mood"][]).map((mood) => (
-                <button
-                  key={mood}
-                  onClick={() => setConfig((c) => ({ ...c, music_mood: mood }))}
-                  className={`px-3 py-1.5 rounded-md text-sm capitalize transition-colors ${
-                    config.music_mood === mood
-                      ? "bg-[#C9A96E] text-[#0a0a0a] font-medium"
-                      : "bg-white/10 text-[#a3a3a3] hover:bg-white/20"
-                  }`}
+            {/* Editable project name */}
+            {editingName ? (
+              <input
+                ref={nameInputRef}
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onBlur={commitNameEdit}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitNameEdit();
+                  if (e.key === "Escape") { setEditingName(false); setNameInput(projectName); }
+                }}
+                className="text-2xl font-semibold bg-transparent border-b border-[#C9A96E] text-[#e5e5e5] focus:outline-none w-72"
+              />
+            ) : (
+              <button
+                onClick={() => { setNameInput(projectName); setEditingName(true); }}
+                className="group flex items-center gap-2 text-left"
+              >
+                <h1 className="text-2xl font-semibold text-[#e5e5e5]">{projectName || "Project"}</h1>
+                <svg
+                  className="w-4 h-4 text-[#a3a3a3] opacity-0 group-hover:opacity-100 transition-opacity"
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
                 >
-                  {mood}
-                </button>
-              ))}
-            </div>
+                  <path strokeLinecap="round" strokeLinejoin="round"
+                    d="M15.232 5.232l3.536 3.536M9 13l-4 1 1-4L14.586 2.414a2 2 0 012.828 0l1.172 1.172a2 2 0 010 2.828L9 13z" />
+                </svg>
+              </button>
+            )}
+            <p className="text-[#a3a3a3] text-sm mt-1">
+              {clips.length} clip{clips.length !== 1 ? "s" : ""}
+            </p>
           </div>
 
-          {/* Zoom toggle */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-[#e5e5e5]">Ken Burns Zoom</p>
-              <p className="text-xs text-[#555555] mt-0.5">Subtle zoom effect on clips</p>
-            </div>
+          <div className="flex items-center gap-3">
+            <NavDrawer />
             <button
-              onClick={() => setConfig((c) => ({ ...c, zoom: !c.zoom }))}
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                config.zoom ? "bg-[#22c55e]" : "bg-white/20"
-              }`}
+              onClick={() => navigate("/library")}
+              className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
             >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                  config.zoom ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
+              ← Back
             </button>
-          </div>
-
-          {/* Boring clip filter */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-[#e5e5e5]">Skip Boring Clips</p>
-              <p className="text-xs text-[#555555] mt-0.5">Auto-remove static or frozen shots</p>
-            </div>
             <button
-              onClick={() => setConfig((c) => ({ ...c, filter_boring: !c.filter_boring }))}
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                config.filter_boring ? "bg-[#22c55e]" : "bg-white/20"
-              }`}
+              onClick={handleRender}
+              disabled={rendering || clips.length === 0}
+              className="px-6 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                  config.filter_boring ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
+              {rendering ? "Starting..." : "Render"}
             </button>
-          </div>
-
-          {/* Intro card */}
-          <div>
-            <label className="block text-sm text-[#e5e5e5] mb-2">Intro Card Text</label>
-            <input
-              type="text"
-              value={config.intro_text}
-              onChange={(e) => setConfig((c) => ({ ...c, intro_text: e.target.value }))}
-              placeholder="Leave blank to skip"
-              className="w-full bg-[#111111] border border-white/10 rounded-md px-3 py-2 text-[#e5e5e5] text-sm placeholder:text-[#555555] focus:outline-none focus:border-[#C9A96E]/50"
-            />
-          </div>
-
-          {/* Outro card */}
-          <div>
-            <label className="block text-sm text-[#e5e5e5] mb-2">Outro Card Text</label>
-            <input
-              type="text"
-              value={config.outro_text}
-              onChange={(e) => setConfig((c) => ({ ...c, outro_text: e.target.value }))}
-              placeholder="Leave blank to skip"
-              className="w-full bg-[#111111] border border-white/10 rounded-md px-3 py-2 text-[#e5e5e5] text-sm placeholder:text-[#555555] focus:outline-none focus:border-[#C9A96E]/50"
-            />
           </div>
         </div>
 
-        {error && <p className="text-red-400 text-sm mt-4">{error}</p>}
+        {/* Timeline */}
+        <div className="border border-white/10 rounded-lg p-4">
+          <TimelineStrip
+            clips={clips}
+            config={config}
+            onReorder={handleReorder}
+            onDelete={handleDelete}
+          />
+        </div>
+
+        {/* Settings */}
+        <SettingsPanel config={config} onChange={setConfig} />
+
+        {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>
     </div>
   );

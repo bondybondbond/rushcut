@@ -3,9 +3,11 @@ import { JobConfig } from "@/types/project";
 
 const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
-  zoom: true,
+  zoom: false,
   intro_text: "",
+  intro_color: "#000000",
   outro_text: "",
+  outro_color: "#000000",
   filter_boring: false,
 };
 

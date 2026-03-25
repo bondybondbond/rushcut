@@ -21,13 +21,13 @@ export function StepIndicator({ currentStep }: { currentStep: Step }) {
                   ? "text-[#e5e5e5] font-medium"
                   : isPast
                   ? "text-[#a3a3a3]"
-                  : "text-[#555555]"
+                  : "text-[#a3a3a3]"
               }
             >
               {step.label}
             </span>
             {i < STEPS.length - 1 && (
-              <span className="text-[#555555]">/</span>
+              <span className="text-[#a3a3a3]">/</span>
             )}
           </div>
         );

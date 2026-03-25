@@ -46,7 +46,9 @@ export interface Job {
 export interface JobConfig {
   music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic";
   intro_text: string;
+  intro_color: string; // #rrggbb background colour for intro card
   outro_text: string;
+  outro_color: string; // #rrggbb background colour for outro card
   zoom: boolean;
   filter_boring: boolean;
 }

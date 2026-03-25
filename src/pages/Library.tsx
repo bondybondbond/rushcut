@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectSummary } from "@/types/project";
+import { NavDrawer } from "@/components/NavDrawer";
 
 function formatDate(iso: string): string {
   try {
@@ -13,7 +14,7 @@ function formatDate(iso: string): string {
 }
 
 function StatusBadge({ status }: { status: string | null }) {
-  if (!status) return <span className="text-[#555555] text-xs">No renders</span>;
+  if (!status) return <span className="text-[#a3a3a3] text-xs">No renders</span>;
   const map: Record<string, { label: string; color: string }> = {
     done:       { label: "Done",       color: "text-[#22c55e]" },
     processing: { label: "Processing", color: "text-[#C9A96E]" },
@@ -42,16 +43,13 @@ export default function Library() {
       <div className="max-w-3xl mx-auto space-y-8">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold text-[#e5e5e5]">My Projects</h1>
-            <p className="text-[#a3a3a3] text-sm mt-1">Past editing sessions.</p>
+          <div className="flex items-center gap-3">
+            <NavDrawer />
+            <div>
+              <h1 className="text-2xl font-semibold text-[#e5e5e5]">My Projects</h1>
+              <p className="text-[#a3a3a3] text-sm mt-1">Past editing sessions.</p>
+            </div>
           </div>
-          <button
-            onClick={() => navigate("/upload")}
-            className="px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors"
-          >
-            New Project
-          </button>
         </div>
 
         {loading && <p className="text-[#a3a3a3] text-sm">Loading...</p>}
@@ -59,7 +57,7 @@ export default function Library() {
 
         {!loading && projects.length === 0 && (
           <div className="text-center py-16 border border-white/10 rounded-lg">
-            <p className="text-[#555555]">No projects yet.</p>
+            <p className="text-[#a3a3a3]">No projects yet.</p>
             <button
               onClick={() => navigate("/upload")}
               className="mt-4 text-sm text-[#FF8A65] hover:text-[#ff9e7a] transition-colors"
@@ -79,8 +77,8 @@ export default function Library() {
                 <div className="min-w-0 flex-1">
                   <p className="text-[#e5e5e5] font-medium truncate">{p.name}</p>
                   <div className="flex items-center gap-3 mt-0.5">
-                    <span className="text-[#555555] text-xs">{formatDate(p.created_at)}</span>
-                    <span className="text-[#555555] text-xs">{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}</span>
+                    <span className="text-[#a3a3a3] text-xs">{formatDate(p.created_at)}</span>
+                    <span className="text-[#a3a3a3] text-xs">{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}</span>
                     <StatusBadge status={p.last_job_status} />
                   </div>
                 </div>

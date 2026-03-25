@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Job, PipelineProgressEvent } from "@/types/project";
+import { NavDrawer } from "@/components/NavDrawer";
 
 const STAGE_LABELS: Record<string, string> = {
   normalise:    "Normalising clips...",
@@ -18,35 +20,27 @@ function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage;
 }
 
-// Convert a Windows output path to an asset:// URL for Tauri's asset protocol.
-// e.g. C:\clips\processed\abc.mp4 -> asset://localhost/C:/clips/processed/abc.mp4
-function outputPathToAssetUrl(winPath: string): string {
-  const normalized = winPath.replace(/\\/g, "/");
-  return `asset://localhost/${normalized}`;
-}
-
 export default function Output() {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
 
-  const [job, setJob] = useState<Job | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Waiting...");
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Load initial job state
+  // Load initial job state (handles page refresh on already-done job)
   useEffect(() => {
     if (!jobId) return;
     invoke<Job>("get_job_cmd", { jobId })
       .then((j) => {
-        setJob(j);
         setProgress(j.progress_pct);
         if (j.status === "done" && j.local_output_path) {
           setOutputPath(j.local_output_path);
           setStage("Done");
         } else if (j.status === "failed") {
           setErrorMsg(j.error_message ?? "Render failed");
+          setStage("Error");
         }
       })
       .catch(() => {
@@ -58,41 +52,28 @@ export default function Output() {
   useEffect(() => {
     if (!jobId) return;
 
-    const unlistenProgress = listen<PipelineProgressEvent>(
-      "pipeline-progress",
-      (event) => {
-        if (event.payload.jobId !== jobId) return;
-        setProgress(event.payload.progress);
-        // Stage label is set exclusively by pipeline-stage events
-      }
-    );
+    const unlistenProgress = listen<PipelineProgressEvent>("pipeline-progress", (event) => {
+      if (event.payload.jobId !== jobId) return;
+      setProgress(event.payload.progress);
+    });
 
-    const unlistenDone = listen<PipelineProgressEvent>(
-      "pipeline-done",
-      (event) => {
-        if (event.payload.jobId !== jobId) return;
-        setProgress(100);
-        setStage("Done");
-        setOutputPath(event.payload.outputPath);
-      }
-    );
+    const unlistenDone = listen<PipelineProgressEvent>("pipeline-done", (event) => {
+      if (event.payload.jobId !== jobId) return;
+      setProgress(100);
+      setStage("Done");
+      setOutputPath(event.payload.outputPath);
+    });
 
-    const unlistenError = listen<PipelineProgressEvent>(
-      "pipeline-error",
-      (event) => {
-        if (event.payload.jobId !== jobId) return;
-        setErrorMsg(event.payload.message || "Render failed");
-        setStage("Error");
-      }
-    );
+    const unlistenError = listen<PipelineProgressEvent>("pipeline-error", (event) => {
+      if (event.payload.jobId !== jobId) return;
+      setErrorMsg(event.payload.message || "Render failed");
+      setStage("Error");
+    });
 
-    const unlistenStage = listen<{ jobId: string; stage: string }>(
-      "pipeline-stage",
-      (event) => {
-        if (event.payload.jobId !== jobId) return;
-        setStage(stageLabel(event.payload.stage));
-      }
-    );
+    const unlistenStage = listen<{ jobId: string; stage: string }>("pipeline-stage", (event) => {
+      if (event.payload.jobId !== jobId) return;
+      setStage(stageLabel(event.payload.stage));
+    });
 
     return () => {
       unlistenProgress.then((f) => f());
@@ -104,22 +85,27 @@ export default function Output() {
 
   const isDone = outputPath !== null;
   const isError = errorMsg !== null;
-  const assetUrl = outputPath ? outputPathToAssetUrl(outputPath) : null;
+
+  // Use Tauri's convertFileSrc for correct asset:// URL on Windows
+  const assetUrl = outputPath ? convertFileSrc(outputPath) : null;
+
+  // Human-readable filename from path
+  const filename = outputPath
+    ? outputPath.replace(/\\/g, "/").split("/").pop() ?? outputPath
+    : null;
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
       <div className="max-w-3xl mx-auto space-y-8">
+
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-[#e5e5e5]">
-            {isDone ? "Your film is ready" : isError ? "Render failed" : "Rendering..."}
-          </h1>
-          <button
-            onClick={() => navigate("/upload")}
-            className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
-          >
-            New project
-          </button>
+          <div className="flex items-center gap-3">
+            <NavDrawer />
+            <h1 className="text-2xl font-semibold text-[#FF8A65]">
+              {isDone ? "Your film is ready" : isError ? "Render failed" : "Rendering..."}
+            </h1>
+          </div>
         </div>
 
         {/* Progress bar */}
@@ -135,6 +121,9 @@ export default function Output() {
                 style={{ width: `${progress}%` }}
               />
             </div>
+            <p className="text-xs text-[#a3a3a3]">
+              1080p renders take 2–5 min — switch tabs and come back whenever.
+            </p>
           </div>
         )}
 
@@ -149,7 +138,17 @@ export default function Output() {
                 className="w-full max-h-[480px]"
               />
             </div>
-            <p className="text-xs text-[#555555] break-all">{outputPath}</p>
+            <div className="flex items-center justify-between">
+              {filename && (
+                <p className="text-sm text-[#a3a3a3]">{filename}</p>
+              )}
+              <button
+                onClick={() => navigate("/library")}
+                className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+              >
+                ← My Projects
+              </button>
+            </div>
           </div>
         )}
 
@@ -164,11 +163,6 @@ export default function Output() {
               Go back
             </button>
           </div>
-        )}
-
-        {/* Job info */}
-        {job && (
-          <p className="text-xs text-[#333333]">Job {jobId}</p>
         )}
       </div>
     </div>
