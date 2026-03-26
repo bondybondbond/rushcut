@@ -647,6 +647,7 @@ Remove "switch tabs" entirely.
 | Pipeline failure UI on Output page | If WSL/FFmpeg unavailable or pipeline errors out, Output page hangs at "Waiting..." with no timeout or error message. Add a 10-min timeout + failure state. | 11c or 12 |
 | React Router v7 future flags | Add `v7_startTransition` and `v7_relativeSplatPath` flags to `<BrowserRouter>` before upgrading to React Router v7. | 11c |
 | E2E test: fresh-install seed | render.spec.ts relies on existing projects. Add a `--e2e-seed` flag or test fixture to create a project with clips for fresh installs. | 12 |
+| Programmatic clip loading for eval | `invoke("scan_folder")` returns data but doesn't update Upload page React state. Add a Tauri command or JS bridge that triggers the full `handleScan` flow so the eval skill can populate the UI without the native file dialog. | 12 |
 
 ---
 
