@@ -15,39 +15,29 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 11 (UI Polish) COMPLETE**
+**Phase 2 — Batch 11b (E2E Infrastructure + Eval Skill) COMPLETE**
 
-Batch 10 E2E verified. Batch 11 (19-item UI feedback pass) complete.
+Batch 11b delivered: WebdriverIO v9 + msedgedriver E2E scaffold with 3-layer BiDi fix (verified 3x consecutive green runs). Created `rushcut-eval` skill for human-like E2E testing via chrome-devtools MCP. Dry run passed 33/35 checks (2 permanent SKIPs due to native file dialog limitation).
 
 ---
 
 ## Immediate Next Task
 
-**Batch 11b — Autonomous E2E via tauri-driver** (new session)
-
-Wire up tauri-driver + msedgedriver + WebdriverIO so Claude can run E2E tests against the real Tauri binary autonomously. Spec in `docs/PRD-DEV.md` — Batch 11b section.
-
-After 11b: **Batch 11c** (9 UI items: mandatory project name prompt, scan spinner, home screen redesign, remove manual path input, transition picker, nav drawer position, download button, copy fixes, 4K notice on upload).
+**Batch 11c** — 9 UI items: mandatory project name prompt, scan spinner, home screen redesign, remove manual path input, transition picker, nav drawer position, download button, copy fixes, 4K notice on upload.
 
 After 11c: **Director Intelligence** (Gemini clip ordering, beat-sync, motion peak trimming).
 
 ---
 
-## In Progress
+## Recently Completed
 
-**Batch 11 — UI Polish COMPLETE (2026-03-25)**
+**Batch 11b — E2E Infrastructure + Eval Skill (2026-03-26)**
 
-19-item feedback pass complete:
-- File picker (individual clips) alongside folder picker (`scan.py --files` + `probe_files` Rust cmd)
-- Inline project name edit (pencil icon → input → `rename_project_cmd`)
-- SettingsPanel: music default None, zoom hidden/"coming soon", card colour swatches (intro/outro)
-- Output: `convertFileSrc` fix (video player now works), job ID removed, human-readable filename
-- NavDrawer: hamburger → collapsible left drawer, Home/My Projects/New Project
-- Back nav from Editor → Library
-- Colour compliance pass across all pages/components
-- Output filename: `<slug>-<shortId>.mp4` (no raw UUID)
-- Card colour bug fixed: `run.py` was hardcoding `"black"`; now reads `intro_color`/`outro_color` from settings
-- `render.py` bridge for Phase 2 flat config format (`intro_text`/`outro_text` vs old `intro_card` object)
+- WebdriverIO v9 + msedgedriver E2E scaffold (`wdio.conf.ts`, `e2e/fast.spec.ts`, `e2e/render.spec.ts`)
+- 3-layer BiDi fix: `--disable-bidi` + `webSocketUrl: false` + route-aware readiness gate
+- Verified 3x consecutive `pnpm test:e2e` green runs (7/7 each)
+- Created `rushcut-eval` skill (`.claude/skills/rushcut-eval/SKILL.md`) for human-like E2E testing via chrome-devtools MCP
+- Dry run: 33/35 PASS, 2 permanent SKIP (Upload page clip display — requires native file dialog)
 
 ---
 
@@ -62,19 +52,6 @@ After 11c: **Director Intelligence** (Gemini clip ordering, beat-sync, motion pe
 | Auth / project library | Batch 12+ |
 | Stripe / paid tier | Phase 3 |
 | Cloud mode (Vercel + Lambda) | Phase 3 |
-
----
-
-## Blocked / Deferred
-
-| Item | Blocked by | Status |
-|---|---|---|
-| Boring clip filter (motion score) | Local pipeline must exist first | Batch 8 sub-task |
-| Smart clip selection (>20 clips) | Local pipeline must exist first | Batch 8 sub-task |
-| Per-clip in/out handles | Local pipeline + folder scan first | Batch 8 sub-task |
-| Auth / project library | Batch 10 | Batch 10 |
-| Stripe / paid tier | AI layer (DEC-020) | Phase 3 |
-| Cloud mode (Vercel + Lambda) | Phase 3 reintroduction | Phase 3 |
 
 ---
 

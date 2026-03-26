@@ -7,7 +7,7 @@ let appProcess: ChildProcess;
 let msEdge: ChildProcess;
 let viteServer: ChildProcess;
 
-// Prefer debug binary (loads from Vite dev server — always reflects latest source).
+// Prefer debug binary (loads from Vite dev server -- always reflects latest source).
 // Fall back to release binary only if debug binary doesn't exist.
 const releasePath = path.resolve(__dirname, "src-tauri", "target", "release", "rushcut.exe");
 const debugPath   = path.resolve(__dirname, "src-tauri", "target", "debug",   "rushcut.exe");
@@ -17,7 +17,11 @@ const usingDebug  = APP_PATH === debugPath;
 const CDP_PORT    = 9222;  // WebView2 remote debug port
 const DRIVER_PORT = 9515;  // msedgedriver port
 
-function waitForPort(port: number, timeoutMs = 20000): Promise<void> {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeoutMs;
     function attempt() {
@@ -38,6 +42,78 @@ function waitForPort(port: number, timeoutMs = 20000): Promise<void> {
   });
 }
 
+/** Kill stale rushcut, msedgedriver, and any process holding the CDP port. */
+async function killStaleProcesses(): Promise<void> {
+  spawn("taskkill", ["/F", "/IM", "rushcut.exe"], { stdio: "pipe" });
+  spawn("taskkill", ["/F", "/IM", "msedgedriver.exe"], { stdio: "pipe" });
+  spawn("powershell.exe", [
+    "-Command",
+    `$p = Get-NetTCPConnection -LocalPort ${CDP_PORT} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }`,
+  ], { stdio: "pipe" });
+  await new Promise<void>((r) => setTimeout(r, 2000));
+}
+
+/** Start Vite dev server if port 1420 is not already live. */
+async function ensureViteRunning(): Promise<void> {
+  const port1420Live = await new Promise<boolean>((resolve) => {
+    const req = http.get("http://localhost:1420", () => { req.destroy(); resolve(true); });
+    req.on("error", () => resolve(false));
+    req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+  });
+  if (!port1420Live) {
+    viteServer = spawn("pnpm", ["exec", "vite"], {
+      cwd: __dirname,
+      stdio: "pipe",
+      shell: true,
+    });
+    await new Promise<void>((resolve) => {
+      viteServer.stdout?.on("data", (d: Buffer) => {
+        if (d.toString().includes("ready in") || d.toString().includes("Local:")) resolve();
+      });
+      setTimeout(resolve, 10_000);
+    });
+  }
+}
+
+/**
+ * Poll CDP /json/list until a React Router route appears (/upload, /library, /editor/).
+ * This is a stronger signal than "any non-blank URL" -- proves React has mounted.
+ */
+async function waitForAppRoute(timeoutMs = 30_000): Promise<void> {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    function check() {
+      const req = http.get(`http://127.0.0.1:${CDP_PORT}/json/list`, (res) => {
+        let body = "";
+        res.on("data", (d: Buffer) => { body += d.toString(); });
+        res.on("end", () => {
+          try {
+            const targets = JSON.parse(body) as Array<{ url: string }>;
+            const ready = targets.some((t) =>
+              t.url.includes("/upload") ||
+              t.url.includes("/library") ||
+              t.url.includes("/editor/")
+            );
+            if (ready) { resolve(); return; }
+          } catch {}
+          if (Date.now() > deadline) { resolve(); return; }
+          setTimeout(check, 500);
+        });
+      });
+      req.on("error", () => {
+        if (Date.now() > deadline) { resolve(); return; }
+        setTimeout(check, 500);
+      });
+      req.setTimeout(2000, () => { req.destroy(); setTimeout(check, 500); });
+    }
+    check();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// WebdriverIO config
+// ---------------------------------------------------------------------------
+
 export const config: WebdriverIO.Config = {
   // Connect to msedgedriver (not directly to CDP port)
   hostname: "127.0.0.1",
@@ -52,8 +128,9 @@ export const config: WebdriverIO.Config = {
       "ms:edgeOptions": {
         debuggerAddress: `127.0.0.1:${CDP_PORT}`,
       },
-      // BiDi protocol reports stale about:blank for WebView2 attach mode.
-      // Force classic WebDriver to get correct URL and DOM access.
+      // Layer 2: prevent WDIO from requesting BiDi during session negotiation.
+      webSocketUrl: false,
+      // Belt-and-suspenders: force classic WebDriver protocol.
       "wdio:enforceWebDriverClassic": true,
     },
   ],
@@ -68,42 +145,10 @@ export const config: WebdriverIO.Config = {
   specs: ["./e2e/**/*.spec.ts"],
 
   beforeSession: async () => {
-    // Kill any stale processes from previous runs (including WebView2 subprocess on port 9222)
-    spawn("taskkill", ["/F", "/IM", "rushcut.exe"], { stdio: "pipe" });
-    spawn("taskkill", ["/F", "/IM", "msedgedriver.exe"], { stdio: "pipe" });
-    // Kill whatever process is holding the CDP port (usually a WebView2 leftover)
-    spawn("powershell.exe", [
-      "-Command",
-      `$p = Get-NetTCPConnection -LocalPort ${CDP_PORT} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }`,
-    ], { stdio: "pipe" });
-    await new Promise<void>((r) => setTimeout(r, 2000));
+    await killStaleProcesses();
+    if (usingDebug) await ensureViteRunning();
 
-    // Start Vite dev server if using debug binary and 1420 is not live
-    if (usingDebug) {
-      const port1420Live = await new Promise<boolean>((resolve) => {
-        const req = http.get("http://localhost:1420", () => { req.destroy(); resolve(true); });
-        req.on("error", () => resolve(false));
-        req.setTimeout(1000, () => { req.destroy(); resolve(false); });
-      });
-      if (!port1420Live) {
-        viteServer = spawn("pnpm", ["exec", "vite"], {
-          cwd: __dirname,
-          stdio: "pipe",
-          shell: true,
-        });
-        // Wait for Vite "ready" signal or up to 10s
-        await new Promise<void>((resolve) => {
-          viteServer.stdout?.on("data", (d: Buffer) => {
-            if (d.toString().includes("ready in") || d.toString().includes("Local:")) resolve();
-          });
-          setTimeout(resolve, 10_000);
-        });
-      }
-    }
-
-    // Launch the Tauri binary with WebView2 remote debugging enabled.
-    // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS is read by the WebView2 host process
-    // and causes it to open a CDP debug endpoint on CDP_PORT.
+    // Launch Tauri binary with WebView2 remote debugging enabled.
     appProcess = spawn(APP_PATH, [], {
       env: {
         ...process.env,
@@ -112,46 +157,21 @@ export const config: WebdriverIO.Config = {
       stdio: "pipe",
     });
 
-    // Wait for the WebView2 CDP endpoint to become available
-    await waitForPort(CDP_PORT, 20000);
+    // Wait for CDP endpoint, then for a real React Router route.
+    await waitForPort(CDP_PORT, 30_000);
+    await waitForAppRoute(30_000);
 
-    // Wait for the app to navigate away from the initial blank page
-    await new Promise<void>((resolve) => {
-      const deadline = Date.now() + 20_000;
-      function checkTargets() {
-        const req = http.get(`http://127.0.0.1:${CDP_PORT}/json/list`, (res) => {
-          let body = "";
-          res.on("data", (d: Buffer) => { body += d.toString(); });
-          res.on("end", () => {
-            try {
-              const targets = JSON.parse(body) as Array<{ url: string }>;
-              const loaded = targets.some((t) => t.url !== "about:blank" && t.url !== "");
-              if (loaded) { resolve(); return; }
-            } catch {}
-            if (Date.now() > deadline) { resolve(); return; }
-            setTimeout(checkTargets, 300);
-          });
-        });
-        req.on("error", () => {
-          if (Date.now() > deadline) { resolve(); return; }
-          setTimeout(checkTargets, 300);
-        });
-        req.setTimeout(2000, () => { req.destroy(); setTimeout(checkTargets, 300); });
-      }
-      checkTargets();
-    });
+    // Brief pause for DOM hydration after CDP reports the route.
+    await new Promise<void>((r) => setTimeout(r, 2000));
 
-    // Extra wait: attaching msedgedriver while the page is navigating resets it to about:blank.
-    // Wait for the navigation to fully complete (React Router redirect + render).
-    await new Promise<void>((r) => setTimeout(r, 6000));
-
-    // Start msedgedriver as the WebDriver intermediary
+    // Layer 1: --disable-bidi prevents BiDi WebSocket negotiation entirely.
+    // Without this, WDIO v9 + msedgedriver 146 negotiate BiDi and call
+    // browsingContext.navigate, which hangs on Vite's HMR WebSocket.
     msEdge = spawn(
       "C:\\Users\\Manasak\\.cargo\\bin\\msedgedriver.exe",
-      [`--port=${DRIVER_PORT}`],
+      [`--port=${DRIVER_PORT}`, "--disable-bidi"],
       { stdio: "pipe", shell: false }
     );
-    // Give msedgedriver time to start
     await new Promise<void>((r) => setTimeout(r, 3000));
   },
 

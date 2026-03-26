@@ -642,6 +642,11 @@ Remove "switch tabs" entirely.
 | Project name → output filename | Fixed in Batch 11 (`slugify`). Mandatory name prompt (11c-1) closes the edge case. | 11c |
 | Proxy / low-res preview files | **Required for interactive timeline (Batch 13+), not now.** DJI HEVC at source res will stutter during frame-accurate scrubbing in the WebView. Generate H.264 720p proxies on project create (scan.py step); use for editor preview, discard for final render. ~10s/clip in WSL2 FFmpeg. Flag when interactive trim/zoom UI is designed. | 13+ |
 | Music volume vs. clip volume control | Add `music_volume` slider (0–100, default 40) to SettingsPanel → pass to `music.py` as `-filter:a "volume=X"` on the music track before mix | 12 |
+| Audio sample rate normalisation | Output currently inherits 96kHz from DJI source. Force `-ar 48000` in final mux step for compatibility. | 11c or 12 |
+| Stale job cleanup in Library | Interrupted pipeline runs stay stuck at "Processing" forever. Add a timeout or heartbeat check to mark stale jobs as "Failed". | 12 |
+| Pipeline failure UI on Output page | If WSL/FFmpeg unavailable or pipeline errors out, Output page hangs at "Waiting..." with no timeout or error message. Add a 10-min timeout + failure state. | 11c or 12 |
+| React Router v7 future flags | Add `v7_startTransition` and `v7_relativeSplatPath` flags to `<BrowserRouter>` before upgrading to React Router v7. | 11c |
+| E2E test: fresh-install seed | render.spec.ts relies on existing projects. Add a `--e2e-seed` flag or test fixture to create a project with clips for fresh installs. | 12 |
 
 ---
 

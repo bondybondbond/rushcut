@@ -95,10 +95,10 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Solution:** Add `"wdio:enforceWebDriverClassic": true` to the capability. This disables BiDi and uses classic WebDriver protocol, which reads the correct URL.
 **Context:** `wdio.conf.ts` capabilities block. Required any time msedgedriver attaches to an already-running WebView2 via `ms:edgeOptions.debuggerAddress`.
 
-## [msedgedriver mid-navigation race resets renderer to about:blank]
-**Problem:** Attaching msedgedriver to WebView2 while the app is still navigating (`about:blank` → `http://localhost:1420/`) permanently resets the renderer back to `about:blank` — WebDriver then returns `about:blank` for all subsequent `getUrl()` calls.
-**Solution:** After verifying the CDP `/json/list` shows a non-blank URL, wait an additional static delay (6 seconds) before spawning msedgedriver. This ensures the React Router redirect (`/` → `/upload`) has fully completed before attachment.
-**Context:** `wdio.conf.ts` `beforeSession` — the 6s delay sits between `checkTargets` resolving and `spawn("msedgedriver.exe")`.
+## [msedgedriver BiDi negotiation hangs on Vite HMR WebSocket]
+**Problem:** WDIO v9 + msedgedriver 146 negotiate BiDi protocol despite `wdio:enforceWebDriverClassic: true`. BiDi internally calls `browsingContext.navigate` which hangs forever because Vite's HMR WebSocket prevents `readyState === "complete"`.
+**Solution:** 3-layer fix: (1) `--disable-bidi` flag on msedgedriver spawn (primary — kills BiDi negotiation entirely), (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list` before spawning msedgedriver. Reduced blind delay from 6s to 2s (only covers DOM hydration gap now).
+**Context:** `wdio.conf.ts` — msedgedriver spawn args, capabilities block, `waitForAppRoute()` helper. See `docs/E2E-DEBUGGING.md` for full history.
 
 ## [Stale WebView2 subprocess holds CDP port between test runs]
 **Problem:** Killing `rushcut.exe` does not kill the WebView2 subprocess (a separate OS process). The stale subprocess holds port 9222 across test runs; the next run attaches to a dead WebView2, causing `getUrl()` to time out.
@@ -119,6 +119,16 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Problem:** The release binary has the frontend embedded at build time. After adding `data-testid` attrs, a release binary built before those changes will fail all selector-based tests.
 **Solution:** In `wdio.conf.ts`, check for the debug binary first (`src-tauri/target/debug/rushcut.exe`), fall back to release. Debug binary loads the frontend from the live Vite dev server and always reflects current source without a full `tauri build`.
 **Context:** `wdio.conf.ts` `APP_PATH` / `usingDebug` constants.
+
+## [Chrome-devtools MCP UIDs go stale after React re-renders]
+**Problem:** After clicking a button that changes React state (navigation, chip toggle), all UIDs from the previous `take_snapshot`/`wait_for` are invalidated. Clicking a stale UID errors with "Element with uid X no longer exists".
+**Solution:** Always take a fresh snapshot (`take_snapshot` or `wait_for`) before every interaction after a state change. For sequential clicks in a loop (e.g., music chips), add ~200ms delay or take a snapshot between each click.
+**Context:** `rushcut-eval` skill — applies to any chrome-devtools MCP interaction with a React app.
+
+## [invoke() via evaluate_script bypasses React state]
+**Problem:** Calling `window.__TAURI_INTERNALS__.invoke("scan_folder")` via `evaluate_script` returns data from Rust but doesn't update the React component's state (no `setClips()` call). Upload page shows no clips.
+**Solution:** Accept this as a permanent limitation. Use `invoke("scan_folder")` only to get clip metadata for `create_project`, not to populate UI. Mark clip display checks as SKIP in eval.
+**Context:** `rushcut-eval` skill — Upload page eval section.
 
 ---
 

@@ -9,9 +9,6 @@
 - **No S3, no Lambda, no Supabase, no Vercel**
 - `lambda/` is ARCHIVED reference only — do not modify it
 
-### Why the pivot (DEC-022 + DEC-023)
-Upload bottleneck is fatal: 19 GB / 62-clip session = ~84 min upload before any processing. Local-first removes this entirely. Tauri chosen over Electron for lighter binary (~10-30 MB) and faster cold start.
-
 ### UX flow
 Folder picker (`/upload`) -> Editor (`/editor/:projectId`) -> Output (`/output/:jobId`)
 
@@ -49,7 +46,6 @@ Written to `C:\clips\processed\<slug>-<shortId>.mp4` (e.g. `my-project-a1b2c3d4.
 - **Dev launch:** Run `pnpm dev` from `C:\apps\rushcut`. `pnpm dev:vite` alone starts only the React frontend at `:1420` — all Tauri `invoke()` calls throw "Cannot read properties of undefined (reading 'invoke')". Use `pnpm dev` for real testing (compiles Rust, opens Tauri window). Requires `cargo` in PATH — Rustup installs to `%USERPROFILE%\.cargo\bin` but only new terminals pick it up. If `cargo not found`, open a fresh terminal (or run `$env:PATH += ";$env:USERPROFILE\.cargo\bin"` once). First Cargo build takes several minutes; subsequent are fast.
 - **gitignore for Tauri:** `src-tauri/target/` and `src-tauri/gen/` MUST be in `.gitignore`. They are NOT added automatically. Forgetting this means committing hundreds of MB of binary build artifacts, which blocks GitHub push (`GH001: Large files detected`) and requires `git filter-branch` to fix.
 - **git push in Claude Code shell hangs silently:** Windows Credential Manager intercepts `git push` even when a token is embedded in the remote URL, causing the process to hang indefinitely with no output. Fix: always push as `GIT_ASKPASS=echo GIT_TERMINAL_PROMPT=0 git push https://<token>@github.com/... main`. Never use plain `git push` — it will hang.
-- **Recovering large files already in git history:** If build artifacts were committed and are blocking push, use `git filter-branch --tree-filter 'rm -rf src-tauri/target src-tauri/gen' -- <bad-commit>^..HEAD`, then `git push --force` (not `--force-with-lease` — stale info check fails after rewrite). Kill any hung git processes first with PowerShell `Stop-Process -Name git -Force`.
 - **`pipeline-progress` Rust event must NOT include a `stage` field.** Emitting `"stage": "processing"` clobbers the human-readable label just set by the `pipeline-stage` event. The progress handler in `Output.tsx` only updates the number; `pipeline-stage` exclusively owns the label text.
 - **Tauri 2.x permissions:** All plugin commands must be declared in `src-tauri/capabilities/default.json`. Missing entries throw `not allowed` at runtime, NOT at compile time. Example: folder picker requires `"dialog:allow-open"` in the permissions array.
 - **Tauri plugin config in tauri.conf.json:** Use `null` for plugins with no options (e.g. `"dialog": null`). Using `{}` throws a deserialization panic at startup.
@@ -72,11 +68,17 @@ Written to `C:\clips\processed\<slug>-<shortId>.mp4` (e.g. `my-project-a1b2c3d4.
 - **Binary preference:** Debug binary first (`src-tauri/target/debug/rushcut.exe`), release as fallback. Debug binary loads frontend from live Vite dev server — always reflects current source without a `tauri build`.
 - **Vite dev server:** `wdio.conf.ts` auto-starts Vite if using debug binary and port 1420 is not live.
 - **CDP attach:** Binary launched with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; msedgedriver attaches via `ms:edgeOptions.debuggerAddress: "127.0.0.1:9222"`.
-- **CRITICAL — `wdio:enforceWebDriverClassic: true` required:** WDIO v9 defaults to BiDi protocol; BiDi reports stale `about:blank` for WebView2 attach mode. Without this flag, `getUrl()` always returns `about:blank`.
-- **CRITICAL — 6s delay before msedgedriver:** Attaching while WebView2 is mid-navigation permanently resets the renderer to `about:blank`. The `beforeSession` hook waits for a non-blank CDP target, then sleeps 6s before spawning msedgedriver.
+- **3-layer BiDi fix (RESOLVED):** WDIO v9 + msedgedriver 146 negotiate BiDi despite `wdio:enforceWebDriverClassic`, causing `browsingContext.navigate` to hang on Vite's HMR WebSocket. Fix: (1) `--disable-bidi` flag on msedgedriver spawn, (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list`. See `docs/E2E-DEBUGGING.md` for full history.
 - **Stale process cleanup:** Kill `rushcut.exe`, `msedgedriver.exe`, and the process holding port 9222 (PowerShell `Get-NetTCPConnection`) at the start of every `beforeSession`. WebView2 subprocess survives `rushcut.exe` kill and holds the port.
 - **Never use `browser.url()`:** It hangs indefinitely against the Vite dev server (HMR WebSocket blocks `readyState === "complete"`). Use `browser.waitUntil(() => browser.getUrl())` instead.
 - **Run tests from PowerShell only:** `pnpm test:e2e`. Git Bash mangles paths in wdio.conf.ts.
+
+## E2E Eval Skill (`/rushcut-eval`)
+
+- **Human-like eval:** Uses chrome-devtools MCP (`take_snapshot`, `take_screenshot`, `click`, `fill`) to drive the app via CDP port 9222. Prefers clicking UIDs over `evaluate_script`.
+- **Acceptable invoke shortcuts:** Only `scan_folder` (OS file dialog can't be automated) and `create_project` (requires React state from scan). Everything else must be driven via UI clicks.
+- **Stale UIDs:** React re-renders invalidate all UIDs. Always take a fresh snapshot before interacting after any state change.
+- **Upload page limitation:** `invoke("scan_folder")` returns data but doesn't update React component state — clip display checks are permanent SKIPs.
 
 ## Docker & Lambda (RETIRED for local build)
 
