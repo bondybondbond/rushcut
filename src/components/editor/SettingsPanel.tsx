@@ -96,6 +96,27 @@ export function SettingsPanel({ config, onChange }: Props) {
         </div>
       </div>
 
+      {/* Transition */}
+      <div className={row}>
+        <p className={label}>Transition</p>
+        <div className="flex gap-2">
+          <Chip
+            testId="chip-transition-crossfade"
+            active={config.transition === "crossfade"}
+            onClick={() => update({ transition: "crossfade" })}
+          >
+            Crossfade
+          </Chip>
+          <Chip
+            testId="chip-transition-dip-to-black"
+            active={config.transition === "dip_to_black"}
+            onClick={() => update({ transition: "dip_to_black" })}
+          >
+            Dip to black
+          </Chip>
+        </div>
+      </div>
+
       {/* Ken Burns Zoom — disabled, coming soon */}
       <div className={`${row} opacity-50`}>
         <div className="flex items-center justify-between">

@@ -4,10 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Clip, JobConfig, ProjectWithClips } from "@/types/project";
 import { TimelineStrip } from "@/components/editor/TimelineStrip";
 import { SettingsPanel } from "@/components/editor/SettingsPanel";
-import { NavDrawer } from "@/components/NavDrawer";
 
 const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
+  transition: "crossfade",
   intro_text: "",
   intro_color: "#000000",
   outro_text: "",
@@ -137,7 +137,6 @@ export default function Editor() {
           </div>
 
           <div className="flex items-center gap-3">
-            <NavDrawer />
             <button
               data-testid="btn-back"
               onClick={() => navigate("/library")}

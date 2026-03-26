@@ -1,11 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ClipMeta, Clip } from "@/types/project";
+import type { ClipMeta, Clip, ProjectSummary } from "@/types/project";
 import { UploadZone } from "@/components/upload/UploadZone";
 import { ClipList } from "@/components/upload/ClipList";
-import { NavDrawer } from "@/components/NavDrawer";
 
 // Convert ClipMeta (from scan) to Clip (for UI display)
 function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
@@ -21,11 +20,23 @@ function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
 
 export default function Upload() {
   const navigate = useNavigate();
+  const [view, setView] = useState<"home" | "clips">("home");
   const [scanning, setScanning] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [folderPath, setFolderPath] = useState<string | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [pendingName, setPendingName] = useState("");
+  const [recentProjects, setRecentProjects] = useState<ProjectSummary[]>([]);
+  const [loadingRecents, setLoadingRecents] = useState(true);
+
+  useEffect(() => {
+    invoke<ProjectSummary[]>("list_projects_cmd")
+      .then((projects) => setRecentProjects(projects.slice(0, 3)))
+      .catch(() => setRecentProjects([]))
+      .finally(() => setLoadingRecents(false));
+  }, []);
 
   async function handlePickFolder() {
     try {
@@ -58,6 +69,7 @@ export default function Upload() {
             const newClips = metas.map((m, i) => metaToClip(m, i, prev.length));
             return [...prev, ...newClips];
           });
+          setView("clips");
         }
       } catch (e) {
         setError(`Probe failed: ${e}`);
@@ -82,6 +94,7 @@ export default function Upload() {
         setFolderPath(null);
       } else {
         setClips(metas.map((m, i) => metaToClip(m, i)));
+        setView("clips");
       }
     } catch (e) {
       setError(`Scan failed: ${e}`);
@@ -91,8 +104,26 @@ export default function Upload() {
     }
   }
 
-  async function handleContinue() {
+  function deriveProjectName(): string {
+    if (folderPath) {
+      return folderPath.split(/[/\\]/).filter(Boolean).pop() ?? "My Project";
+    }
+    if (clips.length > 0) {
+      const parts = clips[0].local_path.split(/[/\\]/).filter(Boolean);
+      if (parts.length >= 2) return parts[parts.length - 2];
+    }
+    return "My Project";
+  }
+
+  // Intercept point for ClipList's onContinue — show name modal
+  function handleContinueClick() {
+    setPendingName("");
+    setShowNameModal(true);
+  }
+
+  async function handleContinue(name: string) {
     if (clips.length === 0) return;
+    setShowNameModal(false);
     setCreating(true);
     setError(null);
 
@@ -108,17 +139,8 @@ export default function Upload() {
         thumbnail_data: c.thumbnail_data ?? null,
       }));
 
-      // Derive project name from folder, or first clip's parent folder
-      let projectName = "My Project";
-      if (folderPath) {
-        projectName = folderPath.split(/[/\\]/).filter(Boolean).pop() ?? "My Project";
-      } else if (clips.length > 0) {
-        const parts = clips[0].local_path.split(/[/\\]/).filter(Boolean);
-        if (parts.length >= 2) projectName = parts[parts.length - 2];
-      }
-
       const projectId = await invoke<string>("create_project", {
-        name: projectName,
+        name,
         clips: orderedMetas,
       });
 
@@ -137,65 +159,187 @@ export default function Upload() {
     setClips(reordered);
   }
 
-  const busy = scanning || creating;
+  // ----- Scanning overlay (shown in any view while scan is in progress) -----
+  if (scanning) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] flex items-center justify-center">
+        <div data-testid="scan-spinner" className="flex flex-col items-center gap-4">
+          <span className="inline-block w-8 h-8 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin" />
+          <span className="text-[#a3a3a3] text-sm">Scanning your clips...</span>
+        </div>
+      </div>
+    );
+  }
 
+  // ----- Home view -----
+  if (view === "home") {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
+        <div className="max-w-4xl mx-auto space-y-10 pt-8">
+          {/* Wordmark */}
+          <div className="text-center">
+            <h1 className="text-4xl font-bold text-[#e5e5e5] tracking-tight">RushCut</h1>
+            <p className="text-[#a3a3a3] text-sm mt-2">Turn raw clips into a film in minutes.</p>
+          </div>
+
+          {/* Two-card layout */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            {/* Left: Start New Project */}
+            <div className="border border-[#FF8A65]/40 rounded-xl p-6 space-y-5 bg-[#FF8A65]/5">
+              <div className="space-y-1">
+                <p className="text-lg font-semibold text-[#e5e5e5]">Start New Project</p>
+                <p className="text-sm text-[#a3a3a3]">Create a film in minutes.</p>
+              </div>
+              <div className="space-y-3">
+                <button
+                  data-testid="btn-choose-folder"
+                  onClick={handlePickFolder}
+                  className="w-full px-4 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors text-sm"
+                >
+                  Choose Folder
+                </button>
+                <button
+                  data-testid="btn-add-files"
+                  onClick={handlePickFiles}
+                  className="w-full px-4 py-2.5 border border-white/30 text-[#e5e5e5] font-semibold rounded-md hover:bg-white/10 transition-colors text-sm"
+                >
+                  Add Files
+                </button>
+              </div>
+              <UploadZone onFolderPath={scanFolder} disabled={false} />
+              <p className="text-xs text-[#a3a3a3]">
+                Output: 1080p &middot; <span className="text-[#C9A96E]">4K coming soon</span>
+              </p>
+            </div>
+
+            {/* Right: Resume a Project */}
+            <div className="border border-[#C9A96E]/40 rounded-xl p-6 space-y-4 bg-[#C9A96E]/5">
+              <div className="space-y-1">
+                <p className="text-lg font-semibold text-[#e5e5e5]">Resume a Project</p>
+                <p className="text-sm text-[#a3a3a3]">Pick up where you left off.</p>
+              </div>
+              {loadingRecents ? (
+                <p className="text-[#a3a3a3] text-sm">Loading...</p>
+              ) : recentProjects.length === 0 ? (
+                <p className="text-[#a3a3a3] text-sm">No projects yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {recentProjects.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => navigate(`/editor/${p.id}`)}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-colors text-left"
+                    >
+                      <div className="w-10 h-8 rounded bg-[#1a1a1a] border border-white/10 flex-shrink-0 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-[#a3a3a3]" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z" />
+                        </svg>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[#e5e5e5] text-sm font-medium truncate">{p.name}</p>
+                        <p className="text-[#a3a3a3] text-xs">{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => navigate("/library")}
+                className="text-xs text-[#a3a3a3] hover:text-[#C9A96E] transition-colors"
+              >
+                View all projects -&gt;
+              </button>
+            </div>
+          </div>
+
+          {error && <p data-testid="upload-error" className="text-red-400 text-sm">{error}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  // ----- Clips view -----
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
       <div className="max-w-3xl mx-auto space-y-8">
         {/* Header */}
         <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-[#e5e5e5]">New Project</h1>
+            <p className="text-[#a3a3a3] text-sm mt-1">
+              {folderPath
+                ? folderPath.split(/[/\\]/).filter(Boolean).pop()
+                : `${clips.length} file${clips.length !== 1 ? "s" : ""} selected`}
+            </p>
+          </div>
           <div className="flex items-center gap-3">
-            <NavDrawer />
-            <div>
-              <h1 className="text-2xl font-semibold text-[#e5e5e5]">RushCut</h1>
-              <p className="text-[#a3a3a3] text-sm mt-1">Select clips to get started.</p>
-            </div>
+            <button
+              data-testid="btn-add-files"
+              onClick={handlePickFiles}
+              disabled={creating}
+              className="px-4 py-2 border border-white/30 text-[#e5e5e5] text-sm font-medium rounded-md hover:bg-white/10 transition-colors disabled:opacity-40"
+            >
+              + Add Files
+            </button>
+            <button
+              onClick={() => { setView("home"); setClips([]); setFolderPath(null); setError(null); }}
+              className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+            >
+              &lt;- Back
+            </button>
           </div>
         </div>
 
-        {/* Picker buttons */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <button
-            data-testid="btn-choose-folder"
-            onClick={handlePickFolder}
-            disabled={busy}
-            className="px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {scanning ? "Scanning..." : "Choose Folder"}
-          </button>
-          <button
-            data-testid="btn-add-files"
-            onClick={handlePickFiles}
-            disabled={busy}
-            className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] font-semibold rounded-md hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Add Files
-          </button>
-          {folderPath && (
-            <span className="text-[#a3a3a3] text-sm truncate max-w-xs" title={folderPath}>
-              {folderPath}
-            </span>
-          )}
-        </div>
-
-        {/* Drop zone + manual path fallback */}
-        <UploadZone onFolderPath={scanFolder} disabled={busy} />
-
-        {/* Error */}
         {error && <p data-testid="upload-error" className="text-red-400 text-sm">{error}</p>}
 
-        {/* Clip list */}
-        {clips.length > 0 && (
-          <ClipList
-            clips={clips}
-            onDelete={handleDelete}
-            onReorder={handleReorder}
-            onContinue={handleContinue}
-          />
-        )}
+        <ClipList
+          clips={clips}
+          onDelete={handleDelete}
+          onReorder={handleReorder}
+          onContinue={handleContinueClick}
+        />
 
         {creating && (
           <p className="text-[#a3a3a3] text-sm text-center">Creating project...</p>
+        )}
+
+        {/* Name modal */}
+        {showNameModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+            <div className="bg-[#111111] border border-white/15 rounded-xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+              <h2 className="text-lg font-semibold text-[#e5e5e5]">Name your project</h2>
+              <input
+                data-testid="input-project-name-modal"
+                type="text"
+                autoFocus
+                placeholder="e.g. Dolomites Trip, Summer 2026"
+                value={pendingName}
+                onChange={(e) => setPendingName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && pendingName.trim().length >= 2) {
+                    handleContinue(pendingName.trim());
+                  }
+                  if (e.key === "Escape") setShowNameModal(false);
+                }}
+                className="w-full bg-white/5 border border-white/20 rounded-md px-3 py-2.5 text-[#e5e5e5] placeholder:text-[#555555] focus:outline-none focus:border-[#C9A96E]/60"
+              />
+              <button
+                data-testid="btn-create-project"
+                onClick={() => handleContinue(pendingName.trim())}
+                disabled={pendingName.trim().length < 2}
+                className="w-full px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Create Project
+              </button>
+              <button
+                data-testid="btn-skip-name"
+                onClick={() => handleContinue(deriveProjectName())}
+                className="w-full text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+              >
+                Skip (use folder name)
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

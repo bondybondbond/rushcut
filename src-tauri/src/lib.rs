@@ -90,6 +90,17 @@ fn scan_folder(folder_path: String) -> Result<Vec<ClipMeta>, String> {
     Ok(clips)
 }
 
+/// Open a file in Windows Explorer with the file selected.
+/// windows-only: explorer /select reveals file in Windows Explorer
+#[tauri::command]
+fn open_output_path(path: String) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path))
+        .spawn()
+        .map_err(|e| format!("Failed to open explorer: {}", e))?;
+    Ok(())
+}
+
 /// Rename a project.
 #[tauri::command]
 fn rename_project_cmd(project_id: String, name: String) -> Result<(), String> {
@@ -392,6 +403,7 @@ pub fn run() {
             start_job,
             get_job_cmd,
             list_projects_cmd,
+            open_output_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectSummary } from "@/types/project";
-import { NavDrawer } from "@/components/NavDrawer";
 
 function formatDate(iso: string): string {
   try {
@@ -44,7 +43,6 @@ export default function Library() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <NavDrawer />
             <div>
               <h1 className="text-2xl font-semibold text-[#e5e5e5]">My Projects</h1>
               <p className="text-[#a3a3a3] text-sm mt-1">Past editing sessions.</p>

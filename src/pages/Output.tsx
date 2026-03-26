@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Job, PipelineProgressEvent } from "@/types/project";
-import { NavDrawer } from "@/components/NavDrawer";
 
 const STAGE_LABELS: Record<string, string> = {
   normalise:    "Normalising clips...",
@@ -101,7 +100,6 @@ export default function Output() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <NavDrawer />
             <h1 className="text-2xl font-semibold text-[#FF8A65]">
               {isDone ? "Your film is ready" : isError ? "Render failed" : "Rendering..."}
             </h1>
@@ -123,7 +121,7 @@ export default function Output() {
               />
             </div>
             <p className="text-xs text-[#a3a3a3]">
-              1080p renders take 2–5 min — switch tabs and come back whenever.
+              1080p renders take 2-5 min.
             </p>
           </div>
         )}
@@ -140,6 +138,13 @@ export default function Output() {
                 className="w-full max-h-[480px]"
               />
             </div>
+            <button
+              data-testid="btn-open-file"
+              onClick={() => invoke("open_output_path", { path: outputPath })}
+              className="w-full px-5 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors"
+            >
+              Open File in Explorer
+            </button>
             <div className="flex items-center justify-between">
               {filename && (
                 <p data-testid="output-filename" className="text-sm text-[#a3a3a3]">{filename}</p>
@@ -149,7 +154,7 @@ export default function Output() {
                 onClick={() => navigate("/library")}
                 className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
               >
-                ← My Projects
+                &lt;- My Projects
               </button>
             </div>
           </div>

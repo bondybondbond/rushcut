@@ -37,7 +37,7 @@ export function NavDrawer() {
         data-testid="btn-nav-open"
         onClick={() => setOpen((v) => !v)}
         aria-label="Open menu"
-        className="flex flex-col justify-center gap-1.5 w-8 h-8 p-1 text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+        className="flex flex-col justify-center gap-1.5 w-8 h-8 p-1 rounded-md border border-white/20 bg-white/5 hover:bg-white/10 text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
       >
         <span className={`block h-0.5 bg-current transition-all duration-200 ${open ? "rotate-45 translate-y-2" : ""}`} />
         <span className={`block h-0.5 bg-current transition-all duration-200 ${open ? "opacity-0" : ""}`} />

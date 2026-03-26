@@ -5,6 +5,7 @@ import Upload from "@/pages/Upload";
 import Editor from "@/pages/Editor";
 import Output from "@/pages/Output";
 import Library from "@/pages/Library";
+import { AppShell } from "@/components/AppShell";
 
 export default function App() {
   useEffect(() => {
@@ -19,12 +20,14 @@ export default function App() {
   }, []);
 
   return (
-    <Routes>
-      <Route path="/" element={<Navigate to="/upload" replace />} />
-      <Route path="/upload" element={<Upload />} />
-      <Route path="/library" element={<Library />} />
-      <Route path="/editor/:projectId" element={<Editor />} />
-      <Route path="/output/:jobId" element={<Output />} />
-    </Routes>
+    <AppShell>
+      <Routes>
+        <Route path="/" element={<Navigate to="/upload" replace />} />
+        <Route path="/upload" element={<Upload />} />
+        <Route path="/library" element={<Library />} />
+        <Route path="/editor/:projectId" element={<Editor />} />
+        <Route path="/output/:jobId" element={<Output />} />
+      </Routes>
+    </AppShell>
   );
 }

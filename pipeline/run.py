@@ -77,7 +77,7 @@ def main() -> None:
             "music_mood": settings.get("music_mood", "none"),
             "zoom": settings.get("zoom", False),
             "filter_boring": settings.get("filter_boring", False),
-            "transition": settings.get("transition", "crossfade"),
+            "transition": settings.get("transition", "crossfade"),  # log: confirmed received
             "silence_removal": settings.get("silence_removal", False),
             "intro_color": settings.get("intro_color", "#000000"),
             "intro_text": intro_text,
@@ -85,6 +85,8 @@ def main() -> None:
             "outro_text": outro_text,
         },
     }
+
+    print(f"[run.py] transition={job['config']['transition']}", flush=True)
 
     # Resolve WSL2 paths from local_path (stored as Windows paths in DB)
     clip_paths = [Path(win_to_wsl(c["local_path"])) for c in clips]
