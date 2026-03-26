@@ -105,6 +105,7 @@ export default function Editor() {
             {editingName ? (
               <input
                 ref={nameInputRef}
+                data-testid="input-project-name"
                 value={nameInput}
                 onChange={(e) => setNameInput(e.target.value)}
                 onBlur={commitNameEdit}
@@ -116,6 +117,7 @@ export default function Editor() {
               />
             ) : (
               <button
+                data-testid="project-name"
                 onClick={() => { setNameInput(projectName); setEditingName(true); }}
                 className="group flex items-center gap-2 text-left"
               >
@@ -137,12 +139,14 @@ export default function Editor() {
           <div className="flex items-center gap-3">
             <NavDrawer />
             <button
+              data-testid="btn-back"
               onClick={() => navigate("/library")}
               className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
             >
               ← Back
             </button>
             <button
+              data-testid="btn-render"
               onClick={handleRender}
               disabled={rendering || clips.length === 0}
               className="px-6 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -165,7 +169,7 @@ export default function Editor() {
         {/* Settings */}
         <SettingsPanel config={config} onChange={setConfig} />
 
-        {error && <p className="text-red-400 text-sm">{error}</p>}
+        {error && <p data-testid="editor-error" className="text-red-400 text-sm">{error}</p>}
       </div>
     </div>
   );

@@ -88,6 +88,40 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **DJI HEVC + Chrome thumbnail generation:** Chrome reads the embedded MJPEG stream (stream 1) from DJI containers when generating thumbnails via `<video>` + canvas, so `generateThumbnail()` often succeeds locally. However it is unreliable across sessions and devices. Persist thumbnails as base64 in Supabase (`thumbnail_data TEXT`) at upload time; the editor reads them directly as `<img src>` — no video decode on the editor page ever.
 - **`MediaError` code diagnosis:** Add `console.error('[thumbnail]', { code: video.error?.code })` in the video error handler before assuming codec failure. Code 4 = codec unsupported (HEVC/H.265); code 2 = network/CORS failure. These require different fixes.
 
+## E2E Testing — Tauri + WebView2 + WDIO
+
+## [WDIO BiDi reports stale about:blank for WebView2 attach mode]
+**Problem:** WDIO v9 enables WebDriver BiDi by default; `browsingContext.getTree` returns `about:blank` even when CDP `/json/list` shows the correct URL — the BiDi protocol has a known mismatch with WebView2's CDP attach implementation.
+**Solution:** Add `"wdio:enforceWebDriverClassic": true` to the capability. This disables BiDi and uses classic WebDriver protocol, which reads the correct URL.
+**Context:** `wdio.conf.ts` capabilities block. Required any time msedgedriver attaches to an already-running WebView2 via `ms:edgeOptions.debuggerAddress`.
+
+## [msedgedriver mid-navigation race resets renderer to about:blank]
+**Problem:** Attaching msedgedriver to WebView2 while the app is still navigating (`about:blank` → `http://localhost:1420/`) permanently resets the renderer back to `about:blank` — WebDriver then returns `about:blank` for all subsequent `getUrl()` calls.
+**Solution:** After verifying the CDP `/json/list` shows a non-blank URL, wait an additional static delay (6 seconds) before spawning msedgedriver. This ensures the React Router redirect (`/` → `/upload`) has fully completed before attachment.
+**Context:** `wdio.conf.ts` `beforeSession` — the 6s delay sits between `checkTargets` resolving and `spawn("msedgedriver.exe")`.
+
+## [Stale WebView2 subprocess holds CDP port between test runs]
+**Problem:** Killing `rushcut.exe` does not kill the WebView2 subprocess (a separate OS process). The stale subprocess holds port 9222 across test runs; the next run attaches to a dead WebView2, causing `getUrl()` to time out.
+**Solution:** In `beforeSession`, use PowerShell `Get-NetTCPConnection -LocalPort 9222 | Stop-Process -Force` to kill whatever process holds the port before launching the binary.
+**Context:** `wdio.conf.ts` `beforeSession` cleanup block. Also `taskkill /F /IM rushcut.exe` and `/IM msedgedriver.exe`.
+
+## [browser.url() hangs indefinitely with Vite dev server]
+**Problem:** `browser.url("http://localhost:1420/")` hangs for 2+ minutes because WDIO's `POST /session/:id/url` waits for `document.readyState === "complete"`. Vite's persistent HMR WebSocket prevents this state from ever firing.
+**Solution:** Remove all `browser.url()` calls. Instead, poll `browser.getUrl()` using `browser.waitUntil()` and check for the expected route substring (e.g. `url.includes("/upload")`).
+**Context:** `e2e/fast.spec.ts` `before` hook; any spec that runs against the debug binary (Vite dev server).
+
+## [CDP /json/list URL vs WebDriver getUrl() mismatch]
+**Problem:** CDP REST `/json/list[].url` reflects the browser process's pending navigation target (e.g. `http://localhost:1420/`), while WebDriver `GET /url` reflects the renderer process (which may still show `about:blank` during navigation).
+**Solution:** Use `/json/list` only to confirm the app has launched and navigated away from blank — not as a proxy for what WebDriver will return. Always use `browser.waitUntil(getUrl())` after attaching msedgedriver.
+**Context:** `wdio.conf.ts` `checkTargets` function.
+
+## [Prefer debug binary over release for E2E; release binary is stale after source changes]
+**Problem:** The release binary has the frontend embedded at build time. After adding `data-testid` attrs, a release binary built before those changes will fail all selector-based tests.
+**Solution:** In `wdio.conf.ts`, check for the debug binary first (`src-tauri/target/debug/rushcut.exe`), fall back to release. Debug binary loads the frontend from the live Vite dev server and always reflects current source without a full `tauri build`.
+**Context:** `wdio.conf.ts` `APP_PATH` / `usingDebug` constants.
+
+---
+
 ## UX / product decisions (locked)
 
 - **Draft-first, configure-optional** — show the first render before any configuration. Mandatory configure screens before a draft add friction at the worst moment. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.

@@ -66,6 +66,18 @@ Written to `C:\clips\processed\<slug>-<shortId>.mp4` (e.g. `my-project-a1b2c3d4.
 - **Filters:** Use `xfade=transition=fade` (not `crossfade`). `scale` must go INSIDE `-filter_complex` when combining streams; never mix with `-vf`.
 - **Paths in WSL2:** Windows path `C:\clips\DJI_01.MP4` becomes `/mnt/c/clips/DJI_01.MP4`. Always convert before passing to FFmpeg.
 
+## E2E Testing (Batch 11b)
+
+- **Test runner:** WebdriverIO v9 (`pnpm test:e2e`). Connects via msedgedriver to an already-running WebView2 debug port. NOT tauri-driver.
+- **Binary preference:** Debug binary first (`src-tauri/target/debug/rushcut.exe`), release as fallback. Debug binary loads frontend from live Vite dev server — always reflects current source without a `tauri build`.
+- **Vite dev server:** `wdio.conf.ts` auto-starts Vite if using debug binary and port 1420 is not live.
+- **CDP attach:** Binary launched with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; msedgedriver attaches via `ms:edgeOptions.debuggerAddress: "127.0.0.1:9222"`.
+- **CRITICAL — `wdio:enforceWebDriverClassic: true` required:** WDIO v9 defaults to BiDi protocol; BiDi reports stale `about:blank` for WebView2 attach mode. Without this flag, `getUrl()` always returns `about:blank`.
+- **CRITICAL — 6s delay before msedgedriver:** Attaching while WebView2 is mid-navigation permanently resets the renderer to `about:blank`. The `beforeSession` hook waits for a non-blank CDP target, then sleeps 6s before spawning msedgedriver.
+- **Stale process cleanup:** Kill `rushcut.exe`, `msedgedriver.exe`, and the process holding port 9222 (PowerShell `Get-NetTCPConnection`) at the start of every `beforeSession`. WebView2 subprocess survives `rushcut.exe` kill and holds the port.
+- **Never use `browser.url()`:** It hangs indefinitely against the Vite dev server (HMR WebSocket blocks `readyState === "complete"`). Use `browser.waitUntil(() => browser.getUrl())` instead.
+- **Run tests from PowerShell only:** `pnpm test:e2e`. Git Bash mangles paths in wdio.conf.ts.
+
 ## Docker & Lambda (RETIRED for local build)
 
 - Lambda, ECR, IAM role, and IAM user are all DELETED. Do NOT rebuild.

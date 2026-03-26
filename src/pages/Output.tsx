@@ -112,11 +112,12 @@ export default function Output() {
         {!isDone && !isError && (
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
-              <span className="text-[#a3a3a3]">{stage}</span>
-              <span className="text-[#e5e5e5] font-mono">{progress}%</span>
+              <span data-testid="stage-label" className="text-[#a3a3a3]">{stage}</span>
+              <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono">{progress}%</span>
             </div>
             <div className="h-2 bg-white/10 rounded-full overflow-hidden">
               <div
+                data-testid="progress-bar"
                 className="h-full bg-[#22c55e] rounded-full transition-all duration-500"
                 style={{ width: `${progress}%` }}
               />
@@ -132,6 +133,7 @@ export default function Output() {
           <div className="space-y-4">
             <div className="rounded-lg overflow-hidden bg-black border border-white/10">
               <video
+                data-testid="video-player"
                 src={assetUrl}
                 controls
                 autoPlay={false}
@@ -140,9 +142,10 @@ export default function Output() {
             </div>
             <div className="flex items-center justify-between">
               {filename && (
-                <p className="text-sm text-[#a3a3a3]">{filename}</p>
+                <p data-testid="output-filename" className="text-sm text-[#a3a3a3]">{filename}</p>
               )}
               <button
+                data-testid="btn-my-projects"
                 onClick={() => navigate("/library")}
                 className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
               >

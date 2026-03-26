@@ -66,6 +66,7 @@ function SortableClipCard({ clip, index, onDelete }: SortableClipCardProps) {
   return (
     <div
       ref={setNodeRef}
+      data-testid="clip-item"
       style={style}
       className="flex flex-col rounded-lg overflow-hidden border border-white/10 bg-[#111111] cursor-grab active:cursor-grabbing select-none"
       {...attributes}

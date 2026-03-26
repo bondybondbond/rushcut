@@ -34,6 +34,7 @@ export function NavDrawer() {
     <div ref={drawerRef} className="relative z-50">
       {/* Hamburger button */}
       <button
+        data-testid="btn-nav-open"
         onClick={() => setOpen((v) => !v)}
         aria-label="Open menu"
         className="flex flex-col justify-center gap-1.5 w-8 h-8 p-1 text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
@@ -53,12 +54,14 @@ export function NavDrawer() {
             <NavItem
               label="New Project"
               icon="+"
+              testId="nav-item-new-project"
               active={isActive("/upload")}
               onClick={() => go("/upload")}
             />
             <NavItem
               label="My Projects"
               icon="◈"
+              testId="nav-item-my-projects"
               active={isActive("/library")}
               onClick={() => go("/library")}
             />
@@ -74,14 +77,17 @@ function NavItem({
   icon,
   active,
   onClick,
+  testId,
 }: {
   label: string;
   icon: string;
   active: boolean;
   onClick: () => void;
+  testId?: string;
 }) {
   return (
     <button
+      data-testid={testId}
       onClick={onClick}
       className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors text-left ${
         active

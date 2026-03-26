@@ -156,6 +156,7 @@ export default function Upload() {
         {/* Picker buttons */}
         <div className="flex items-center gap-3 flex-wrap">
           <button
+            data-testid="btn-choose-folder"
             onClick={handlePickFolder}
             disabled={busy}
             className="px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -163,6 +164,7 @@ export default function Upload() {
             {scanning ? "Scanning..." : "Choose Folder"}
           </button>
           <button
+            data-testid="btn-add-files"
             onClick={handlePickFiles}
             disabled={busy}
             className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] font-semibold rounded-md hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -180,7 +182,7 @@ export default function Upload() {
         <UploadZone onFolderPath={scanFolder} disabled={busy} />
 
         {/* Error */}
-        {error && <p className="text-red-400 text-sm">{error}</p>}
+        {error && <p data-testid="upload-error" className="text-red-400 text-sm">{error}</p>}
 
         {/* Clip list */}
         {clips.length > 0 && (

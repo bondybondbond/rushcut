@@ -24,15 +24,18 @@ export function SettingsPanel({ config, onChange }: Props) {
   function Chip({
     active,
     onClick,
+    testId,
     children,
   }: {
     active: boolean;
     onClick: () => void;
+    testId?: string;
     children: React.ReactNode;
   }) {
     return (
       <button
         type="button"
+        data-testid={testId}
         onClick={onClick}
         className={`text-xs rounded-md px-3 py-1.5 border transition-all duration-200 font-medium ${
           active
@@ -50,15 +53,18 @@ export function SettingsPanel({ config, onChange }: Props) {
     selected,
     label: swatchLabel,
     onSelect,
+    testId,
   }: {
     color: string;
     selected: boolean;
     label: string;
     onSelect: () => void;
+    testId?: string;
   }) {
     return (
       <button
         type="button"
+        data-testid={testId}
         title={swatchLabel}
         onClick={onSelect}
         className={`w-7 h-7 rounded-full border-2 transition-all ${
@@ -80,6 +86,7 @@ export function SettingsPanel({ config, onChange }: Props) {
           {(["none", "cinematic", "upbeat", "chill", "electronic"] as const).map((mood) => (
             <Chip
               key={mood}
+              testId={`chip-music-${mood}`}
               active={config.music_mood === mood}
               onClick={() => update({ music_mood: mood })}
             >
@@ -113,6 +120,7 @@ export function SettingsPanel({ config, onChange }: Props) {
         <p className={label}>Intro Card</p>
         <p className={sublabel}>Leave blank to skip.</p>
         <input
+          data-testid="input-intro-text"
           type="text"
           placeholder="Enter title..."
           value={config.intro_text}
@@ -125,6 +133,7 @@ export function SettingsPanel({ config, onChange }: Props) {
             {CARD_COLORS.map((c) => (
               <ColorSwatch
                 key={c.value}
+                testId={`swatch-intro-${c.label.toLowerCase()}`}
                 color={c.value}
                 label={c.label}
                 selected={config.intro_color === c.value}
@@ -140,6 +149,7 @@ export function SettingsPanel({ config, onChange }: Props) {
         <p className={label}>Outro Card</p>
         <p className={sublabel}>Leave blank to skip.</p>
         <input
+          data-testid="input-outro-text"
           type="text"
           placeholder="Enter text..."
           value={config.outro_text}
@@ -152,6 +162,7 @@ export function SettingsPanel({ config, onChange }: Props) {
             {CARD_COLORS.map((c) => (
               <ColorSwatch
                 key={c.value}
+                testId={`swatch-outro-${c.label.toLowerCase()}`}
                 color={c.value}
                 label={c.label}
                 selected={config.outro_color === c.value}
