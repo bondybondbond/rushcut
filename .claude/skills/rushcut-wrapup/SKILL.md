@@ -69,12 +69,15 @@ Use native **Edit** tool.
 
 ## Step 5 — Cleanup
 
-Check for anything to remove:
-- **Debug logs** — `console.log` / `print()` statements added during the session that aren't needed in production
-- **Temp/scratch files** — throwaway files created during the session
-- **Dead TODOs** — inline TODO comments that were resolved this session
+**Code:** Remove `console.log` / `print()` debug statements, temp/scratch files, resolved inline TODOs.
 
-Remove what's found. If nothing, skip.
+**Docs (light prune — apply "earns its place" test):**
+- LEARNINGS.md: merge near-duplicate entries; remove patterns that are now obvious or resolved
+- Rules files: remove anything now inferable from code or made redundant by a recent fix
+- CLAUDE.md: if over 120 lines, something must be cut or moved to a rules file — no exceptions
+
+This is a light pass, not a deep audit. If nothing clearly stale or redundant, skip docs.
+For a thorough docs cleanup (reorganise, consolidate, cull old batches from PRD-DEV.md), the user should ask explicitly — don't do it unsolicited in a wrapup.
 
 ---
 
@@ -111,16 +114,20 @@ This step runs **after** LEARNINGS.md and rules files are updated. By then, most
 
 **Target: CLAUDE.md must stay under 120 lines. Treat 200 as absolute max.**
 
+**Hard cap: CLAUDE.md must stay under 120 lines. If it's over, cut before adding.**
+
 **Pass A — Add (be strict):** Only add if ALL of these are true:
-- It would cause a **costly mistake** if a fresh session started without knowing it
-- It's **project-wide** (not path-specific — those go in `.claude/rules/`)
-- It's **not already in** LEARNINGS.md, a rules file, or inferable from the code
+1. It would cause a **costly mistake** if a fresh session started without knowing it
+2. It's **project-wide** (path-specific detail → `.claude/rules/`)
+3. It's **not already in** LEARNINGS.md, a rules file, or inferable from the code
 
 **Pass B — Remove:** Cut anything that:
-- Can be looked up in `.claude/rules/pipeline.md`, `.claude/rules/rust-tauri.md`, `.claude/rules/e2e.md`, or `docs/DESIGN.md`
+- Can be looked up in `.claude/rules/` or `docs/DESIGN.md`
 - Is stale, resolved, or no longer a risk
 - Is general developer knowledge not specific to RushCut
+- Was added speculatively ("might be useful") rather than because a session actually needed it
 
 Format: short bullets only. No paragraphs, no explanations, no history.
+When in doubt, leave it out — LEARNINGS.md is the right place for "good to know".
 
 Use native **Edit** tool.
