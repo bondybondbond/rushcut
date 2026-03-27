@@ -21,6 +21,13 @@ Applies when working on `src-tauri/**`.
 Windows-only command. Uses `std::process::Command::new("explorer").arg(format!("/select,{}", path)).spawn()`.
 Comment: `// windows-only: explorer /select reveals file in Windows Explorer`
 
+## Serena MCP (symbol-level navigation)
+
+For large Rust files (`lib.rs`, `db.rs`), prefer Serena over full-file reads:
+- `mcp__serena__get_symbols_overview` — list all functions/structs without loading the file
+- `mcp__serena__find_symbol` with `include_body=true` — read one function only
+- `mcp__serena__find_referencing_symbols` — find all callers before refactoring
+
 ## Cargo / PATH
 
 After `winget install Rustlang.Rustup`, `cargo` is only available in new terminals. Existing shells: `$env:PATH += ";$env:USERPROFILE\.cargo\bin"`.
