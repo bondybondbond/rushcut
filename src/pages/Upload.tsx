@@ -230,14 +230,21 @@ export default function Upload() {
                       onClick={() => navigate(`/editor/${p.id}`)}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-colors text-left"
                     >
-                      <div className="w-10 h-8 rounded bg-[#1a1a1a] border border-white/10 flex-shrink-0 flex items-center justify-center">
-                        <svg className="w-4 h-4 text-[#a3a3a3]" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z" />
-                        </svg>
+                      <div className="w-10 h-8 rounded bg-[#1a1a1a] border border-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
+                        {p.first_clip_thumbnail ? (
+                          <img src={p.first_clip_thumbnail} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <svg className="w-4 h-4 text-[#a3a3a3]" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z" />
+                          </svg>
+                        )}
                       </div>
                       <div className="min-w-0">
                         <p className="text-[#e5e5e5] text-sm font-medium truncate">{p.name}</p>
-                        <p className="text-[#a3a3a3] text-xs">{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}</p>
+                        <p className="text-[#a3a3a3] text-xs">
+                          {new Date(p.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                          {" · "}{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}
+                        </p>
                       </div>
                     </button>
                   ))}
@@ -266,11 +273,6 @@ export default function Upload() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-[#e5e5e5]">New Project</h1>
-            <p className="text-[#a3a3a3] text-sm mt-1">
-              {folderPath
-                ? folderPath.split(/[/\\]/).filter(Boolean).pop()
-                : `${clips.length} file${clips.length !== 1 ? "s" : ""} selected`}
-            </p>
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -283,9 +285,9 @@ export default function Upload() {
             </button>
             <button
               onClick={() => { setView("home"); setClips([]); setFolderPath(null); setError(null); }}
-              className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-[#C5FFF9]/40 text-[#C5FFF9] text-sm font-medium rounded-md hover:bg-[#C5FFF9]/10 transition-colors"
             >
-              &lt;- Back
+              &#8592; Back
             </button>
           </div>
         </div>
@@ -330,13 +332,6 @@ export default function Upload() {
                 className="w-full px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Create Project
-              </button>
-              <button
-                data-testid="btn-skip-name"
-                onClick={() => handleContinue(deriveProjectName())}
-                className="w-full text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
-              >
-                Skip (use folder name)
               </button>
             </div>
           </div>

@@ -653,15 +653,16 @@ Remove "switch tabs" entirely.
 
 ### Gate
 
-- [ ] Name prompt appears after clip selection; project name is mandatory before editor opens
-- [ ] Scan shows spinner during folder/file processing
-- [ ] Home screen has two-card layout; recent projects visible on right
-- [ ] Manual path input gone
-- [ ] Transition picker (crossfade / dip to black) visible and working
-- [ ] Hamburger is top-left, same position on all 4 screens, looks like a button
-- [ ] Output screen: "Open File" reveals file in Explorer
-- [ ] Rendering copy no longer says "switch tabs"
-- [ ] "4K coming soon" visible on Upload screen
+- [x] Name prompt appears after clip selection; project name is mandatory before editor opens
+- [x] Scan shows spinner during folder/file processing
+- [x] Home screen has two-card layout; recent projects visible on right
+- [x] Manual path input gone
+- [x] Transition picker (None / Crossfade / Dip to black) visible and working; default is None
+- [x] Hamburger is top-left, same position on all 4 screens, looks like a button
+- [x] Output screen: "Open File" reveals file in Explorer
+- [x] Rendering copy replaced with live elapsed count-up timer
+- [x] "4K coming soon" visible on Upload screen
+- [x] E2E eval: 41/41 PASS
 
 ---
 
@@ -681,6 +682,9 @@ Remove "switch tabs" entirely.
 
 | Version | Date       | Changes                                            |
 | ------- | ---------- | -------------------------------------------------- |
+| 0.6     | 2026-03-27 | Batch 11c complete — home redesign, name modal, scan spinner, transition picker (None/Crossfade/Dip to black), AppShell, elapsed timer, Open File button, real thumbnails in Resume section, bin icons always red, CardBlock bins in timeline, xfade clamp. E2E eval 41/41 PASS. |
+| 0.5     | 2026-03-26 | Batch 11b complete — WebdriverIO v9 + msedgedriver E2E scaffold, 3-layer BiDi fix, rushcut-eval skill, dry run 33/35 PASS |
+| 0.4     | 2026-03-25 | Batch 11 complete — 19-item UI polish: file picker, project rename, SettingsPanel overhaul, Output video fix, NavDrawer, colour compliance, filename slugification, card colour pipeline fix |
 | 0.3     | 2026-03-24 | Batch 9 complete — full UX flow: folder picker, scan.py, 5 Tauri commands, editor + output pages, manifest-based pipeline invocation |
 | 0.2     | 2026-03-24 | Batch 8 complete — Tauri 2.x scaffold, Rust + SQLite backend, pipeline CLI, WSL2 check |
 | 0.1     | 2026-03-22 | Phase 2 build plan created from Phase 1 exit state |

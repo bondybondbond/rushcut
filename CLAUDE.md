@@ -53,6 +53,7 @@ Written to `C:\clips\processed\<slug>-<shortId>.mp4` (e.g. `my-project-a1b2c3d4.
 - **Asset URLs in WebView:** Always use `convertFileSrc(winPath)` from `@tauri-apps/api/core` to get playable `https://asset.localhost/...` URLs. Manual `asset://localhost/C:/...` construction fails silently — video element shows nothing.
 - **`run.py` config completeness:** All settings fields must be explicitly read from `settings.get(key, default)` in `run.py`. Any field omitted from the config dict sent to `run_pipeline()` silently falls back to wrong pipeline defaults (e.g. zoom/silence_removal used to default True). Add every new `JobConfig` field to `run.py` the moment it's added to the TypeScript type.
 - **Output filename format:** `<slug>-<shortId>.mp4` where slug = `slugify(project.name)` (Rust, lowercased, spaces→hyphens, non-alphanum stripped) and shortId = first 8 chars of job UUID. Never raw UUID in output filename.
+- **`JobConfig.transition` default is `"none"` (not `"crossfade"`)** — `DEFAULT_CONFIG` in `Editor.tsx` sets `transition: "none"`. The three options are `"none"` (plain concat), `"crossfade"` (xfade fade), `"dip_to_black"` (xfade fadeblack). Do not change the default back to crossfade.
 
 ## FFmpeg Quirks (WSL2 local build)
 
@@ -60,6 +61,7 @@ Written to `C:\clips\processed\<slug>-<shortId>.mp4` (e.g. `my-project-a1b2c3d4.
 - **Portrait clips (1728×3072) normalise to 608×1080** via `scale=-2:1080`. This is correct — do not attempt to "fix" the orientation. Landscape output from portrait clips requires a separate `layout` param (see TODO in `normalise.py`).
 - **Encoding:** Always `-c:v libx264 -pix_fmt yuv420p -profile:v main` — omitting it can silently fall back to HEVC, which Windows Media Player rejects.
 - **Filters:** Use `xfade=transition=fade` (not `crossfade`). `scale` must go INSIDE `-filter_complex` when combining streams; never mix with `-vf`.
+- **xfade_dur is clamped in `transitions.py`** — `XFADE_DUR = 1.5s` is clamped to `min(1.5, min_clip_duration / 2.0)` at render time. This prevents transitions from consuming short clips (e.g. 3s intro cards). Do not remove this guard.
 - **Paths in WSL2:** Windows path `C:\clips\DJI_01.MP4` becomes `/mnt/c/clips/DJI_01.MP4`. Always convert before passing to FFmpeg.
 
 ## E2E Testing (Batch 11b)

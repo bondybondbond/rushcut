@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Job, PipelineProgressEvent } from "@/types/project";
+import type { Job, PipelineProgressEvent, ProjectWithClips } from "@/types/project";
 
 const STAGE_LABELS: Record<string, string> = {
   normalise:    "Normalising clips...",
@@ -24,9 +24,12 @@ export default function Output() {
   const navigate = useNavigate();
 
   const [progress, setProgress] = useState(0);
-  const [stage, setStage] = useState("Waiting...");
+  const [stage, setStage] = useState("Starting up the magic...");
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string | null>(null);
+  const startTimeRef = useRef<number>(Date.now());
+  const [elapsedLabel, setElapsedLabel] = useState<string>("0s");
 
   // Load initial job state (handles page refresh on already-done job)
   useEffect(() => {
@@ -41,9 +44,14 @@ export default function Output() {
           setErrorMsg(j.error_message ?? "Render failed");
           setStage("Error");
         }
+        // Fetch project name for friendly filename display
+        return invoke<ProjectWithClips>("get_project", { projectId: j.project_id });
+      })
+      .then((pw) => {
+        setProjectName(pw.project.name);
       })
       .catch(() => {
-        // Job might not be in DB yet if we navigated very fast — ignore
+        // Non-fatal — filename falls back to path-derived name
       });
   }, [jobId]);
 
@@ -82,16 +90,32 @@ export default function Output() {
     };
   }, [jobId]);
 
+  // Elapsed timer — counts up every second while rendering
+  useEffect(() => {
+    if (outputPath || errorMsg) return;
+    // Start counting from first progress event
+    const interval = setInterval(() => {
+      const sec = Math.floor((Date.now() - startTimeRef.current) / 1000);
+      if (sec < 60) {
+        setElapsedLabel(`${sec}s`);
+      } else {
+        setElapsedLabel(`${Math.floor(sec / 60)}m ${sec % 60}s`);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [outputPath, errorMsg]);
+
   const isDone = outputPath !== null;
   const isError = errorMsg !== null;
 
-  // Use Tauri's convertFileSrc for correct asset:// URL on Windows
   const assetUrl = outputPath ? convertFileSrc(outputPath) : null;
 
-  // Human-readable filename from path
-  const filename = outputPath
-    ? outputPath.replace(/\\/g, "/").split("/").pop() ?? outputPath
-    : null;
+  // Display name: project name if available, otherwise derive from filename
+  const displayName = projectName
+    ? `${projectName}.mp4`
+    : outputPath
+      ? (outputPath.replace(/\\/g, "/").split("/").pop() ?? outputPath)
+      : null;
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
@@ -99,11 +123,16 @@ export default function Output() {
 
         {/* Header */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold text-[#FF8A65]">
-              {isDone ? "Your film is ready" : isError ? "Render failed" : "Rendering..."}
-            </h1>
-          </div>
+          <h1 className="text-2xl font-semibold text-[#FF8A65]">
+            {isDone ? "Your film is ready" : isError ? "Render failed" : "Rendering..."}
+          </h1>
+          <button
+            data-testid="btn-my-projects"
+            onClick={() => navigate("/library")}
+            className="px-4 py-2 bg-[#E1F2CE] text-[#1a1a1a] font-semibold text-sm rounded-md hover:bg-[#d0e8b8] transition-colors"
+          >
+            My Projects
+          </button>
         </div>
 
         {/* Progress bar */}
@@ -120,9 +149,7 @@ export default function Output() {
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <p className="text-xs text-[#a3a3a3]">
-              1080p renders take 2-5 min.
-            </p>
+            <p className="text-xs text-[#a3a3a3]">{elapsedLabel} elapsed</p>
           </div>
         )}
 
@@ -145,18 +172,9 @@ export default function Output() {
             >
               Open File in Explorer
             </button>
-            <div className="flex items-center justify-between">
-              {filename && (
-                <p data-testid="output-filename" className="text-sm text-[#a3a3a3]">{filename}</p>
-              )}
-              <button
-                data-testid="btn-my-projects"
-                onClick={() => navigate("/library")}
-                className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
-              >
-                &lt;- My Projects
-              </button>
-            </div>
+            {displayName && (
+              <p data-testid="output-filename" className="text-sm text-[#a3a3a3] text-center">{displayName}</p>
+            )}
           </div>
         )}
 

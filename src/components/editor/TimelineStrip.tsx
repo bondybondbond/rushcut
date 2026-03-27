@@ -32,22 +32,43 @@ function VideoIcon() {
   );
 }
 
+function TrashIcon({ size = 10 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6"/>
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+      <path d="M10 11v6M14 11v6"/>
+      <path d="M9 6V4h6v2"/>
+    </svg>
+  );
+}
+
 // Text card shown at start/end of timeline
-function CardBlock({ label, text }: { label: string; text: string }) {
+function CardBlock({ label, text, onClear }: { label: string; text: string; onClear?: () => void }) {
   if (!text) return null;
   return (
-    <div className="flex-shrink-0 w-20 h-28 rounded-lg border border-white/20 flex flex-col items-center justify-center p-2 text-center bg-white/5">
+    <div className="flex-shrink-0 w-20 h-28 rounded-lg border border-white/20 flex flex-col items-center justify-center p-2 text-center bg-white/5 relative">
+      {onClear && (
+        <button
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onClear(); }}
+          className="absolute top-1 right-1 bg-black/70 rounded p-0.5 text-red-400 hover:bg-black/90 transition-colors"
+          aria-label={`Remove ${label}`}
+        >
+          <TrashIcon size={9} />
+        </button>
+      )}
       <p className="text-[10px] text-[#a3a3a3] font-medium">{label}</p>
       <p className="text-[9px] text-[#e5e5e5] mt-1 line-clamp-3 break-all">{text}</p>
     </div>
   );
 }
 
-// Separator between clips
+// Separator between clips — only shown when transition is active
 function TransitionDot() {
   return (
     <div className="flex-shrink-0 flex items-center justify-center px-1 self-center">
-      <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
+      <div className="w-2 h-2 rounded-full bg-white/50" />
     </div>
   );
 }
@@ -90,15 +111,10 @@ function SortableClipTile({ clip, index, onDelete }: SortableClipTileProps) {
           <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); onDelete(clip.id); }}
-            className="absolute top-1 right-1 bg-black/70 rounded p-1 text-[#a3a3a3] hover:text-red-400 hover:bg-black/90 transition-colors"
+            className="absolute top-1 right-1 bg-black/70 rounded p-1 text-red-400 hover:bg-black/90 transition-colors"
             aria-label={`Delete ${clip.filename}`}
           >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-              <path d="M10 11v6M14 11v6"/>
-              <path d="M9 6V4h6v2"/>
-            </svg>
+            <TrashIcon size={10} />
           </button>
         )}
       </div>
@@ -119,10 +135,13 @@ interface TimelineStripProps {
   config: JobConfig;
   onReorder: (clips: Clip[]) => void;
   onDelete?: (clipId: string) => void;
+  onClearIntro?: () => void;
+  onClearOutro?: () => void;
 }
 
-export function TimelineStrip({ clips, config, onReorder, onDelete }: TimelineStripProps) {
+export function TimelineStrip({ clips, config, onReorder, onDelete, onClearIntro, onClearOutro }: TimelineStripProps) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const showDots = config.transition !== "none";
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -147,22 +166,22 @@ export function TimelineStrip({ clips, config, onReorder, onDelete }: TimelineSt
           <div className="flex items-stretch gap-1 min-w-max px-1 py-2">
             {config.intro_text && (
               <>
-                <CardBlock label="Intro" text={config.intro_text} />
-                <TransitionDot />
+                <CardBlock label="Intro" text={config.intro_text} onClear={onClearIntro} />
+                {showDots && <TransitionDot />}
               </>
             )}
 
             {clips.map((clip, idx) => (
               <div key={clip.id} className="flex items-center">
                 <SortableClipTile clip={clip} index={idx} onDelete={onDelete} />
-                {idx < clips.length - 1 && <TransitionDot />}
+                {idx < clips.length - 1 && showDots && <TransitionDot />}
               </div>
             ))}
 
             {config.outro_text && (
               <>
-                <TransitionDot />
-                <CardBlock label="Outro" text={config.outro_text} />
+                {showDots && <TransitionDot />}
+                <CardBlock label="Outro" text={config.outro_text} onClear={onClearOutro} />
               </>
             )}
           </div>

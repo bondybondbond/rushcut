@@ -84,7 +84,7 @@ function SortableClipCard({ clip, index, onDelete }: SortableClipCardProps) {
         <button
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); onDelete(clip.id); }}
-          className="absolute top-1.5 right-1.5 bg-black/70 rounded p-1 text-[#a3a3a3] hover:text-red-400 hover:bg-black/90 transition-colors"
+          className="absolute top-1.5 right-1.5 bg-black/70 rounded p-1 text-red-400 hover:bg-black/90 transition-colors"
           aria-label={`Delete ${clip.filename}`}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -147,7 +147,7 @@ export function ClipList({ clips, onDelete, onReorder, onContinue }: ClipListPro
     <div className="space-y-4">
       {clips.length >= 2 && (
         <p className="text-[#e5e5e5] text-sm">
-          Clips will edit in this order. Drag to rearrange.
+          Clips will edit in this order. Drag to rearrange. Bin to remove.
         </p>
       )}
 

@@ -7,7 +7,7 @@ import { SettingsPanel } from "@/components/editor/SettingsPanel";
 
 const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
-  transition: "crossfade",
+  transition: "none",
   intro_text: "",
   intro_color: "#000000",
   outro_text: "",
@@ -140,9 +140,9 @@ export default function Editor() {
             <button
               data-testid="btn-back"
               onClick={() => navigate("/library")}
-              className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-[#C5FFF9]/40 text-[#C5FFF9] text-sm font-medium rounded-md hover:bg-[#C5FFF9]/10 transition-colors"
             >
-              ← Back
+              &#8592; Back
             </button>
             <button
               data-testid="btn-render"
@@ -162,6 +162,8 @@ export default function Editor() {
             config={config}
             onReorder={handleReorder}
             onDelete={handleDelete}
+            onClearIntro={() => setConfig((c) => ({ ...c, intro_text: "", intro_color: "#000000" }))}
+            onClearOutro={() => setConfig((c) => ({ ...c, outro_text: "", outro_color: "#000000" }))}
           />
         </div>
 

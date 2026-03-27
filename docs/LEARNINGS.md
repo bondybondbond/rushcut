@@ -12,6 +12,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **Get durations from trimmed paths, not normalised paths** — xfade offset formula uses per-clip duration; if trim runs before transitions, re-run `get_duration()` on the trimmed files or offsets will be silently wrong.
 - **Pairwise `acrossfade` breaks for 3+ clips** — chained acrossfade overlaps audio incorrectly for N>2. Use `acrossfade` only for exactly 2 clips; for 3+ use `concat=n={N}:v=0:a=1`.
 - **xfade offset formula** (port verbatim from spike): `offset = cumulative + duration[i-1] - xfade_dur * i`
+- **xfade_dur must be clamped to half the shortest clip duration** — a 1.5s xfade consumes a 1s clip entirely (both the preceding xfade and the next one eat the same clip). Clamp: `effective_dur = min(xfade_dur, min(durations) / 2.0)` before building the filter chain. Log a warning if clamping occurs.
 
 ## FFmpeg — codec / output
 
@@ -129,6 +130,13 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Problem:** Calling `window.__TAURI_INTERNALS__.invoke("scan_folder")` via `evaluate_script` returns data from Rust but doesn't update the React component's state (no `setClips()` call). Upload page shows no clips.
 **Solution:** Accept this as a permanent limitation. Use `invoke("scan_folder")` only to get clip metadata for `create_project`, not to populate UI. Mark clip display checks as SKIP in eval.
 **Context:** `rushcut-eval` skill — Upload page eval section.
+
+---
+
+## UX / timing feedback
+
+- **ETA countdown timers are unreliable for non-linear pipelines** — a remaining-time estimate based on `elapsed / progress * (100 - progress)` grows during slow pipeline stages (e.g. loudnorm), making it worse than nothing. Use a simple count-up elapsed timer instead (`useRef<number>(Date.now())` on component mount, tick every second). Users calibrate expectations from "it took 30s last time" not from a fluctuating estimate.
+- **Start elapsed timer on mount, not on first progress event** — initialise `startTimeRef = useRef<number>(Date.now())` at declaration time so the counter starts at 0 immediately; initialising lazily (e.g. on first `progress > 0`) causes a visible delay before counting starts.
 
 ---
 

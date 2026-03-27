@@ -15,29 +15,39 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 11b (E2E Infrastructure + Eval Skill) COMPLETE**
+**Phase 2 — Batch 11c (UX Polish Round 2) COMPLETE**
 
-Batch 11b delivered: WebdriverIO v9 + msedgedriver E2E scaffold with 3-layer BiDi fix (verified 3x consecutive green runs). Created `rushcut-eval` skill for human-like E2E testing via chrome-devtools MCP. Dry run passed 33/35 checks (2 permanent SKIPs due to native file dialog limitation).
+Batch 11c delivered: home screen two-card redesign with real project thumbnails, mandatory project name modal, scan spinner, AppShell (fixed NavDrawer), transition picker (None/Crossfade/Dip), elapsed count-up timer on Output, Open File button, always-red bin icons, CardBlock bins in timeline, xfade duration clamped to prevent short clip consumption. E2E eval: 41/41 PASS.
 
 ---
 
 ## Immediate Next Task
 
-**Batch 11c** — 9 UI items: mandatory project name prompt, scan spinner, home screen redesign, remove manual path input, transition picker, nav drawer position, download button, copy fixes, 4K notice on upload.
+**Batch 12** — delete project from Library, audio sample rate normalisation (force `-ar 48000`), stale job cleanup, music volume slider, or **Director Intelligence** (Gemini clip ordering, beat-sync, motion peak trimming).
 
-After 11c: **Director Intelligence** (Gemini clip ordering, beat-sync, motion peak trimming).
+Priority: Director Intelligence (differentiating AI layer) or the three quality-of-life fixes that affect all renders (audio rate, stale jobs, delete project).
 
 ---
 
 ## Recently Completed
 
+**Batch 11c — UX Polish Round 2 (2026-03-27)**
+
+- Home screen: two-card layout (Start New Project + Resume a Project), real thumbnails from `first_clip_thumbnail` (Rust subquery added to `list_projects`), dates in Resume section
+- Mandatory project name modal before `create_project` is called; Skip button removed
+- Scan spinner overlay during `scanning` state
+- AppShell: shared `<AppShell>` wrapper with fixed NavDrawer; removed per-page NavDrawer inline usage
+- Transition picker: None (default) / Crossfade / Dip to black; `DEFAULT_CONFIG.transition = "none"`
+- `XFADE_DUR` increased to 1.5s; clamped to `min(1.5, min_clip_dur / 2.0)` to prevent short clip consumption
+- Output page: elapsed count-up timer replacing static copy; "Starting up the magic..." initial stage; "My Projects" button top-right; project name displayed as `{name}.mp4`
+- Open File button on Output done state (Rust `open_output_path` command using `explorer /select,`)
+- Always-red bin icons in ClipList and timeline; CardBlock bins; card delete bins in SettingsPanel headers
+- `#C5FFF9` Back buttons on Upload/Editor/Library; `#E1F2CE` My Projects button on Output
+- E2E eval: 41/41 PASS (0 failures)
+
 **Batch 11b — E2E Infrastructure + Eval Skill (2026-03-26)**
 
-- WebdriverIO v9 + msedgedriver E2E scaffold (`wdio.conf.ts`, `e2e/fast.spec.ts`, `e2e/render.spec.ts`)
-- 3-layer BiDi fix: `--disable-bidi` + `webSocketUrl: false` + route-aware readiness gate
-- Verified 3x consecutive `pnpm test:e2e` green runs (7/7 each)
-- Created `rushcut-eval` skill (`.claude/skills/rushcut-eval/SKILL.md`) for human-like E2E testing via chrome-devtools MCP
-- Dry run: 33/35 PASS, 2 permanent SKIP (Upload page clip display — requires native file dialog)
+- WebdriverIO v9 + msedgedriver E2E scaffold; 3-layer BiDi fix; `rushcut-eval` skill; 33/35 PASS
 
 ---
 

@@ -23,7 +23,7 @@ _TRANSITION_MAP = {
     "dip_to_black": "fadeblack",
 }
 
-XFADE_DUR = 0.5  # seconds
+XFADE_DUR = 1.5  # seconds
 
 
 def build_filter_complex(
@@ -50,8 +50,30 @@ def build_filter_complex(
         audio_out_label is "" if no clips have audio.
     """
     n = len(clip_paths)
-    xfade_name = _TRANSITION_MAP.get(transition, "fade")
     scale_h = "360" if mode == "draft" else "1080"
+
+    # --- "none" transition: straight concat, no xfade ---
+    if transition == "none":
+        any_audio = any(audio_flags)
+        inputs_v = "".join(f"[{i}:v]" for i in range(n))
+        v_out = "[vout]"
+        scale_filter = f"{inputs_v}concat=n={n}:v=1:a=0[vconcat]; [vconcat]scale=-2:{scale_h}{v_out}"
+        if not any_audio:
+            return scale_filter, v_out, ""
+        inputs_a = "".join(f"[{i}:a]" for i in range(n))
+        a_out = "[aout]"
+        audio_filter = f"{inputs_a}concat=n={n}:v=0:a=1{a_out}"
+        return f"{scale_filter}; {audio_filter}", v_out, a_out
+
+    xfade_name = _TRANSITION_MAP.get(transition, "fade")
+
+    # Clamp xfade_dur so it never exceeds half the shortest clip.
+    # Prevents transitions from consuming clips shorter than 2× the fade duration.
+    min_dur = min(durations)
+    effective_dur = min(xfade_dur, min_dur / 2.0)
+    if effective_dur < xfade_dur:
+        log.warning("[transitions] xfade_dur clamped %.3fs -> %.3fs (shortest clip=%.3fs)", xfade_dur, effective_dur, min_dur)
+    xfade_dur = effective_dur
 
     # --- Video: pairwise xfade chain ---
     video_parts: list[str] = []

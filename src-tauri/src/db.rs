@@ -27,6 +27,7 @@ pub struct ProjectSummary {
     pub clip_count: i64,
     pub last_job_id: Option<String>,
     pub last_job_status: Option<String>,
+    pub first_clip_thumbnail: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -298,7 +299,8 @@ pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {
             p.id, p.name, p.created_at,
             (SELECT COUNT(*) FROM clips WHERE project_id = p.id) as clip_count,
             (SELECT id FROM jobs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) as last_job_id,
-            (SELECT status FROM jobs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) as last_job_status
+            (SELECT status FROM jobs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) as last_job_status,
+            (SELECT thumbnail_data FROM clips WHERE project_id = p.id ORDER BY sort_order ASC LIMIT 1) as first_clip_thumbnail
          FROM projects p
          ORDER BY p.created_at DESC",
     )?;
@@ -311,6 +313,7 @@ pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {
                 clip_count: row.get(3)?,
                 last_job_id: row.get(4)?,
                 last_job_status: row.get(5)?,
+                first_clip_thumbnail: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

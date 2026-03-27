@@ -41,13 +41,17 @@ export default function Library() {
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
       <div className="max-w-3xl mx-auto space-y-8">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div>
-              <h1 className="text-2xl font-semibold text-[#e5e5e5]">My Projects</h1>
-              <p className="text-[#a3a3a3] text-sm mt-1">Past editing sessions.</p>
-            </div>
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-[#e5e5e5]">My Projects</h1>
+            <p className="text-[#a3a3a3] text-sm mt-1">Past editing sessions.</p>
           </div>
+          <button
+            onClick={() => navigate("/upload")}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-[#C5FFF9]/40 text-[#C5FFF9] text-sm font-medium rounded-md hover:bg-[#C5FFF9]/10 transition-colors"
+          >
+            &#8592; Back
+          </button>
         </div>
 
         {loading && <p className="text-[#a3a3a3] text-sm">Loading...</p>}

@@ -75,6 +75,24 @@ export function SettingsPanel({ config, onChange }: Props) {
     );
   }
 
+  function TrashBtn({ onClick }: { onClick: () => void }) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="p-1 text-red-400 hover:bg-red-400/10 rounded transition-colors"
+        aria-label="Remove card"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+          <path d="M10 11v6M14 11v6"/>
+          <path d="M9 6V4h6v2"/>
+        </svg>
+      </button>
+    );
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-[#a3a3a3] text-xs uppercase tracking-wider font-medium mb-4">Settings</p>
@@ -96,10 +114,17 @@ export function SettingsPanel({ config, onChange }: Props) {
         </div>
       </div>
 
-      {/* Transition */}
+      {/* Transition effect */}
       <div className={row}>
-        <p className={label}>Transition</p>
+        <p className={label}>Transition effect</p>
         <div className="flex gap-2">
+          <Chip
+            testId="chip-transition-none"
+            active={config.transition === "none"}
+            onClick={() => update({ transition: "none" })}
+          >
+            None
+          </Chip>
           <Chip
             testId="chip-transition-crossfade"
             active={config.transition === "crossfade"}
@@ -138,7 +163,12 @@ export function SettingsPanel({ config, onChange }: Props) {
 
       {/* Intro card */}
       <div className={row}>
-        <p className={label}>Intro Card</p>
+        <div className="flex items-center justify-between mb-1">
+          <p className={label + " mb-0"}>Intro Card</p>
+          {config.intro_text && (
+            <TrashBtn onClick={() => update({ intro_text: "", intro_color: "#000000" })} />
+          )}
+        </div>
         <p className={sublabel}>Leave blank to skip.</p>
         <input
           data-testid="input-intro-text"
@@ -167,7 +197,12 @@ export function SettingsPanel({ config, onChange }: Props) {
 
       {/* Outro card */}
       <div className={row}>
-        <p className={label}>Outro Card</p>
+        <div className="flex items-center justify-between mb-1">
+          <p className={label + " mb-0"}>Outro Card</p>
+          {config.outro_text && (
+            <TrashBtn onClick={() => update({ outro_text: "", outro_color: "#000000" })} />
+          )}
+        </div>
         <p className={sublabel}>Leave blank to skip.</p>
         <input
           data-testid="input-outro-text"
