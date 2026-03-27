@@ -30,6 +30,8 @@ export default function Output() {
   const [projectName, setProjectName] = useState<string | null>(null);
   const startTimeRef = useRef<number>(Date.now());
   const [elapsedLabel, setElapsedLabel] = useState<string>("0s");
+  // Ref to track completion so the timeout callback doesn't race with a done event
+  const completedRef = useRef(false);
 
   // Load initial job state (handles page refresh on already-done job)
   useEffect(() => {
@@ -38,9 +40,11 @@ export default function Output() {
       .then((j) => {
         setProgress(j.progress_pct);
         if (j.status === "done" && j.local_output_path) {
+          completedRef.current = true;
           setOutputPath(j.local_output_path);
           setStage("Done");
         } else if (j.status === "failed") {
+          completedRef.current = true;
           setErrorMsg(j.error_message ?? "Render failed");
           setStage("Error");
         }
@@ -66,6 +70,7 @@ export default function Output() {
 
     const unlistenDone = listen<PipelineProgressEvent>("pipeline-done", (event) => {
       if (event.payload.jobId !== jobId) return;
+      completedRef.current = true;
       setProgress(100);
       setStage("Done");
       setOutputPath(event.payload.outputPath);
@@ -73,6 +78,7 @@ export default function Output() {
 
     const unlistenError = listen<PipelineProgressEvent>("pipeline-error", (event) => {
       if (event.payload.jobId !== jobId) return;
+      completedRef.current = true;
       setErrorMsg(event.payload.message || "Render failed");
       setStage("Error");
     });
@@ -104,6 +110,18 @@ export default function Output() {
     }, 1000);
     return () => clearInterval(interval);
   }, [outputPath, errorMsg]);
+
+  // 10-minute client-side timeout for silent pipeline failures
+  useEffect(() => {
+    if (!jobId) return;
+    const timer = setTimeout(() => {
+      if (!completedRef.current) {
+        setErrorMsg("Pipeline timed out -- check WSL2 is running");
+        setStage("Error");
+      }
+    }, 10 * 60 * 1000);
+    return () => clearTimeout(timer);
+  }, [jobId]);
 
   const isDone = outputPath !== null;
   const isError = errorMsg !== null;

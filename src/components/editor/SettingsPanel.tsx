@@ -112,6 +112,23 @@ export function SettingsPanel({ config, onChange }: Props) {
             </Chip>
           ))}
         </div>
+        {config.music_mood !== "none" && (
+          <div className="mt-3 flex items-center gap-3">
+            <span className="text-xs text-[#a3a3a3] shrink-0">Volume</span>
+            <input
+              data-testid="music-volume-slider"
+              type="range"
+              min={0}
+              max={100}
+              value={config.music_volume}
+              onChange={(e) => update({ music_volume: Number(e.target.value) })}
+              className="flex-1 accent-[#FF8A65] h-1.5 rounded-full cursor-pointer"
+            />
+            <span className="text-xs text-[#a3a3a3] w-7 text-right shrink-0">
+              {config.music_volume}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Transition effect */}

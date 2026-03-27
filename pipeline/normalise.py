@@ -63,6 +63,7 @@ def normalise(
             "-preset", preset,
             "-c:a", "aac",
             "-b:a", "128k",
+            "-ar", "48000",
             str(out),
         ])
 

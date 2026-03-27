@@ -149,6 +149,16 @@ pub fn rename_project(project_id: &str, name: &str) -> Result<(), rusqlite::Erro
     Ok(())
 }
 
+/// Delete a project and all its clips and jobs.
+/// Schema has no ON DELETE CASCADE, so order matters: clips -> jobs -> projects.
+pub fn delete_project(project_id: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute("DELETE FROM clips WHERE project_id = ?1", params![project_id])?;
+    conn.execute("DELETE FROM jobs WHERE project_id = ?1", params![project_id])?;
+    conn.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Clip helpers
 // ---------------------------------------------------------------------------
@@ -294,6 +304,13 @@ pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
 
 pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
+    // Mark jobs that have been stuck in "processing" for over 60 minutes as failed.
+    // Catches pipelines that crashed without emitting an error event.
+    conn.execute(
+        "UPDATE jobs SET status = 'failed', error_message = 'Pipeline timed out (no response for 60 min)'
+         WHERE status = 'processing' AND created_at < datetime('now', '-60 minutes')",
+        [],
+    )?;
     let mut stmt = conn.prepare(
         "SELECT
             p.id, p.name, p.created_at,

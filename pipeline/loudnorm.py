@@ -111,6 +111,7 @@ def loudnorm(video_path: Path, out_path: Path, context=None) -> Path:
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", "128k",
+        "-ar", "48000",
         str(out_path),
     ])
 

@@ -19,6 +19,8 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **Always specify `-c:v libx264 -pix_fmt yuv420p -profile:v main`** — omitting `-c:v` after `-filter_complex` can silently fall back to HEVC, which Windows Photos/Media Player rejects with error 0x80004005.
 - **Single-clip shortcut**: use simple `-vf "scale=-2:360"` without `-filter_complex` — avoids needless complexity and the constraint that scale can't be in both `-vf` and `-filter_complex`.
 - **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams; `0:a?` maps all of them. Always use the indexed form when normalising DJI footage.
+- **Force `-ar 48000` at every re-encode site** — DJI Osmo Pocket 3 records at 96kHz; some players (including certain mobile decoders) reject non-48kHz AAC. Add `-ar 48000` to every FFmpeg call that re-encodes audio: normalise, inject_silence, single-clip render, multi-clip render, music mix, loudnorm. One missed site means the final output inherits 96kHz from the concat stream.
+- **Multi-clip render path needs explicit audio codec args** — the filter_complex concat output has no implicit codec; omitting `-c:a aac -b:a 128k -ar 48000` causes FFmpeg to auto-select, inheriting the source sample rate. Always include audio codec args on every FFmpeg output regardless of path taken.
 
 ## DJI OsmoPocket3
 
@@ -46,9 +48,18 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 ## Pipeline events — Tauri / React contract
 
 ## [Stage label clobber]
+
 **Problem:** `pipeline-progress` Rust event includes a `stage` field (e.g. `"processing"`), which immediately overwrites the human-readable label set by the `pipeline-stage` event one line earlier.
 **Solution:** `pipeline-progress` must only emit `{ jobId, progress }`. The `pipeline-stage` event exclusively owns the label; the React progress handler must only call `setProgress`, not `setStage`.
 **Context:** `src-tauri/src/lib.rs` `run_pipeline()`, `src/pages/Output.tsx` progress listener.
+
+## SQLite — schema constraints
+
+- **No `ON DELETE CASCADE` without `PRAGMA foreign_keys = ON`** — rusqlite opens each connection without enabling FK enforcement. Even if FKs are declared in the schema, `DELETE FROM projects WHERE id = ?` won't cascade. Always delete in child-first order manually: `clips` → `jobs` → `projects`. Confirm by reading the schema DDL before writing any delete logic.
+
+## UI-to-pipeline value mapping
+
+- **Slider sends 0–100, pipeline expects 0.0–1.0** — React range inputs return integers (0–100); pipeline functions expect float factors (0.0–1.0). Scale in `run.py` at the settings boundary: `settings.get("music_volume", 40) / 100.0`. If the default in `run.py` is set as a raw float (e.g. `0.4`), it will be silently wrong the first time the UI sends an integer `40`. Always align the default unit with the source: use `40` (integer, UI scale) as the default in `run.py` and always divide.
 
 ## Tauri / Windows dev
 
@@ -92,41 +103,49 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 ## E2E Testing — Tauri + WebView2 + WDIO
 
 ## [WDIO BiDi reports stale about:blank for WebView2 attach mode]
+
 **Problem:** WDIO v9 enables WebDriver BiDi by default; `browsingContext.getTree` returns `about:blank` even when CDP `/json/list` shows the correct URL — the BiDi protocol has a known mismatch with WebView2's CDP attach implementation.
 **Solution:** Add `"wdio:enforceWebDriverClassic": true` to the capability. This disables BiDi and uses classic WebDriver protocol, which reads the correct URL.
 **Context:** `wdio.conf.ts` capabilities block. Required any time msedgedriver attaches to an already-running WebView2 via `ms:edgeOptions.debuggerAddress`.
 
 ## [msedgedriver BiDi negotiation hangs on Vite HMR WebSocket]
+
 **Problem:** WDIO v9 + msedgedriver 146 negotiate BiDi protocol despite `wdio:enforceWebDriverClassic: true`. BiDi internally calls `browsingContext.navigate` which hangs forever because Vite's HMR WebSocket prevents `readyState === "complete"`.
 **Solution:** 3-layer fix: (1) `--disable-bidi` flag on msedgedriver spawn (primary — kills BiDi negotiation entirely), (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list` before spawning msedgedriver. Reduced blind delay from 6s to 2s (only covers DOM hydration gap now).
 **Context:** `wdio.conf.ts` — msedgedriver spawn args, capabilities block, `waitForAppRoute()` helper. See `docs/E2E-DEBUGGING.md` for full history.
 
 ## [Stale WebView2 subprocess holds CDP port between test runs]
+
 **Problem:** Killing `rushcut.exe` does not kill the WebView2 subprocess (a separate OS process). The stale subprocess holds port 9222 across test runs; the next run attaches to a dead WebView2, causing `getUrl()` to time out.
 **Solution:** In `beforeSession`, use PowerShell `Get-NetTCPConnection -LocalPort 9222 | Stop-Process -Force` to kill whatever process holds the port before launching the binary.
 **Context:** `wdio.conf.ts` `beforeSession` cleanup block. Also `taskkill /F /IM rushcut.exe` and `/IM msedgedriver.exe`.
 
 ## [browser.url() hangs indefinitely with Vite dev server]
+
 **Problem:** `browser.url("http://localhost:1420/")` hangs for 2+ minutes because WDIO's `POST /session/:id/url` waits for `document.readyState === "complete"`. Vite's persistent HMR WebSocket prevents this state from ever firing.
 **Solution:** Remove all `browser.url()` calls. Instead, poll `browser.getUrl()` using `browser.waitUntil()` and check for the expected route substring (e.g. `url.includes("/upload")`).
 **Context:** `e2e/fast.spec.ts` `before` hook; any spec that runs against the debug binary (Vite dev server).
 
 ## [CDP /json/list URL vs WebDriver getUrl() mismatch]
+
 **Problem:** CDP REST `/json/list[].url` reflects the browser process's pending navigation target (e.g. `http://localhost:1420/`), while WebDriver `GET /url` reflects the renderer process (which may still show `about:blank` during navigation).
 **Solution:** Use `/json/list` only to confirm the app has launched and navigated away from blank — not as a proxy for what WebDriver will return. Always use `browser.waitUntil(getUrl())` after attaching msedgedriver.
 **Context:** `wdio.conf.ts` `checkTargets` function.
 
 ## [Prefer debug binary over release for E2E; release binary is stale after source changes]
+
 **Problem:** The release binary has the frontend embedded at build time. After adding `data-testid` attrs, a release binary built before those changes will fail all selector-based tests.
 **Solution:** In `wdio.conf.ts`, check for the debug binary first (`src-tauri/target/debug/rushcut.exe`), fall back to release. Debug binary loads the frontend from the live Vite dev server and always reflects current source without a full `tauri build`.
 **Context:** `wdio.conf.ts` `APP_PATH` / `usingDebug` constants.
 
 ## [Chrome-devtools MCP UIDs go stale after React re-renders]
+
 **Problem:** After clicking a button that changes React state (navigation, chip toggle), all UIDs from the previous `take_snapshot`/`wait_for` are invalidated. Clicking a stale UID errors with "Element with uid X no longer exists".
 **Solution:** Always take a fresh snapshot (`take_snapshot` or `wait_for`) before every interaction after a state change. For sequential clicks in a loop (e.g., music chips), add ~200ms delay or take a snapshot between each click.
 **Context:** `rushcut-eval` skill — applies to any chrome-devtools MCP interaction with a React app.
 
 ## [invoke() via evaluate_script bypasses React state]
+
 **Problem:** Calling `window.__TAURI_INTERNALS__.invoke("scan_folder")` via `evaluate_script` returns data from Rust but doesn't update the React component's state (no `setClips()` call). Upload page shows no clips.
 **Solution:** Accept this as a permanent limitation. Use `invoke("scan_folder")` only to get clip metadata for `create_project`, not to populate UI. Mark clip display checks as SKIP in eval.
 **Context:** `rushcut-eval` skill — Upload page eval section.

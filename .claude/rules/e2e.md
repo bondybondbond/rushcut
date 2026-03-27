@@ -12,9 +12,11 @@ Applies when working on `e2e/**`, `wdio.conf.ts`, or running `/rushcut-eval`.
 ## Stale process cleanup (beforeSession)
 
 Kill `rushcut.exe`, `msedgedriver.exe`, and the process holding port 9222:
+
 ```powershell
 Get-NetTCPConnection -LocalPort 9222 | Select-Object OwningProcess | Stop-Process -Force
 ```
+
 WebView2 subprocess survives `rushcut.exe` kill and holds the port.
 
 ## Never use `browser.url()`
@@ -23,9 +25,13 @@ Hangs indefinitely — Vite HMR WebSocket blocks `readyState === "complete"`. Po
 
 ## rushcut-eval skill (`/rushcut-eval`)
 
-Human-like eval via chrome-devtools MCP. Full spec at `.claude/skills/rushcut-eval/SKILL.md`.
+Hybrid eval: WDIO specs for deterministic assertions + 3 MCP screenshots + 1 console check. Full spec at `.claude/skills/rushcut-eval/SKILL.md`.
 
 Key rules:
-- UIDs go stale after any React re-render. Always take fresh `take_snapshot` / `wait_for` before clicking.
-- Acceptable `invoke()` shortcuts: `scan_folder` (OS file dialog) + `create_project` (needs React state). Everything else via UI clicks.
+
+- Run WDIO via **PowerShell** with `powershell.exe -Command "cd C:/apps/rushcut && pnpm test:e2e:xxx 2>&1"`.
+- Three spec suites: `test:e2e` (fast), `test:e2e:editor` (gap-editor), `test:e2e:render` (render).
+- Failure screenshots auto-saved to `e2e/screenshots/` (in `.gitignore`) via `afterTest` hook.
+- Acceptable `invoke()` shortcuts in specs: `scan_folder` + `create_project` (OS file dialogs can't be automated). Use `browser.execute()` for these.
 - Upload page clip display = permanent SKIP. `invoke("scan_folder")` returns data but bypasses `setClips()`.
+- Fall back to `mcp__chrome-devtools__take_snapshot` for live DOM inspection on failures — hybrid reduces MCP use, does not eliminate it.

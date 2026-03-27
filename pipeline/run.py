@@ -83,6 +83,7 @@ def main() -> None:
             "intro_text": intro_text,
             "outro_color": settings.get("outro_color", "#000000"),
             "outro_text": outro_text,
+            "music_volume": settings.get("music_volume", 40) / 100.0,
         },
     }
 

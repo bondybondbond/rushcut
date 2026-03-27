@@ -13,7 +13,7 @@ function formatDate(iso: string): string {
 }
 
 function StatusBadge({ status }: { status: string | null }) {
-  if (!status) return <span className="text-[#a3a3a3] text-xs">No renders</span>;
+  if (!status) return <span data-testid="project-status" className="text-[#a3a3a3] text-xs">No renders</span>;
   const map: Record<string, { label: string; color: string }> = {
     done:       { label: "Done",       color: "text-[#22c55e]" },
     processing: { label: "Processing", color: "text-[#C9A96E]" },
@@ -21,7 +21,7 @@ function StatusBadge({ status }: { status: string | null }) {
     failed:     { label: "Failed",     color: "text-red-400"   },
   };
   const { label, color } = map[status] ?? { label: status, color: "text-[#a3a3a3]" };
-  return <span className={`text-xs font-medium ${color}`}>{label}</span>;
+  return <span data-testid="project-status" className={`text-xs font-medium ${color}`}>{label}</span>;
 }
 
 export default function Library() {
@@ -29,6 +29,7 @@ export default function Library() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<ProjectSummary[]>("list_projects_cmd")
@@ -36,6 +37,19 @@ export default function Library() {
       .catch((e) => setError(`Failed to load projects: ${e}`))
       .finally(() => setLoading(false));
   }, []);
+
+  async function handleDelete(projectId: string, projectName: string) {
+    if (!window.confirm(`Delete "${projectName}"? This cannot be undone.`)) return;
+    setDeletingId(projectId);
+    try {
+      await invoke("delete_project_cmd", { projectId });
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+    } catch (e) {
+      setError(`Failed to delete project: ${e}`);
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
@@ -74,6 +88,7 @@ export default function Library() {
             {projects.map((p) => (
               <div
                 key={p.id}
+                data-testid="project-card"
                 className="flex items-center justify-between px-4 py-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/8 transition-colors"
               >
                 <div className="min-w-0 flex-1">
@@ -94,10 +109,25 @@ export default function Library() {
                     </button>
                   )}
                   <button
+                    data-testid="btn-open-project"
                     onClick={() => navigate(`/editor/${p.id}`)}
                     className="px-3 py-1.5 text-xs text-[#a3a3a3] border border-white/20 rounded-md hover:text-[#e5e5e5] hover:border-white/40 transition-colors"
                   >
                     Open
+                  </button>
+                  <button
+                    data-testid="btn-delete-project"
+                    onClick={() => handleDelete(p.id, p.name)}
+                    disabled={deletingId === p.id}
+                    className="p-1.5 text-red-400/60 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                    aria-label="Delete project"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6"/>
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                      <path d="M10 11v6M14 11v6"/>
+                      <path d="M9 6V4h6v2"/>
+                    </svg>
                   </button>
                 </div>
               </div>

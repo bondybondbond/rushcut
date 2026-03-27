@@ -15,21 +15,28 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 11c (UX Polish Round 2) COMPLETE**
+**Phase 2 — Batch 12 (QoL Fixes) COMPLETE**
 
-Batch 11c delivered: home screen two-card redesign with real project thumbnails, mandatory project name modal, scan spinner, AppShell (fixed NavDrawer), transition picker (None/Crossfade/Dip), elapsed count-up timer on Output, Open File button, always-red bin icons, CardBlock bins in timeline, xfade duration clamped to prevent short clip consumption. E2E eval: 41/41 PASS.
+Batch 12 delivered: audio `-ar 48000` enforced at all 6 FFmpeg re-encode sites (normalise, inject_silence, single-clip render, multi-clip render, music mix, loudnorm), music volume slider (0–100 UI → 0.0–1.0 pipeline, fixed 0.3/0.4 default mismatch), delete project from Library (Rust command + confirmation dialog + optimistic list removal), stale job auto-cleanup (60-min SQL timeout inline in `list_projects_cmd`), 10-min client-side pipeline timeout on Output page with `useRef` guard and cleanup. E2E eval: 7/7 fast PASS; 5/7 editor (2 pre-existing spec bugs); 8/11 render (3 pre-existing spec bugs — render itself PASS, film confirmed 23s).
 
 ---
 
 ## Immediate Next Task
 
-**Batch 12** — delete project from Library, audio sample rate normalisation (force `-ar 48000`), stale job cleanup, music volume slider, or **Director Intelligence** (Gemini clip ordering, beat-sync, motion peak trimming).
-
-Priority: Director Intelligence (differentiating AI layer) or the three quality-of-life fixes that affect all renders (audio rate, stale jobs, delete project).
+**Batch 13 — Director Intelligence** (differentiating AI layer): Gemini clip ordering/selection, beat-sync via librosa, motion peak trimming. Or fix 5 pre-existing E2E spec bugs first (minor, see gap-editor.spec.ts + render.spec.ts).
 
 ---
 
 ## Recently Completed
+
+**Batch 12 — QoL Fixes (2026-03-27)**
+
+- Audio: `-ar 48000` added to all 6 FFmpeg re-encode sites; multi-clip path was missing `-c:a` entirely (silent bug fixed)
+- Music volume: slider (0–100) in SettingsPanel; pipeline scales via `/ 100.0` in `run.py`; removed stale `MUSIC_VOLUME = 0.3` constant from `music.py`; `mix_music()` now takes `music_volume: float = 0.4` param
+- Delete project: `delete_project_cmd` Rust command; manual delete order clips→jobs→projects (no FK cascade); Library UI with trash icon, `window.confirm`, optimistic list update
+- Stale job cleanup: 60-min SQL UPDATE inside `list_projects_cmd`; jobs stuck in `processing` auto-failed
+- Output timeout: 10-min `setTimeout` with `completedRef` guard; `useEffect` cleanup prevents unmounted-component warning
+- `music_volume: 40` added to stale `DEFAULT_CONFIG` in `ConfigurePanel.tsx` to fix TS2741 error
 
 **Batch 11c — UX Polish Round 2 (2026-03-27)**
 
@@ -53,15 +60,15 @@ Priority: Director Intelligence (differentiating AI layer) or the three quality-
 
 ## Deferred / Blocked
 
-| Item | Status |
-|---|---|
-| Boring clip filter (motion score) | Batch 12+ |
-| Smart clip selection (>20 clips) | Batch 12+ |
-| Per-clip in/out handles | Batch 12+ |
-| Proxy files for HEVC scrubbing | Batch 13+ (interactive timeline) |
-| Auth / project library | Batch 12+ |
-| Stripe / paid tier | Phase 3 |
-| Cloud mode (Vercel + Lambda) | Phase 3 |
+| Item                              | Status                           |
+| --------------------------------- | -------------------------------- |
+| Boring clip filter (motion score) | Batch 12+                        |
+| Smart clip selection (>20 clips)  | Batch 12+                        |
+| Per-clip in/out handles           | Batch 12+                        |
+| Proxy files for HEVC scrubbing    | Batch 13+ (interactive timeline) |
+| Auth / project library            | Batch 12+                        |
+| Stripe / paid tier                | Phase 3                          |
+| Cloud mode (Vercel + Lambda)      | Phase 3                          |
 
 ---
 

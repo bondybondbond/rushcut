@@ -97,7 +97,7 @@ def inject_silence_where_needed(
                 "-i", str(p),
                 "-f", "lavfi", "-i", f"aevalsrc=0:c=stereo:s=44100:d={dur:.4f}",
                 "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
                 "-shortest",
                 str(silent),
             ])
@@ -281,7 +281,7 @@ def run_pipeline(
             "-preset", preset,
         ]
         if audio_flags[0]:
-            cmd += ["-c:a", "aac", "-b:a", "128k"]
+            cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
         cmd.append(str(output))
         ffmpeg_run(cmd)
     else:
@@ -304,8 +304,9 @@ def run_pipeline(
                 "-profile:v", "main",
                 "-crf", str(crf),
                 "-preset", preset,
-                str(output),
             ]
+            + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_out else [])
+            + [str(output)]
         )
         ffmpeg_run(cmd)
 
@@ -317,7 +318,8 @@ def run_pipeline(
     if music_filename:
         log.info("[render] Step 6: mix music (%s)", music_mood)
         music_out = tmp / "with_music.mp4"
-        output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out)
+        music_volume = float(config.get("music_volume", 0.4))
+        output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out, music_volume=music_volume)
     else:
         log.info("[render] Step 6: music skipped")
 

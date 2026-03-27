@@ -36,3 +36,5 @@ Written to `C:\clips\processed\<slug>-<shortId>.mp4`. Slug = `slugify(project.na
 - **xfade_dur clamp:** `transitions.py` clamps to `min(1.5, min_clip_dur / 2.0)`. Do not remove — prevents short clips (e.g. 3s cards) from being consumed.
 - **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams.
 - **Audio concat for 3+ clips:** Use `concat=n=N:v=0:a=1` + `atrim`/`asetpts`. Pairwise `acrossfade` for N>2 produces misaligned overlaps.
+- **`-ar 48000` at every re-encode site:** DJI records at 96kHz; force 48kHz at normalise, inject_silence, single-clip render, multi-clip render, music mix, and loudnorm. One missing site means 96kHz leaks into the output.
+- **music_volume slider scaling:** UI sends 0–100 integer; pipeline expects 0.0–1.0 float. Scale in `run.py`: `settings.get("music_volume", 40) / 100.0`. Default must be `40` (integer) not `0.4` (float) to stay in the same unit.

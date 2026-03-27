@@ -126,6 +126,7 @@ Upload 3 DJI clips. Confirm:
 Copy the working Lambda pipeline to a top-level `pipeline/` directory. Remove Lambda-specific wrapper. Add CLI entry point.
 
 **Steps:**
+
 1. Copy `lambda/pipeline/*` -> `pipeline/` (preserves normalise, detect, trim, transitions, cards, music, loudnorm, zoom, render)
 2. Copy `lambda/fonts/` -> `pipeline/fonts/` (DejaVuSans.ttf for Pillow cards)
 3. Copy `lambda/music/` -> `pipeline/music/` (4 bundled MP3s)
@@ -141,11 +142,13 @@ Copy the working Lambda pipeline to a top-level `pipeline/` directory. Remove La
 Replace file drag-drop upload UI with a local folder path input. No file transfer. No R2.
 
 **UI (`/upload`):**
+
 - Replace UploadZone with a text input: "Enter folder path" (default: `C:\clips\`)
 - On submit: POST to `/api/projects/scan` with `{ folderPath: 'C:\\clips\\' }`
 - Show scanned clip list: filename, size, duration (probed via WSL2 ffprobe)
 
 **API route `POST /api/projects/scan`:**
+
 - Spawns: `wsl -d Ubuntu-24.04 -- python3 /mnt/c/apps/rushcut/pipeline/scan.py --folder /mnt/c/clips/`
 - `scan.py` outputs JSON array: `[{ filename, local_path, size_bytes, duration_ms, width, height }]`
 - API creates Supabase project + clip rows with `local_path` column (no r2_key)
@@ -160,11 +163,13 @@ Replace file drag-drop upload UI with a local folder path input. No file transfe
 Replace `invokeLambda()` with a Node.js `child_process` spawn.
 
 **`src/app/api/jobs/create/route.ts`:**
+
 - Remove `invokeLambda()` call
 - Replace with: `spawn('wsl', ['-d', 'Ubuntu-24.04', '--', 'python3', '/mnt/c/apps/rushcut/pipeline/run.py', '--job-id', jobId])`
 - Fire-and-forget: `run.py` updates Supabase job status as it progresses (same polling contract as before)
 
 **`pipeline/run.py`:**
+
 - Reads job config + clip local_paths from Supabase
 - Runs full pipeline (normalise -> detect -> trim -> transitions -> cards -> music -> loudnorm)
 - Output: `/mnt/c/clips/processed/[jobId].mp4`
@@ -177,6 +182,7 @@ Replace `invokeLambda()` with a Node.js `child_process` spawn.
 **Supabase `jobs` table:** Add `local_output_path TEXT NULL` column.
 
 **`src/app/api/output/[jobId]/video/route.ts`** -- new route:
+
 - Reads `local_output_path` from Supabase
 - Streams the file with range request support (so the video player can seek)
 - Returns `Content-Type: video/mp4`
@@ -188,12 +194,15 @@ Replace `invokeLambda()` with a Node.js `child_process` spawn.
 ### 8e — Boring clip filter + smart selection
 
 **`pipeline/detect.py`** -- add `motion_score(clip_path) -> float`:
+
 ```python
 ffmpeg -i clip.mp4 -vf "select='gt(scene,0.02)',metadata=print:file=-" -an -f null -
 ```
+
 Parse scene change scores, return average.
 
 **`pipeline/render.py`** -- after normalise, before trim:
+
 - Score all clips
 - Auto-exclude clips below `MOTION_FILTER_THRESHOLD` (default 0.015, env-configurable)
 - If >20 clips remain, rank by `motion_score * duration_weight`, keep top 20
@@ -400,20 +409,20 @@ RushCut renders blank in a standard headless browser because `window.__TAURI_INT
 
 Claude does this in ~30 min before any driver work. Targets:
 
-| Element | `data-testid` |
-|---|---|
+| Element                | `data-testid`       |
+| ---------------------- | ------------------- |
 | "Choose Folder" button | `btn-choose-folder` |
-| "Add Files" button | `btn-add-files` |
-| Clip list item | `clip-item` |
-| Continue/Render button | `btn-render` |
-| Project name heading | `project-name` |
-| Hamburger nav button | `btn-nav-open` |
+| "Add Files" button     | `btn-add-files`     |
+| Clip list item         | `clip-item`         |
+| Continue/Render button | `btn-render`        |
+| Project name heading   | `project-name`      |
+| Hamburger nav button   | `btn-nav-open`      |
 | Music chip (each mood) | `chip-music-{mood}` |
-| Intro text input | `input-intro-text` |
-| Outro text input | `input-outro-text` |
-| Progress bar | `progress-bar` |
-| Output video player | `video-player` |
-| Output filename label | `output-filename` |
+| Intro text input       | `input-intro-text`  |
+| Outro text input       | `input-outro-text`  |
+| Progress bar           | `progress-bar`      |
+| Output video player    | `video-player`      |
+| Output filename label  | `output-filename`   |
 
 Files to touch: `Upload.tsx`, `Editor.tsx`, `SettingsPanel.tsx`, `Output.tsx`, `NavDrawer.tsx`
 
@@ -432,6 +441,7 @@ cargo install tauri-driver
 ```
 
 Add to `package.json`:
+
 ```json
 "scripts": {
   "test:e2e": "pnpm build && webdriverio run wdio.conf.ts"
@@ -449,11 +459,13 @@ Add `wdio.conf.ts` — tauri-driver spawns the real `.exe` and drives it via Web
 Claude writes the following specs in `e2e/` using WebdriverIO's `$('[data-testid="..."]')` selectors:
 
 **Spec 1 — Upload flow**
+
 - App opens → upload screen visible
 - Click "Choose Folder" → file dialog appears (or cancel gracefully)
 - Nav drawer opens/closes on hamburger click
 
 **Spec 2 — Editor flow** (requires a pre-seeded test project in SQLite)
+
 - Project name is editable (click → input appears → blur saves)
 - Music default is "No Music"
 - Zoom toggle is disabled/greyed
@@ -461,6 +473,7 @@ Claude writes the following specs in `e2e/` using WebdriverIO's `$('[data-testid
 - "← Back" navigates to Library
 
 **Spec 3 — E2E render** (uses the 3 short test clips already in `C:\clips\`)
+
 - Scan folder → clips appear
 - Click Render → Output screen appears
 - Progress bar increments (poll every 2s, timeout 5 min)
@@ -472,6 +485,7 @@ Claude writes the following specs in `e2e/` using WebdriverIO's `$('[data-testid
 ### 11b-4 — Wire into Claude Code hook (optional)
 
 In `.claude/settings.local.json`, add a post-edit hook:
+
 ```json
 "hooks": {
   "PostToolUse": [{
@@ -499,6 +513,7 @@ Full auto-run on every edit is optional — the 3-min render timeout makes it sl
 > **Estimate:** 3–5 hrs. Can run in a single chat session.
 
 ### Bugs fixed inline (not deferred)
+
 - **Card colour hardcoded to black** — `run.py` was ignoring `intro_color`/`outro_color` from settings; fixed in Batch 11 session.
 - **zoom/silence_removal defaulting to True** — corrected to False in `run.py`.
 
@@ -509,6 +524,7 @@ Full auto-run on every edit is optional — the 3-min render timeout makes it sl
 **Problem:** Project name is editable on the Editor screen via a pencil icon, but it's invisible to most users. Without a name, the output file gets an ugly slug like `clips-a3f8bc12.mp4`. Most users will never discover the inline edit.
 
 **Fix:** After user selects clips and clicks Continue (before `create_project` is called), show a **name prompt modal**:
+
 - Single input: "Name your project" (required, min 2 chars)
 - Placeholder: "e.g. Dolomites Trip, Summer 2026"
 - CTA: "Create Project" (disabled until name entered)
@@ -525,6 +541,7 @@ The output file will then be `dolomites-trip-a3f8bc12.mp4` from the first render
 **Problem:** After selecting folder/files, app goes grey/unresponsive with no feedback while scan.py runs (can take 5–15s for large folders).
 
 **Fix:** In `Upload.tsx`, show a spinner overlay or animated status line during `scanning` state.
+
 - Replace the disabled-button greying with an explicit `<ScanningState />` component
 - "Scanning your clips..." with a small spinner animation (CSS only — no library needed)
 - Show clip count as they resolve: "Found 12 clips..."
@@ -536,6 +553,7 @@ The output file will then be `dolomites-trip-a3f8bc12.mp4` from the first render
 **Problem:** First screen is a blank upload zone. Not welcoming for recreational users.
 
 **New layout:**
+
 ```
 [RushCut logo / wordmark — centred]
 
@@ -547,6 +565,7 @@ The output file will then be `dolomites-trip-a3f8bc12.mp4` from the first render
 ```
 
 Two big equal-width cards side by side (or stacked on narrow window):
+
 - **Left:** peach border, folder icon, "Start New Project" in large font, sub: "Create a film in minutes." Clicking shows the existing folder/file pickers.
 - **Right:** sand border, history icon, "Resume a Project." Shows 3 most recent projects as rows with thumbnail + name. Clicking opens `/editor/:projectId`.
 
@@ -571,6 +590,7 @@ The drag-drop zone label can update to: "Or drag a folder here."
 **Problem:** The Batch 6 settings panel had crossfade / dip-to-black transition choices. Removed in Phase 2 rewrite. Pipeline (`render.py` line ~290) still reads `config.get("transition", "crossfade")` — the picker just needs to come back to the UI.
 
 **Fix:** Add to `SettingsPanel.tsx`:
+
 ```tsx
 {/* Transition */}
 <div className={row}>
@@ -591,6 +611,7 @@ Add `transition: "crossfade"` to `JobConfig` type and `DEFAULT_CONFIG`.
 **Problem:** Hamburger appears top-left on Upload but moves on other screens. Should be top-left everywhere, same visual weight as a proper button.
 
 **Fix:**
+
 - Wrap all pages in a shared `<AppShell>` layout component that renders the nav drawer at a fixed top-left position (absolute or sticky `fixed top-4 left-4 z-50`)
 - Give the hamburger more button appearance: `rounded-md border border-white/20 p-2 bg-white/5 hover:bg-white/10`
 - Remove per-page `<NavDrawer />` inline usage — single source in AppShell
@@ -604,6 +625,7 @@ Add `transition: "crossfade"` to `JobConfig` type and `DEFAULT_CONFIG`.
 **Problem:** No obvious way to "save" or "open" the finished film. The video player is embedded but there's no export/download action.
 
 **Fix:** Add a big peach button below the video player on the done state:
+
 - "Open File" → calls `invoke("open_output_path", { path: outputPath })` which runs `explorer.exe /select,<path>` to reveal the file in Windows Explorer.
 - New Rust command `open_output_path(path: String)` using `std::process::Command::new("explorer").arg(format!("/select,{}", path)).spawn()`.
 
@@ -614,6 +636,7 @@ Add `transition: "crossfade"` to `JobConfig` type and `DEFAULT_CONFIG`.
 **Problem:** "Switch tabs and come back whenever" is browser-only advice — meaningless in a desktop app.
 
 **Fix:** Already partially done in Batch 11. Confirm Output.tsx reads:
+
 > "1080p renders take 2–5 min."
 
 Remove "switch tabs" entirely.
@@ -625,6 +648,7 @@ Remove "switch tabs" entirely.
 **Problem:** The 4K notice only appears in SettingsPanel (screen 2). Should also appear on the Upload screen.
 
 **Fix:** Add a small muted note below the picker buttons in `Upload.tsx`:
+
 ```tsx
 <p className="text-xs text-[#a3a3a3]">
   Output: 1080p · <span className="text-[#C9A96E]">4K coming soon</span>
@@ -635,19 +659,19 @@ Remove "switch tabs" entirely.
 
 ### Deferred to later batches
 
-| # | Item | Batch |
-|---|------|-------|
-| Silence/boring clip verification | Needs tauri-driver E2E (Batch 11b) | 11b |
-| Delete project from My Projects | Rust `delete_project` cmd + Library UI | 12 |
-| Project name → output filename | Fixed in Batch 11 (`slugify`). Mandatory name prompt (11c-1) closes the edge case. | 11c |
-| Proxy / low-res preview files | **Required for interactive timeline (Batch 13+), not now.** DJI HEVC at source res will stutter during frame-accurate scrubbing in the WebView. Generate H.264 720p proxies on project create (scan.py step); use for editor preview, discard for final render. ~10s/clip in WSL2 FFmpeg. Flag when interactive trim/zoom UI is designed. | 13+ |
-| Music volume vs. clip volume control | Add `music_volume` slider (0–100, default 40) to SettingsPanel → pass to `music.py` as `-filter:a "volume=X"` on the music track before mix | 12 |
-| Audio sample rate normalisation | Output currently inherits 96kHz from DJI source. Force `-ar 48000` in final mux step for compatibility. | 11c or 12 |
-| Stale job cleanup in Library | Interrupted pipeline runs stay stuck at "Processing" forever. Add a timeout or heartbeat check to mark stale jobs as "Failed". | 12 |
-| Pipeline failure UI on Output page | If WSL/FFmpeg unavailable or pipeline errors out, Output page hangs at "Waiting..." with no timeout or error message. Add a 10-min timeout + failure state. | 11c or 12 |
-| React Router v7 future flags | Add `v7_startTransition` and `v7_relativeSplatPath` flags to `<BrowserRouter>` before upgrading to React Router v7. | 11c |
-| E2E test: fresh-install seed | render.spec.ts relies on existing projects. Add a `--e2e-seed` flag or test fixture to create a project with clips for fresh installs. | 12 |
-| Programmatic clip loading for eval | `invoke("scan_folder")` returns data but doesn't update Upload page React state. Add a Tauri command or JS bridge that triggers the full `handleScan` flow so the eval skill can populate the UI without the native file dialog. | 12 |
+| #                                    | Item                                                                                                                                                                                                                                                                                                                                      | Batch     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Silence/boring clip verification     | Needs tauri-driver E2E (Batch 11b)                                                                                                                                                                                                                                                                                                        | 11b       |
+| Delete project from My Projects      | Rust `delete_project` cmd + Library UI                                                                                                                                                                                                                                                                                                    | 12        |
+| Project name → output filename       | Fixed in Batch 11 (`slugify`). Mandatory name prompt (11c-1) closes the edge case.                                                                                                                                                                                                                                                        | 11c       |
+| Proxy / low-res preview files        | **Required for interactive timeline (Batch 13+), not now.** DJI HEVC at source res will stutter during frame-accurate scrubbing in the WebView. Generate H.264 720p proxies on project create (scan.py step); use for editor preview, discard for final render. ~10s/clip in WSL2 FFmpeg. Flag when interactive trim/zoom UI is designed. | 13+       |
+| Music volume vs. clip volume control | Add `music_volume` slider (0–100, default 40) to SettingsPanel → pass to `music.py` as `-filter:a "volume=X"` on the music track before mix                                                                                                                                                                                               | 12        |
+| Audio sample rate normalisation      | Output currently inherits 96kHz from DJI source. Force `-ar 48000` in final mux step for compatibility.                                                                                                                                                                                                                                   | 11c or 12 |
+| Stale job cleanup in Library         | Interrupted pipeline runs stay stuck at "Processing" forever. Add a timeout or heartbeat check to mark stale jobs as "Failed".                                                                                                                                                                                                            | 12        |
+| Pipeline failure UI on Output page   | If WSL/FFmpeg unavailable or pipeline errors out, Output page hangs at "Waiting..." with no timeout or error message. Add a 10-min timeout + failure state.                                                                                                                                                                               | 11c or 12 |
+| React Router v7 future flags         | Add `v7_startTransition` and `v7_relativeSplatPath` flags to `<BrowserRouter>` before upgrading to React Router v7.                                                                                                                                                                                                                       | 11c       |
+| E2E test: fresh-install seed         | render.spec.ts relies on existing projects. Add a `--e2e-seed` flag or test fixture to create a project with clips for fresh installs.                                                                                                                                                                                                    | 12        |
+| Programmatic clip loading for eval   | `invoke("scan_folder")` returns data but doesn't update Upload page React state. Add a Tauri command or JS bridge that triggers the full `handleScan` flow so the eval skill can populate the UI without the native file dialog.                                                                                                          | 12        |
 
 ---
 
@@ -680,11 +704,12 @@ Remove "switch tabs" entirely.
 
 ## Changelog
 
-| Version | Date       | Changes                                            |
-| ------- | ---------- | -------------------------------------------------- |
+| Version | Date       | Changes                                                                                                                                                                                                                                                                          |
+| ------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.7     | 2026-03-27 | Batch 12 complete — audio -ar 48000 at all 6 re-encode sites, music volume slider (0-100 UI / 0.0-1.0 pipeline), delete project (Rust + Library UI), stale job auto-cleanup (60-min SQL), 10-min Output page timeout. E2E: 7/7 fast PASS, render confirmed PASS. |
 | 0.6     | 2026-03-27 | Batch 11c complete — home redesign, name modal, scan spinner, transition picker (None/Crossfade/Dip to black), AppShell, elapsed timer, Open File button, real thumbnails in Resume section, bin icons always red, CardBlock bins in timeline, xfade clamp. E2E eval 41/41 PASS. |
-| 0.5     | 2026-03-26 | Batch 11b complete — WebdriverIO v9 + msedgedriver E2E scaffold, 3-layer BiDi fix, rushcut-eval skill, dry run 33/35 PASS |
-| 0.4     | 2026-03-25 | Batch 11 complete — 19-item UI polish: file picker, project rename, SettingsPanel overhaul, Output video fix, NavDrawer, colour compliance, filename slugification, card colour pipeline fix |
-| 0.3     | 2026-03-24 | Batch 9 complete — full UX flow: folder picker, scan.py, 5 Tauri commands, editor + output pages, manifest-based pipeline invocation |
-| 0.2     | 2026-03-24 | Batch 8 complete — Tauri 2.x scaffold, Rust + SQLite backend, pipeline CLI, WSL2 check |
-| 0.1     | 2026-03-22 | Phase 2 build plan created from Phase 1 exit state |
+| 0.5     | 2026-03-26 | Batch 11b complete — WebdriverIO v9 + msedgedriver E2E scaffold, 3-layer BiDi fix, rushcut-eval skill, dry run 33/35 PASS                                                                                                                                                        |
+| 0.4     | 2026-03-25 | Batch 11 complete — 19-item UI polish: file picker, project rename, SettingsPanel overhaul, Output video fix, NavDrawer, colour compliance, filename slugification, card colour pipeline fix                                                                                     |
+| 0.3     | 2026-03-24 | Batch 9 complete — full UX flow: folder picker, scan.py, 5 Tauri commands, editor + output pages, manifest-based pipeline invocation                                                                                                                                             |
+| 0.2     | 2026-03-24 | Batch 8 complete — Tauri 2.x scaffold, Rust + SQLite backend, pipeline CLI, WSL2 check                                                                                                                                                                                           |
+| 0.1     | 2026-03-22 | Phase 2 build plan created from Phase 1 exit state                                                                                                                                                                                                                               |

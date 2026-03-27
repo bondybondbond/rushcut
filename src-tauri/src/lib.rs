@@ -1,7 +1,7 @@
 mod db;
 
 use db::{
-    get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
+    delete_project, get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
     list_projects, rename_project, update_job_done, update_job_error, update_job_progress,
     Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
 };
@@ -88,6 +88,12 @@ fn scan_folder(folder_path: String) -> Result<Vec<ClipMeta>, String> {
         .map_err(|e| format!("Failed to parse scan.py output: {}\n{}", e, stdout))?;
 
     Ok(clips)
+}
+
+/// Delete a project and all associated clips and jobs.
+#[tauri::command]
+fn delete_project_cmd(project_id: String) -> Result<(), String> {
+    delete_project(&project_id).map_err(|e| format!("Failed to delete project: {}", e))
 }
 
 /// Open a file in Windows Explorer with the file selected.
@@ -403,6 +409,7 @@ pub fn run() {
             start_job,
             get_job_cmd,
             list_projects_cmd,
+            delete_project_cmd,
             open_output_path,
         ])
         .run(tauri::generate_context!())

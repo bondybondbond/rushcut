@@ -14,7 +14,6 @@ from .utils import FFMPEG, ffmpeg_run
 
 log = logging.getLogger(__name__)
 
-MUSIC_VOLUME = 0.3      # Music level relative to original audio
 FADE_OUT_S = 3.0        # Seconds to fade music out at end
 
 
@@ -24,6 +23,7 @@ def mix_music(
     track_name: str | None,
     music_dir: Path,
     out_path: Path,
+    music_volume: float = 0.4,
 ) -> Path:
     """
     Mix a background music track into video_path.
@@ -60,7 +60,7 @@ def mix_music(
     #   amix   -> mix with original audio, keep original duration
     fc = (
         f"[1:a]atrim=0:{video_duration_s:.4f},"
-        f"volume={MUSIC_VOLUME},"
+        f"volume={music_volume:.4f},"
         f"afade=t=out:st={fade_start:.4f}:d={FADE_OUT_S}[mus];"
         f"[0:a][mus]amix=inputs=2:duration=first:dropout_transition=3[aout]"
     )
@@ -75,6 +75,7 @@ def mix_music(
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", "128k",
+        "-ar", "48000",
         str(out_path),
     ])
 

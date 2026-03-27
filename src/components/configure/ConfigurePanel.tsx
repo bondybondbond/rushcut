@@ -10,6 +10,7 @@ const DEFAULT_CONFIG: JobConfig = {
   outro_text: "",
   outro_color: "#000000",
   filter_boring: false,
+  music_volume: 40,
 };
 
 const MUSIC_MOODS: { label: string; value: JobConfig["music_mood"] }[] = [
