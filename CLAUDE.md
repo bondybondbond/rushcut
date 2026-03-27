@@ -1,90 +1,48 @@
-## Architecture (current — Batch 9+)
+## Architecture
 
-**This is a Tauri 2.x local desktop app. NOT a Next.js/Vercel/Lambda project.**
+**Tauri 2.x local desktop app. NOT Next.js, Vercel, Lambda, or any cloud service.**
 
 - **Renderer:** React + Vite (`src/`)
 - **Backend:** Rust (`src-tauri/`)
 - **Pipeline:** Python 3 in WSL2 Ubuntu-24.04 (`pipeline/`)
 - **DB:** SQLite via rusqlite (`%APPDATA%\rushcut\rushcut.db`)
-- **No S3, no Lambda, no Supabase, no Vercel**
-- `lambda/` is ARCHIVED reference only — do not modify it
+- No S3, no Lambda, no Supabase, no Vercel. `lambda/` is ARCHIVED — do not modify.
 
 ### UX flow
-Folder picker (`/upload`) -> Editor (`/editor/:projectId`) -> Output (`/output/:jobId`)
 
-### Pipeline invocation
-`wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/run.py --job-id <uuid> --manifest-path <wsl_path>`
+`/upload` → `/editor/:projectId` → `/output/:jobId`
 
-Manifest JSON is written to `%TEMP%\rushcut\<job_id>.json` by Rust before spawning. Contains clips array + settings + output_path. WSL path passed to `run.py`.
+### Dev command
 
-Folder scan: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/scan.py --folder <wsl_path>`
-Individual file scan (file picker): `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/scan.py --files <wsl_path1> <wsl_path2> ...`
-
-Progress is read line-by-line from stdout: `STAGE:name`, `PROGRESS:N`, `DONE:/mnt/c/...`, `ERROR:msg`
-
-### Output
-Written to `C:\clips\processed\<slug>-<shortId>.mp4` (e.g. `my-project-a1b2c3d4.mp4`). Served via `convertFileSrc(path)` from `@tauri-apps/api/core` — do NOT construct `asset://localhost/...` URLs manually; `convertFileSrc` outputs `https://asset.localhost/...` on Windows.
+`pnpm dev` (starts Vite + compiles Rust + opens Tauri window). `pnpm dev:vite` alone = all `invoke()` calls fail.
 
 ---
 
-## Architecture & Core Rules
+## Critical Rules (every session)
 
-- **Stack:** Tauri 2.x + React 19 + Vite. Do NOT use Next.js, Supabase, AWS SDK, or R2.
-- **UX Flow:** Folder select (`/upload`) -> Editor (`/editor/:projectId`) -> Output (`/output/:jobId`). Settings panel lives inside the editor page.
-- **Design system:** Read `docs/DESIGN.md` before any UI work. It is the canonical colour palette, typography, button patterns, and copy rules. Do not invent colours or patterns outside it.
-- **Local only (Phase 2):** Run via `cargo tauri dev`. No Vercel. No cloud deployment.
+- **WSL must go via PowerShell.** Claude Code Bash = Git Bash; Git Bash mangles `/mnt/c/` paths. Wrap all WSL calls as `powershell.exe -Command "wsl -d Ubuntu-24.04 -u root -- ..."`. Glob patterns in PowerShell args get expanded by Git Bash — use `cmd.exe /c` for those.
+- **`git push` hangs silently in this shell.** Always push as: `GIT_ASKPASS=echo GIT_TERMINAL_PROMPT=0 git push https://<token>@github.com/bondybondbond/rushcut.git main`
+- **Asset URLs:** Always `convertFileSrc(winPath)` from `@tauri-apps/api/core`. Never construct `asset://` URLs manually — video element shows nothing.
+- **`pipeline-progress` Rust event must NOT include `stage`.** Only emit `{ jobId, progress }`. Stage field clobbers human-readable labels from `pipeline-stage`.
+- **`DEFAULT_CONFIG.transition = "none"`** (not "crossfade"). Three options: `"none"` / `"crossfade"` / `"dip_to_black"`.
+- **Tailwind:** `src/globals.css` has `@import "tailwindcss"`, imported from `main.tsx`. Do NOT reference `src/app/globals.css` (deleted).
+- **gitignore:** `src-tauri/target/` and `src-tauri/gen/` must be in `.gitignore`. Missing = 668 MB of build artifacts blocking GitHub push.
+- **ASCII only** in console/UI output — no Unicode or emoji (breaks cp1252 encoding).
+- **Design system:** Read `docs/DESIGN.md` before any UI work — canonical palette, typography, and copy rules.
 
-## Windows 11 Local Dev
+---
 
-- **Console + UI output:** ASCII only (`->`, `[PASS]`, `[FAIL]`). No Unicode arrows or emojis — breaks cp1252 encoding and looks inconsistent in the UI.
-- **Paths:** Run all scripts from `C:\apps\rushcut`. Source clips from any local folder (default `C:\clips\`). Output to `C:\clips\processed\`.
-- **Pipeline:** Always run via WSL2: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/run.py --job-id ...`
-- **FFmpeg in WSL2:** Must be installed natively. If missing, run `wsl -d Ubuntu-24.04 -u root -- apt-get install -y --fix-missing ffmpeg` (installed version is v6.1.1 at `/usr/bin/ffmpeg`). Do NOT rely on the Windows ffmpeg.exe in PATH — WSL root shell does not inherit the Windows PATH entries for it.
-- **WSL commands from Git Bash mangle paths:** Git Bash rewrites `/mnt/c/...` paths to Windows paths, breaking all WSL invocations. Always run `wsl` commands from PowerShell, not Git Bash. **Claude Code's Bash tool runs in Git Bash** — wrap every WSL call as `powershell.exe -Command "wsl -d Ubuntu-24.04 -u root -- ..."`. Glob patterns (`*foo*`) in PowerShell args also get expanded by Git Bash; use `cmd.exe /c` for those queries.
-- **PowerShell `Out-File` writes UTF-8 BOM:** Python's `json` module raises "Unexpected UTF-8 BOM" on files written by PowerShell's `Out-File`. Write pipeline JSON manifests via Python or WSL `cat >` — never `Out-File`.
-- **Pipeline relative imports:** `pipeline/` modules use relative imports (`from .cards import ...`). `run.py` must insert the *parent* of `pipeline/` into `sys.path` and import as `from pipeline.render import run_pipeline`. Using `from render import run_pipeline` with `pipeline/` itself in `sys.path` breaks all relative imports in submodules.
-- **Dev launch:** Run `pnpm dev` from `C:\apps\rushcut`. `pnpm dev:vite` alone starts only the React frontend at `:1420` — all Tauri `invoke()` calls throw "Cannot read properties of undefined (reading 'invoke')". Use `pnpm dev` for real testing (compiles Rust, opens Tauri window). Requires `cargo` in PATH — Rustup installs to `%USERPROFILE%\.cargo\bin` but only new terminals pick it up. If `cargo not found`, open a fresh terminal (or run `$env:PATH += ";$env:USERPROFILE\.cargo\bin"` once). First Cargo build takes several minutes; subsequent are fast.
-- **gitignore for Tauri:** `src-tauri/target/` and `src-tauri/gen/` MUST be in `.gitignore`. They are NOT added automatically. Forgetting this means committing hundreds of MB of binary build artifacts, which blocks GitHub push (`GH001: Large files detected`) and requires `git filter-branch` to fix.
-- **git push in Claude Code shell hangs silently:** Windows Credential Manager intercepts `git push` even when a token is embedded in the remote URL, causing the process to hang indefinitely with no output. Fix: always push as `GIT_ASKPASS=echo GIT_TERMINAL_PROMPT=0 git push https://<token>@github.com/... main`. Never use plain `git push` — it will hang.
-- **`pipeline-progress` Rust event must NOT include a `stage` field.** Emitting `"stage": "processing"` clobbers the human-readable label just set by the `pipeline-stage` event. The progress handler in `Output.tsx` only updates the number; `pipeline-stage` exclusively owns the label text.
-- **Tauri 2.x permissions:** All plugin commands must be declared in `src-tauri/capabilities/default.json`. Missing entries throw `not allowed` at runtime, NOT at compile time. Example: folder picker requires `"dialog:allow-open"` in the permissions array.
-- **Tauri plugin config in tauri.conf.json:** Use `null` for plugins with no options (e.g. `"dialog": null`). Using `{}` throws a deserialization panic at startup.
-- **Tailwind CSS entry point:** `src/globals.css` must contain `@import "tailwindcss"` and be imported in `src/main.tsx`. Do NOT reference `src/app/globals.css` — that path was a Next.js artifact and the directory is deleted.
-- **Asset URLs in WebView:** Always use `convertFileSrc(winPath)` from `@tauri-apps/api/core` to get playable `https://asset.localhost/...` URLs. Manual `asset://localhost/C:/...` construction fails silently — video element shows nothing.
-- **`run.py` config completeness:** All settings fields must be explicitly read from `settings.get(key, default)` in `run.py`. Any field omitted from the config dict sent to `run_pipeline()` silently falls back to wrong pipeline defaults (e.g. zoom/silence_removal used to default True). Add every new `JobConfig` field to `run.py` the moment it's added to the TypeScript type.
-- **Output filename format:** `<slug>-<shortId>.mp4` where slug = `slugify(project.name)` (Rust, lowercased, spaces→hyphens, non-alphanum stripped) and shortId = first 8 chars of job UUID. Never raw UUID in output filename.
-- **`JobConfig.transition` default is `"none"` (not `"crossfade"`)** — `DEFAULT_CONFIG` in `Editor.tsx` sets `transition: "none"`. The three options are `"none"` (plain concat), `"crossfade"` (xfade fade), `"dip_to_black"` (xfade fadeblack). Do not change the default back to crossfade.
+## Detail in `.claude/rules/`
 
-## FFmpeg Quirks (WSL2 local build)
+- **Pipeline invocation, manifest, FFmpeg quirks:** `.claude/rules/pipeline.md`
+- **Tauri commands, permissions, capabilities:** `.claude/rules/rust-tauri.md`
+- **E2E testing (WDIO + rushcut-eval skill):** `.claude/rules/e2e.md`
 
-- **DJI Osmo Pocket 3:** Real video is HEVC stream `0`; stream `1` is an embedded MJPEG thumbnail. Always use `-map 0:v:0`.
-- **Portrait clips (1728×3072) normalise to 608×1080** via `scale=-2:1080`. This is correct — do not attempt to "fix" the orientation. Landscape output from portrait clips requires a separate `layout` param (see TODO in `normalise.py`).
-- **Encoding:** Always `-c:v libx264 -pix_fmt yuv420p -profile:v main` — omitting it can silently fall back to HEVC, which Windows Media Player rejects.
-- **Filters:** Use `xfade=transition=fade` (not `crossfade`). `scale` must go INSIDE `-filter_complex` when combining streams; never mix with `-vf`.
-- **xfade_dur is clamped in `transitions.py`** — `XFADE_DUR = 1.5s` is clamped to `min(1.5, min_clip_duration / 2.0)` at render time. This prevents transitions from consuming short clips (e.g. 3s intro cards). Do not remove this guard.
-- **Paths in WSL2:** Windows path `C:\clips\DJI_01.MP4` becomes `/mnt/c/clips/DJI_01.MP4`. Always convert before passing to FFmpeg.
+---
 
-## E2E Testing (Batch 11b)
+## Retired infrastructure (do not rebuild)
 
-- **Test runner:** WebdriverIO v9 (`pnpm test:e2e`). Connects via msedgedriver to an already-running WebView2 debug port. NOT tauri-driver.
-- **Binary preference:** Debug binary first (`src-tauri/target/debug/rushcut.exe`), release as fallback. Debug binary loads frontend from live Vite dev server — always reflects current source without a `tauri build`.
-- **Vite dev server:** `wdio.conf.ts` auto-starts Vite if using debug binary and port 1420 is not live.
-- **CDP attach:** Binary launched with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; msedgedriver attaches via `ms:edgeOptions.debuggerAddress: "127.0.0.1:9222"`.
-- **3-layer BiDi fix (RESOLVED):** WDIO v9 + msedgedriver 146 negotiate BiDi despite `wdio:enforceWebDriverClassic`, causing `browsingContext.navigate` to hang on Vite's HMR WebSocket. Fix: (1) `--disable-bidi` flag on msedgedriver spawn, (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list`. See `docs/E2E-DEBUGGING.md` for full history.
-- **Stale process cleanup:** Kill `rushcut.exe`, `msedgedriver.exe`, and the process holding port 9222 (PowerShell `Get-NetTCPConnection`) at the start of every `beforeSession`. WebView2 subprocess survives `rushcut.exe` kill and holds the port.
-- **Never use `browser.url()`:** It hangs indefinitely against the Vite dev server (HMR WebSocket blocks `readyState === "complete"`). Use `browser.waitUntil(() => browser.getUrl())` instead.
-- **Run tests from PowerShell only:** `pnpm test:e2e`. Git Bash mangles paths in wdio.conf.ts.
-
-## E2E Eval Skill (`/rushcut-eval`)
-
-- **Human-like eval:** Uses chrome-devtools MCP (`take_snapshot`, `take_screenshot`, `click`, `fill`) to drive the app via CDP port 9222. Prefers clicking UIDs over `evaluate_script`.
-- **Acceptable invoke shortcuts:** Only `scan_folder` (OS file dialog can't be automated) and `create_project` (requires React state from scan). Everything else must be driven via UI clicks.
-- **Stale UIDs:** React re-renders invalidate all UIDs. Always take a fresh snapshot before interacting after any state change.
-- **Upload page limitation:** `invoke("scan_folder")` returns data but doesn't update React component state — clip display checks are permanent SKIPs.
-
-## Docker & Lambda (RETIRED for local build)
-
-- Lambda, ECR, IAM role, and IAM user are all DELETED. Do NOT rebuild.
-- Docker Desktop is still broken — irrelevant now.
-- AWS account (459338751297) still exists with no monthly cost. Supabase project paused (restorable 90 days).
-- The `lambda/` directory is kept as reference only. Active pipeline code lives in `pipeline/` (top-level).
+- Lambda / ECR / IAM role: DELETED
+- R2 bucket: DELETED
+- Supabase: PAUSED (data preserved, may be needed Phase 3)
+- Docker Desktop: broken, irrelevant
