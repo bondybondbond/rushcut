@@ -28,7 +28,19 @@
 - **Tailwind:** `src/globals.css` has `@import "tailwindcss"`, imported from `main.tsx`. Do NOT reference `src/app/globals.css` (deleted).
 - **gitignore:** `src-tauri/target/` and `src-tauri/gen/` must be in `.gitignore`. Missing = 668 MB of build artifacts blocking GitHub push.
 - **ASCII only** in console/UI output — no Unicode or emoji (breaks cp1252 encoding).
-- **Design system:** Read `docs/DESIGN.md` before any UI work — canonical palette, typography, and copy rules.
+- **Design system:** Read `docs/DESIGN.md` before any UI work — canonical colour palette, typography, button patterns, and copy rules. Do not invent colours or patterns outside it.
+
+---
+
+## Key docs (read when relevant)
+
+| File                | When to read                                                              |
+| ------------------- | ------------------------------------------------------------------------- |
+| `docs/DESIGN.md`    | **Always** before touching any UI — colours, fonts, spacing, copy tone    |
+| `docs/CONTEXT.md`   | Start of a feature session — current batch, deferred items, next priority |
+| `docs/PRD-DEV.md`   | Planning a new feature or checking the backlog                            |
+| `docs/LEARNINGS.md` | Debugging a known class of problem (FFmpeg, pipeline, E2E)                |
+| `.claude/rules/`    | Path-specific technical rules — load the relevant file, not all of them   |
 
 ---
 
