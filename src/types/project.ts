@@ -52,7 +52,7 @@ export interface JobConfig {
   outro_color: string; // #rrggbb background colour for outro card
   zoom: boolean;
   filter_boring: boolean;
-  music_volume: number; // 0–100, maps to 0.0–1.0 in pipeline
+  music_volume: "subtle" | "balanced" | "prominent";
 }
 
 export interface ProjectSummary {

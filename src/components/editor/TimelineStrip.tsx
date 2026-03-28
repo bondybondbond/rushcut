@@ -94,6 +94,7 @@ function SortableClipTile({ clip, index, onDelete }: SortableClipTileProps) {
     <div
       ref={setNodeRef}
       style={style}
+      data-testid="clip-item"
       className="flex-shrink-0 w-20 flex flex-col rounded-lg overflow-hidden border border-white/10 bg-[#111111] cursor-grab active:cursor-grabbing select-none"
       {...attributes}
       {...listeners}

@@ -14,7 +14,7 @@ const DEFAULT_CONFIG: JobConfig = {
   outro_color: "#000000",
   zoom: false,
   filter_boring: false,
-  music_volume: 40,
+  music_volume: "balanced",
 };
 
 export default function Editor() {

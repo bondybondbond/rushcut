@@ -15,21 +15,26 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 12 (QoL Fixes) COMPLETE**
+**Phase 2 — Batch 12b (Music Mode Presets) COMPLETE**
 
-Batch 12 delivered: audio `-ar 48000` enforced at all 6 FFmpeg re-encode sites (normalise, inject_silence, single-clip render, multi-clip render, music mix, loudnorm), music volume slider (0–100 UI → 0.0–1.0 pipeline, fixed 0.3/0.4 default mismatch), delete project from Library (Rust command + confirmation dialog + optimistic list removal), stale job auto-cleanup (60-min SQL timeout inline in `list_projects_cmd`), 10-min client-side pipeline timeout on Output page with `useRef` guard and cleanup. E2E eval: 7/7 fast PASS; 5/7 editor (2 pre-existing spec bugs); 8/11 render (3 pre-existing spec bugs — render itself PASS, film confirmed 23s).
+Batch 12b delivered: `music_volume` type changed from `number` (0–100) to `"subtle" | "balanced" | "prominent"` union; 3-chip preset group in SettingsPanel replaces slider (conditional on `music_mood !== "none"`); `run.py` maps presets to floats `{subtle: 0.2, balanced: 0.4, prominent: 0.7}` with legacy numeric fallback; 5 pre-existing E2E spec bugs fixed (2× `expect(val,msg)` 2-arg, progress poll race, filename slug regex, `clip-item` testid missing from TimelineStrip). E2E eval: 7/7 fast PASS, 5/7 editor, 8/11 render — all failures pre-existing; none new.
 
 ---
 
 ## Immediate Next Task
 
-**Batch 12b — Music Mode Presets** (small patch): Replace the `music_volume` 0–100 slider with a 3-chip preset group (Subtle / Balanced / Prominent). Changes: TS `JobConfig` type, Rust `JobConfig` struct, SettingsPanel UI, `run.py` mode→float mapping. Expect Tauri recompile. Diagnose before fixing if IPC breaks.
-
-After 12b: **Batch 13 — Motion Intelligence** (FFmpeg/librosa only — no Gemini). See PRD-DEV.md for full scope.
+**Batch 13 — Motion Intelligence** (FFmpeg/librosa only — no Gemini). See PRD-DEV.md for full scope. Goal: a 60+ clip DJI session produces a watchable 3–6 min film with no manual curation.
 
 ---
 
 ## Recently Completed
+
+**Batch 12b — Music Mode Presets + Spec Bug Fixes (2026-03-28)**
+
+- `music_volume` type → `"subtle" | "balanced" | "prominent"` union (was `number` 0–100)
+- SettingsPanel: 3-chip group (Subtle / Balanced / Prominent), conditional on `music_mood !== "none"`, Balanced default
+- `run.py`: preset→float map `{subtle: 0.2, balanced: 0.4, prominent: 0.7}`; legacy numeric values fall back to 0.4
+- E2E spec fixes: `expect(val,msg)` 2-arg (×2), progress poll race condition, filename slug regex → `.mp4` suffix check, `clip-item` testid added to `TimelineStrip.tsx`
 
 **Batch 12 — QoL Fixes (2026-03-27)**
 

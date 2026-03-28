@@ -83,7 +83,11 @@ def main() -> None:
             "intro_text": intro_text,
             "outro_color": settings.get("outro_color", "#000000"),
             "outro_text": outro_text,
-            "music_volume": settings.get("music_volume", 40) / 100.0,
+            # music_volume is a preset string ("subtle"/"balanced"/"prominent").
+            # Legacy numeric values (e.g. 40 from old saved projects) fall back to "balanced" (0.4).
+            "music_volume": {"subtle": 0.2, "balanced": 0.4, "prominent": 0.7}.get(
+                settings.get("music_volume", "balanced"), 0.4
+            ),
         },
     }
 

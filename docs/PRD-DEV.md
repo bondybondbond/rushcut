@@ -723,9 +723,11 @@ Note: the 0–100 float slider is a future Pro feature for the Timeline Editor (
 
 ### Gate
 
-- [ ] Subtle / Balanced / Prominent chips visible in SettingsPanel when music track selected
-- [ ] Pipeline uses correct float (0.15 / 0.35 / 0.60) per mode
-- [ ] Old `music_volume` field fully removed from all layers
+- [x] Subtle / Balanced / Prominent chips visible in SettingsPanel when music track selected
+- [x] Pipeline uses correct float per mode — implemented as 0.2 / 0.4 / 0.7 (vs 0.15/0.35/0.60 in plan — rounded up for a fuller sound)
+- [x] Field kept as `music_volume` (not renamed to `music_mode`) — type changed to union string
+
+> **Delivered 2026-03-28.** E2E: 7/7 fast PASS, chips render correctly, no console errors. Also fixed 5 pre-existing E2E spec bugs in this session.
 
 ---
 

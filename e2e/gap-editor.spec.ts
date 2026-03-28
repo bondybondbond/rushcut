@@ -100,7 +100,7 @@ describe("Editor extended", () => {
       // Re-fetch to get updated class after React re-render
       const updated = await $(`[data-testid="chip-music-${mood}"]`);
       const cls = await updated.getAttribute("class");
-      expect(cls, `chip-music-${mood} should be active (border-[#FF8A65])`).toContain("FF8A65");
+      expect(cls).toContain("FF8A65");
     }
   });
 

@@ -144,6 +144,18 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Solution:** Always take a fresh snapshot (`take_snapshot` or `wait_for`) before every interaction after a state change. For sequential clicks in a loop (e.g., music chips), add ~200ms delay or take a snapshot between each click.
 **Context:** `rushcut-eval` skill — applies to any chrome-devtools MCP interaction with a React app.
 
+## [WDIO/Jest `expect(val, message)` 2-arg form not supported]
+
+**Problem:** `expect(value, "error message").toBe(...)` throws "Expect takes at most one argument" — this Jest version doesn't accept a custom message as the second arg to `expect()`.
+**Solution:** For value assertions use `expect(value).toBe(...)` without a message. For null/existence guards use `if (!x) throw new Error("x missing")` before the assertion.
+**Context:** `e2e/gap-editor.spec.ts` and `e2e/render.spec.ts` — any spec using a message arg on `expect()`.
+
+## [Progress element disappears before poll catches 100%]
+
+**Problem:** `waitUntil` polling for `progress-pct >= 100` times out even when the pipeline succeeds. The done state renders and removes the progress element between two 2s poll intervals — the poller never sees 100%.
+**Solution:** Include the "done" state as an alternative early-exit condition: `if (await h1.getText() === "Your film is ready") return true` before checking the progress value.
+**Context:** `e2e/render.spec.ts` — any spec that polls a transitional UI element that disappears on completion.
+
 ## [invoke() via evaluate_script bypasses React state]
 
 **Problem:** Calling `window.__TAURI_INTERNALS__.invoke("scan_folder")` via `evaluate_script` returns data from Rust but doesn't update the React component's state (no `setClips()` call). Upload page shows no clips.
