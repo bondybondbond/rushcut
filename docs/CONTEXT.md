@@ -23,7 +23,9 @@ Batch 12 delivered: audio `-ar 48000` enforced at all 6 FFmpeg re-encode sites (
 
 ## Immediate Next Task
 
-**Batch 13 — Director Intelligence** (differentiating AI layer): Gemini clip ordering/selection, beat-sync via librosa, motion peak trimming. Or fix 5 pre-existing E2E spec bugs first (minor, see gap-editor.spec.ts + render.spec.ts).
+**Batch 12b — Music Mode Presets** (small patch): Replace the `music_volume` 0–100 slider with a 3-chip preset group (Subtle / Balanced / Prominent). Changes: TS `JobConfig` type, Rust `JobConfig` struct, SettingsPanel UI, `run.py` mode→float mapping. Expect Tauri recompile. Diagnose before fixing if IPC breaks.
+
+After 12b: **Batch 13 — Motion Intelligence** (FFmpeg/librosa only — no Gemini). See PRD-DEV.md for full scope.
 
 ---
 
@@ -62,13 +64,18 @@ Batch 12 delivered: audio `-ar 48000` enforced at all 6 FFmpeg re-encode sites (
 
 | Item                              | Status                           |
 | --------------------------------- | -------------------------------- |
-| Boring clip filter (motion score) | Batch 12+                        |
-| Smart clip selection (>20 clips)  | Batch 12+                        |
-| Per-clip in/out handles           | Batch 12+                        |
-| Proxy files for HEVC scrubbing    | Batch 13+ (interactive timeline) |
-| Auth / project library            | Batch 12+                        |
-| Stripe / paid tier                | Phase 3                          |
-| Cloud mode (Vercel + Lambda)      | Phase 3                          |
+| Boring clip filter (motion score)     | Batch 13                         |
+| Smart clip selection (>20 clips)      | Batch 13                         |
+| Per-clip in/out handles + trim        | Batch 14 (Clip Editor)           |
+| Per-clip transition picker            | Batch 14 (Clip Editor)           |
+| Previewable transitions (proxy)       | Batch 14+ (proxy system needed)  |
+| Clip reorder UI                       | Batch 14 (Clip Editor)           |
+| AI Director screen                    | Batch 15                         |
+| Proxy files for HEVC scrubbing        | Batch 14+ (interactive timeline) |
+| Auth / project library                | Batch 16                         |
+| 4K output                             | Batch 16                         |
+| Stripe / paid tier                    | Batch 16                         |
+| Cloud mode (Vercel + Lambda)          | Phase 3                          |
 
 ---
 

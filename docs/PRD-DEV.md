@@ -225,7 +225,11 @@ Run the full DJI session (`C:\clips\` -> 62 clips, ~19 GB):
 
 ---
 
-## Batch 9 — Director Intelligence
+## Batch 9 — Director Intelligence ⚠️ SUPERSEDED
+
+> **Superseded by Batch 13 (2026-03-28 direction session).** The Gemini API approach was deferred; the UX
+> screen was moved to Batch 15 (after Batch 14 Clip Editor exists). Batch 13 delivers the same pipeline
+> intelligence (motion scoring, peak window, beat-sync) using FFmpeg/librosa only. See Batch 13 below.
 
 > **Goal:** The user gives intent ("cinematic, start with mountain shots, fast cuts") and gets a film that actually reflects it. This is the "Director, not Editor" principle from the PRD — the differentiating layer that separates RushCut from Clipchamp and every other clip stitcher.
 > **Estimate:** 2–3 days.
@@ -300,7 +304,10 @@ Run a real DJI session with brief "fast cuts, start with the landscape shots":
 
 ---
 
-## Batch 10 — Auth + Library
+## Batch 10 — Auth + Library ⚠️ SUPERSEDED
+
+> **Superseded by Batch 16 (2026-03-28 direction session).** Consolidated with 4K output and Pro tier
+> gating into a single auth+monetisation batch. Content preserved below for reference.
 
 > **Goal:** User has an account. Projects persist. The product is ready to share with others.
 > **Estimate:** 1 day.
@@ -690,6 +697,175 @@ Remove "switch tabs" entirely.
 
 ---
 
+---
+
+## Batch 12b — Music Mode Presets
+
+> **Goal:** Replace the raw 0–100 `music_volume` slider (Batch 12) with named presets that are meaningful to non-technical users.
+> **Estimate:** 1–2 hrs. Touches 4 files across 3 layers — expect a Tauri recompile. Diagnose IPC before fixing if anything breaks.
+
+Replace `music_volume: number` (0–100 integer) with `music_mode: "subtle" | "balanced" | "prominent"`:
+
+| Preset | Label | Internal float | User meaning |
+|---|---|---|---|
+| `subtle` | Subtle | 0.15 | Voice / clip audio dominant |
+| `balanced` | Balanced | 0.35 | Music and clip audio equal |
+| `prominent` | Prominent | 0.60 | Music-forward |
+
+**Files to change:**
+
+- `src/types.ts` — `music_volume: number` → `music_mode: "subtle" | "balanced" | "prominent"`
+- `src/pages/Editor.tsx` or `src/components/SettingsPanel.tsx` — 3-chip preset group replacing slider; only shown when music track ≠ "None"
+- `src-tauri/src/lib.rs` — `JobConfig` struct: same field rename
+- `pipeline/run.py` — map `music_mode` → float before calling `mix_music()`; remove the old `/ 100.0` division
+
+Note: the 0–100 float slider is a future Pro feature for the Timeline Editor (Batch 14+).
+
+### Gate
+
+- [ ] Subtle / Balanced / Prominent chips visible in SettingsPanel when music track selected
+- [ ] Pipeline uses correct float (0.15 / 0.35 / 0.60) per mode
+- [ ] Old `music_volume` field fully removed from all layers
+
+---
+
+## Batch 13 — Motion Intelligence
+
+> **Goal:** A 60+ clip DJI session produces a watchable 3–6 min film with no manual clip curation.
+> **Estimate:** 2–3 days (pipeline only — no new screens, no new Rust commands).
+> **This is the batch that makes the Phase 2 exit gate achievable.**
+>
+> Note: Gemini API deferred. All intelligence is FFmpeg/librosa-only. AI Director screen is Batch 15.
+
+### 13a — Boring clip filter (motion scoring)
+
+Score each clip using FFmpeg scene change detection:
+
+```python
+ffmpeg -i clip.mp4 -vf "select='gt(scene,0.02)',metadata=print:file=-" -an -f null -
+```
+
+Parse scene change scores → return `motion_score: float` per clip. Auto-exclude clips below `MOTION_FILTER_THRESHOLD` (default 0.015, configurable via env).
+
+### 13b — Smart clip cap (>N clips)
+
+When more than N clips remain after motion filtering (default N=20), rank by `motion_score × duration_weight`, keep top N. Log excluded clips and reasons to job metadata for later display.
+
+### 13c — Peak window detection
+
+Per clip, find the best-N-seconds window using motion score sampled at 0.5s intervals. Return `(start_ms, end_ms)` of the highest-scoring window as default in/out points. Replaces silence-trim as the default trim heuristic. User-set handles always win.
+
+### 13d — Beat-sync music cuts
+
+Via librosa: detect beat times in the selected music track. When calculating xfade offsets in `transitions.py`, snap each cut point to the nearest beat within ±0.3s. Falls back to timestamp order if no music selected or librosa fails.
+
+### UI surface
+
+SettingsPanel shows "Using X of Y clips · N excluded" (read-only). No new screens.
+
+### Gate
+
+- [ ] 62-clip / 19 GB DJI session → watchable film with no manual curation
+- [ ] Near-static clips auto-excluded (verify via job metadata)
+- [ ] Film runtime 3–6 min without manual trimming
+- [ ] Cuts align with music beats on cinematic/upbeat tracks
+
+---
+
+## Batch 14 — Clip Editor
+
+> **Goal:** User can see the assembled clip order, reorder, trim, and set per-clip transitions before render.
+> **Estimate:** 3–5 days (major UI addition).
+> **Design reference:** `rushcut-mockups.html` — Free Timeline + clip inspector. Both tiers get full controls; Pro gating is Batch 16.**
+
+### 14a — Clip strip (proportional, draggable)
+
+Replace static clip list in Editor with a draggable proportional-width clip strip:
+- Clip card width ∝ clip duration
+- Drag to reorder
+- Total film duration shown as running total beneath strip
+- Excluded clips (from Batch 13) shown dimmed at bottom; draggable back into strip
+
+### 14b — Per-clip inspector
+
+Click any clip → inspector panel shows:
+- **Transition in**: Cut / Dissolve / Dip to Black / Zoom In / Slide Left (per-clip, overrides global)
+- **In/Out trim bar**: scrub handles showing selected window within full clip
+
+### 14c — Transition set expansion
+
+Supported transitions for Batch 14 (FFmpeg xfade params in parentheses):
+
+| Label | xfade param |
+|---|---|
+| Cut | *(no filter)* |
+| Dissolve | `fade` |
+| Dip to Black | `fadeblack` |
+| Zoom In | `zoomin` |
+| Slide Left | `slideleft` |
+
+Transition preview (show 2s looping proxy) is **deferred** — requires a proxy system. Stub the preview icon in UI; wire it in a follow-up.
+
+### 14d — Output duration control
+
+Integer-minute slider (1–10 min) in SettingsPanel. Only shown when combined raw clip duration ≥ 2 min. Default: Auto (pipeline decides, ceiling ~6 min).
+
+### Gate
+
+- [ ] Clip strip renders with proportional widths; total duration shown
+- [ ] Drag reorder updates clip order for render
+- [ ] Per-clip transition picker overrides global transition
+- [ ] In/Out trim handles update trim points in manifest
+- [ ] Excluded clips visible at bottom; can drag back in
+- [ ] Output duration slider visible and passed to pipeline
+
+---
+
+## Batch 15 — AI Director Screen
+
+> **Goal:** Surface the AI's edit proposal explicitly, between Upload and Clip Editor. Makes "Director, not Editor" visible to the user.
+> **Prerequisite:** Batch 13 (real clip analysis data) + Batch 14 (Clip Editor to land in after Accept).
+> **Estimate:** 2–3 days.
+
+New route: `/director/:projectId` — inserted into flow after scan completes, before `/editor/:projectId`.
+
+### Layout (two-column)
+
+**Left:** AI Proposal summary
+- Style tags (e.g. "Energetic", "Dissolve transitions", "Upbeat track", "~2m 20s")
+- "N of M clips used · X excluded"
+- Actions: **Accept & Edit** → `/editor/:projectId` with AI order pre-loaded | **Regenerate** → re-run analysis | **Skip → Manual** → `/editor/:projectId` with original scan order
+
+**Right:** Proposed clip order list
+- Filename, trim duration, transition label per cut
+- Excluded clips shown dimmed/dashed with reason (e.g. "Too short", "Low motion")
+- Tap excluded clip → option to add it back manually
+
+### Gate
+
+- [ ] Director screen appears after scan for new projects
+- [ ] Accept loads Clip Editor with AI-proposed order pre-populated
+- [ ] Regenerate re-runs analysis and refreshes proposal
+- [ ] Skip loads Clip Editor with original scan order
+- [ ] Excluded clips shown with reason; can be added back
+
+---
+
+## Batch 16 — Auth + 4K + Tier
+
+> **Goal:** Product is shareable with paying users. Pro tier enforced.
+> **Estimate:** 3–5 days.
+> **Prerequisite:** DEC-020 conditions met (AI layer shipped = Batch 13+).
+
+- Supabase Auth (email + Google OAuth)
+- 4K pipeline path (`-vf scale=-2:2160`, libx264, profile high)
+- Pro tier gating: AI Director screen, 4K output, advanced transitions (Slide Right, Wipe, etc.), timeline volume slider
+- Upgrade chips + locked overlays for free-tier users (single-pass addition across UI)
+- Stripe (£4.99/mo Creator)
+- Library: show resolution badge (1080p / 4K) per project
+
+---
+
 ## Phase 3 Preview (not in scope now)
 
 - Stripe (£4.99/mo Creator) — after DEC-020 conditions met
@@ -706,6 +882,7 @@ Remove "switch tabs" entirely.
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                          |
 | ------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.8     | 2026-03-28 | Direction session — agreed batch roadmap 12b→13→14→15→16. Music mode presets replace slider, 5-transition set, motion intelligence (no Gemini), Clip Editor, AI Director screen, Auth+4K+Tier. Old Batch 9 (Gemini) and Batch 10 (Auth) marked superseded. |
 | 0.7     | 2026-03-27 | Batch 12 complete — audio -ar 48000 at all 6 re-encode sites, music volume slider (0-100 UI / 0.0-1.0 pipeline), delete project (Rust + Library UI), stale job auto-cleanup (60-min SQL), 10-min Output page timeout. E2E: 7/7 fast PASS, render confirmed PASS. |
 | 0.6     | 2026-03-27 | Batch 11c complete — home redesign, name modal, scan spinner, transition picker (None/Crossfade/Dip to black), AppShell, elapsed timer, Open File button, real thumbnails in Resume section, bin icons always red, CardBlock bins in timeline, xfade clamp. E2E eval 41/41 PASS. |
 | 0.5     | 2026-03-26 | Batch 11b complete — WebdriverIO v9 + msedgedriver E2E scaffold, 3-layer BiDi fix, rushcut-eval skill, dry run 33/35 PASS                                                                                                                                                        |
