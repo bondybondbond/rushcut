@@ -15,6 +15,8 @@ Manifest JSON (written to %TEMP%\rushcut\<job_id>.json by Rust, passed as WSL pa
 
 Protocol (stdout, line-by-line):
   PROGRESS:<0-100>
+  STAGE:<human-readable stage name>
+  ANALYSIS:clips_used=N,clips_total=M,clips_excluded=X
   DONE:<wsl_path_to_output>
   ERROR:<message>
 """
@@ -49,6 +51,10 @@ def on_stage(stage: str) -> None:
     print(f"STAGE:{stage}", flush=True)
 
 
+def on_analysis(data: str) -> None:
+    print(f"ANALYSIS:{data}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
@@ -76,7 +82,8 @@ def main() -> None:
         "config": {
             "music_mood": settings.get("music_mood", "none"),
             "zoom": settings.get("zoom", False),
-            "filter_boring": settings.get("filter_boring", False),
+            # filter_boring defaults True -- motion scoring (Batch 13) is the new default.
+            "filter_boring": settings.get("filter_boring", True),
             "transition": settings.get("transition", "crossfade"),  # log: confirmed received
             "silence_removal": settings.get("silence_removal", False),
             "intro_color": settings.get("intro_color", "#000000"),
@@ -88,6 +95,9 @@ def main() -> None:
             "music_volume": {"subtle": 0.2, "balanced": 0.4, "prominent": 0.7}.get(
                 settings.get("music_volume", "balanced"), 0.4
             ),
+            # Batch 13 tuning knobs -- UI can expose later; sensible defaults for now.
+            "max_clips": settings.get("max_clips", 20),
+            "target_clip_dur": settings.get("target_clip_dur", 5.0),
         },
     }
 
@@ -104,7 +114,7 @@ def main() -> None:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from pipeline.render import run_pipeline
 
-        tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage)
+        tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage, on_analysis=on_analysis)
 
         shutil.copy2(str(tmp_output), str(output_wsl))
         print(f"DONE:{output_wsl}", flush=True)

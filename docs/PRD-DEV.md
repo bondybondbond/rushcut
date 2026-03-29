@@ -767,63 +767,123 @@ SettingsPanel shows "Using X of Y clips · N excluded" (read-only). No new scree
 
 ### Gate
 
-- [ ] 62-clip / 19 GB DJI session → watchable film with no manual curation
-- [ ] Near-static clips auto-excluded (verify via job metadata)
+- [x] Code delivered: motion.py, beats.py, render.py rewrite, db analysis_summary, SettingsPanel toggle. E2E: 25/25 PASS.
+- [ ] 62-clip / 19 GB DJI session → watchable film — BLOCKED: motion scoring adds >10 min overhead (see Batch 13b)
+- [ ] Near-static clips auto-excluded — BLOCKED pending Batch 13b decision
 - [ ] Film runtime 3–6 min without manual trimming
-- [ ] Cuts align with music beats on cinematic/upbeat tracks
+- [ ] Cuts align with music beats — DEFERRED ("not required now")
+
+> **Delivered 2026-03-29.** Motion scoring subsequently found to add >10 min on 10 min footage. Motion scoring removed in Batch 13b per DEC-023. Product direction pivots to user-directed clip review (Batch 14, revised).
 
 ---
 
-## Batch 14 — Clip Editor
+## Batch 13b — Pipeline Fix + UI Cleanup
 
-> **Goal:** User can see the assembled clip order, reorder, trim, and set per-clip transitions before render.
-> **Estimate:** 3–5 days (major UI addition).
-> **Design reference:** `rushcut-mockups.html` — Free Timeline + clip inspector. Both tiers get full controls; Pro gating is Batch 16.**
+> **Goal:** Remove motion scoring overhead, fix UI polish bugs, add pipeline timing diagnostics.
+> **Estimate:** 2–4 hrs.
+> **Prerequisite for Phase 2 exit gate.** Pipeline must complete a 10 min session in under 3 min before any further feature work.
 
-### 14a — Clip strip (proportional, draggable)
+### 13b-1 — Remove motion scoring from pipeline
 
-Replace static clip list in Editor with a draggable proportional-width clip strip:
-- Clip card width ∝ clip duration
-- Drag to reorder
-- Total film duration shown as running total beneath strip
-- Excluded clips (from Batch 13) shown dimmed at bottom; draggable back into strip
+- Remove `filter_by_motion`, `find_peak_window`, `scored_frames_map` wiring from `render.py`
+- Revert trim heuristic: use `detect.py` silence trim as default (was the behaviour before Batch 13)
+- Keep beat-sync stubs but confirm they add <5s overhead (librosa load only runs if music selected)
+- `run.py`: remove `filter_boring` from active config path; set default `False` or remove key
+- `pipeline/motion.py`: keep file untouched — dead code, not called
 
-### 14b — Per-clip inspector
+### 13b-2 — Hide filter_boring toggle in SettingsPanel
 
-Click any clip → inspector panel shows:
-- **Transition in**: Cut / Dissolve / Dip to Black / Zoom In / Slide Left (per-clip, overrides global)
-- **In/Out trim bar**: scrub handles showing selected window within full clip
+- Remove "Smart Clip Selection" row from SettingsPanel
+- Keep `filter_boring` in `JobConfig` TypeScript type (for future use)
+- Keep `DEFAULT_CONFIG.filter_boring = false`
 
-### 14c — Transition set expansion
+### 13b-3 — Filename versioning
 
-Supported transitions for Batch 14 (FFmpeg xfade params in parentheses):
+- Output filename: `slug-01.mp4`, `slug-02.mp4` (per-project counter) not `slug-{8char-uuid}.mp4`
+- Rust `lib.rs` `start_job` / output path computation: count existing files matching `<slug>-NN.mp4` in `C:\clips\processed\`, pick next N (zero-padded to 2 digits)
 
-| Label | xfade param |
-|---|---|
-| Cut | *(no filter)* |
-| Dissolve | `fade` |
-| Dip to Black | `fadeblack` |
-| Zoom In | `zoomin` |
-| Slide Left | `slideleft` |
+### 13b-4 — Volume chip color
 
-Transition preview (show 2s looping proxy) is **deferred** — requires a proxy system. Stub the preview icon in UI; wire it in a follow-up.
+- Music volume preset chips (Subtle / Balanced / Prominent): change accent from `#FF8A65` (orange) to `#99B3FF` (blue)
+- Document in `docs/DESIGN.md` under "Chip / toggle accent" section
 
-### 14d — Output duration control
+### 13b-5 — Per-stage timing logs
 
-Integer-minute slider (1–10 min) in SettingsPanel. Only shown when combined raw clip duration ≥ 2 min. Default: Auto (pipeline decides, ceiling ~6 min).
+- In `render.py`, record `time.time()` at each stage boundary
+- Emit `STAGE:Timing: <stage>=<elapsed:.1f>s` as STAGE lines so they appear in Rust job log
+- Enables bottleneck diagnosis without reading Python internals
+
+### 13b-6 — Fix toggle translate-x visual bug
+
+- `h-5 w-9` container (36px × 20px), `h-3.5 w-3.5` thumb (14px)
+- "On" state `translate-x-4` = 16px — only moves thumb to centre. Correct value: `translate-x-[18px]` or `translate-x-[1.125rem]` to land thumb flush-right with 2px padding
+- Audit all toggle instances in SettingsPanel
 
 ### Gate
 
-- [ ] Clip strip renders with proportional widths; total duration shown
-- [ ] Drag reorder updates clip order for render
-- [ ] Per-clip transition picker overrides global transition
-- [ ] In/Out trim handles update trim points in manifest
-- [ ] Excluded clips visible at bottom; can drag back in
-- [ ] Output duration slider visible and passed to pipeline
+- [ ] Pipeline completes a 10-clip session in <2 min
+- [ ] No `filter_boring` toggle visible in SettingsPanel
+- [ ] Output file named `slug-01.mp4` not `slug-{uuid}.mp4`
+- [ ] Volume preset chips render in blue `#99B3FF`
+- [ ] Terminal output shows per-stage timing when pipeline runs
+- [ ] Toggle thumb visually reaches right end in "on" state
 
 ---
 
-## Batch 15 — AI Director Screen
+## Batch 14 — Clip Review (revised)
+
+> **REVISED SCOPE (post-Batch 13 pivot):** Guided clip-review editor — user sets IN/OUT + focal point per clip, system does deterministic assembly. Replaces old "Clip Editor" timeline concept.
+> **Prerequisite:** Batch 13b (pipeline stable, <3 min on 10 min footage).
+> **Estimate:** 4–6 days (new screen, proxy generation, per-clip DB model).
+
+### 14a — Sequential clip review screen
+
+New route: `/review/:projectId`. Replaces direct jump from Upload → Editor for sessions with >5 clips.
+
+One clip at a time:
+- Full-width video player (proxy if available, source otherwise)
+- Scrub bar with IN/OUT handle drag
+- Focal point picker (tap to mark X/Y, or "Centre" default)
+- Zoom preset: None / Gentle (1.1x) / Medium (1.3x) / Tight (1.5x)
+- Include / Skip buttons (large, keyboard accessible: `Enter` = include, `Space` = skip)
+- Progress: "Clip 3 of 12 — 9 remaining"
+
+### 14b — Proxy generation
+
+On project create (during scan), generate H.264 720p proxies for each clip:
+- `ffmpeg -i source.mp4 -c:v libx264 -crf 28 -vf scale=-2:720 -c:a aac -ar 48000 proxy.mp4`
+- ~5–10s per clip in WSL2; run in background after scan completes
+- Store proxy path in `clips` table (`proxy_path TEXT`)
+- Clip review screen uses proxy for scrubbing; final render always uses original
+
+### 14c — Per-clip data model
+
+Add to `clips` table:
+- `in_ms INTEGER` (null = use peak window or full clip)
+- `out_ms INTEGER` (null = use peak window or full clip)
+- `focal_x REAL` (0.0–1.0, null = centre)
+- `focal_y REAL` (0.0–1.0, null = centre)
+- `zoom_mode TEXT` (null | "gentle" | "medium" | "tight")
+- `include INTEGER DEFAULT 1` (0 = skipped)
+
+Pipeline reads these from manifest; uses them instead of silence trim when set.
+
+### 14d — Tabbed settings UI
+
+Reorganise SettingsPanel into tabs: Music/Sound · Effects · Text (intro/outro cards).
+
+### Gate
+
+- [ ] Clip review screen navigates one clip at a time with IN/OUT, focal point, zoom preset, include/skip
+- [ ] Proxy generation runs after scan; proxies used for scrubbing in review screen
+- [ ] Per-clip in/ms, out_ms, focal_x/y, zoom_mode passed through manifest to pipeline
+- [ ] Pipeline applies user IN/OUT over silence trim when set
+- [ ] Skipped clips excluded from render
+- [ ] Tabbed settings visible in Editor
+
+---
+
+## Batch 15 — AI Director Screen (deprioritised)
 
 > **Goal:** Surface the AI's edit proposal explicitly, between Upload and Clip Editor. Makes "Director, not Editor" visible to the user.
 > **Prerequisite:** Batch 13 (real clip analysis data) + Batch 14 (Clip Editor to land in after Accept).

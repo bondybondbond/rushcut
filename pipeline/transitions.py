@@ -10,6 +10,8 @@ Key constraints (from CLAUDE.md + plan fixes):
 - Audio: acrossfade for 2-clip case only.
          For 3+ clips use concat filter (hard cuts) — pairwise acrossfade stacks
          incorrectly across N clips and produces misaligned audio overlaps.
+- Batch 13: durations passed in may be beat-adjusted (snapped to music beats) by
+  render.py Step 5a before this function is called. No signature change needed here.
 """
 
 import logging

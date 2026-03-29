@@ -13,7 +13,7 @@ const DEFAULT_CONFIG: JobConfig = {
   outro_text: "",
   outro_color: "#000000",
   zoom: false,
-  filter_boring: false,
+  filter_boring: true,
   music_volume: "balanced",
 };
 

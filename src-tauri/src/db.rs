@@ -67,6 +67,7 @@ pub struct Job {
     pub local_output_path: Option<String>,
     pub settings_json: Option<String>,
     pub error_message: Option<String>,
+    pub analysis_summary: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -123,6 +124,18 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
     ")?;
+
+    // Additive migration: analysis_summary column (Batch 13).
+    // SQLite has no ADD COLUMN IF NOT EXISTS, so guard with pragma_table_info.
+    let col_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name='analysis_summary'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !col_exists {
+        conn.execute("ALTER TABLE jobs ADD COLUMN analysis_summary TEXT", [])?;
+    }
+
     Ok(())
 }
 
@@ -192,8 +205,8 @@ pub fn insert_clip(clip: &Clip) -> Result<(), rusqlite::Error> {
 pub fn insert_job(job: &Job) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.execute(
-        "INSERT INTO jobs (id, project_id, status, progress_pct, local_output_path, settings_json, error_message, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO jobs (id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             job.id,
             job.project_id,
@@ -202,9 +215,20 @@ pub fn insert_job(job: &Job) -> Result<(), rusqlite::Error> {
             job.local_output_path,
             job.settings_json,
             job.error_message,
+            job.analysis_summary,
             job.created_at,
             job.updated_at,
         ],
+    )?;
+    Ok(())
+}
+
+pub fn update_job_analysis(job_id: &str, analysis_summary: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let ts = now();
+    conn.execute(
+        "UPDATE jobs SET analysis_summary = ?1, updated_at = ?2 WHERE id = ?3",
+        params![analysis_summary, ts, job_id],
     )?;
     Ok(())
 }
@@ -285,7 +309,7 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
 pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, created_at, updated_at
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at
          FROM jobs WHERE id = ?1",
         params![job_id],
         |row| Ok(Job {
@@ -296,8 +320,9 @@ pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
             local_output_path: row.get(4)?,
             settings_json: row.get(5)?,
             error_message: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
+            analysis_summary: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
         }),
     )
 }

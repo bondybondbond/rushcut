@@ -8,6 +8,7 @@
 ## [0.5] — 2026-03-15 — Batch 2 upload & storage
 
 ### Added
+
 - `src/lib/supabase.ts` — browser client + server (service role) client implemented
 - `src/lib/r2.ts` — S3-compatible R2 wrapper: `getPresignedPutUrl`, `getPresignedGetUrl`, `deleteObject`
 - `src/utils/execFileNoThrow.ts` — safe `execFile` wrapper, never throws, returns `{ stdout, stderr, code }`
@@ -23,13 +24,16 @@
 - Supabase `jobs` table created (schema per BUILD-PLAN §Batch 2)
 
 ### Fixed
+
 - `next.config.ts`: added `serverExternalPackages: ['@ffprobe-installer/ffprobe']` — Turbopack was failing with `Unknown module type` on the bundled README.md
 
 ### Changed
+
 - Upload CTA now navigates to `/preview/[real-jobId]` — `demo-job-id` hardcode removed
 - Client-side size guard changed to **per-file** 1GB (was ambiguous "1GB total")
 
 ### Known limitations (deferred)
+
 - Probe skipped on Vercel Hobby (ffprobe binary ~70MB exceeds 50MB function limit); `probe_skipped` flag used in UI instead; Lambda will backfill metadata in Batch 4
 - `projectId` in `localStorage` — orphaned R2 objects if tab closed mid-upload; resume-draft flow deferred to Batch 3
 
@@ -38,6 +42,7 @@
 ## [0.4] — 2026-03-15 — Batch 1 skeleton UI + copy/flow
 
 ### Added
+
 - All 5 pages scaffolded and navigable: Landing, Upload, Configure, Preview, Download
 - Locked copy on all pages — headings, subheads, CTAs, helper text
 - `StepIndicator` component (3-step: Upload / Preview / Download)
@@ -49,6 +54,7 @@
 - `.claude/launch.json` for preview tooling
 
 ### Changed (flow vs original plan)
+
 - **Draft-first flow**: Upload CTA → `/preview/demo-job-id` directly (skips Configure)
 - **Configure demoted**: optional, reachable only via "Edit settings" from Preview
 - **StepIndicator**: 3 steps only (Configure removed from mandatory rail)
@@ -62,6 +68,7 @@
 ## [0.3] — March 2026 — PRD reassessment + rename
 
 ### Changed
+
 - Product renamed from OneClip → **RushCut** (see DEC-006)
 - Problem statement rewritten around founder's personal pain point (DaVinci Resolve hours-per-clip)
 - Clipchamp repositioned as primary competitor (not CapCut/Filmora)
@@ -74,12 +81,14 @@
 - Added Section 14: Strategic Clarity
 
 ### Added
+
 - Section 0: Founder Context (SpellWiz, Chrome extension learning history)
 - DECISIONS.md with 8 initial decisions logged
 - ARCHITECTURE.md with full stack rationale and pipeline detail
 - README.md
 
 ### Repo
+
 - Private Git repo initialised
 
 ---
@@ -87,6 +96,7 @@
 ## [0.2] — March 2026 — Initial PRD
 
 ### Added
+
 - Full PRD drafted: problem statement, target user, feature scope, tech stack, cost model, pricing, competitive table, build plan, risks
 - AI vs FFmpeg decision table
 - Two-step draft + final render flow confirmed

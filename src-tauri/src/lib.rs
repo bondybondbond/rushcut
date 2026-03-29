@@ -2,8 +2,8 @@ mod db;
 
 use db::{
     delete_project, get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
-    list_projects, rename_project, update_job_done, update_job_error, update_job_progress,
-    Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
+    list_projects, rename_project, update_job_analysis, update_job_done, update_job_error,
+    update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader};
@@ -236,6 +236,7 @@ async fn start_job(
         local_output_path: Some(output_path.clone()),
         settings_json: Some(settings_json),
         error_message: None,
+        analysis_summary: None,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -305,6 +306,10 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
                 "pipeline-stage",
                 json!({ "jobId": job_id, "stage": stage_name.trim() }),
             );
+        } else if let Some(data) = line.strip_prefix("ANALYSIS:") {
+            // Store motion analysis summary from pipeline (Batch 13).
+            // Format: clips_used=N,clips_total=M,clips_excluded=X
+            let _ = update_job_analysis(&job_id, data.trim());
         } else if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
             let pct: i64 = pct_str.trim().parse().unwrap_or(0);
             let _ = update_job_progress(&job_id, pct, "processing");

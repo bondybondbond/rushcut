@@ -17,23 +17,24 @@
 
 ## Stack
 
-| Layer | Tool | Rationale |
-|---|---|---|
-| Frontend | Next.js (App Router) | Vercel-deployable, App Router for streaming/async render status |
-| UI | Tailwind + shadcn/ui | Rapid prototyping without custom CSS debt |
-| Auth + DB | Supabase | Free tier covers full PoC; Postgres for project/export records |
-| File storage | Cloudflare R2 | Zero egress fees — critical for large video files |
-| Proxy preview | FFmpeg (low-res Lambda) | Fast draft without full render cost |
-| Full render | FFmpeg on AWS Lambda (containerised) | Serverless, scales to zero, pay-per-export |
-| Payments | Stripe | Standard, well-documented |
+| Layer         | Tool                                 | Rationale                                                       |
+| ------------- | ------------------------------------ | --------------------------------------------------------------- |
+| Frontend      | Next.js (App Router)                 | Vercel-deployable, App Router for streaming/async render status |
+| UI            | Tailwind + shadcn/ui                 | Rapid prototyping without custom CSS debt                       |
+| Auth + DB     | Supabase                             | Free tier covers full PoC; Postgres for project/export records  |
+| File storage  | Cloudflare R2                        | Zero egress fees — critical for large video files               |
+| Proxy preview | FFmpeg (low-res Lambda)              | Fast draft without full render cost                             |
+| Full render   | FFmpeg on AWS Lambda (containerised) | Serverless, scales to zero, pay-per-export                      |
+| Payments      | Stripe                               | Standard, well-documented                                       |
 
 ### v2 AI additions (not in scope until Phase 3)
-| Feature | Tool |
-|---|---|
-| Scene/action scoring | Google Video Intelligence API |
-| Face detection / smart zoom | Google Vision API or OpenCV |
-| Context-aware ordering | Gemini 2.0 Flash |
-| Beat-sync music | `librosa` (open-source Python) |
+
+| Feature                     | Tool                           |
+| --------------------------- | ------------------------------ |
+| Scene/action scoring        | Google Video Intelligence API  |
+| Face detection / smart zoom | Google Vision API or OpenCV    |
+| Context-aware ordering      | Gemini 2.0 Flash               |
+| Beat-sync music             | `librosa` (open-source Python) |
 
 ---
 
@@ -41,14 +42,14 @@
 
 These limits exist to ensure per-export infrastructure cost never exceeds subscription revenue. They must be enforced at **both** client (pre-upload validation) and server (reject at API layer) — never rely on documentation alone.
 
-| Limit | Free Tier | Paid Creator Tier |
-|---|---|---|
-| Max file size | 500MB | 1GB |
-| Max project size (total upload) | 5GB | 10GB |
-| Max clips per project | 20 | 50 |
-| Max exports per month | Unlimited | 10 |
-| Google Video Intelligence cap | N/A | 5 min footage per export |
-| Lambda /tmp allocation | 512MB (default) | 10GB (must be explicitly set) |
+| Limit                           | Free Tier       | Paid Creator Tier             |
+| ------------------------------- | --------------- | ----------------------------- |
+| Max file size                   | 500MB           | 1GB                           |
+| Max project size (total upload) | 5GB             | 10GB                          |
+| Max clips per project           | 20              | 50                            |
+| Max exports per month           | Unlimited       | 10                            |
+| Google Video Intelligence cap   | N/A             | 5 min footage per export      |
+| Lambda /tmp allocation          | 512MB (default) | 10GB (must be explicitly set) |
 
 > **Why these numbers?** At 10GB input, paid tier costs ~£0.56–0.70/export. At 10 exports/month = ~£5.60–7.00 vs £4.99 revenue — the cap prevents worst-case loss. Typical hobbyist (1–4 exports/month at 3–5GB) sits at ~78% gross margin. See `PRD.md` Section 8 for full breakdown.
 
@@ -88,6 +89,7 @@ Output: 1080p MP4 [free] / 4K MP4 [paid] → R2 (24h signed URL)
 ```
 
 ### Key technical risks
+
 - **Codec normalisation:** DJI (H.264/H.265), GoPro (H.264), iPhone (HEVC). Must pre-process to consistent container before xfade. Build this first.
 - **zoompan performance:** Frame-by-frame re-encode — a 30s clip with zoom can take 90s Lambda processing. Benchmark before committing to all clips.
 - **Lambda cold start:** 3GB RAM container = 8–15s cold start. Use progress indicator; provisioned concurrency for paid tier.
@@ -101,10 +103,10 @@ Output: 1080p MP4 [free] / 4K MP4 [paid] → R2 (24h signed URL)
 
 Two-step render to avoid wasting full compute on a version the user rejects:
 
-| Step | Resolution | Where | Speed |
-|---|---|---|---|
-| Draft proxy | 360p | Lambda (low memory config) | ~15–30s |
-| Final render | 1080p (free) / 4K (paid) | Lambda (3GB config) | ~60–720s |
+| Step         | Resolution               | Where                      | Speed    |
+| ------------ | ------------------------ | -------------------------- | -------- |
+| Draft proxy  | 360p                     | Lambda (low memory config) | ~15–30s  |
+| Final render | 1080p (free) / 4K (paid) | Lambda (3GB config)        | ~60–720s |
 
 Draft is browser-previewable. User confirms, then final render triggers.
 
@@ -114,14 +116,14 @@ Draft is browser-previewable. User confirms, then final render triggers.
 
 ## Cost Model (summary)
 
-| Export type | Input size | Estimated cost |
-|---|---|---|
-| Free 1080p | 3GB | ~£0.015 |
-| Free 1080p | 5GB | ~£0.025 |
-| Free 1080p | 10GB (max) | ~£0.049 |
-| Paid 4K + AI (GVI capped) | 3GB | ~£0.51 |
-| Paid 4K + AI (GVI capped) | 5GB | ~£0.56 |
-| Paid 4K + AI (GVI capped) | 10GB (max) | ~£0.70 |
+| Export type               | Input size | Estimated cost |
+| ------------------------- | ---------- | -------------- |
+| Free 1080p                | 3GB        | ~£0.015        |
+| Free 1080p                | 5GB        | ~£0.025        |
+| Free 1080p                | 10GB (max) | ~£0.049        |
+| Paid 4K + AI (GVI capped) | 3GB        | ~£0.51         |
+| Paid 4K + AI (GVI capped) | 5GB        | ~£0.56         |
+| Paid 4K + AI (GVI capped) | 10GB (max) | ~£0.70         |
 
 Infrastructure costs ~$0 up to 200 users on free tiers. See `PRD.md` Section 8 for full breakdown.
 
@@ -132,6 +134,7 @@ Infrastructure costs ~$0 up to 200 users on free tiers. See `PRD.md` Section 8 f
 > To be populated in Phase 1 build sessions.
 
 Prerequisites (assumed Windows 11 + WSL2):
+
 - Node.js 20+
 - Docker Desktop (for local Lambda FFmpeg container testing)
 - AWS CLI

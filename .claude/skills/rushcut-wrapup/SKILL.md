@@ -69,6 +69,12 @@ Use native **Edit** tool.
 
 ## Step 5 — Cleanup
 
+**Test artifacts:** Delete any failure screenshots that accumulated during the session:
+
+```bash
+powershell.exe -Command "if (Test-Path C:/apps/rushcut/e2e/screenshots) { Remove-Item C:/apps/rushcut/e2e/screenshots/* -Force -ErrorAction SilentlyContinue; Write-Host 'screenshots cleared' }"
+```
+
 **Code:** Remove `console.log` / `print()` debug statements, temp/scratch files, resolved inline TODOs.
 
 **Docs (light prune — apply "earns its place" test):**
@@ -87,7 +93,7 @@ Stage only source files changed this session:
 
 ```bash
 cd C:/apps/rushcut
-git add src/ pipeline/ docs/ .claude/ CLAUDE.md
+git add src/ pipeline/ docs/ .claude/ e2e/ wdio.conf.ts package.json CLAUDE.md .gitignore
 git status
 git commit -m "type(scope): description
 

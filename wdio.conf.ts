@@ -175,6 +175,15 @@ export const config: WebdriverIO.Config = {
     await new Promise<void>((r) => setTimeout(r, 3000));
   },
 
+  afterTest: async (test, _ctx, result) => {
+    if (result.error) {
+      const screenshotsDir = path.resolve(__dirname, "e2e", "screenshots");
+      if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
+      const safeName = test.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 80);
+      await browser.saveScreenshot(path.join(screenshotsDir, `${safeName}-FAIL.png`));
+    }
+  },
+
   afterSession: async () => {
     if (msEdge)     msEdge.kill("SIGTERM");
     if (appProcess) appProcess.kill("SIGTERM");

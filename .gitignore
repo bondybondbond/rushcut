@@ -35,6 +35,9 @@ Thumbs.db
 .serverless/
 cdk.out/
 
+# Test failure screenshots
+e2e/screenshots/
+
 # Logs
 *.log
 npm-debug.log*

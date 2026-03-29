@@ -8,6 +8,7 @@
     "dev:vite": "vite",
     "build:vite": "vite build",
     "test:e2e": "pnpm exec wdio run wdio.conf.ts --spec e2e/fast.spec.ts",
+    "test:e2e:editor": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/gap-editor.spec.ts\"",
     "test:e2e:render": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/render.spec.ts\"",
     "test:e2e:full": "pnpm exec wdio run wdio.conf.ts"
   },

@@ -39,6 +39,7 @@ export interface Job {
   local_output_path: string | null;
   settings_json: string | null;
   error_message: string | null;
+  analysis_summary: string | null; // "clips_used=N,clips_total=M,clips_excluded=X" from Batch 13
   created_at: string;
   updated_at: string;
 }

@@ -56,10 +56,12 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 ## SQLite — schema constraints
 
 - **No `ON DELETE CASCADE` without `PRAGMA foreign_keys = ON`** — rusqlite opens each connection without enabling FK enforcement. Even if FKs are declared in the schema, `DELETE FROM projects WHERE id = ?` won't cascade. Always delete in child-first order manually: `clips` → `jobs` → `projects`. Confirm by reading the schema DDL before writing any delete logic.
+- **No `ADD COLUMN IF NOT EXISTS` in SQLite** — running `ALTER TABLE t ADD COLUMN c TEXT` a second time raises "duplicate column name: c" and crashes. Use a migration guard: `SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name='column_name'` → only run ALTER if count is 0. Do this in Rust `db.rs` `init()` immediately after the initial `execute_batch` schema creation.
 
 ## UI-to-pipeline value mapping
 
-- **Slider sends 0–100, pipeline expects 0.0–1.0** — React range inputs return integers (0–100); pipeline functions expect float factors (0.0–1.0). Scale in `run.py` at the settings boundary: `settings.get("music_volume", 40) / 100.0`. If the default in `run.py` is set as a raw float (e.g. `0.4`), it will be silently wrong the first time the UI sends an integer `40`. Always align the default unit with the source: use `40` (integer, UI scale) as the default in `run.py` and always divide.
+- **Slider sends 0–100, pipeline expects 0.0–1.0** — React range inputs return integers (0–100); pipeline functions expect float factors (0.0–1.0). Scale in `run.py` at the settings boundary: `settings.get("music_volume", 40) / 100.0`. If the default in `run.py` is set as a raw float (e.g. `0.4`), it will be silently wrong the first time the UI sends an integer `40`. Always align the default unit with the source: use `40` (integer, UI scale) as the default in `run.py` and always divide. NOTE: as of Batch 12b `music_volume` is now a string union `"subtle"|"balanced"|"prominent"` — the 0–100 integer pattern no longer applies to this field specifically, but the principle remains valid for any new numeric config field.
+- **Per-clip pre-processing cost is multiplicative** — adding an FFmpeg pass per clip before the encode phase (e.g. scene detection scoring) multiplies processing time by N clips. On 30 DJI clips at ~20s each, that is 10+ extra minutes before a single frame is rendered. Profile realistically on target footage size before shipping any per-clip analysis step; prefer single-pass designs where the analysis output is reused for multiple purposes (trim + score from the same FFmpeg call).
 
 ## Tauri / Windows dev
 

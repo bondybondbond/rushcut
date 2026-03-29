@@ -13,11 +13,13 @@ Manifest JSON written to `%TEMP%\rushcut\<job_id>.json` by Rust. Contains clips 
 Folder scan: `wsl -d Ubuntu-24.04 -u root -- python3 .../scan.py --folder <wsl_path>`
 File scan:   `wsl -d Ubuntu-24.04 -u root -- python3 .../scan.py --files <path1> <path2> ...`
 
-Progress stdout: `STAGE:name` · `PROGRESS:N` · `DONE:/mnt/c/...` · `ERROR:msg`
+Progress stdout: `STAGE:name` · `PROGRESS:N` · `DONE:/mnt/c/...` · `ERROR:msg` · `ANALYSIS:key=val,...`
+
+`ANALYSIS:` lines carry structured metadata (e.g. `clips_used=15,clips_total=20,clips_excluded=5`). Rust parses these and stores in `jobs.analysis_summary`. Emit once at end of pipeline run.
 
 ## Output path
 
-Written to `C:\clips\processed\<slug>-<shortId>.mp4`. Slug = `slugify(project.name)` (Rust). ShortId = first 8 UUID chars.
+Written to `C:\clips\processed\<slug>-01.mp4`, `<slug>-02.mp4` etc. Slug = `slugify(project.name)` (Rust). Counter = per-project sequential count of existing output files matching `<slug>-NN.mp4`. Changed from UUID suffix in Batch 13b.
 
 ## Python pitfalls
 
@@ -37,4 +39,5 @@ Written to `C:\clips\processed\<slug>-<shortId>.mp4`. Slug = `slugify(project.na
 - **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams.
 - **Audio concat for 3+ clips:** Use `concat=n=N:v=0:a=1` + `atrim`/`asetpts`. Pairwise `acrossfade` for N>2 produces misaligned overlaps.
 - **`-ar 48000` at every re-encode site:** DJI records at 96kHz; force 48kHz at normalise, inject_silence, single-clip render, multi-clip render, music mix, and loudnorm. One missing site means 96kHz leaks into the output.
-- **music_volume slider scaling:** UI sends 0–100 integer; pipeline expects 0.0–1.0 float. Scale in `run.py`: `settings.get("music_volume", 40) / 100.0`. Default must be `40` (integer) not `0.4` (float) to stay in the same unit.
+- **music_volume is now a string union:** `"subtle" | "balanced" | "prominent"`. `run.py` maps to floats `{subtle: 0.2, balanced: 0.4, prominent: 0.7}`. The old 0–100 integer slider no longer exists (changed Batch 12b).
+- **pipeline/motion.py is DEAD CODE** — do not call from render.py. Motion scoring added >10 min overhead on 10 min footage. Kept for future premium AI feature only. Never re-enable without profiling total time on realistic footage first.

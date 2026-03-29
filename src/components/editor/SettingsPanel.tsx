@@ -159,6 +159,32 @@ export function SettingsPanel({ config, onChange }: Props) {
         </div>
       </div>
 
+      {/* Smart clip selection (filter_boring) */}
+      <div className={row}>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className={label}>Smart Clip Selection</p>
+            <p className={sublabel + " mb-0"}>
+              Auto-exclude static clips. Keep best 20 by motion score.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="toggle-filter-boring"
+            onClick={() => update({ filter_boring: !config.filter_boring })}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+              config.filter_boring ? "bg-[#FF8A65]" : "bg-white/25"
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                config.filter_boring ? "translate-x-4" : "translate-x-0.5"
+              }`}
+            />
+          </button>
+        </div>
+      </div>
+
       {/* Ken Burns Zoom — disabled, coming soon */}
       <div className={`${row} opacity-50`}>
         <div className="flex items-center justify-between">

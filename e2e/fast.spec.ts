@@ -77,7 +77,7 @@ describe("Editor page", () => {
 
   it("shows Settings panel music chips with No Music active by default", async () => {
     // Navigate into first project if one exists
-    const firstProject = await $(".project-card, [data-testid='project-card']");
+    const firstProject = await $('[data-testid="btn-open-project"]');
     if (!(await firstProject.isExisting())) return;
 
     await firstProject.click();
@@ -103,7 +103,7 @@ describe("Editor page", () => {
     await nameInput.waitForDisplayed({ timeout: 3_000 });
     expect(await nameInput.isDisplayed()).toBe(true);
 
-    await nameInput.keys(["Escape"]);
+    await browser.keys(["Escape"]);
     await nameBtn.waitForDisplayed({ timeout: 3_000 });
     expect(await nameBtn.getText()).toBe(originalText);
   });

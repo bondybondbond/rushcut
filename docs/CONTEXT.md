@@ -15,19 +15,47 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 12b (Music Mode Presets) COMPLETE**
+**Phase 2 — Batch 13 (Motion Intelligence) COMPLETE — with strategic pivot**
 
-Batch 12b delivered: `music_volume` type changed from `number` (0–100) to `"subtle" | "balanced" | "prominent"` union; 3-chip preset group in SettingsPanel replaces slider (conditional on `music_mood !== "none"`); `run.py` maps presets to floats `{subtle: 0.2, balanced: 0.4, prominent: 0.7}` with legacy numeric fallback; 5 pre-existing E2E spec bugs fixed (2× `expect(val,msg)` 2-arg, progress poll race, filename slug regex, `clip-item` testid missing from TimelineStrip). E2E eval: 7/7 fast PASS, 5/7 editor, 8/11 render — all failures pre-existing; none new.
+Batch 13 delivered: `pipeline/motion.py` (FFmpeg scene-change scoring, peak window trim), `pipeline/beats.py` (librosa beat detection + snap), `pipeline/render.py` rewrite (motion filter, clip cap, peak window trim, beat-sync steps), `pipeline/run.py` (forwarded max_clips, target_clip_dur, flipped filter_boring default), `src-tauri/src/db.rs` (analysis_summary column + migration guard), `src-tauri/src/lib.rs` (ANALYSIS: stdout parser), `src/types/project.ts` (analysis_summary field), `src/components/editor/SettingsPanel.tsx` (filter_boring toggle).
+
+**STRATEGIC PIVOT (post-Batch 13 real-footage testing):** Motion scoring runs FFmpeg once per clip before encoding — on 10 min / 6 GB footage this adds >10 min processing time. User decision: remove motion scoring entirely if it cannot be brought under ~1 min total. Product direction shifts from auto-curation to **guided clip-review editor** (user sets IN/OUT + focal point per clip, pipeline does deterministic assembly). AI policy updated: AI only where user-visible improvement is demonstrable — never invisible internals. Beat-sync explicitly "not required now."
 
 ---
 
 ## Immediate Next Task
 
-**Batch 13 — Motion Intelligence** (FFmpeg/librosa only — no Gemini). See PRD-DEV.md for full scope. Goal: a 60+ clip DJI session produces a watchable 3–6 min film with no manual curation.
+**Batch 13b — Pipeline Fix + UI Cleanup** (see scope below)
+
+---
+
+## Batch 13b Scope
+
+Priority order — implement all before Batch 14:
+
+1. **Remove motion scoring from pipeline** — `motion.py` kept as dead code (future premium AI feature), but NOT called from `render.py`. Remove `filter_by_motion`, `find_peak_window`, `scored_frames_map` wiring from render.py. Remove `filter_boring` from the active config path in `run.py`. Revert peak-window trim back to silence trim (detect.py) as default. Beat-sync steps may stay as stubs but must not slow pipeline.
+2. **Hide filter_boring toggle** — remove "Smart Clip Selection" row from SettingsPanel (the toggle is meaningless without motion scoring). Keep `filter_boring` in `JobConfig` type for future use, just don't render it.
+3. **Filename versioning** — output filename changes from `slug-{8-char-uuid}.mp4` to `slug-01.mp4`, `slug-02.mp4` etc (per-project counter). Rust `lib.rs` must query count of existing output files matching `slug-NN.mp4` and pick next N.
+4. **Volume chip color** — change from `#FF8A65` (orange) to `#99B3FF` (blue) for music volume preset chips (Subtle/Balanced/Prominent). Document in `docs/DESIGN.md`.
+5. **Per-stage timing logs** — add `time.time()` instrumentation to `render.py` at each major stage boundary; emit `STAGE:Timing: <stage>=<elapsed>s` lines so Rust log output makes bottlenecks visible.
+6. **Fix toggle translate-x visual bug** — "on" state thumb doesn't visually reach the right end. Audit `h-5 w-9` container vs `h-3.5 w-3.5` thumb vs `translate-x-4` — adjust translate value so thumb sits flush-right when active.
 
 ---
 
 ## Recently Completed
+
+**Batch 13 — Motion Intelligence (2026-03-29)**
+
+- `pipeline/motion.py` (NEW): FFmpeg scene-change scoring via `select='gt(scene,0.02)',metadata=print:file=-`; `score_clip()` single pass returning `(motion_score, scored_frames)`; `filter_by_motion()` with safety keep-all fallback; `find_peak_window()` sliding window, no extra FFmpeg pass
+- `pipeline/beats.py` (NEW): `detect_beats()` via librosa; `snap_to_beat()` with tolerance; graceful fallback (returns `[]` on ImportError)
+- `pipeline/render.py`: replaced freezedetect inline block; added motion filter (13a), clip cap by motion×sqrt(duration) (13b), peak-window trim (13c), beat-sync re-trim (13d); `ANALYSIS:clips_used=N,...` stdout protocol
+- `pipeline/run.py`: `on_analysis` callback; `max_clips`, `target_clip_dur` forwarded; `filter_boring` default `True`
+- `src-tauri/src/db.rs`: `analysis_summary TEXT` column; SQLite migration guard (`pragma_table_info` check); `update_job_analysis()` helper
+- `src-tauri/src/lib.rs`: `ANALYSIS:` stdout prefix handler; calls `update_job_analysis`
+- `src/types/project.ts`: `analysis_summary: string | null` on `Job`
+- `src/components/editor/SettingsPanel.tsx`: Smart Clip Selection toggle row; `filter_boring` wired
+- librosa 0.11.0 installed in WSL2 Ubuntu-24.04
+- E2E: 25/25 PASS (fast suite)
 
 **Batch 12b — Music Mode Presets + Spec Bug Fixes (2026-03-28)**
 
@@ -67,20 +95,22 @@ Batch 12b delivered: `music_volume` type changed from `number` (0–100) to `"su
 
 ## Deferred / Blocked
 
-| Item                              | Status                           |
-| --------------------------------- | -------------------------------- |
-| Boring clip filter (motion score)     | Batch 13                         |
-| Smart clip selection (>20 clips)      | Batch 13                         |
-| Per-clip in/out handles + trim        | Batch 14 (Clip Editor)           |
-| Per-clip transition picker            | Batch 14 (Clip Editor)           |
-| Previewable transitions (proxy)       | Batch 14+ (proxy system needed)  |
-| Clip reorder UI                       | Batch 14 (Clip Editor)           |
-| AI Director screen                    | Batch 15                         |
-| Proxy files for HEVC scrubbing        | Batch 14+ (interactive timeline) |
-| Auth / project library                | Batch 16                         |
-| 4K output                             | Batch 16                         |
-| Stripe / paid tier                    | Batch 16                         |
-| Cloud mode (Vercel + Lambda)          | Phase 3                          |
+| Item                                       | Status                                          |
+| ------------------------------------------ | ----------------------------------------------- |
+| Motion scoring (boring filter)             | DEAD CODE — pipeline/motion.py kept, not called |
+| Beat-sync music cuts                       | Not required now — revisit if <1 min total      |
+| Per-clip IN/OUT handles + trim             | Batch 14 (Clip Review screen)                   |
+| Per-clip focal point + deterministic zoom  | Batch 14 (Clip Review screen)                   |
+| Sequential clip review flow                | Batch 14 (replaces old Clip Editor concept)     |
+| Per-clip transition picker                 | Batch 14+                                       |
+| Previewable transitions (proxy)            | Batch 14+ (proxy system needed)                 |
+| Proxy files for HEVC scrubbing             | Batch 14 (prerequisite for fast scrub)          |
+| Tabbed settings UI (Music / Effects / Text)| Batch 14                                        |
+| AI Director screen                         | Batch 15 (deprioritised)                        |
+| Auth / project library                     | Batch 16                                        |
+| 4K output                                  | Batch 16                                        |
+| Stripe / paid tier                         | Batch 16                                        |
+| Cloud mode (Vercel + Lambda)               | Phase 3                                         |
 
 ---
 
@@ -91,6 +121,9 @@ Batch 12b delivered: `music_volume` type changed from `number` (0–100) to `"su
 - **DEC-020:** Stripe deferred until AI layer exists — charging for clip stitching has no lock-in
 - **DEC-021:** "In the middle" positioning confirmed — direction power, not full auto-AI, not manual timeline
 - **DEC-022:** Full local build — upload bottleneck (84 min for 19 GB session at 30 Mbps) makes cloud-upload model unworkable for real sessions. Phase 2 runs entirely on-machine via WSL2.
+- **DEC-023:** Motion scoring removed — FFmpeg-per-clip scoring adds >10 min on 10 min footage; unacceptable. pipeline/motion.py kept as dead code only. May be revisited as a premium AI feature if total time can be <1 min.
+- **DEC-024:** Product pivots to guided clip-review editor — user sets IN/OUT + focal point per clip; pipeline does deterministic assembly. No invisible auto-curation. "Anti-fake-AI, not anti-AI."
+- **DEC-025:** AI policy = selective, user-visible only — AI only where improvement is demonstrable and sellable. Never for internals the user can't see or verify.
 
 Full decision log: `docs/DECISIONS.md`
 
