@@ -2,6 +2,12 @@
 
 > Lock this down before any UI work. All colours, sizes, and component patterns here are canonical.
 
+## Product positioning
+
+> **"RushCut does not decide your memories for you. It helps you shape them quickly."**
+
+User decides. Pipeline executes. Every UI decision should reinforce this: give control clearly, remove friction fast, never surprise the user with an invisible choice the system made on their behalf.
+
 ---
 
 ## Colours
@@ -85,15 +91,18 @@ Always **green** (`#22c55e`), never white/grey.
 
 ## Configure Panel Chips
 
+Chip active accent: `#99B3FF` (blue) — used for music mood, volume preset, transition chips.
+Card color-swatch selected ring: `#FF8A65` (peach) — kept for card background pickers only.
+
 ```tsx
 {/* Active */}
-"border-[#FF8A65] text-[#FF8A65] bg-[#FF8A65]/10"
+"border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
 
 {/* Inactive */}
 "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
 ```
 
-Toggle: ON = `bg-[#FF8A65]`, OFF = `bg-white/25`.
+Toggle: ON = `bg-[#99B3FF]`, OFF = `bg-white/25`.
 
 ---
 

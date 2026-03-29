@@ -7,6 +7,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ## FFmpeg — filter_complex
 
+- **Mixed portrait+landscape requires fixed-canvas pre-scale before concat/xfade** — `scale=-2:{h}` appended after concat/xfade produces streams of different widths (e.g. 1920px landscape vs 540px portrait); FFmpeg aborts with exit 234. Fix: pre-scale every input stream to an exact canvas with named labels `[sv0]`, `[sv1]`... before any concat or xfade reference: `[{i}:v]scale=W:H:force_original_aspect_ratio=decrease,pad=W:H:(ow-iw)/2:(oh-ih)/2[sv{i}]`. Both the `"none"` (concat) path and xfade path must be updated — missing one path means the crash survives for certain transition settings.
 - **xfade transition name is `fade` not `crossfade`** — `crossfade` raises "Not yet implemented in FFmpeg". Use `xfade=transition=fade`. For dip-to-black use `xfade=transition=fadeblack` (native, no custom logic needed).
 - **`scale` must be inside `-filter_complex`** — using `-vf` alongside `-filter_complex` on the same output stream raises "Simple and complex filtering cannot be used together". Append scale as the final step inside the filter chain.
 - **Get durations from trimmed paths, not normalised paths** — xfade offset formula uses per-clip duration; if trim runs before transitions, re-run `get_duration()` on the trimmed files or offsets will be silently wrong.
@@ -16,6 +17,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ## FFmpeg — codec / output
 
+- **Use `-preset ultrafast` for normalised intermediates** — normalise.py produces temp files that are re-encoded again by the xfade/concat render step. Using `-preset fast` for these intermediates wastes 3–4× CPU on motion estimation for files that will be re-encoded anyway. `ultrafast` produces the same final output quality at ~3–4× lower normalise time (confirmed: ~3 min → ~60–90s on 3×4K clips). Always use `ultrafast` for intermediate normalise; `fast`/`medium` is only meaningful for the final render output.
 - **Always specify `-c:v libx264 -pix_fmt yuv420p -profile:v main`** — omitting `-c:v` after `-filter_complex` can silently fall back to HEVC, which Windows Photos/Media Player rejects with error 0x80004005.
 - **Single-clip shortcut**: use simple `-vf "scale=-2:360"` without `-filter_complex` — avoids needless complexity and the constraint that scale can't be in both `-vf` and `-filter_complex`.
 - **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams; `0:a?` maps all of them. Always use the indexed form when normalising DJI footage.
@@ -168,6 +170,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ## UX / timing feedback
 
+- **Rolling inactivity timeout beats wall-clock timeout for long pipelines** — a hard `setTimeout(10min)` fires even when the pipeline is making steady forward progress, producing a false "timed out" error. Instead: start the timer on mount and reset it on each `pipeline-stage` event. Do NOT reset on every `pipeline-progress` tick — a hung pipeline that emits noisy progress would never time out. The timer fires only when no stage change has arrived for the full timeout window.
 - **ETA countdown timers are unreliable for non-linear pipelines** — a remaining-time estimate based on `elapsed / progress * (100 - progress)` grows during slow pipeline stages (e.g. loudnorm), making it worse than nothing. Use a simple count-up elapsed timer instead (`useRef<number>(Date.now())` on component mount, tick every second). Users calibrate expectations from "it took 30s last time" not from a fluctuating estimate.
 - **Start elapsed timer on mount, not on first progress event** — initialise `startTimeRef = useRef<number>(Date.now())` at declaration time so the counter starts at 0 immediately; initialising lazily (e.g. on first `progress > 0`) causes a visible delay before counting starts.
 

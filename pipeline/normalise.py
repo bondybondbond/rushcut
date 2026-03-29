@@ -43,7 +43,7 @@ def normalise(
         preset = "ultrafast"
     else:
         scale_filter = "scale=-2:1080,format=yuv420p"
-        preset = "fast"
+        preset = "ultrafast"  # intermediates — re-encoded by render step, quality irrelevant
 
     norm_paths: list[Path] = []
 

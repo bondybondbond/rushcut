@@ -195,10 +195,19 @@ async fn start_job(
     let project_data = get_project_with_clips(&project_id)
         .map_err(|e| format!("DB error (get clips): {}", e))?;
 
-    // Build output path — use human-readable project name + short job ID
+    // Build output path — slug-01.mp4, slug-02.mp4 ... (per-project counter)
     let slug = slugify(&project_data.project.name);
-    let short_id = &job_id[..8];
-    let output_path = format!(r"{}\{}-{}.mp4", DEFAULT_OUTPUT_DIR, slug, short_id);
+    let counter = std::fs::read_dir(DEFAULT_OUTPUT_DIR)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+              .filter(|e| {
+                  let name = e.file_name().to_string_lossy().to_string();
+                  name.starts_with(&format!("{}-", slug)) && name.ends_with(".mp4")
+              })
+              .count()
+        })
+        .unwrap_or(0);
+    let output_path = format!(r"{}\{}-{:02}.mp4", DEFAULT_OUTPUT_DIR, slug, counter + 1);
 
     // Write manifest JSON to Windows TEMP
     let manifest = json!({

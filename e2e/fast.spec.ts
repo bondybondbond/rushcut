@@ -89,7 +89,7 @@ describe("Editor page", () => {
     const noneChip = await $('[data-testid="chip-music-none"]');
     await noneChip.waitForExist({ timeout: 5_000 });
     const classes = await noneChip.getAttribute("class");
-    expect(classes).toContain("FF8A65");
+    expect(classes).toContain("99B3FF");
   });
 
   it("inline project name edit: click -> input appears -> Escape cancels", async () => {

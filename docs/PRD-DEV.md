@@ -821,32 +821,92 @@ SettingsPanel shows "Using X of Y clips · N excluded" (read-only). No new scree
 
 ### Gate
 
-- [ ] Pipeline completes a 10-clip session in <2 min
-- [ ] No `filter_boring` toggle visible in SettingsPanel
-- [ ] Output file named `slug-01.mp4` not `slug-{uuid}.mp4`
-- [ ] Volume preset chips render in blue `#99B3FF`
-- [ ] Terminal output shows per-stage timing when pipeline runs
-- [ ] Toggle thumb visually reaches right end in "on" state
+- [x] Pipeline completes a 10-clip session in <2 min
+- [x] No `filter_boring` toggle visible in SettingsPanel
+- [x] Output file named `slug-01.mp4` not `slug-{uuid}.mp4`
+- [x] Volume preset chips render in blue `#99B3FF`
+- [x] Terminal output shows per-stage timing when pipeline runs
+- [x] Toggle thumb visually reaches right end in "on" state
+
+> **Delivered 2026-03-29.** All 6 tasks complete. Post-batch hotfixes also shipped: portrait+landscape crash (`transitions.py` fixed-canvas pre-scale), normalise ultrafast preset, Output.tsx rolling timeout. E2E: 25/25 PASS.
+
+---
+
+## Batch 13c — Pipeline Reliability + Speed
+
+> **Goal:** Fix remaining pipeline bugs found during real 4K footage testing. No new features — reliability only.
+> **Estimate:** 1–2 days.
+> **Prerequisite for Batch 14:** Music must loop; sync must be diagnosed before building per-clip trim controls on top of a drifting concat.
+
+### 13c-1 — Music looping
+
+`pipeline/music.py`: the MP3 track currently lays over the film once and ends. For films longer than the track (~2.5 min), music cuts off mid-film.
+
+- Use `-stream_loop -1` on the music input to loop indefinitely, then trim to exact film duration
+- Optional: add `-af "afade=t=out:st=<end-2>:d=2"` to fade out the last 2s cleanly
+- Test with a >3 min render to confirm loop is seamless
+
+### 13c-2 — Audio/video sync investigation
+
+Audio sync drift observed during real-footage testing (speech visibly out of sync). Before fixing, log to identify the source:
+
+- Add PTS logging at normalise output, trim output, and concat input
+- Reproduce with a known drifting clip pair
+- Likely candidates: silence-trim boundary cutting mid-frame, or audio concat offset drift across 3+ clips
+- Fix only after root cause is confirmed in logs
+
+### 13c-3 — Hardware HEVC decode
+
+Normalise is still the main speed bottleneck (~60–90s for 3×4K clips after ultrafast fix). If WSL2 GPU passthrough is active (`/dev/dxg` present), `-hwaccel auto` can offload HEVC decode to the GPU.
+
+- Probe: `ls /dev/dxg` and check `ffmpeg -hwaccels` output in WSL2
+- If available: add `-hwaccel auto` before `-i` in `normalise.py` FFmpeg call; verify output is identical
+- Do not implement blind — confirm decode offload actually fires before shipping
+
+### Gate
+
+- [ ] Film >3 min renders with music looping to fill the full duration
+- [ ] A/V sync root cause logged and identified (fix may be in 13c or 14 depending on complexity)
+- [ ] Hardware decode probed; implemented if WSL2 GPU passthrough confirmed
 
 ---
 
 ## Batch 14 — Clip Review (revised)
 
-> **REVISED SCOPE (post-Batch 13 pivot):** Guided clip-review editor — user sets IN/OUT + focal point per clip, system does deterministic assembly. Replaces old "Clip Editor" timeline concept.
-> **Prerequisite:** Batch 13b (pipeline stable, <3 min on 10 min footage).
+> **REVISED SCOPE (post-Batch 13 pivot):** Guided clip-review editor — user decides, pipeline executes. Replaces old "Clip Editor" timeline concept.
+> **Positioning anchor:** "RushCut does not decide your memories for you. It helps you shape them quickly."
+> **Prerequisite:** Batch 13b + 13c complete. Proxy generation (14b) should be the first task in this batch — scrubbing in clip review is unusable without proxies on 4K HEVC.
 > **Estimate:** 4–6 days (new screen, proxy generation, per-clip DB model).
 
 ### 14a — Sequential clip review screen
 
 New route: `/review/:projectId`. Replaces direct jump from Upload → Editor for sessions with >5 clips.
 
-One clip at a time:
+**Two review modes per clip — Quick is the default:**
+
+**Quick mode (default, collapsed):**
 - Full-width video player (proxy if available, source otherwise)
-- Scrub bar with IN/OUT handle drag
-- Focal point picker (tap to mark X/Y, or "Centre" default)
+- Include / Skip buttons (large, keyboard-accessible: `Enter` = include, `Space` = skip)
+- Focal point picker (tap to mark X/Y, or "Centre" default — single tap, no drag required)
+- "Expand" affordance reveals Precise controls
+
+**Precise mode (expanded per clip, opt-in):**
+- Scrub bar with draggable IN/OUT handles
 - Zoom preset: None / Gentle (1.1x) / Medium (1.3x) / Tight (1.5x)
-- Include / Skip buttons (large, keyboard accessible: `Enter` = include, `Space` = skip)
-- Progress: "Clip 3 of 12 — 9 remaining"
+- All Quick controls still present
+
+Design intent: a user can review 60 clips using Quick mode only and still produce a good film. Precise mode is for hero shots where the user wants explicit control. Don't force full manual trimming on every clip.
+
+Progress indicator: "Clip 3 of 12 — 9 remaining"
+
+**Post-review Editor is intentionally minimal.** After Clip Review, the Editor contains only:
+- Clip reorder
+- Music mood + volume preset
+- Transition style (global)
+- Intro / Outro card text
+- Render
+
+No new controls should grow in the Editor. Any per-clip decision belongs in the Review screen, not here.
 
 ### 14b — Proxy generation
 
@@ -854,19 +914,19 @@ On project create (during scan), generate H.264 720p proxies for each clip:
 - `ffmpeg -i source.mp4 -c:v libx264 -crf 28 -vf scale=-2:720 -c:a aac -ar 48000 proxy.mp4`
 - ~5–10s per clip in WSL2; run in background after scan completes
 - Store proxy path in `clips` table (`proxy_path TEXT`)
-- Clip review screen uses proxy for scrubbing; final render always uses original
+- Clip review screen uses proxy for scrubbing; final render always uses originals
 
 ### 14c — Per-clip data model
 
 Add to `clips` table:
-- `in_ms INTEGER` (null = use peak window or full clip)
-- `out_ms INTEGER` (null = use peak window or full clip)
+- `in_ms INTEGER` (null = silence trim or full clip)
+- `out_ms INTEGER` (null = silence trim or full clip)
 - `focal_x REAL` (0.0–1.0, null = centre)
 - `focal_y REAL` (0.0–1.0, null = centre)
 - `zoom_mode TEXT` (null | "gentle" | "medium" | "tight")
 - `include INTEGER DEFAULT 1` (0 = skipped)
 
-Pipeline reads these from manifest; uses them instead of silence trim when set.
+Pipeline reads these from manifest; explicit in/out wins over silence trim when set.
 
 ### 14d — Tabbed settings UI
 
@@ -874,11 +934,12 @@ Reorganise SettingsPanel into tabs: Music/Sound · Effects · Text (intro/outro 
 
 ### Gate
 
-- [ ] Clip review screen navigates one clip at a time with IN/OUT, focal point, zoom preset, include/skip
+- [ ] Quick mode is default; Include/Skip works with keyboard; Precise mode expands per clip
 - [ ] Proxy generation runs after scan; proxies used for scrubbing in review screen
-- [ ] Per-clip in/ms, out_ms, focal_x/y, zoom_mode passed through manifest to pipeline
+- [ ] Per-clip in_ms, out_ms, focal_x/y, zoom_mode passed through manifest to pipeline
 - [ ] Pipeline applies user IN/OUT over silence trim when set
 - [ ] Skipped clips excluded from render
+- [ ] Post-review Editor contains only the 5 items listed above — nothing more
 - [ ] Tabbed settings visible in Editor
 
 ---

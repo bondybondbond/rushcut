@@ -35,6 +35,8 @@ Written to `C:\clips\processed\<slug>-01.mp4`, `<slug>-02.mp4` etc. Slug = `slug
 - **Encoding:** Always `-c:v libx264 -pix_fmt yuv420p -profile:v main`. Omitting allows silent HEVC fallback (Windows Media Player rejects HEVC).
 - **xfade name:** `xfade=transition=fade` (NOT `crossfade`). Dip-to-black = `xfade=transition=fadeblack`.
 - **scale inside filter_complex:** Never mix `-vf` and `-filter_complex` on the same output stream.
+- **Fixed-canvas pre-scale for portrait+landscape mixing:** `transitions.py` pre-scales every input to an exact canvas (`scale=W:H:force_original_aspect_ratio=decrease,pad=W:H:(ow-iw)/2:(oh-ih)/2`) with named labels `[sv0]`,`[sv1]`... before any concat or xfade. Do NOT use `scale=-2:{h}` after the chain — that was the crash (different widths entering xfade = FFmpeg exit 234). Both `"none"` and xfade paths use this approach.
+- **normalise.py uses `ultrafast` preset for both modes** — normalised files are intermediates re-encoded by the render step. `fast` or better wastes CPU on motion estimation. Final mode changed from `fast` → `ultrafast` in Batch 13b.
 - **xfade_dur clamp:** `transitions.py` clamps to `min(1.5, min_clip_dur / 2.0)`. Do not remove — prevents short clips (e.g. 3s cards) from being consumed.
 - **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams.
 - **Audio concat for 3+ clips:** Use `concat=n=N:v=0:a=1` + `atrim`/`asetpts`. Pairwise `acrossfade` for N>2 produces misaligned overlaps.

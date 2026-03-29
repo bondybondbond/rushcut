@@ -11,7 +11,8 @@ async function createEvalProject(): Promise<{ id: number } | null> {
     const { invoke } = (window as any).__TAURI_INTERNALS__;
     const metas: any[] = await invoke("scan_folder", { folderPath: "C:\\clips" });
     if (!metas || metas.length === 0) return null;
-    const clips = metas.map((m: any) => ({
+    // Limit to first 3 clips — keeps test setup time bounded regardless of folder size
+    const clips = metas.slice(0, 3).map((m: any) => ({
       filename: m.filename,
       local_path: m.local_path,
       size_bytes: m.size_bytes,
@@ -100,7 +101,7 @@ describe("Editor extended", () => {
       // Re-fetch to get updated class after React re-render
       const updated = await $(`[data-testid="chip-music-${mood}"]`);
       const cls = await updated.getAttribute("class");
-      expect(cls).toContain("FF8A65");
+      expect(cls).toContain("99B3FF");
     }
   });
 
@@ -113,7 +114,7 @@ describe("Editor extended", () => {
     // None chip must be inactive
     const noneChip = await $('[data-testid="chip-music-none"]');
     const cls = await noneChip.getAttribute("class");
-    expect(cls).not.toContain("FF8A65");
+    expect(cls).not.toContain("99B3FF");
     // Reset to none
     await noneChip.click();
     await browser.pause(200);

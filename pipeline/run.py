@@ -82,8 +82,6 @@ def main() -> None:
         "config": {
             "music_mood": settings.get("music_mood", "none"),
             "zoom": settings.get("zoom", False),
-            # filter_boring defaults True -- motion scoring (Batch 13) is the new default.
-            "filter_boring": settings.get("filter_boring", True),
             "transition": settings.get("transition", "crossfade"),  # log: confirmed received
             "silence_removal": settings.get("silence_removal", False),
             "intro_color": settings.get("intro_color", "#000000"),
@@ -95,7 +93,6 @@ def main() -> None:
             "music_volume": {"subtle": 0.2, "balanced": 0.4, "prominent": 0.7}.get(
                 settings.get("music_volume", "balanced"), 0.4
             ),
-            # Batch 13 tuning knobs -- UI can expose later; sensible defaults for now.
             "max_clips": settings.get("max_clips", 20),
             "target_clip_dur": settings.get("target_clip_dur", 5.0),
         },

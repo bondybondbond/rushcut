@@ -32,6 +32,8 @@ export default function Output() {
   const [elapsedLabel, setElapsedLabel] = useState<string>("0s");
   // Ref to track completion so the timeout callback doesn't race with a done event
   const completedRef = useRef(false);
+  // Rolling activity timer — reset on each pipeline-stage change (not every progress tick)
+  const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load initial job state (handles page refresh on already-done job)
   useEffect(() => {
@@ -63,14 +65,30 @@ export default function Output() {
   useEffect(() => {
     if (!jobId) return;
 
+    // Rolling 10-min inactivity timeout — resets on each pipeline-stage change.
+    // Resets on stage events only (meaningful forward progress), NOT on every
+    // progress tick — a noisy tick stream must not suppress a genuine hang.
+    function resetActivityTimer() {
+      if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
+      activityTimerRef.current = setTimeout(() => {
+        if (!completedRef.current) {
+          setErrorMsg("Pipeline timed out -- check WSL2 is running");
+          setStage("Error");
+        }
+      }, 10 * 60 * 1000);
+    }
+    resetActivityTimer(); // start immediately on mount
+
     const unlistenProgress = listen<PipelineProgressEvent>("pipeline-progress", (event) => {
       if (event.payload.jobId !== jobId) return;
       setProgress(event.payload.progress);
+      // intentionally NOT resetting the activity timer here
     });
 
     const unlistenDone = listen<PipelineProgressEvent>("pipeline-done", (event) => {
       if (event.payload.jobId !== jobId) return;
       completedRef.current = true;
+      if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
       setProgress(100);
       setStage("Done");
       setOutputPath(event.payload.outputPath);
@@ -79,6 +97,7 @@ export default function Output() {
     const unlistenError = listen<PipelineProgressEvent>("pipeline-error", (event) => {
       if (event.payload.jobId !== jobId) return;
       completedRef.current = true;
+      if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
       setErrorMsg(event.payload.message || "Render failed");
       setStage("Error");
     });
@@ -86,9 +105,11 @@ export default function Output() {
     const unlistenStage = listen<{ jobId: string; stage: string }>("pipeline-stage", (event) => {
       if (event.payload.jobId !== jobId) return;
       setStage(stageLabel(event.payload.stage));
+      resetActivityTimer(); // stage change = meaningful forward progress, reset timer
     });
 
     return () => {
+      if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
       unlistenProgress.then((f) => f());
       unlistenDone.then((f) => f());
       unlistenError.then((f) => f());
@@ -110,18 +131,6 @@ export default function Output() {
     }, 1000);
     return () => clearInterval(interval);
   }, [outputPath, errorMsg]);
-
-  // 10-minute client-side timeout for silent pipeline failures
-  useEffect(() => {
-    if (!jobId) return;
-    const timer = setTimeout(() => {
-      if (!completedRef.current) {
-        setErrorMsg("Pipeline timed out -- check WSL2 is running");
-        setStage("Error");
-      }
-    }, 10 * 60 * 1000);
-    return () => clearTimeout(timer);
-  }, [jobId]);
 
   const isDone = outputPath !== null;
   const isError = errorMsg !== null;

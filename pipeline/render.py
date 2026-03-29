@@ -3,14 +3,10 @@ pipeline/render.py -- Orchestrator: runs the full pipeline for a job.
 
 Pipeline order:
   1.  normalise      -> H.264/yuv420p/25fps/1080p/AAC
-  1b. motion filter  -> (if config.filter_boring) score clips, exclude boring,
-                        cap at max_clips by motion_score * sqrt(duration)
-  2.  peak trim      -> best-motion window per clip (reuses scored_frames from 1b);
-                        falls back to silence trim if motion data unavailable
+  2.  silence trim   -> (if config.silence_removal) trim silence from clip edges
   3.  zoom           -> (if config.zoom, final mode only)
   4.  cards          -> prepend intro, append outro (if text provided)
   5.  render         -> filter_complex xfade + scale, or single-clip shortcut
-  5a. beat-sync      -> re-trim clip durations to align cut points with music beats
   6.  mix_music      -> (if config.music_mood != "none")
   7.  loudnorm       -> two-pass EBU R128 (final mode only)
 
@@ -21,14 +17,12 @@ Entry points:
 
 import logging
 import shutil
-from math import sqrt
+import time
 from pathlib import Path
 
-from .beats import detect_beats, snap_to_beat
 from .cards import make_card
 from .detect import detect_trim_points
 from .loudnorm import loudnorm
-from .motion import filter_by_motion, find_peak_window
 from .music import mix_music
 from .normalise import normalise
 from .transitions import build_filter_complex
@@ -142,77 +136,32 @@ def run_pipeline(
     music_filename = f"{music_mood}.mp3" if music_mood and music_mood != "none" else None
     music_path = MUSIC_DIR / music_filename if music_filename else None
 
-    # Motion scoring state -- populated in Step 1b, consumed in Steps 2 and 5a.
+    # ANALYSIS counters -- all clips used, no motion filtering.
     clips_total = len(clip_paths)
     clips_used = clips_total
     clips_excluded = 0
-    scored_frames_map: dict[Path, list[tuple[float, float]]] = {}
-    scores_dict: dict[Path, float] = {}
 
     # 1. Normalise -- report per-clip so progress doesn't appear stuck.
-    report_stage("normalise")
+    report_stage("Normalising clips")
     log.info("[render] Step 1: normalise")
     report(10)
+    t0 = time.time()
 
     def _normalise_progress(done: int, total: int) -> None:
         report(10 + int(done / total * 15))  # 10% -> 25%
 
     current_paths = normalise(clip_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
+    print(f"TIMING:normalise={time.time()-t0:.1f}s", flush=True)
 
-    # 1b. Motion scoring: boring filter (13a) + clip cap (13b).
-    # Runs on normalised clips for consistent format. Populates scored_frames_map
-    # for reuse in peak window trim (Step 2) -- no extra FFmpeg pass there.
-    if config.get("filter_boring", False) and len(current_paths) > 1:
-        report_stage("motion_analysis")
-        log.info("[render] Step 1b: motion scoring (%d clips)", len(current_paths))
-
-        kept, excluded, scores_dict, scored_frames_map = filter_by_motion(current_paths)
-        clips_excluded = len(excluded)
-        current_paths = kept
-
-        # Clip cap (13b): if too many clips remain, keep top N by motion_score * sqrt(duration).
-        MAX_CLIPS = int(config.get("max_clips", 20))
-        if len(current_paths) > MAX_CLIPS:
-            scored = [
-                (scores_dict.get(p, 0.0) * sqrt(max(0.01, get_duration(p))), p)
-                for p in current_paths
-            ]
-            current_paths = [p for _, p in sorted(scored)[-MAX_CLIPS:]]
-            extra_excluded = clips_total - clips_excluded - len(current_paths)
-            clips_excluded += extra_excluded
-            log.info("[render] Clip cap: kept top %d (cap=%d)", len(current_paths), MAX_CLIPS)
-
-        clips_used = len(current_paths)
-        report_stage(f"Motion analysis: {clips_used} of {clips_total} clips selected")
-        log.info("[render] %d clips used, %d excluded", clips_used, clips_excluded)
-
-    # Emit ANALYSIS line -- always, even when filter_boring=False (all 0 excluded).
+    # Emit ANALYSIS line.
     report_analysis(f"clips_used={clips_used},clips_total={clips_total},clips_excluded={clips_excluded}")
 
-    # 2. Trim -- peak window (13c) if motion data available, silence trim otherwise.
-    report_stage("trim")
+    # 2. Silence trim.
+    report_stage("Trimming clips")
     report(25)
+    t0 = time.time()
 
-    if scored_frames_map:
-        # Peak window trim: reuses scored_frames from Step 1b -- zero extra FFmpeg passes.
-        TARGET_DUR = float(config.get("target_clip_dur", 5.0))
-        log.info("[render] Step 2: peak window trim (target=%.1fs per clip)", TARGET_DUR)
-        trimmed = []
-        for i, p in enumerate(current_paths):
-            dur = get_duration(p)
-            frames = scored_frames_map.get(p, [])
-            start, end = find_peak_window(frames, dur, window_s=TARGET_DUR)
-            # Guard: skip trim if window is essentially the full clip or too short.
-            if end - start >= 0.5 and not (abs(start) < 0.01 and abs(end - dur) < 0.01):
-                log.info("[render] Clip %d peak trim: %.2fs->%.2fs (%.2fs)", i, start, end, end - start)
-                out = tmp / f"peak_{i}.mp4"
-                trimmed.append(trim(p, start, end, out))
-            else:
-                log.info("[render] Clip %d peak trim: full clip kept (%.2fs)", i, dur)
-                trimmed.append(p)
-        current_paths = trimmed
-
-    elif config.get("silence_removal", False):
+    if config.get("silence_removal", False):
         log.info("[render] Step 2: silence trim")
         trimmed = []
         for i, p in enumerate(current_paths):
@@ -221,9 +170,10 @@ def run_pipeline(
             out = tmp / f"trim_{i}.mp4"
             trimmed.append(trim(p, start, end, out))
         current_paths = trimmed
-
     else:
         log.info("[render] Step 2: trim skipped")
+
+    print(f"TIMING:trim={time.time()-t0:.1f}s", flush=True)
 
     # 3. Zoom (per-clip, before transitions).
     # Skipped in draft mode -- zoompan is CPU-intensive and can exceed timeout.
@@ -279,42 +229,14 @@ def run_pipeline(
         current_paths = current_paths + [card]
 
     # 5. Build filter_complex + render.
-    report_stage("render")
+    report_stage("Rendering")
     # CRITICAL: durations must come from current_paths (post-trim), not original clips.
     report(50)
     log.info("[render] Step 5: render with xfade")
     output = tmp / "render.mp4"
     durations = [get_duration(p) for p in current_paths]
     audio_flags = [has_audio(p) for p in current_paths]
-
-    # 5a. Beat-sync (13d): snap cut points to music beats, re-trim to beat-aligned durations.
-    # Runs before inject_silence and build_filter_complex so durations are already final.
-    # Note: durations list is mutated in-place where clips are re-trimmed.
-    beat_times = detect_beats(music_path) if music_path else []
-    if beat_times:
-        log.info("[render] Step 5a: beat-sync (%d beats)", len(beat_times))
-        cumulative = 0.0
-        adjusted_paths = []
-        for i, (p, dur) in enumerate(zip(list(current_paths), list(durations))):
-            cut_time = cumulative + dur
-            snapped = snap_to_beat(cut_time, beat_times)
-            # Never trim a clip shorter than 0.5s.
-            new_dur = max(0.5, snapped - cumulative)
-            delta = abs(new_dur - dur)
-            log.info(
-                "[render] Beat-sync clip %d: %.3fs -> %.3fs (delta=%.3fs)",
-                i, dur, new_dur, delta,
-            )
-            if delta > 0.05:
-                beat_out = tmp / f"beat_{i}.mp4"
-                adjusted_paths.append(trim(p, 0.0, new_dur, beat_out))
-                durations[i] = new_dur
-            else:
-                adjusted_paths.append(p)
-            cumulative = snapped
-        current_paths = adjusted_paths
-    else:
-        log.info("[render] Step 5a: beat-sync skipped (no beats or no music)")
+    t0 = time.time()
 
     # Inject silence for any clips lacking audio (cards have no audio).
     current_paths, audio_flags = inject_silence_where_needed(
@@ -367,9 +289,12 @@ def run_pipeline(
         )
         ffmpeg_run(cmd)
 
+    print(f"TIMING:render={time.time()-t0:.1f}s", flush=True)
+
     # 6. Mix music.
-    report_stage("music")
+    report_stage("Mixing music")
     report(75)
+    t0 = time.time()
     if music_filename:
         log.info("[render] Step 6: mix music (%s)", music_mood)
         music_out = tmp / "with_music.mp4"
@@ -377,16 +302,19 @@ def run_pipeline(
         output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out, music_volume=music_volume)
     else:
         log.info("[render] Step 6: music skipped")
+    print(f"TIMING:music={time.time()-t0:.1f}s", flush=True)
 
     # 7. Loudnorm (final only -- two-pass is too slow for draft).
-    report_stage("loudnorm")
+    report_stage("Loudnorm")
     report(85)
+    t0 = time.time()
     if mode != "draft":
         log.info("[render] Step 7: loudnorm")
         final_out = tmp / "final.mp4"
         output = loudnorm(output, final_out, context=context)
     else:
         log.info("[render] Step 7: loudnorm skipped (draft mode)")
+    print(f"TIMING:loudnorm={time.time()-t0:.1f}s", flush=True)
 
     report(95)
     log.info("[render] Pipeline complete: %s", output)

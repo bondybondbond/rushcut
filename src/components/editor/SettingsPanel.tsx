@@ -39,7 +39,7 @@ export function SettingsPanel({ config, onChange }: Props) {
         onClick={onClick}
         className={`text-xs rounded-md px-3 py-1.5 border transition-all duration-200 font-medium ${
           active
-            ? "border-[#FF8A65] text-[#FF8A65] bg-[#FF8A65]/10"
+            ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
             : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
         }`}
       >
@@ -156,32 +156,6 @@ export function SettingsPanel({ config, onChange }: Props) {
           >
             Dip to black
           </Chip>
-        </div>
-      </div>
-
-      {/* Smart clip selection (filter_boring) */}
-      <div className={row}>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className={label}>Smart Clip Selection</p>
-            <p className={sublabel + " mb-0"}>
-              Auto-exclude static clips. Keep best 20 by motion score.
-            </p>
-          </div>
-          <button
-            type="button"
-            data-testid="toggle-filter-boring"
-            onClick={() => update({ filter_boring: !config.filter_boring })}
-            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-              config.filter_boring ? "bg-[#FF8A65]" : "bg-white/25"
-            }`}
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                config.filter_boring ? "translate-x-4" : "translate-x-0.5"
-              }`}
-            />
-          </button>
         </div>
       </div>
 

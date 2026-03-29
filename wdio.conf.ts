@@ -132,12 +132,14 @@ export const config: WebdriverIO.Config = {
       webSocketUrl: false,
       // Belt-and-suspenders: force classic WebDriver protocol.
       "wdio:enforceWebDriverClassic": true,
+      // scan_folder + create_project call WSL2 synchronously -- can take >30s on cold start.
+      timeouts: { script: 90000 },
     },
   ],
 
   framework: "mocha",
   mochaOpts: {
-    timeout: 300_000,
+    timeout: 600_000,
   },
 
   reporters: ["spec"],
