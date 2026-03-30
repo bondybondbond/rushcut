@@ -15,31 +15,31 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 13b COMPLETE. Next: Batch 13c (pipeline reliability + speed).**
+**Phase 2 — Batch 13c PARTIAL. Next: Batch 13d (sync fix + loop crossfade + music volume balance).**
 
-Batch 13b delivered: motion scoring removed, filter_boring toggle hidden, output filename versioning (`slug-01.mp4`), volume chip color `#99B3FF`, per-stage timing logs in `render.py`, toggle translate-x fix. Plus post-batch hotfixes: portrait+landscape mixing crash fixed (`transitions.py` fixed-canvas pre-scale), normalise preset `fast`→`ultrafast` (~3min→~1min), Output.tsx rolling timeout (resets on `pipeline-stage`, not progress ticks).
+Batch 13c delivered: music looping (`-stream_loop -1` + `asetpts=PTS-STARTPTS`), A/V sync logging (`[sync-check]` lines after normalise + post-trim), hwaccel probed (Vulkan extension absent — skipped). E2E: 25/25 PASS.
 
-**Real-footage testing observations (20 DJI 4K clips, 3840×2160):**
-- Portrait 2.7K + landscape 4K mixing previously crashed (FFmpeg exit 234) — FIXED in transitions.py
-- Normalise was the bottleneck (~3 min of ~5 min total on 3 large clips) — improved with ultrafast preset
-- Music stops at ~2.5 min (no looping) — deferred to 13c
-- Audio/video sync drift visible — deferred to 13c (log first, fix after)
-- Output.tsx fired false "Pipeline timed out" for >10min renders — FIXED (rolling timer)
+**Real-footage testing observations (3 DJI 4K landscape clips, 3840×2160):**
+- Music loops correctly — but audible gap between loop iterations (crossfade at loop boundary still needed)
+- Audio/video sync still drifting — logs now in place; root cause not yet analysed
+- Music volume too loud relative to clip audio — relative balance control needed urgently
+- Build time 5.5 min for 3 clips — hwaccel not viable (Vulkan extension missing); further investigation needed
+- Hardware HEVC decode: `/dev/dxg` present but `VK_KHR_video_decode_queue` not supported; CUDA/VDPAU absent. `ultrafast` software decode is the current ceiling.
 
 ---
 
 ## Immediate Next Task
 
-**Batch 13c — Pipeline Reliability + Speed** (see scope below)
+**Batch 13d — Sync Fix + Music Polish**
 
 ---
 
-## Batch 13c Scope
+## Batch 13d Scope
 
-1. **Music looping** — `music.py`: use `-stream_loop -1` on the MP3 input so the track loops to cover the full film duration, then trim to exact length. Add optional crossfade at loop point.
-2. **Audio sync investigation** — add per-clip A/V sync logging to `render.py` and `normalise.py` before attempting any fix. Check: does drift originate at normalise (resampling), trim (silence detection boundary), or final concat? Log PTS values at each stage, reproduce with a known drifting clip, then fix.
-3. **Hardware HEVC decode** — test `-hwaccel auto` in `normalise.py` FFmpeg call. If WSL2 GPU passthrough is active (`/dev/dxg` exists), this should cut decode time significantly for 4K clips. Probe first, implement only if gains are confirmed.
-4. **E2E: update codec assertion** — `render.spec.ts` already updated to check `height=1080` only (not hardcoded `608x1080`). Confirm no further spec drift from new clip set.
+1. **Loop crossfade** — `music.py`: add `acrossfade` at the loop boundary so track iterations blend seamlessly rather than cutting hard.
+2. **A/V sync fix** — analyse `[sync-check]` logs from a real render; identify drift origin (normalise resampling, silence-trim boundary, or concat offset); fix the root cause.
+3. **Relative music volume** — expose a per-render music/clip loudness balance. Current `music_volume` presets (subtle/balanced/prominent) set an absolute music level but don't adapt to clip audio levels. Consider: measure average clip audio dBFS at normalise time and scale music target accordingly, or add a `clip_volume` companion preset.
+4. **Build speed** — investigate normalise parallelisation (concurrent `subprocess.run` for N clips); target <2 min for 3×4K clips.
 
 ---
 

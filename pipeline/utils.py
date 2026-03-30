@@ -63,6 +63,26 @@ def get_frame_size(path: str | Path) -> tuple[int, int]:
     raise RuntimeError(f"Cannot determine frame size for {path}")
 
 
+def log_av_sync(path: str | Path, label: str) -> None:
+    """Log A/V stream duration, nb_frames, and r_frame_rate for sync debugging."""
+    try:
+        data = ffprobe_json(["-show_streams", str(path)])
+        for s in data.get("streams", []):
+            t = s.get("codec_type", "?")
+            if t not in ("video", "audio"):
+                continue
+            log.info(
+                "[sync-check] %s %s: start=%s dur=%s nb_frames=%s r_frame_rate=%s",
+                label, t,
+                s.get("start_time", "N/A"),
+                s.get("duration", "N/A"),
+                s.get("nb_frames", "N/A"),
+                s.get("r_frame_rate", "N/A"),
+            )
+    except Exception as exc:
+        log.warning("[sync-check] %s: ffprobe failed — %s", label, exc)
+
+
 def has_audio(path: str | Path) -> bool:
     """Return True if the file contains at least one audio stream."""
     result = subprocess.run(

@@ -53,13 +53,14 @@ def mix_music(
     log.info("[music] Mixing %s (fade out at %.2fs)", track_name, fade_start)
 
     # filter_complex:
-    #   [1:a] = music track
+    #   [1:a] = music track (looped via -stream_loop -1)
+    #   asetpts -> reset PTS before atrim (loop assigns continuously rising PTS; must reset first)
     #   atrim  -> trim to video duration
     #   volume -> lower music level
     #   afade  -> fade out last FADE_OUT_S seconds
     #   amix   -> mix with original audio, keep original duration
     fc = (
-        f"[1:a]atrim=0:{video_duration_s:.4f},"
+        f"[1:a]asetpts=PTS-STARTPTS,atrim=0:{video_duration_s:.4f},"
         f"volume={music_volume:.4f},"
         f"afade=t=out:st={fade_start:.4f}:d={FADE_OUT_S}[mus];"
         f"[0:a][mus]amix=inputs=2:duration=first:dropout_transition=3[aout]"
@@ -68,6 +69,7 @@ def mix_music(
     ffmpeg_run([
         FFMPEG, "-y",
         "-i", str(video_path),
+        "-stream_loop", "-1",   # loop music indefinitely; atrim cuts to exact film duration
         "-i", str(track_path),
         "-filter_complex", fc,
         "-map", "0:v",

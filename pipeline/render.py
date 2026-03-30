@@ -27,7 +27,7 @@ from .music import mix_music
 from .normalise import normalise
 from .transitions import build_filter_complex
 from .trim import trim
-from .utils import FFMPEG, ffmpeg_run, get_duration, get_frame_size, has_audio
+from .utils import FFMPEG, ffmpeg_run, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import apply_zoom
 
 log = logging.getLogger(__name__)
@@ -174,6 +174,8 @@ def run_pipeline(
         log.info("[render] Step 2: trim skipped")
 
     print(f"TIMING:trim={time.time()-t0:.1f}s", flush=True)
+    for i, p in enumerate(current_paths):
+        log_av_sync(p, f"post-trim_{i}")
 
     # 3. Zoom (per-clip, before transitions).
     # Skipped in draft mode -- zoompan is CPU-intensive and can exceed timeout.

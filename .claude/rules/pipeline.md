@@ -40,6 +40,7 @@ Written to `C:\clips\processed\<slug>-01.mp4`, `<slug>-02.mp4` etc. Slug = `slug
 - **xfade_dur clamp:** `transitions.py` clamps to `min(1.5, min_clip_dur / 2.0)`. Do not remove — prevents short clips (e.g. 3s cards) from being consumed.
 - **`-map 0:a:0?` not `-map 0:a?`** — DJI clips can contain multiple audio streams.
 - **Audio concat for 3+ clips:** Use `concat=n=N:v=0:a=1` + `atrim`/`asetpts`. Pairwise `acrossfade` for N>2 produces misaligned overlaps.
+- **Music loop: `asetpts=PTS-STARTPTS` before `atrim` when using `-stream_loop -1`** — loop assigns continuously rising PTS; trimming before reset cuts too early. Order: `[1:a]asetpts=PTS-STARTPTS,atrim=0:{dur},volume=...,afade=...`. See `music.py`.
 - **`-ar 48000` at every re-encode site:** DJI records at 96kHz; force 48kHz at normalise, inject_silence, single-clip render, multi-clip render, music mix, and loudnorm. One missing site means 96kHz leaks into the output.
 - **music_volume is now a string union:** `"subtle" | "balanced" | "prominent"`. `run.py` maps to floats `{subtle: 0.2, balanced: 0.4, prominent: 0.7}`. The old 0–100 integer slider no longer exists (changed Batch 12b).
 - **pipeline/motion.py is DEAD CODE** — do not call from render.py. Motion scoring added >10 min overhead on 10 min footage. Kept for future premium AI feature only. Never re-enable without profiling total time on realistic footage first.

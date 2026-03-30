@@ -14,7 +14,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from .utils import FFMPEG, ffmpeg_run
+from .utils import FFMPEG, ffmpeg_run, log_av_sync
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,9 @@ def normalise(
         scale_filter = "scale=-2:1080,format=yuv420p"
         preset = "ultrafast"  # intermediates — re-encoded by render step, quality irrelevant
 
+    # -hwaccel auto probed 2026-03-30: /dev/dxg present but Vulkan video decode extension
+    # not supported; CUDA/VDPAU absent. All hw paths fall back to software. Skip hwaccel.
+
     norm_paths: list[Path] = []
 
     for i, src in enumerate(clip_paths):
@@ -67,6 +70,7 @@ def normalise(
             str(out),
         ])
 
+        log_av_sync(out, f"norm_{i}")
         norm_paths.append(out)
         if on_clip_done:
             on_clip_done(i + 1, len(clip_paths))

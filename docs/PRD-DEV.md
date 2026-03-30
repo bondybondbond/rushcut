@@ -865,9 +865,11 @@ Normalise is still the main speed bottleneck (~60–90s for 3×4K clips after ul
 
 ### Gate
 
-- [ ] Film >3 min renders with music looping to fill the full duration
-- [ ] A/V sync root cause logged and identified (fix may be in 13c or 14 depending on complexity)
-- [ ] Hardware decode probed; implemented if WSL2 GPU passthrough confirmed
+- [x] Film >3 min renders with music looping to fill the full duration — PARTIAL: loops but audible gap at boundary; crossfade deferred to 13d
+- [x] A/V sync root cause logged and identified — logging added (`[sync-check]` after normalise + post-trim); root cause analysis deferred to 13d
+- [x] Hardware decode probed; implemented if WSL2 GPU passthrough confirmed — probed: `/dev/dxg` present but `VK_KHR_video_decode_queue` absent; CUDA/VDPAU absent. Software only. Comment in `normalise.py`.
+
+> **Delivered 2026-03-30.** Music looping shipped (`-stream_loop -1` + `asetpts=PTS-STARTPTS` ordering). Sync logging in place. Hwaccel confirmed non-viable. Remaining: loop crossfade, sync root-cause fix, relative music volume, build speed — deferred to Batch 13d.
 
 ---
 
