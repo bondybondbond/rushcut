@@ -2,6 +2,10 @@
 
 Applies when working on `pipeline/**`, `src-tauri/src/lib.rs` (pipeline spawn), or `src/pages/Output.tsx`.
 
+## Sync / performance fixes — logs first
+
+Before writing any A/V sync fix or normalise speed fix, run a real render and read the `[sync-check]` log output. Identify WHERE drift enters (normalise output? post-trim? concat?) before touching code. `aresample=async` worsens DJI monotonic drift — see LEARNINGS.md. WSL2 normalise is I/O-bound; ProcessPoolExecutor makes it slower — see LEARNINGS.md.
+
 ## Invocation
 
 ```

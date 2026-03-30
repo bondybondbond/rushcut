@@ -17,6 +17,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ## FFmpeg — codec / output
 
+- **WSL2 HEVC normalise is I/O-bound, not CPU-bound** — running N FFmpeg normalise processes concurrently (e.g. via `ProcessPoolExecutor`) does not speed up normalisation; it makes it slower (90s → 3 min on 3×4K clips) because all processes contend for the same NTFS-via-WSL2 filesystem reads. The bottleneck is disk I/O. Do not retry parallelisation without profiling disk throughput first. The real win is reducing the per-clip work (e.g. draft proxy copy rather than full H.264 transcode).
 - **Use `-preset ultrafast` for normalised intermediates** — normalise.py produces temp files that are re-encoded again by the xfade/concat render step. Using `-preset fast` for these intermediates wastes 3–4× CPU on motion estimation for files that will be re-encoded anyway. `ultrafast` produces the same final output quality at ~3–4× lower normalise time (confirmed: ~3 min → ~60–90s on 3×4K clips). Always use `ultrafast` for intermediate normalise; `fast`/`medium` is only meaningful for the final render output.
 - **Always specify `-c:v libx264 -pix_fmt yuv420p -profile:v main`** — omitting `-c:v` after `-filter_complex` can silently fall back to HEVC, which Windows Photos/Media Player rejects with error 0x80004005.
 - **Single-clip shortcut**: use simple `-vf "scale=-2:360"` without `-filter_complex` — avoids needless complexity and the constraint that scale can't be in both `-vf` and `-filter_complex`.
@@ -34,6 +35,8 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 ## FFmpeg — music looping
 
 - **`asetpts=PTS-STARTPTS` must come before `atrim` when using `-stream_loop -1`** — with infinite loop, FFmpeg assigns continuously rising PTS values across loop boundaries. If `atrim=0:{duration}` runs first it sees inflated timestamps and may cut too early. Always reset timestamps first: `[1:a]asetpts=PTS-STARTPTS,atrim=0:{duration:.4f},...`. Wrong order produces silent music gaps at the expected trim point.
+- **`aresample=async=N` worsens monotonic drift from CFR resampling** — `async` mode compensates drift by inserting/dropping audio samples. DJI HEVC decoded to 25fps CFR produces *monotonic* drift (same direction every clip); `async` fights it by inserting samples, creating audible pops/jumps rather than smooth drift. Do not use `aresample=async` for this class of drift. The correct fix requires reading `[sync-check]` log output to identify where drift enters (normalise → concat → music), then correcting timestamps at that specific step.
+- **`volumedetect` mean_volume is unreliable on DJI wind-noise footage** — DJI clips with wind noise register mean_volume of -14 to -16 dBFS. Using this as a relative anchor (e.g. `clip_mean + offset_db`) pushes music to -26 to -28 dBFS at "balanced" preset — effectively inaudible. Use `loudnorm` integrated LUFS instead, or clamp the measured mean to a floor (e.g. -20 dBFS) before computing the offset.
 
 ## Lambda pipeline
 

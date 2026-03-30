@@ -15,31 +15,29 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 13c PARTIAL. Next: Batch 13d (sync fix + loop crossfade + music volume balance).**
+**Phase 2 — Batch 13c state. Batch 13d attempted and deferred. Next: Batch 14 (Clip Review Editor).**
 
 Batch 13c delivered: music looping (`-stream_loop -1` + `asetpts=PTS-STARTPTS`), A/V sync logging (`[sync-check]` lines after normalise + post-trim), hwaccel probed (Vulkan extension absent — skipped). E2E: 25/25 PASS.
 
-**Real-footage testing observations (3 DJI 4K landscape clips, 3840×2160):**
-- Music loops correctly — but audible gap between loop iterations (crossfade at loop boundary still needed)
-- Audio/video sync still drifting — logs now in place; root cause not yet analysed
-- Music volume too loud relative to clip audio — relative balance control needed urgently
-- Build time 5.5 min for 3 clips — hwaccel not viable (Vulkan extension missing); further investigation needed
-- Hardware HEVC decode: `/dev/dxg` present but `VK_KHR_video_decode_queue` not supported; CUDA/VDPAU absent. `ultrafast` software decode is the current ceiling.
+**Batch 13d — attempted, reverted (2026-03-31):**
+- `aresample=async=1000` — actively worsened A/V sync. DJI drift is monotonic; sample insertion caused audible jumps from 18s onwards. Reverted.
+- ProcessPoolExecutor parallelisation — normalise went 90s → 3 min. WSL2 HEVC decode is I/O-bound; 4 concurrent processes contend for disk. Reverted.
+- Relative volume via `volumedetect` — music became inaudible. DJI wind noise inflates mean_volume to -14/-16 dBFS; -12 dB balanced offset pushed music to -26 dBFS. Reverted.
+- Loop crossfade (N-copy + acrossfade) — not tested against real footage before revert. Approach is sound; defer to Batch 14.
+
+**Real-footage issues (unchanged, deferred to Batch 14):**
+- Loop gap at music boundary
+- A/V sync drift (logs in place — read them before writing any fix)
+- Music too loud vs clip audio
+- 5.5 min for 3×4K clips (I/O bound, not CPU bound)
 
 ---
 
 ## Immediate Next Task
 
-**Batch 13d — Sync Fix + Music Polish**
+**Batch 14 — Clip Review Editor**
 
 ---
-
-## Batch 13d Scope
-
-1. **Loop crossfade** — `music.py`: add `acrossfade` at the loop boundary so track iterations blend seamlessly rather than cutting hard.
-2. **A/V sync fix** — analyse `[sync-check]` logs from a real render; identify drift origin (normalise resampling, silence-trim boundary, or concat offset); fix the root cause.
-3. **Relative music volume** — expose a per-render music/clip loudness balance. Current `music_volume` presets (subtle/balanced/prominent) set an absolute music level but don't adapt to clip audio levels. Consider: measure average clip audio dBFS at normalise time and scale music target accordingly, or add a `clip_volume` companion preset.
-4. **Build speed** — investigate normalise parallelisation (concurrent `subprocess.run` for N clips); target <2 min for 3×4K clips.
 
 ---
 
