@@ -148,7 +148,8 @@ def run_pipeline(
     t0 = time.time()
 
     def _normalise_progress(done: int, total: int) -> None:
-        report(10 + int(done / total * 15))  # 10% -> 25%
+        report_stage(f"Normalising clip {done} of {total}")
+        report(10 + int(done / total * 40))  # 10% -> 50%
 
     current_paths = normalise(clip_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
     print(f"TIMING:normalise={time.time()-t0:.1f}s", flush=True)
@@ -158,17 +159,34 @@ def run_pipeline(
 
     # 2. Silence trim.
     report_stage("Trimming clips")
-    report(25)
+    report(52)
     t0 = time.time()
 
-    if config.get("silence_removal", False):
-        log.info("[render] Step 2: silence trim")
+    # Check if any clip has user-set trim points (in_ms/out_ms from Review screen).
+    has_user_trims = any(c.get("in_ms") is not None or c.get("out_ms") is not None for c in clips)
+
+    if has_user_trims or config.get("silence_removal", False):
+        log.info("[render] Step 2: trim (user overrides: %s, silence_removal: %s)",
+                 has_user_trims, config.get("silence_removal", False))
         trimmed = []
-        for i, p in enumerate(current_paths):
-            dur = get_duration(p)
-            start, end = detect_trim_points(p, dur)
-            out = tmp / f"trim_{i}.mp4"
-            trimmed.append(trim(p, start, end, out))
+        for i, (p, clip_meta) in enumerate(zip(current_paths, clips)):
+            user_in = clip_meta.get("in_ms")
+            user_out = clip_meta.get("out_ms")
+            if user_in is not None or user_out is not None:
+                # User-set trim points override silence detection (ms -> seconds)
+                dur = get_duration(p)
+                start = (user_in / 1000.0) if user_in is not None else 0.0
+                end = (user_out / 1000.0) if user_out is not None else dur
+                log.info("[render] Clip %d: user trim %.3fs -> %.3fs", i, start, end)
+                out = tmp / f"trim_{i}.mp4"
+                trimmed.append(trim(p, start, end, out))
+            elif config.get("silence_removal", False):
+                dur = get_duration(p)
+                start, end = detect_trim_points(p, dur)
+                out = tmp / f"trim_{i}.mp4"
+                trimmed.append(trim(p, start, end, out))
+            else:
+                trimmed.append(p)
         current_paths = trimmed
     else:
         log.info("[render] Step 2: trim skipped")
@@ -179,14 +197,31 @@ def run_pipeline(
 
     # 3. Zoom (per-clip, before transitions).
     # Skipped in draft mode -- zoompan is CPU-intensive and can exceed timeout.
+    # Per-clip zoom_mode from Review screen takes precedence over global config.zoom.
     report_stage("zoom")
-    report(35)
-    if config.get("zoom", False) and mode == "final":
-        log.info("[render] Step 3: zoom")
-        current_paths = [
-            apply_zoom(p, tmp / f"zoom_{i}.mp4")
-            for i, p in enumerate(current_paths)
-        ]
+    report(55)
+    has_per_clip_zoom = any(c.get("zoom_mode") for c in clips)
+    global_zoom = config.get("zoom", False) and mode == "final"
+
+    if has_per_clip_zoom or global_zoom:
+        log.info("[render] Step 3: zoom (per_clip=%s, global=%s)", has_per_clip_zoom, global_zoom)
+        zoomed = []
+        for i, (p, clip_meta) in enumerate(zip(current_paths, clips)):
+            clip_zoom = clip_meta.get("zoom_mode")
+            if clip_zoom:
+                # Per-clip zoom with focal point
+                zoomed.append(apply_zoom(
+                    p, tmp / f"zoom_{i}.mp4",
+                    focal_x=clip_meta.get("focal_x"),
+                    focal_y=clip_meta.get("focal_y"),
+                    zoom_mode=clip_zoom,
+                ))
+            elif global_zoom:
+                # Global zoom (legacy: centre, tight)
+                zoomed.append(apply_zoom(p, tmp / f"zoom_{i}.mp4"))
+            else:
+                zoomed.append(p)
+        current_paths = zoomed
     else:
         log.info("[render] Step 3: zoom skipped (mode=%s)", mode)
 
@@ -233,7 +268,7 @@ def run_pipeline(
     # 5. Build filter_complex + render.
     report_stage("Rendering")
     # CRITICAL: durations must come from current_paths (post-trim), not original clips.
-    report(50)
+    report(60)
     log.info("[render] Step 5: render with xfade")
     output = tmp / "render.mp4"
     durations = [get_duration(p) for p in current_paths]
@@ -295,7 +330,7 @@ def run_pipeline(
 
     # 6. Mix music.
     report_stage("Mixing music")
-    report(75)
+    report(80)
     t0 = time.time()
     if music_filename:
         log.info("[render] Step 6: mix music (%s)", music_mood)
@@ -308,7 +343,7 @@ def run_pipeline(
 
     # 7. Loudnorm (final only -- two-pass is too slow for draft).
     report_stage("Loudnorm")
-    report(85)
+    report(88)
     t0 = time.time()
     if mode != "draft":
         log.info("[render] Step 7: loudnorm")

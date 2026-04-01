@@ -15,33 +15,44 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 13c state. Batch 13d attempted and deferred. Next: Batch 14 (Clip Review Editor).**
+**Phase 2 — Batch 14c complete. Next: Batch 14b (Proxy Generation).**
 
-Batch 13c delivered: music looping (`-stream_loop -1` + `asetpts=PTS-STARTPTS`), A/V sync logging (`[sync-check]` lines after normalise + post-trim), hwaccel probed (Vulkan extension absent — skipped). E2E: 25/25 PASS.
-
-**Batch 13d — attempted, reverted (2026-03-31):**
-- `aresample=async=1000` — actively worsened A/V sync. DJI drift is monotonic; sample insertion caused audible jumps from 18s onwards. Reverted.
-- ProcessPoolExecutor parallelisation — normalise went 90s → 3 min. WSL2 HEVC decode is I/O-bound; 4 concurrent processes contend for disk. Reverted.
-- Relative volume via `volumedetect` — music became inaudible. DJI wind noise inflates mean_volume to -14/-16 dBFS; -12 dB balanced offset pushed music to -26 dBFS. Reverted.
-- Loop crossfade (N-copy + acrossfade) — not tested against real footage before revert. Approach is sound; defer to Batch 14.
-
-**Real-footage issues (unchanged, deferred to Batch 14):**
-- Loop gap at music boundary
-- A/V sync drift (logs in place — read them before writing any fix)
-- Music too loud vs clip audio
-- 5.5 min for 3×4K clips (I/O bound, not CPU bound)
+Batch 14-P (Pipeline Reliability sub-batch) delivered:
+- Music looping: N-copy pairwise chained acrossfade replaces `-stream_loop -1`. `silencedetect` strips track intro/outro silence before tiling. Residual gap reduced; true zero-gap requires waveform-matching (Batch 15+).
+- A/V sync fixed: root cause was hard-concat audio giving clip N audio a 1.5s late start at every cut after the first. Fixed by replacing 3+ clip concat with pairwise chained acrossfade (same as 2-clip path). `apad=whole_dur=durations[i]` aligns each clip's audio duration to its video duration, so crossfade start = xfade offset exactly. No lag at any cut.
+- Per-clip normalise progress: stage label + progress % updated per clip (10%→50%), remaining stages remapped to avoid backward movement (52/55/60/80/88/95).
+- Library routing: processing projects open the render monitor instead of the editor.
+- Persistent pipeline log: `run.py` writes to `/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log` (survives WSL2 shutdown).
 
 ---
 
 ## Immediate Next Task
 
-**Batch 14 — Clip Review Editor**
+**Batch 14b — Proxy Generation** (H.264 720p proxies per clip, background after project create)
 
----
+Then: Batch 14a (Review Screen UI), Batch 14d (Tabbed Settings).
 
 ---
 
 ## Recently Completed
+
+**Batch 14c — Per-Clip Data Model (2026-04-01)**
+
+- DB: 7 additive migrations on `clips` table: `in_ms`, `out_ms`, `focal_x`, `focal_y`, `zoom_mode`, `include` (default 1), `proxy_path`
+- Rust: `Clip` struct extended; `get_project_with_clips` SELECT expanded to 18 cols with index comment map; `update_clip_review()` (clamps focal to 0.0-1.0); `update_clip_proxy()`
+- Tauri: `update_clip_review_cmd` registered; `start_job` filters `include==0` clips, returns error on empty manifest, clamps `out_ms` to `duration_ms`, includes per-clip fields in manifest JSON
+- TypeScript: `Clip` interface + 7 new fields; `metaToClip` updated with defaults
+- Pipeline `render.py`: Step 2 user `in_ms`/`out_ms` override silence detection; Step 3 per-clip `zoom_mode` + focal point
+- Pipeline `zoom.py`: 3 presets (gentle 1.1x / medium 1.3x / tight 1.5x), focal-aware x/y with edge clamping, diagnostic logging
+
+**Batch 14-P — Pipeline Reliability (2026-04-01)**
+
+- A/V sync fixed: root cause = hard-concat audio for 3+ clips assigns clip N audio a 1.5s late start at every cut after the first (audio cut at sum(durations[:N]) while xfade ends at sum(durations[:N]) − xfade_dur). Fix: pairwise chained `acrossfade` for ALL N>=2 clips. `apad=whole_dur=durations[i]` normalises each clip's audio duration to exact video frame boundary, so acrossfade start = xfade offset exactly.
+- Music looping: N-copy pairwise chained acrossfade (replaced `-stream_loop -1`); `silencedetect` strips track intro/outro silence before tiling. Residual gap persists (track tail is low-energy, not silence); waveform-matching deferred.
+- Per-clip normalise progress: `report_stage(f"Normalising clip {done} of {total}")` + per-clip `report()` remapping (10%→50% normalise, 52/55/60/80/88/95 for remainder).
+- Library routing: processing project "Open" button navigates to `/output/:jobId` instead of editor.
+- Persistent pipeline log: `run.py` `FileHandler` at `/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log`.
+- LEARNINGS.md + pipeline.md rules updated: `apad` + pairwise acrossfade is correct for 3+ clips.
 
 **Batch 13b — Pipeline Fix + UI Cleanup + Post-batch Hotfixes (2026-03-29)**
 
@@ -112,13 +123,14 @@ Batch 13c delivered: music looping (`-stream_loop -1` + `asetpts=PTS-STARTPTS`),
 | ------------------------------------------ | ----------------------------------------------------------- |
 | Motion scoring (boring filter)             | DEAD CODE — pipeline/motion.py kept, not called             |
 | Beat-sync music cuts                       | Not required now — revisit if <1 min total                  |
-| Music looping                              | Batch 13c (music.py `-stream_loop -1`)                      |
-| Audio/video sync drift                     | Batch 13c (log first, fix after root cause confirmed)       |
+| Music looping                              | FIXED Batch 14-P — N-copy acrossfade + silence-trim         |
+| Music loop: waveform-matching loop point   | Future (Batch 15+) — find spectral-match point in track for zero-gap loop; may need AI/librosa |
+| Audio/video sync drift                     | FIXED Batch 14-P — pairwise acrossfade chain (apad-aligned) |
 | Hardware HEVC decode (`-hwaccel auto`)     | Batch 13c (probe WSL2 GPU passthrough, implement if viable) |
-| Per-clip IN/OUT handles + trim             | Batch 14 (Clip Review screen)                               |
-| Per-clip focal point + deterministic zoom  | Batch 14 (Clip Review screen)                               |
-| Sequential clip review flow                | Batch 14 (replaces old Clip Editor concept)                 |
-| Proxy files for HEVC scrubbing             | Batch 14 — first task (scrubbing unusable without proxies)  |
+| Per-clip IN/OUT + trim (data model)        | DONE Batch 14c — pipeline wired, UI in 14a                  |
+| Per-clip focal point + zoom (data model)   | DONE Batch 14c — pipeline wired, UI in 14a                  |
+| Sequential clip review flow                | Batch 14a (Review screen UI)                                |
+| Proxy files for HEVC scrubbing             | Batch 14b (next task)                                       |
 | Per-clip transition picker                 | Batch 14+                                                   |
 | Previewable transitions (proxy)            | Batch 14+ (proxy system needed)                             |
 | Tabbed settings UI (Music / Effects / Text)| Batch 14                                                    |

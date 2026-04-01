@@ -28,6 +28,10 @@ import sys
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+# Mirror all logs to a fixed file so tooling can read them after a render
+_log_file = logging.FileHandler("/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log", mode="w")
+_log_file.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+logging.getLogger().addHandler(_log_file)
 
 
 def win_to_wsl(path: str) -> str:

@@ -50,6 +50,14 @@ pub struct Clip {
     pub thumbnail_data: Option<String>,
     pub sort_order: i64,
     pub created_at: String,
+    // -- Review fields (Batch 14c) --
+    pub in_ms: Option<i64>,
+    pub out_ms: Option<i64>,
+    pub focal_x: Option<f64>,
+    pub focal_y: Option<f64>,
+    pub zoom_mode: Option<String>,  // "gentle" | "medium" | "tight"
+    pub include: i64,               // 1 = include, 0 = skip
+    pub proxy_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -136,6 +144,30 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         conn.execute("ALTER TABLE jobs ADD COLUMN analysis_summary TEXT", [])?;
     }
 
+    // Additive migrations: per-clip review fields (Batch 14c).
+    let clip_cols = [
+        ("in_ms",      "INTEGER"),
+        ("out_ms",     "INTEGER"),
+        ("focal_x",    "REAL"),
+        ("focal_y",    "REAL"),
+        ("zoom_mode",  "TEXT"),
+        ("include",    "INTEGER DEFAULT 1"),
+        ("proxy_path", "TEXT"),
+    ];
+    for (col_name, col_type) in &clip_cols {
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name=?1",
+            params![col_name],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        if !exists {
+            conn.execute(
+                &format!("ALTER TABLE clips ADD COLUMN {} {}", col_name, col_type),
+                [],
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -176,6 +208,9 @@ pub fn delete_project(project_id: &str) -> Result<(), rusqlite::Error> {
 // Clip helpers
 // ---------------------------------------------------------------------------
 
+/// Insert a clip with core metadata only.
+/// Review fields (in_ms, out_ms, focal_x/y, zoom_mode, include, proxy_path)
+/// intentionally omitted — set via update_clip_review / update_clip_proxy.
 pub fn insert_clip(clip: &Clip) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.execute(
@@ -194,6 +229,38 @@ pub fn insert_clip(clip: &Clip) -> Result<(), rusqlite::Error> {
             clip.sort_order,
             clip.created_at,
         ],
+    )?;
+    Ok(())
+}
+
+/// Update per-clip review fields (set by user in the Review screen).
+/// Clamps focal_x/focal_y to 0.0-1.0 range.
+pub fn update_clip_review(
+    clip_id: &str,
+    in_ms: Option<i64>,
+    out_ms: Option<i64>,
+    focal_x: Option<f64>,
+    focal_y: Option<f64>,
+    zoom_mode: Option<String>,
+    include: i64,
+) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let fx = focal_x.map(|v| v.clamp(0.0, 1.0));
+    let fy = focal_y.map(|v| v.clamp(0.0, 1.0));
+    conn.execute(
+        "UPDATE clips SET in_ms = ?1, out_ms = ?2, focal_x = ?3, focal_y = ?4,
+         zoom_mode = ?5, include = ?6 WHERE id = ?7",
+        params![in_ms, out_ms, fx, fy, zoom_mode, include, clip_id],
+    )?;
+    Ok(())
+}
+
+/// Update the proxy path for a clip (set by proxy generation pipeline).
+pub fn update_clip_proxy(clip_id: &str, proxy_path: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "UPDATE clips SET proxy_path = ?1 WHERE id = ?2",
+        params![proxy_path, clip_id],
     )?;
     Ok(())
 }
@@ -281,24 +348,38 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
     )?;
 
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, filename, local_path, duration_ms, width, height, has_audio, thumbnail_data, sort_order, created_at
+        // Column index map:
+        //  0:id  1:project_id  2:filename  3:local_path  4:duration_ms
+        //  5:width  6:height  7:has_audio  8:thumbnail_data  9:sort_order
+        // 10:created_at  11:in_ms  12:out_ms  13:focal_x  14:focal_y
+        // 15:zoom_mode  16:include  17:proxy_path
+        "SELECT id, project_id, filename, local_path, duration_ms, width, height,
+                has_audio, thumbnail_data, sort_order, created_at,
+                in_ms, out_ms, focal_x, focal_y, zoom_mode, include, proxy_path
          FROM clips WHERE project_id = ?1 ORDER BY sort_order ASC",
     )?;
     let clips: Vec<Clip> = stmt
         .query_map(params![project_id], |row| {
             let has_audio_int: i64 = row.get(7)?;
             Ok(Clip {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                filename: row.get(2)?,
-                local_path: row.get(3)?,
-                duration_ms: row.get(4)?,
-                width: row.get(5)?,
-                height: row.get(6)?,
-                has_audio: has_audio_int != 0,
-                thumbnail_data: row.get(8)?,
-                sort_order: row.get(9)?,
-                created_at: row.get(10)?,
+                id: row.get(0)?,              // 0
+                project_id: row.get(1)?,      // 1
+                filename: row.get(2)?,        // 2
+                local_path: row.get(3)?,      // 3
+                duration_ms: row.get(4)?,     // 4
+                width: row.get(5)?,           // 5
+                height: row.get(6)?,          // 6
+                has_audio: has_audio_int != 0, // 7
+                thumbnail_data: row.get(8)?,  // 8
+                sort_order: row.get(9)?,      // 9
+                created_at: row.get(10)?,     // 10
+                in_ms: row.get(11)?,          // 11
+                out_ms: row.get(12)?,         // 12
+                focal_x: row.get(13)?,        // 13
+                focal_y: row.get(14)?,        // 14
+                zoom_mode: row.get(15)?,      // 15
+                include: row.get::<_, Option<i64>>(16)?.unwrap_or(1), // 16 — default 1
+                proxy_path: row.get(17)?,     // 17
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

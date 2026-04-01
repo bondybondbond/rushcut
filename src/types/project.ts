@@ -24,6 +24,14 @@ export interface Clip extends ClipMeta {
   sort_order: number;
   thumbnail_data: string | null; // base64 JPEG data URL
   created_at: string;
+  // Review fields (Batch 14c)
+  in_ms: number | null;
+  out_ms: number | null;
+  focal_x: number | null;       // 0.0-1.0, null = centre
+  focal_y: number | null;       // 0.0-1.0, null = centre
+  zoom_mode: string | null;     // "gentle" | "medium" | "tight"
+  include: number;              // 1 = include, 0 = skip
+  proxy_path: string | null;
 }
 
 export interface ProjectWithClips {

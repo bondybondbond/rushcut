@@ -15,6 +15,14 @@ function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
     sort_order: existingCount + idx,
     thumbnail_data: meta.thumbnail_data ?? null,
     created_at: new Date().toISOString(),
+    // Review fields — defaults until Review screen sets them
+    in_ms: null,
+    out_ms: null,
+    focal_x: null,
+    focal_y: null,
+    zoom_mode: null,
+    include: 1,
+    proxy_path: null,
   };
 }
 

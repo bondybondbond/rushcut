@@ -110,7 +110,9 @@ export default function Library() {
                   )}
                   <button
                     data-testid="btn-open-project"
-                    onClick={() => navigate(`/editor/${p.id}`)}
+                    onClick={() => p.last_job_id && p.last_job_status === "processing"
+                      ? navigate(`/output/${p.last_job_id}`)
+                      : navigate(`/editor/${p.id}`)}
                     className="px-3 py-1.5 text-xs text-[#a3a3a3] border border-white/20 rounded-md hover:text-[#e5e5e5] hover:border-white/40 transition-colors"
                   >
                     Open

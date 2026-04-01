@@ -2,8 +2,8 @@ mod db;
 
 use db::{
     delete_project, get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
-    list_projects, rename_project, update_job_analysis, update_job_done, update_job_error,
-    update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
+    list_projects, rename_project, update_clip_review, update_job_analysis, update_job_done,
+    update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader};
@@ -114,6 +114,21 @@ fn rename_project_cmd(project_id: String, name: String) -> Result<(), String> {
         .map_err(|e| format!("DB error (rename project): {}", e))
 }
 
+/// Update per-clip review fields (include/skip, focal point, trim, zoom mode).
+#[tauri::command]
+fn update_clip_review_cmd(
+    clip_id: String,
+    in_ms: Option<i64>,
+    out_ms: Option<i64>,
+    focal_x: Option<f64>,
+    focal_y: Option<f64>,
+    zoom_mode: Option<String>,
+    include: i64,
+) -> Result<(), String> {
+    update_clip_review(&clip_id, in_ms, out_ms, focal_x, focal_y, zoom_mode, include)
+        .map_err(|e| format!("DB error (update clip review): {}", e))
+}
+
 /// Probe a list of individual video files (Windows paths) via scan.py --files.
 /// Returns ClipMeta for each valid video file.
 #[tauri::command]
@@ -167,6 +182,14 @@ fn create_project(name: String, clips: Vec<ClipMeta>) -> Result<String, String> 
             thumbnail_data: meta.thumbnail_data.clone(),
             sort_order: idx as i64,
             created_at: db::now(),
+            // Review fields — defaults, set via update_clip_review / update_clip_proxy
+            in_ms: None,
+            out_ms: None,
+            focal_x: None,
+            focal_y: None,
+            zoom_mode: None,
+            include: 1,
+            proxy_path: None,
         };
         insert_clip(&clip).map_err(|e| format!("DB error (insert clip {}): {}", meta.filename, e))?;
     }
@@ -209,18 +232,35 @@ async fn start_job(
         .unwrap_or(0);
     let output_path = format!(r"{}\{}-{:02}.mp4", DEFAULT_OUTPUT_DIR, slug, counter + 1);
 
+    // Filter out skipped clips (include == 0) — they don't reach the pipeline.
+    let included_clips: Vec<&Clip> = project_data.clips.iter()
+        .filter(|c| c.include != 0)
+        .collect();
+    if included_clips.is_empty() {
+        return Err("No clips selected for render".to_string());
+    }
+
     // Write manifest JSON to Windows TEMP
     let manifest = json!({
         "job_id": job_id,
-        "clips": project_data.clips.iter().map(|c| json!({
-            "id": c.id,
-            "filename": c.filename,
-            "local_path": c.local_path,
-            "duration_ms": c.duration_ms,
-            "width": c.width,
-            "height": c.height,
-            "has_audio": c.has_audio,
-        })).collect::<Vec<_>>(),
+        "clips": included_clips.iter().map(|c| {
+            // Clamp out_ms to clip duration to prevent FFmpeg crash on out-of-bounds trim
+            let clamped_out = c.out_ms.map(|o| o.min(c.duration_ms));
+            json!({
+                "id": c.id,
+                "filename": c.filename,
+                "local_path": c.local_path,
+                "duration_ms": c.duration_ms,
+                "width": c.width,
+                "height": c.height,
+                "has_audio": c.has_audio,
+                "in_ms": c.in_ms,
+                "out_ms": clamped_out,
+                "focal_x": c.focal_x,
+                "focal_y": c.focal_y,
+                "zoom_mode": c.zoom_mode,
+            })
+        }).collect::<Vec<_>>(),
         "settings": serde_json::from_str::<serde_json::Value>(&settings_json)
             .unwrap_or(json!({})),
         "output_path": output_path,
@@ -419,6 +459,7 @@ pub fn run() {
             probe_files,
             create_project,
             rename_project_cmd,
+            update_clip_review_cmd,
             get_project,
             start_job,
             get_job_cmd,

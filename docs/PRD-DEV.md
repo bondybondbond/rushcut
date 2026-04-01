@@ -706,11 +706,11 @@ Remove "switch tabs" entirely.
 
 Replace `music_volume: number` (0–100 integer) with `music_mode: "subtle" | "balanced" | "prominent"`:
 
-| Preset | Label | Internal float | User meaning |
-|---|---|---|---|
-| `subtle` | Subtle | 0.15 | Voice / clip audio dominant |
-| `balanced` | Balanced | 0.35 | Music and clip audio equal |
-| `prominent` | Prominent | 0.60 | Music-forward |
+| Preset      | Label     | Internal float | User meaning                |
+| ----------- | --------- | -------------- | --------------------------- |
+| `subtle`    | Subtle    | 0.15           | Voice / clip audio dominant |
+| `balanced`  | Balanced  | 0.35           | Music and clip audio equal  |
+| `prominent` | Prominent | 0.60           | Music-forward               |
 
 **Files to change:**
 
@@ -736,7 +736,7 @@ Note: the 0–100 float slider is a future Pro feature for the Timeline Editor (
 > **Goal:** A 60+ clip DJI session produces a watchable 3–6 min film with no manual clip curation.
 > **Estimate:** 2–3 days (pipeline only — no new screens, no new Rust commands).
 > **This is the batch that makes the Phase 2 exit gate achievable.**
->
+> 
 > Note: Gemini API deferred. All intelligence is FFmpeg/librosa-only. AI Director screen is Batch 15.
 
 ### 13a — Boring clip filter (motion scoring)
@@ -887,12 +887,14 @@ New route: `/review/:projectId`. Replaces direct jump from Upload → Editor for
 **Two review modes per clip — Quick is the default:**
 
 **Quick mode (default, collapsed):**
+
 - Full-width video player (proxy if available, source otherwise)
 - Include / Skip buttons (large, keyboard-accessible: `Enter` = include, `Space` = skip)
 - Focal point picker (tap to mark X/Y, or "Centre" default — single tap, no drag required)
 - "Expand" affordance reveals Precise controls
 
 **Precise mode (expanded per clip, opt-in):**
+
 - Scrub bar with draggable IN/OUT handles
 - Zoom preset: None / Gentle (1.1x) / Medium (1.3x) / Tight (1.5x)
 - All Quick controls still present
@@ -902,6 +904,7 @@ Design intent: a user can review 60 clips using Quick mode only and still produc
 Progress indicator: "Clip 3 of 12 — 9 remaining"
 
 **Post-review Editor is intentionally minimal.** After Clip Review, the Editor contains only:
+
 - Clip reorder
 - Music mood + volume preset
 - Transition style (global)
@@ -913,22 +916,15 @@ No new controls should grow in the Editor. Any per-clip decision belongs in the 
 ### 14b — Proxy generation
 
 On project create (during scan), generate H.264 720p proxies for each clip:
+
 - `ffmpeg -i source.mp4 -c:v libx264 -crf 28 -vf scale=-2:720 -c:a aac -ar 48000 proxy.mp4`
 - ~5–10s per clip in WSL2; run in background after scan completes
 - Store proxy path in `clips` table (`proxy_path TEXT`)
 - Clip review screen uses proxy for scrubbing; final render always uses originals
 
-### 14c — Per-clip data model
+### 14c — Per-clip data model (**DONE 2026-04-01**)
 
-Add to `clips` table:
-- `in_ms INTEGER` (null = silence trim or full clip)
-- `out_ms INTEGER` (null = silence trim or full clip)
-- `focal_x REAL` (0.0–1.0, null = centre)
-- `focal_y REAL` (0.0–1.0, null = centre)
-- `zoom_mode TEXT` (null | "gentle" | "medium" | "tight")
-- `include INTEGER DEFAULT 1` (0 = skipped)
-
-Pipeline reads these from manifest; explicit in/out wins over silence trim when set.
+Added to `clips` table (7 columns): `in_ms`, `out_ms`, `focal_x`, `focal_y`, `zoom_mode`, `include` (default 1), `proxy_path`. Pipeline reads per-clip fields from manifest; user IN/OUT overrides silence trim. `start_job` filters `include==0` clips, clamps `out_ms` to `duration_ms`. `zoom.py` extended with 3 presets + focal-aware panning with edge clamping.
 
 ### 14d — Tabbed settings UI
 
@@ -938,11 +934,30 @@ Reorganise SettingsPanel into tabs: Music/Sound · Effects · Text (intro/outro 
 
 - [ ] Quick mode is default; Include/Skip works with keyboard; Precise mode expands per clip
 - [ ] Proxy generation runs after scan; proxies used for scrubbing in review screen
-- [ ] Per-clip in_ms, out_ms, focal_x/y, zoom_mode passed through manifest to pipeline
-- [ ] Pipeline applies user IN/OUT over silence trim when set
-- [ ] Skipped clips excluded from render
+- [x] Per-clip in_ms, out_ms, focal_x/y, zoom_mode passed through manifest to pipeline (14c)
+- [x] Pipeline applies user IN/OUT over silence trim when set (14c)
+- [x] Skipped clips excluded from render (14c)
 - [ ] Post-review Editor contains only the 5 items listed above — nothing more
 - [ ] Tabbed settings visible in Editor
+
+---
+
+## Backlog — Music Loop: Waveform-Matching Loop Point
+
+> **Deprioritised — Batch 15+ or dedicated audio polish batch.**
+
+**Problem:** Pairwise `acrossfade` crossfades wherever the track boundary happens to fall. If the track has a fade-out at the end and a fade-in at the start, both sides of the crossfade are near-silent — the gap persists.
+
+**Immediate fix (14-P):** Strip track intro/outro silence before tiling (`silencedetect` → `atrim` to active region). Eliminates the silence-compounding effect without AI.
+
+**Better fix (this backlog item):** Find a **waveform-match loop point** — two moments in the track where harmonic/spectral content is nearly identical, so the transition is musically continuous with no click and no gap. The loop plays from 0 → match_point → (jump back to matching start point) → match_point → ... with a crossfade window around the join.
+
+**Implementation options:**
+- librosa `beat_track` + `chroma_features` similarity to find the best two beat-aligned moments with matching spectral fingerprints
+- Or a dedicated audio-loop library (e.g. `librosa`'s segmentation, or `essentia`)
+- May also be addressable with a purpose-built AI audio model (loop-point detection as a learned task)
+
+**This is a user-visible audio quality improvement** — qualifies under the AI policy (demonstrable, sellable) if AI is used. Do not implement speculatively; prioritise only after the silence-trim fix ships and real-footage testing confirms the gap is still audible.
 
 ---
 
@@ -957,11 +972,13 @@ New route: `/director/:projectId` — inserted into flow after scan completes, b
 ### Layout (two-column)
 
 **Left:** AI Proposal summary
+
 - Style tags (e.g. "Energetic", "Dissolve transitions", "Upbeat track", "~2m 20s")
 - "N of M clips used · X excluded"
 - Actions: **Accept & Edit** → `/editor/:projectId` with AI order pre-loaded | **Regenerate** → re-run analysis | **Skip → Manual** → `/editor/:projectId` with original scan order
 
 **Right:** Proposed clip order list
+
 - Filename, trim duration, transition label per cut
 - Excluded clips shown dimmed/dashed with reason (e.g. "Too short", "Low motion")
 - Tap excluded clip → option to add it back manually
@@ -1007,9 +1024,10 @@ New route: `/director/:projectId` — inserted into flow after scan completes, b
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                          |
 | ------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0.9     | 2026-03-31 | Batch 13d attempted and deferred. aresample=async worsened DJI sync; ProcessPoolExecutor made normalise slower (I/O bound); volumedetect overcorrected on wind noise. All changes reverted. Lessons in LEARNINGS.md. Next: Batch 14. |
-| 0.8     | 2026-03-28 | Direction session — agreed batch roadmap 12b→13→14→15→16. Music mode presets replace slider, 5-transition set, motion intelligence (no Gemini), Clip Editor, AI Director screen, Auth+4K+Tier. Old Batch 9 (Gemini) and Batch 10 (Auth) marked superseded. |
-| 0.7     | 2026-03-27 | Batch 12 complete — audio -ar 48000 at all 6 re-encode sites, music volume slider (0-100 UI / 0.0-1.0 pipeline), delete project (Rust + Library UI), stale job auto-cleanup (60-min SQL), 10-min Output page timeout. E2E: 7/7 fast PASS, render confirmed PASS. |
+| 1.0     | 2026-04-01 | Batch 14c — per-clip data model: 7 DB columns, Rust/TS types, update_clip_review cmd, manifest filtering (include==0), out_ms clamp, pipeline trim override + focal-aware zoom.py. Next: 14b (proxies).                                                                         |
+| 0.9     | 2026-03-31 | Batch 13d attempted and deferred. aresample=async worsened DJI sync; ProcessPoolExecutor made normalise slower (I/O bound); volumedetect overcorrected on wind noise. All changes reverted. Lessons in LEARNINGS.md. Next: Batch 14.                                             |
+| 0.8     | 2026-03-28 | Direction session — agreed batch roadmap 12b→13→14→15→16. Music mode presets replace slider, 5-transition set, motion intelligence (no Gemini), Clip Editor, AI Director screen, Auth+4K+Tier. Old Batch 9 (Gemini) and Batch 10 (Auth) marked superseded.                       |
+| 0.7     | 2026-03-27 | Batch 12 complete — audio -ar 48000 at all 6 re-encode sites, music volume slider (0-100 UI / 0.0-1.0 pipeline), delete project (Rust + Library UI), stale job auto-cleanup (60-min SQL), 10-min Output page timeout. E2E: 7/7 fast PASS, render confirmed PASS.                 |
 | 0.6     | 2026-03-27 | Batch 11c complete — home redesign, name modal, scan spinner, transition picker (None/Crossfade/Dip to black), AppShell, elapsed timer, Open File button, real thumbnails in Resume section, bin icons always red, CardBlock bins in timeline, xfade clamp. E2E eval 41/41 PASS. |
 | 0.5     | 2026-03-26 | Batch 11b complete — WebdriverIO v9 + msedgedriver E2E scaffold, 3-layer BiDi fix, rushcut-eval skill, dry run 33/35 PASS                                                                                                                                                        |
 | 0.4     | 2026-03-25 | Batch 11 complete — 19-item UI polish: file picker, project rename, SettingsPanel overhaul, Output video fix, NavDrawer, colour compliance, filename slugification, card colour pipeline fix                                                                                     |

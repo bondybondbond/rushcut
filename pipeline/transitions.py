@@ -11,9 +11,11 @@ Key constraints (from CLAUDE.md + plan fixes):
 - scale=-2:{h} is NO LONGER used inside filter_complex — replaced by fixed-canvas pre-scale.
 - xfade offset formula (ported verbatim from spike):
     offset = cumulative + duration[i-1] - xfade_dur * i
-- Audio: acrossfade for 2-clip case only.
-         For 3+ clips use concat filter (hard cuts) — pairwise acrossfade stacks
-         incorrectly across N clips and produces misaligned audio overlaps.
+- Audio: pairwise chained acrossfade for ALL N>=2 clips.
+         apad=whole_dur makes each clip's audio exactly durations[i] seconds, so
+         acrossfade transitions align with xfade visual offsets — no hard-cut lag.
+         (concat was previously used for 3+ clips but caused clip audio to start
+          1.5s late at every cut after the first, accumulating each xfade_dur.)
 """
 
 import logging
@@ -77,9 +79,13 @@ def build_filter_complex(
         video_filter = f"{pre_scale}; {scaled_inputs}concat=n={n}:v=1:a=0{v_out}"
         if not any_audio:
             return video_filter, v_out, ""
-        inputs_a = "".join(f"[{i}:a]" for i in range(n))
+        # apad=whole_dur: pad each clip's audio to its exact video duration.
+        # CFR normalise produces video ~40-120ms longer than audio per clip;
+        # without padding the audio concat drifts ahead of the video at every cut.
+        pre_pad = "; ".join(f"[{i}:a]apad=whole_dur={durations[i]:.4f}[pa{i}]" for i in range(n))
+        padded_a = "".join(f"[pa{i}]" for i in range(n))
         a_out = "[aout]"
-        audio_filter = f"{inputs_a}concat=n={n}:v=0:a=1{a_out}"
+        audio_filter = f"{pre_pad}; {padded_a}concat=n={n}:v=0:a=1{a_out}"
         return f"{video_filter}; {audio_filter}", v_out, a_out
 
     xfade_name = _TRANSITION_MAP.get(transition, "fade")
@@ -130,21 +136,17 @@ def build_filter_complex(
         log.info("[transitions] No audio in any clip — video-only output")
         return "; ".join(video_parts), v_out, ""
 
-    if n == 2:
-        # Two-clip case: use acrossfade — audio duration already matches video
-        audio_parts = [f"[0:a][1:a]acrossfade=d={xfade_dur}[aout]"]
-    else:
-        # Three+ clips: concat filter (hard audio cuts at joins).
-        # acrossfade chaining for 3+ clips produces misaligned audio overlaps.
-        # IMPORTANT: concat gives sum(durations) but video is (n-1)*xfade_dur shorter
-        # due to xfade overlaps. Trim audio to match video exactly.
-        total_dur = sum(durations) - (n - 1) * xfade_dur
-        inputs = "".join(f"[{i}:a]" for i in range(n))
-        audio_parts = [
-            f"{inputs}concat=n={n}:v=0:a=1,"
-            f"atrim=end={total_dur:.4f},"
-            f"asetpts=PTS-STARTPTS[aout]"
-        ]
+    # N>=2: pad every clip to its exact video duration, then pairwise acrossfade chain.
+    # apad=whole_dur makes each clip audio exactly durations[i]s so the crossfade
+    # start point (durations[i] - xfade_dur) matches the xfade visual offset exactly.
+    pre_pad = "; ".join(f"[{i}:a]apad=whole_dur={durations[i]:.4f}[pa{i}]" for i in range(n))
+    chain: list[str] = []
+    prev = "[pa0]"
+    for i in range(1, n):
+        out_lbl = "[aout]" if i == n - 1 else f"[ac{i}]"
+        chain.append(f"{prev}[pa{i}]acrossfade=d={xfade_dur:.4f}{out_lbl}")
+        prev = out_lbl
+    audio_parts = [f"{pre_pad}; " + "; ".join(chain)]
 
     a_out = "[aout]"
     all_parts = video_parts + audio_parts
