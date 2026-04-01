@@ -75,6 +75,18 @@ Use native **Edit** tool.
 powershell.exe -Command "if (Test-Path C:/apps/rushcut/e2e/screenshots) { Remove-Item C:/apps/rushcut/e2e/screenshots/* -Force -ErrorAction SilentlyContinue; Write-Host 'screenshots cleared' }"
 ```
 
+**Windows temp manifests** (job + proxy JSON files written per render — small but accumulate):
+
+```bash
+powershell.exe -NoProfile -Command "Remove-Item \"\$env:TEMP\rushcut\*.json\" -Force -ErrorAction SilentlyContinue; Write-Host 'temp manifests cleared'"
+```
+
+**WSL2 /tmp/ intermediates** (1-3 GB per render; run.py cleans after each successful run, but crashed runs leave orphans):
+
+```bash
+powershell.exe -NoProfile -Command "wsl -d Ubuntu-24.04 -u root -- sh -c 'rm -rf /tmp/*/'"
+```
+
 **Code:** Remove `console.log` / `print()` debug statements, temp/scratch files, resolved inline TODOs.
 
 **Docs (light prune — apply "earns its place" test):**

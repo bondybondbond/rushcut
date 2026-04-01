@@ -118,6 +118,9 @@ def main() -> None:
         tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage, on_analysis=on_analysis)
 
         shutil.copy2(str(tmp_output), str(output_wsl))
+        # Clean up WSL2 /tmp/<job_id>/ — intermediates are no longer needed after copy.
+        # This frees 1-3 GB per render from the WSL2 tmpfs immediately.
+        shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)
         print(f"DONE:{output_wsl}", flush=True)
     except Exception as e:
         print(f"ERROR:{e}", flush=True)

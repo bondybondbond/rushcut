@@ -2,8 +2,9 @@ mod db;
 
 use db::{
     delete_project, get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
-    list_projects, rename_project, update_clip_review, update_job_analysis, update_job_done,
-    update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
+    list_projects, rename_project, update_clip_proxy, update_clip_review, update_job_analysis,
+    update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary,
+    ProjectWithClips,
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader};
@@ -404,6 +405,137 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Proxy generation (background)
+// ---------------------------------------------------------------------------
+
+/// Kick off H.264 720p proxy generation for all un-proxied clips in a project.
+/// Returns immediately; proxies are written in a background WSL task.
+#[tauri::command]
+async fn generate_proxies_cmd(app: AppHandle, project_id: String) -> Result<(), String> {
+    let project_data = get_project_with_clips(&project_id)
+        .map_err(|e| format!("DB error (get clips): {}", e))?;
+
+    // Filter to included clips that don't have a proxy yet.
+    // Skipped clips (include==0) get no proxy — if user later re-includes them,
+    // on-demand proxy generation (Batch 14a) will handle it.
+    let pending: Vec<_> = project_data
+        .clips
+        .iter()
+        .filter(|c| c.include != 0 && c.proxy_path.is_none())
+        .collect();
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    // Proxy storage: %APPDATA%\rushcut\proxies
+    let appdata = std::env::var("APPDATA")
+        .map_err(|_| "APPDATA env var not set".to_string())?;
+    let proxy_win_dir = format!(r"{}\rushcut\proxies", appdata);
+    std::fs::create_dir_all(&proxy_win_dir)
+        .map_err(|e| format!("Failed to create proxy dir: {}", e))?;
+    let proxy_wsl_dir = win_to_wsl(&proxy_win_dir);
+
+    // Write proxy manifest to %TEMP%\rushcut\<project_id>-proxy.json
+    let manifest = serde_json::json!({
+        "project_id": project_id,
+        "proxy_dir": proxy_wsl_dir,
+        "clips": pending.iter().map(|c| serde_json::json!({
+            "id": c.id,
+            "local_path": c.local_path,
+        })).collect::<Vec<_>>(),
+    });
+    let temp_dir = std::env::temp_dir().join("rushcut");
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    let manifest_path = temp_dir.join(format!("{}-proxy.json", project_id));
+    std::fs::write(&manifest_path, manifest.to_string())
+        .map_err(|e| format!("Failed to write proxy manifest: {}", e))?;
+    let wsl_manifest = win_to_wsl(&manifest_path.to_string_lossy());
+
+    tauri::async_runtime::spawn(async move {
+        run_proxy_gen(app, project_id, wsl_manifest).await;
+    });
+
+    Ok(())
+}
+
+async fn run_proxy_gen(app: AppHandle, project_id: String, wsl_manifest_path: String) {
+    let mut child = match std::process::Command::new("wsl")
+        .args([
+            "-d", "Ubuntu-24.04",
+            "-u", "root",
+            "--",
+            "python3",
+            "/mnt/c/apps/rushcut/pipeline/proxy.py",
+            "--manifest-path", &wsl_manifest_path,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[proxy] Failed to spawn: {}", e);
+            let _ = app.emit("proxy-error", json!({ "projectId": project_id, "message": e.to_string() }));
+            return;
+        }
+    };
+
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = BufReader::new(stdout);
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+
+        if let Some(data) = line.strip_prefix("PROXY:") {
+            // Parse clip_id=<id>,win_path=<path>
+            let mut clip_id = "";
+            let mut win_path = "";
+            for part in data.split(',') {
+                if let Some(v) = part.strip_prefix("clip_id=") { clip_id = v; }
+                if let Some(v) = part.strip_prefix("win_path=") { win_path = v; }
+            }
+            if !clip_id.is_empty() && !win_path.is_empty() {
+                let _ = update_clip_proxy(clip_id, win_path);
+                let _ = app.emit("proxy-progress", json!({
+                    "projectId": project_id,
+                    "clipId": clip_id,
+                    "winPath": win_path,
+                }));
+            }
+        } else if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+            let pct: i64 = pct_str.trim().parse().unwrap_or(0);
+            let _ = app.emit("proxy-progress", json!({
+                "projectId": project_id,
+                "progress": pct,
+            }));
+        } else if line.starts_with("DONE:") {
+            let _ = app.emit("proxy-done", json!({ "projectId": project_id }));
+            return;
+        } else if let Some(err_msg) = line.strip_prefix("ERROR:") {
+            eprintln!("[proxy] ERROR: {}", err_msg);
+            let _ = app.emit("proxy-error", json!({
+                "projectId": project_id,
+                "message": err_msg.trim(),
+            }));
+            return;
+        }
+    }
+
+    // Process exited without DONE/ERROR
+    let _ = child.wait();
+    eprintln!("[proxy] process exited without DONE/ERROR");
+    let _ = app.emit("proxy-error", json!({
+        "projectId": project_id,
+        "message": "Proxy process exited unexpectedly",
+    }));
+}
+
 fn emit_error(app: &AppHandle, job_id: &str, message: &str) {
     let _ = app.emit(
         "pipeline-error",
@@ -466,6 +598,7 @@ pub fn run() {
             list_projects_cmd,
             delete_project_cmd,
             open_output_path,
+            generate_proxies_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

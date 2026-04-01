@@ -19,7 +19,7 @@ File scan:   `wsl -d Ubuntu-24.04 -u root -- python3 .../scan.py --files <path1>
 
 Progress stdout: `STAGE:name` · `PROGRESS:N` · `DONE:/mnt/c/...` · `ERROR:msg` · `ANALYSIS:key=val,...`
 
-`ANALYSIS:` lines carry structured metadata (e.g. `clips_used=15,clips_total=20,clips_excluded=5`). Rust parses these and stores in `jobs.analysis_summary`. Emit once at end of pipeline run.
+`ANALYSIS:` lines carry structured metadata. Rust stores in `jobs.analysis_summary`. Emit **once at the end** of `run_pipeline` (not mid-pipeline). Full schema: `clips_used,clips_total,clips_excluded,raw_duration_s,output_duration_s,total_raw_mb,max_resolution,has_4k,audio_clip_count,normalise_s,render_s,total_s,music,cards,zoom,transition`.
 
 ## Output path
 

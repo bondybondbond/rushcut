@@ -129,6 +129,7 @@ def run_pipeline(
 
     tmp = TMP_BASE / str(job_id)
     tmp.mkdir(parents=True, exist_ok=True)
+    t_wall_start = time.time()
     log.info("[render] Job %s | mode=%s | %d clips", job_id, mode, len(clip_paths))
 
     # Compute music path early -- needed for beat detection before Step 5.
@@ -152,10 +153,8 @@ def run_pipeline(
         report(10 + int(done / total * 40))  # 10% -> 50%
 
     current_paths = normalise(clip_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
-    print(f"TIMING:normalise={time.time()-t0:.1f}s", flush=True)
-
-    # Emit ANALYSIS line.
-    report_analysis(f"clips_used={clips_used},clips_total={clips_total},clips_excluded={clips_excluded}")
+    normalise_s = time.time() - t0
+    print(f"TIMING:normalise={normalise_s:.1f}s", flush=True)
 
     # 2. Silence trim.
     report_stage("Trimming clips")
@@ -326,7 +325,8 @@ def run_pipeline(
         )
         ffmpeg_run(cmd)
 
-    print(f"TIMING:render={time.time()-t0:.1f}s", flush=True)
+    render_s = time.time() - t0
+    print(f"TIMING:render={render_s:.1f}s", flush=True)
 
     # 6. Mix music.
     report_stage("Mixing music")
@@ -355,6 +355,57 @@ def run_pipeline(
 
     report(95)
     log.info("[render] Pipeline complete: %s", output)
+
+    # Emit rich ANALYSIS line — stored in jobs.analysis_summary for benchmarking.
+    try:
+        total_s = time.time() - t_wall_start
+        output_duration_s = get_duration(output)
+
+        # Source file sizes — direct stat on WSL paths (cross-filesystem, but only N files)
+        total_raw_bytes = sum(p.stat().st_size for p in clip_paths if p.exists())
+        total_raw_mb = total_raw_bytes / (1024 * 1024)
+
+        # Resolutions from clip metadata dicts
+        widths  = [c.get("width", 0)  for c in clips]
+        heights = [c.get("height", 0) for c in clips]
+        max_w   = max(widths,  default=0)
+        max_h   = max(heights, default=0)
+        has_4k  = 1 if (max_w >= 3840 or max_h >= 2160) else 0
+
+        # Audio
+        audio_clip_count = sum(1 for c in clips if c.get("has_audio"))
+
+        # Raw footage duration (user-trimmed clips use duration_ms of original source)
+        raw_duration_s = sum(c.get("duration_ms", 0) for c in clips) / 1000.0
+
+        # Settings used
+        music_on      = 0 if config.get("music_mood", "none") == "none" else 1
+        cards_on      = 1 if (config.get("intro_text") or config.get("outro_text")) else 0
+        zoom_on       = 1 if config.get("zoom") else 0
+        transition    = config.get("transition", "none")
+
+        report_analysis(
+            f"clips_used={clips_used}"
+            f",clips_total={clips_total}"
+            f",clips_excluded={clips_excluded}"
+            f",raw_duration_s={raw_duration_s:.1f}"
+            f",output_duration_s={output_duration_s:.1f}"
+            f",total_raw_mb={total_raw_mb:.1f}"
+            f",max_resolution={max_w}x{max_h}"
+            f",has_4k={has_4k}"
+            f",audio_clip_count={audio_clip_count}"
+            f",normalise_s={normalise_s:.0f}"
+            f",render_s={render_s:.0f}"
+            f",total_s={total_s:.0f}"
+            f",music={music_on}"
+            f",cards={cards_on}"
+            f",zoom={zoom_on}"
+            f",transition={transition}"
+        )
+    except Exception as e:
+        log.warning("[render] ANALYSIS emit failed: %s", e)
+        report_analysis(f"clips_used={clips_used},clips_total={clips_total},clips_excluded={clips_excluded}")
+
     return output
 
 

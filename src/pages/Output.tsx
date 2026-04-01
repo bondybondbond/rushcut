@@ -34,6 +34,8 @@ export default function Output() {
   const completedRef = useRef(false);
   // Rolling activity timer — reset on each pipeline-stage change (not every progress tick)
   const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Store project ID for post-render proxy generation (set once job loads)
+  const projectIdRef = useRef<string | null>(null);
 
   // Load initial job state (handles page refresh on already-done job)
   useEffect(() => {
@@ -50,6 +52,8 @@ export default function Output() {
           setErrorMsg(j.error_message ?? "Render failed");
           setStage("Error");
         }
+        // Store project ID for post-render proxy generation
+        projectIdRef.current = j.project_id;
         // Fetch project name for friendly filename display
         return invoke<ProjectWithClips>("get_project", { projectId: j.project_id });
       })
@@ -92,6 +96,10 @@ export default function Output() {
       setProgress(100);
       setStage("Done");
       setOutputPath(event.payload.outputPath);
+      // Generate proxies now that the render is complete — avoids WSL2 FFmpeg contention
+      if (projectIdRef.current) {
+        invoke("generate_proxies_cmd", { projectId: projectIdRef.current }).catch(console.error);
+      }
     });
 
     const unlistenError = listen<PipelineProgressEvent>("pipeline-error", (event) => {

@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 14c complete. Next: Batch 14b (Proxy Generation).**
+**Phase 2 — Batch 14b complete. Next: Batch 14a (Review Screen UI), then 14d (Tabbed Settings), then 14f (Benchmarking + Project Cleanup).**
 
 Batch 14-P (Pipeline Reliability sub-batch) delivered:
 - Music looping: N-copy pairwise chained acrossfade replaces `-stream_loop -1`. `silencedetect` strips track intro/outro silence before tiling. Residual gap reduced; true zero-gap requires waveform-matching (Batch 15+).
@@ -28,13 +28,23 @@ Batch 14-P (Pipeline Reliability sub-batch) delivered:
 
 ## Immediate Next Task
 
-**Batch 14b — Proxy Generation** (H.264 720p proxies per clip, background after project create)
+**Batch 14a — Review Screen UI** (`/review/:projectId` route, Quick + Precise mode per clip, proxy playback, keyboard shortcuts).
 
-Then: Batch 14a (Review Screen UI), Batch 14d (Tabbed Settings).
+Then: Batch 14d (Tabbed Settings), Batch 14f (Benchmarking + Project Cleanup).
 
 ---
 
 ## Recently Completed
+
+**Batch 14b — Proxy Generation + Hygiene (2026-04-02)**
+
+- `pipeline/proxy.py` (new): H.264 720p proxy encode per clip, `--manifest-path` protocol, per-clip `PROXY:clip_id=...,win_path=...` stdout, `-c:a copy` (audio stream-copied, not re-encoded), skips existing proxies, per-clip failure non-fatal
+- `src-tauri/src/lib.rs`: `generate_proxies_cmd` (async Tauri command, filters `include!=0 && proxy_path IS NULL`, writes proxy manifest, spawns background WSL task); `run_proxy_gen` (stdout parser, calls `update_clip_proxy` per clip, emits `proxy-progress`/`proxy-done`/`proxy-error` events); registered in `generate_handler![]`; `update_clip_proxy` added to `use db::{}` imports
+- `src/pages/Output.tsx`: proxy gen fires on `pipeline-done` (not on project create) — avoids WSL2 FFmpeg contention with render pipeline; `projectIdRef` captures project ID from job load
+- `src/pages/Upload.tsx`: fire-and-forget removed (was firing on create, causing ~90s render slowdown)
+- `pipeline/run.py`: `shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)` after copy — frees 1-3 GB WSL2 tmpfs per render immediately
+- `pipeline/render.py`: rich `ANALYSIS:` line emitted at pipeline end (not mid-run): `raw_duration_s`, `output_duration_s`, `total_raw_mb`, `max_resolution`, `has_4k`, `audio_clip_count`, `normalise_s`, `render_s`, `total_s`, `music`, `cards`, `zoom`, `transition`; `t_wall_start` + named timing vars (`normalise_s`, `render_s`)
+- Wrapup skill: added Windows temp manifest + WSL2 `/tmp/` cleanup commands to Step 5
 
 **Batch 14c — Per-Clip Data Model (2026-04-01)**
 
