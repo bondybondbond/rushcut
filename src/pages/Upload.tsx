@@ -31,6 +31,9 @@ export default function Upload() {
   const navigate = useNavigate();
   const [view, setView] = useState<"home" | "clips">("home");
   const [scanning, setScanning] = useState(false);
+  // knownCount: exact clip count (file picker) or null (folder scan — count unknown until done)
+  const [knownCount, setKnownCount] = useState<number | null>(null);
+  const [visibleSkeletons, setVisibleSkeletons] = useState(0);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [folderPath, setFolderPath] = useState<string | null>(null);
@@ -46,6 +49,24 @@ export default function Upload() {
       .catch(() => setRecentProjects([]))
       .finally(() => setLoadingRecents(false));
   }, []);
+
+  // Drive skeleton card count: known = show all at once; unknown = grow one per 200ms
+  useEffect(() => {
+    if (!scanning) {
+      setVisibleSkeletons(0);
+      return;
+    }
+    if (knownCount !== null) {
+      setVisibleSkeletons(knownCount);
+      return;
+    }
+    // Folder scan — unknown count: show 1 immediately then grow
+    setVisibleSkeletons(1);
+    const interval = setInterval(() => {
+      setVisibleSkeletons((n) => (n < 24 ? n + 1 : n));
+    }, 200);
+    return () => clearInterval(interval);
+  }, [scanning, knownCount]);
 
   async function handlePickFolder() {
     try {
@@ -68,6 +89,7 @@ export default function Upload() {
       if (paths.length === 0) return;
 
       setError(null);
+      setKnownCount(paths.length);
       setScanning(true);
       try {
         const metas = await invoke<ClipMeta[]>("probe_files", { paths });
@@ -92,6 +114,7 @@ export default function Upload() {
 
   async function scanFolder(path: string) {
     setError(null);
+    setKnownCount(null);
     setScanning(true);
     setFolderPath(path);
     setClips([]);
@@ -175,10 +198,34 @@ export default function Upload() {
   // ----- Scanning overlay (shown in any view while scan is in progress) -----
   if (scanning) {
     return (
-      <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] flex items-center justify-center">
-        <div data-testid="scan-spinner" className="flex flex-col items-center gap-4">
-          <span className="inline-block w-8 h-8 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin" />
-          <span className="text-[#a3a3a3] text-sm">Scanning your clips...</span>
+      <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
+        <div className="max-w-3xl mx-auto space-y-5">
+          {/* Spinner + label */}
+          <div data-testid="scan-spinner" className="flex items-center gap-3">
+            <span className="inline-block w-5 h-5 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
+            <span className="text-[#a3a3a3] text-sm">Scanning your clips...</span>
+          </div>
+          {/* Progressive skeleton grid */}
+          {visibleSkeletons > 0 && (
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
+              {Array.from({ length: visibleSkeletons }).map((_, i) => (
+                <div
+                  key={i}
+                  className="rounded-lg overflow-hidden border border-white/10 bg-[#111111]"
+                  style={{
+                    animation: "rc-fly-in 0.2s ease both",
+                    animationDelay: knownCount !== null ? `${i * 50}ms` : "0ms",
+                  }}
+                >
+                  <div className="aspect-video bg-white/10 animate-pulse" />
+                  <div className="px-2 py-1.5 space-y-1">
+                    <div className="h-2.5 bg-white/10 animate-pulse rounded w-3/4" />
+                    <div className="h-2 bg-white/10 animate-pulse rounded w-1/3" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );

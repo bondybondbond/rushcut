@@ -61,6 +61,8 @@ function SortableClipCard({ clip, index, onDelete }: SortableClipCardProps) {
     transition,
     opacity: isDragging ? 0.4 : 1,
     zIndex: isDragging ? 50 : undefined,
+    animation: "rc-fly-in 0.25s ease both",
+    animationDelay: `${Math.min(index * 40, 400)}ms`,
   };
 
   return (

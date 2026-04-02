@@ -15,26 +15,37 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 14a complete. Next: Batch 14d (Tabbed Settings), then 14f (Benchmarking + Project Cleanup).**
-
-Batch 14-P (Pipeline Reliability sub-batch) delivered:
-- Music looping: N-copy pairwise chained acrossfade replaces `-stream_loop -1`. `silencedetect` strips track intro/outro silence before tiling. Residual gap reduced; true zero-gap requires waveform-matching (Batch 15+).
-- A/V sync fixed: root cause was hard-concat audio giving clip N audio a 1.5s late start at every cut after the first. Fixed by replacing 3+ clip concat with pairwise chained acrossfade (same as 2-clip path). `apad=whole_dur=durations[i]` aligns each clip's audio duration to its video duration, so crossfade start = xfade offset exactly. No lag at any cut.
-- Per-clip normalise progress: stage label + progress % updated per clip (10%→50%), remaining stages remapped to avoid backward movement (52/55/60/80/88/95).
-- Library routing: processing projects open the render monitor instead of the editor.
-- Persistent pipeline log: `run.py` writes to `/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log` (survives WSL2 shutdown).
+**Phase 2 — Batch 14a/b/c/d complete. Next: Batch 14e ("Build Your Film" — Screen 2 Redesign).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 14d — Tabbed Settings UI** (reorganise SettingsPanel into Music/Sound · Effects · Text tabs).
+**Batch 14e — "Build Your Film" — Screen 2 Redesign**
 
-Then: Batch 14f (Benchmarking + Project Cleanup).
+Full redesign of `/review/:projectId`:
+- Rename title to "Build Your Film"
+- Replace Include/Skip binary as primary action — trimming is primary
+- Clip nav thumbnail strip (replaces text counter); clicking jumps to clip
+- Drag-to-reorder (adds `sort_order` column to `clips` table)
+- Interactive filmstrip trim bar (replaces IN/OUT sliders)
+- Sprite generation in `proxy.py` (frames stitched to JPEG per clip, post-render)
+- Fallback state: clean poster + grey overlay label for first-session (no sprite yet)
+- Focal point feedback: pulsing dot + 1.5s zoom preview CSS animation on click
+- Running total duration counter (sum of trimmed included clips)
 
 ---
 
 ## Recently Completed
+
+**Batch 14d — Quick Wins + Upload Delight (2026-04-03)**
+
+- `Review.tsx`: back button `ml-10` clears fixed hamburger; proxy pending badge removed; centre focal point button removed; Skip Review gains `title` tooltip
+- `Upload.tsx`: scanning overlay replaced — folder scan grows skeleton cards 1/200ms via setInterval (cap 24); file picker shows exactly N cards (`knownCount = paths.length`) with staggered fly-in (`animationDelay: i * 50ms`). Spinner + "Scanning your clips..." label retained alongside grid.
+- `ClipList.tsx`: staggered `rc-fly-in` animation on cards (`index * 40ms` delay, cap 400ms)
+- `src/globals.css`: `@keyframes rc-fly-in` added (opacity 0→1, translateY 10px→0)
+- Skeleton cards use `aspect-video` (compact 16:9) not `aspect-square`
+- E2E: 25/25 PASS
 
 **Batch 14a — Review Screen UI (2026-04-02)**
 

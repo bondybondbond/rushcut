@@ -173,13 +173,12 @@ export default function Review() {
   const total = clips.length;
   const remaining = total - currentIndex - 1;
   const videoSrc = convertFileSrc(clip.proxy_path ?? clip.local_path);
-  const usingProxy = !!clip.proxy_path;
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 ml-10">
           <button
             onClick={() => navigate(`/editor/${projectId}`)}
             className="flex items-center gap-1.5 px-3 py-1.5 border border-[#C5FFF9]/40 text-[#C5FFF9] text-sm font-medium rounded-md hover:bg-[#C5FFF9]/10 transition-colors"
@@ -200,6 +199,7 @@ export default function Review() {
         </div>
         <button
           onClick={() => navigate(`/editor/${projectId}`)}
+          title="All clips included in full — skip straight to effects and music"
           className="px-4 py-1.5 border border-white/25 text-[#e5e5e5] text-sm rounded-md hover:bg-white/5 transition-colors"
         >
           Skip Review &#8594;
@@ -245,31 +245,16 @@ export default function Review() {
               <div className="w-full h-full rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/30 shadow-lg" />
             </div>
           )}
-          {/* Proxy badge */}
-          {!usingProxy && (
-            <div className="absolute top-2 right-2 px-2 py-0.5 bg-black/60 rounded text-[#a3a3a3] text-xs">
-              proxy pending
-            </div>
-          )}
         </div>
 
         {/* Clip info */}
-        <div className="flex items-center justify-between w-full">
-          <div>
-            <p className="text-[#e5e5e5] text-sm font-medium truncate max-w-xs" title={clip.filename}>
-              {clip.filename}
-            </p>
-            <p className="text-[#a3a3a3] text-xs mt-0.5">
-              {fmtMs(clip.duration_ms)} &middot; {clip.width}x{clip.height}
-            </p>
-          </div>
-          {/* Focal point reset */}
-          <button
-            onClick={() => { setFocalX(null); setFocalY(null); }}
-            className="text-xs text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors px-2 py-1 rounded border border-white/10 hover:border-white/25"
-          >
-            Centre focal point
-          </button>
+        <div className="w-full">
+          <p className="text-[#e5e5e5] text-sm font-medium truncate max-w-xs" title={clip.filename}>
+            {clip.filename}
+          </p>
+          <p className="text-[#a3a3a3] text-xs mt-0.5">
+            {fmtMs(clip.duration_ms)} &middot; {clip.width}x{clip.height}
+          </p>
         </div>
 
         {/* Quick controls: Include / Skip */}
