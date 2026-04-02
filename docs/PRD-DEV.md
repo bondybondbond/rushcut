@@ -28,52 +28,19 @@
 
 > **Scope:** Guided clip-review editor — user decides, pipeline executes.
 > **Positioning anchor:** "RushCut does not decide your memories for you. It helps you shape them quickly."
-> **Status:** 14c complete. Next: 14b (proxy generation), then 14a (review screen UI), then 14d (tabbed settings).
+> **Status:** 14a, 14b, 14c complete. Next: 14d (tabbed settings).
 
-### 14a — Sequential clip review screen
+### 14a — Sequential clip review screen (**DONE 2026-04-02**)
 
-New route: `/review/:projectId`. Replaces direct Upload → Editor jump for sessions with >5 clips.
+`/review/:projectId` route, Quick + Precise modes, keyboard shortcuts, focal point picker, IN/OUT trim sliders, zoom chips, sessionStorage resume, Skip Review escape hatch. Full detail in CONTEXT.md.
 
-**Quick mode (default, per clip):**
+### 14b — Proxy generation (**DONE 2026-04-02**)
 
-- Full-width video player (proxy if available, source otherwise)
-- Include / Skip buttons — keyboard: `Enter` = include, `Space` = skip
-- Focal point picker (tap to set X/Y, or "Centre" default)
-- "Expand" affordance reveals Precise controls
-
-**Precise mode (opt-in per clip):**
-
-- Scrub bar with draggable IN/OUT handles
-- Zoom preset: None / Gentle (1.1x) / Medium (1.3x) / Tight (1.5x)
-- All Quick controls still present
-
-Design intent: a user can review 60 clips in Quick mode only and produce a good film. Precise mode is for hero shots. Do not force full manual trimming on every clip.
-
-Progress indicator: "Clip 3 of 12 — 9 remaining"
-
-**Post-review Editor is intentionally minimal.** After Clip Review, the Editor contains only:
-
-- Clip reorder
-- Music mood + volume preset
-- Transition style (global)
-- Intro / Outro card text
-- Render
-
-No new controls should grow in the Editor. Any per-clip decision belongs in Review.
-
-### 14b — Proxy generation
-
-On project create (during scan), generate H.264 720p proxies per clip in background:
-
-```
-ffmpeg -i source.mp4 -c:v libx264 -crf 28 -vf scale=-2:720 -c:a aac -ar 48000 proxy.mp4
-```
-
-~5–10s per clip in WSL2. Store `proxy_path` in `clips` table. Clip review uses proxies for scrubbing; final render always uses originals.
+H.264 720p proxies generated post-render via `proxy.py` + `generate_proxies_cmd`. Full detail in CONTEXT.md.
 
 ### 14c — Per-clip data model (**DONE 2026-04-01**)
 
-7 columns added to `clips` table: `in_ms`, `out_ms`, `focal_x`, `focal_y`, `zoom_mode`, `include` (default 1), `proxy_path`. `start_job` filters `include==0` clips (empty manifest = error). `out_ms` clamped to `duration_ms`. `zoom.py` extended with 3 presets + focal-aware panning with edge clamping. Full detail in CONTEXT.md.
+7 columns added to `clips` table. Full detail in CONTEXT.md.
 
 ### 14d — Tabbed settings UI
 
@@ -81,7 +48,7 @@ Reorganise SettingsPanel into tabs: **Music/Sound · Effects · Text** (intro/ou
 
 ### Gate
 
-- [ ] Quick mode is default; Include/Skip keyboard-accessible; Precise expands per clip
+- [x] Quick mode is default; Include/Skip keyboard-accessible; Precise expands per clip (14a)
 - [x] Proxy generation runs after render completes; proxies used in review screen scrubbing (14b)
 - [x] Per-clip in_ms, out_ms, focal_x/y, zoom_mode passed through manifest to pipeline (14c)
 - [x] Pipeline applies user IN/OUT over silence trim when set (14c)
@@ -170,6 +137,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.2     | 2026-04-02 | Batch 14a — Review Screen UI: `/review/:projectId`, Quick + Precise modes, keyboard shortcuts, focal point overlay, IN/OUT sliders, zoom chips, sessionStorage resume, Skip Review escape hatch, `REVIEW_THRESHOLD` constant, asset scope expanded for source clips. E2E: 25/25. |
 | 1.1     | 2026-04-02 | Batch 14b — proxy generation: `proxy.py`, `generate_proxies_cmd`, post-render firing (avoids FFmpeg contention), `-c:a copy`, `include`-filter. Hygiene: `/tmp/<job_id>` cleanup in `run.py`, rich `ANALYSIS:` line in `render.py`, wrapup temp cleanup. Next: 14a (Review screen). |
 | 1.0     | 2026-04-01 | Batch 14c — per-clip data model: 7 DB columns, Rust/TS types, `update_clip_review` cmd, manifest filtering, `out_ms` clamp, pipeline trim override, focal-aware `zoom.py`. Next: 14b (proxies).                                                                                     |
 | 0.9     | 2026-03-31 | Batch 13d deferred (all changes reverted). `aresample=async` worsened DJI sync; `ProcessPoolExecutor` slower (I/O bound); `volumedetect` overcorrects on wind noise. Lessons in LEARNINGS.md.                                                                                       |

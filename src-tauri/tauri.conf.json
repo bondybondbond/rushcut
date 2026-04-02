@@ -11,7 +11,7 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA\\rushcut\\**", "C:\\clips\\processed\\**"]
+        "scope": ["$APPDATA\\rushcut\\**", "C:\\**", "D:\\**", "E:\\**"]
       }
     }
   },

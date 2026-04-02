@@ -21,6 +21,17 @@ Applies when working on `src-tauri/**`.
 Windows-only command. Uses `std::process::Command::new("explorer").arg(format!("/select,{}", path)).spawn()`.
 Comment: `// windows-only: explorer /select reveals file in Windows Explorer`
 
+## Asset protocol scope
+
+`tauri.conf.json` → `app.security.assetProtocol.scope` must include every directory the WebView reads files from. Missing entries silently return `403` — no build error, no warning.
+
+Current scope: `["$APPDATA\\rushcut\\**", "C:\\**", "D:\\**", "E:\\**"]`
+
+- `$APPDATA\\rushcut\\**` — proxy files
+- `C:\\**` / `D:\\**` / `E:\\**` — source clips and processed output on any common drive
+
+Changes to this config require rebuilding the binary (`pnpm tauri build --debug` or `pnpm dev`).
+
 ## Serena MCP (symbol-level navigation)
 
 For large Rust files (`lib.rs`, `db.rs`), prefer Serena over full-file reads:

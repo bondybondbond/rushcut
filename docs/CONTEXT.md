@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 14b complete. Next: Batch 14a (Review Screen UI), then 14d (Tabbed Settings), then 14f (Benchmarking + Project Cleanup).**
+**Phase 2 — Batch 14a complete. Next: Batch 14d (Tabbed Settings), then 14f (Benchmarking + Project Cleanup).**
 
 Batch 14-P (Pipeline Reliability sub-batch) delivered:
 - Music looping: N-copy pairwise chained acrossfade replaces `-stream_loop -1`. `silencedetect` strips track intro/outro silence before tiling. Residual gap reduced; true zero-gap requires waveform-matching (Batch 15+).
@@ -28,13 +28,27 @@ Batch 14-P (Pipeline Reliability sub-batch) delivered:
 
 ## Immediate Next Task
 
-**Batch 14a — Review Screen UI** (`/review/:projectId` route, Quick + Precise mode per clip, proxy playback, keyboard shortcuts).
+**Batch 14d — Tabbed Settings UI** (reorganise SettingsPanel into Music/Sound · Effects · Text tabs).
 
-Then: Batch 14d (Tabbed Settings), Batch 14f (Benchmarking + Project Cleanup).
+Then: Batch 14f (Benchmarking + Project Cleanup).
 
 ---
 
 ## Recently Completed
+
+**Batch 14a — Review Screen UI (2026-04-02)**
+
+- New route `/review/:projectId` added to App.tsx
+- `src/pages/Review.tsx` (new): sequential clip review, Quick mode (Include/Skip + focal point picker), Precise mode (IN/OUT trim sliders + zoom preset chips)
+- Video player: `convertFileSrc(proxy_path ?? local_path)`, "proxy pending" badge when no proxy yet
+- Focal point: `position: relative` wrapper + transparent overlay div (click → focal_x/focal_y); visual dot indicator; "Centre focal point" reset
+- Keyboard shortcuts: `Enter` = include, `Space` = skip; listener cleanup on unmount; `isSaving` ref guard vs rapid keypresses
+- `sessionStorage` resume: `review_index_${projectId}` key — Back → return resumes at correct clip
+- "Skip Review →" escape hatch in header; "Continue to Editor →" shortcut on last clip
+- `update_clip_review_cmd` invoked per clip; navigates to `/editor/:projectId` on completion
+- `src/lib/constants.ts` (new): `REVIEW_THRESHOLD = 5` — Upload navigates >5 clips to review, ≤5 direct to editor
+- `tauri.conf.json`: asset protocol scope expanded from `C:\clips\processed\**` to `C:\**`, `D:\**`, `E:\**` — fixes 403 on source clip video playback
+- E2E: 25/25 PASS (7 fast + 7 editor + 11 render)
 
 **Batch 14b — Proxy Generation + Hygiene (2026-04-02)**
 
