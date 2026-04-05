@@ -265,6 +265,21 @@ pub fn update_clip_proxy(clip_id: &str, proxy_path: &str) -> Result<(), rusqlite
     Ok(())
 }
 
+/// Update sort_order for a list of clip IDs. Caller passes clips in desired order;
+/// each clip gets sort_order = its index in the list.
+pub fn reorder_clips(clip_ids: &[String]) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute_batch("BEGIN")?;
+    for (i, id) in clip_ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE clips SET sort_order = ?1 WHERE id = ?2",
+            params![i as i64, id],
+        )?;
+    }
+    conn.execute_batch("COMMIT")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Job helpers
 // ---------------------------------------------------------------------------

@@ -2,9 +2,9 @@ mod db;
 
 use db::{
     delete_project, get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
-    list_projects, rename_project, update_clip_proxy, update_clip_review, update_job_analysis,
-    update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary,
-    ProjectWithClips,
+    list_projects, rename_project, reorder_clips, update_clip_proxy, update_clip_review,
+    update_job_analysis, update_job_done, update_job_error, update_job_progress, Clip, ClipMeta,
+    Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader};
@@ -106,6 +106,13 @@ fn open_output_path(path: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Failed to open explorer: {}", e))?;
     Ok(())
+}
+
+/// Persist clip order after a drag-to-reorder action on the Review screen.
+/// clip_ids must be the full ordered list; each clip receives sort_order = its index.
+#[tauri::command]
+fn reorder_clips_cmd(clip_ids: Vec<String>) -> Result<(), String> {
+    reorder_clips(&clip_ids).map_err(|e| format!("DB error (reorder clips): {}", e))
 }
 
 /// Rename a project.
@@ -592,6 +599,7 @@ pub fn run() {
             create_project,
             rename_project_cmd,
             update_clip_review_cmd,
+            reorder_clips_cmd,
             get_project,
             start_job,
             get_job_cmd,

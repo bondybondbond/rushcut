@@ -48,110 +48,11 @@ H.264 720p proxies generated post-render via `proxy.py` + `generate_proxies_cmd`
 
 Review.tsx: back button `ml-10` clears hamburger, proxy pending badge removed, centre focal point button removed, Skip Review tooltip added. Upload.tsx: full-screen spinner replaced with progressive skeleton grid — folder scan grows cards 1/200ms; file picker shows exactly N cards with staggered fly-in. `@keyframes rc-fly-in` added to globals.css. Cards use `aspect-video` (compact). 25/25 E2E PASS.
 
----
+### 14e — "Build Your Film" redesign + hotfix (**DONE 2026-04-05**)
 
-### 14e — "Build Your Film" — Screen 2 Redesign
+14e-core: `reorder_clips_cmd` Tauri command + DB helper; `ClipNavStrip.tsx` (DnD thumbnail strip, auto-scroll, duration counter); Review.tsx full redesign — title "Build Your Film", ClipNavStrip wired, focal pulse/zoom animation, `saveCurrentClip()` + `isSaving` guard, Skip demoted to text-link, autoPlay/progress bar/last-clip CTA distinction removed. 25/25 E2E PASS.
 
-> **Scope:** Complete redesign of the Review screen. This is the main editorial screen — clip composition, trim, order, and duration. Nothing advances to render without it.
-> **Philosophy:** Every clip is IN by default. Skip is the exception. The user trims to the good bit, not decides whether to include.
-
-**Screen rename:** `/review/:projectId` → title becomes "Build Your Film"
-
-**A. Mental model shift:**
-- All clips are IN by default (already true in DB: `include=1`). Don't present Include as a required action.
-- "Skip" is a secondary/destructive action (remove this clip entirely from the film). Visually subordinate.
-- Remove the binary Include/Skip toggle as the primary UI. The primary action is now trimming.
-
-**B. Clip navigation thumbnail strip:**
-- Replace "Clip X of Y, Z remaining" text counter with a horizontal scrollable strip of miniature clip thumbnails
-- Each thumbnail: poster frame captured during scan (~80×45px)
-- Status badges per thumbnail: included (bright), skipped (dim/greyed out), current (highlighted border + label)
-- Clicking a thumbnail jumps to that clip
-- Strip supports drag-to-reorder (updates clip sort order via new `reorder_clips_cmd` Rust command)
-- Running total duration shown beneath the strip: "~3m 24s included" (sum of trimmed durations of included clips)
-- Requires a `sort_order INTEGER` column added to `clips` table (migration); `start_job` uses this order when building the manifest
-
-**C. Interactive filmstrip trim:**
-- Replace the current IN/OUT sliders with an interactive filmstrip bar below the video player
-- Filmstrip spans the full clip duration, proportionally sized
-- **Fallback state (no sprite yet — first session):** Show a clean single-frame poster with a soft grey overlay and a subtle label: "Filmstrip preview available after first render". Visually intentional — not broken-looking.
-- **Active state (sprite exists):** Show the sprite image stretched across the filmstrip width (see sprite generation below)
-- In/out selection region: bright and full colour
-- Trimmed-out regions: dark desaturated overlay
-- Draggable handles at in and out points — update `in_ms` / `out_ms` in real-time, save on release via `update_clip_review_cmd`
-
-**D. Sprite generation (pipeline extension):**
-- Extend `proxy.py`: after generating the H.264 proxy, run a second FFmpeg pass to extract frames at even intervals (1 frame per 5s, max 12 frames) and stitch into a single sprite JPEG (`clip_sprite_<clip_id>.jpg`) stored in the same proxy directory
-- Sprite dimensions: each frame at 160×90, final image = up to 1920×90 (12 frames wide)
-- Emit `SPRITE:clip_id=...,win_path=...` on stdout after each sprite (same protocol as `PROXY:`)
-- Rust (`lib.rs`): parse `SPRITE:` lines in `run_proxy_gen`; call new `update_clip_sprite()` DB helper; emit `sprite-ready` Tauri event with `{ clipId, spritePath }`
-- DB: add `sprite_path TEXT` column to `clips` table (migration, additive)
-- `get_project_with_clips`: extend SELECT and index map to include `sprite_path` (column 18)
-- TypeScript: add `sprite_path?: string` to `Clip` interface
-- Review filmstrip component: listen for `sprite-ready` event; swap from fallback to sprite when received; use `convertFileSrc(sprite_path)` as `<img src>`
-
-**E. Focal point feedback:**
-- When user clicks on the video to set a focal point: render a pulsing circle/crosshair at the clicked coordinates (CSS keyframe animation, 2s loop)
-- Immediately show a 1.5s zoom preview: CSS `transform: scale(1.2 / 1.3 / 1.5)` centred on the focal point (matches pipeline gentle/medium/tight zoom levels)
-- After 1.5s: zoom preview fades out, pulsing dot remains as the persistent focal point indicator
-- Remove the static "click to set focal point" instruction text — the interaction should be self-evident from the dot + preview
-
-**Gate:**
-- [ ] Screen title is "Build Your Film"
-- [ ] Clip nav thumbnail strip replaces text counter; clicking jumps to clip; drag-to-reorder works
-- [ ] Total included duration shown beneath the strip, updates in real-time
-- [ ] Filmstrip bar replaces IN/OUT sliders; draggable handles; in/out selection visually highlighted
-- [ ] Fallback state (no sprite) is a clean poster with intentional grey overlay + label, not a broken stretched image
-- [ ] Sprite generation runs after proxy gen; sprite stored in DB; filmstrip swaps to sprite when `sprite-ready` fires
-- [ ] Focal point click shows pulsing crosshair + 1.5s zoom preview at correct zoom scale
-- [ ] "Skip" is visually subordinate; Include is no longer a required explicit action
-- [ ] `sort_order` column in `clips`; `start_job` uses clip order from DB; drag-to-reorder persists
-
----
-
-### 14f — "Polish" — Screen 3 Cleanup
-
-> **Scope:** Rename and clarify the Editor screen. It is the cosmetic layer — music, transitions, text cards. The film composition is decided in Screen 2. This screen is skippable.
-
-**Screen rename:** Editor → **"Polish"** (title in AppShell header)
-- Subtitle or description line: "Add music, transitions, and text to your film"
-
-**Skippable escape hatch:**
-- Add a prominent "Skip → Render" button at the top of the screen (next to "Start Rendering")
-- This goes straight to the Output screen with current default settings applied
-- Tooltip: "Render your film as-is — you can always add effects later"
-
-**Scope enforcement:**
-- Remove any per-clip trim or focal point controls that may have drifted into the Editor — those belong in Screen 2
-- Confirm the SettingsPanel contains only: music mood, music volume preset, transition style, intro/outro cards
-- ClipList (the reorderable clip list) moves to Screen 2 thumbnail strip — remove from Screen 3 if it would be duplicated
-
-**Gate:**
-- [ ] Screen title is "Polish"
-- [ ] "Skip → Render" button present at top of screen with tooltip
-- [ ] No per-clip trim or focal point controls in this screen
-- [ ] SettingsPanel scope: music, transitions, cards only
-
----
-
-### 14g — Tabbed Settings UI (was 14d)
-
-Reorganise SettingsPanel into tabs: **Music/Sound · Effects · Text** (intro/outro cards).
-
----
-
-### 14h — Benchmarking + Project Cleanup (was 14f)
-
-> **Scope:** Pipeline telemetry surfaced in UI + proper resource cleanup on project delete.
-
-1. `delete_project_cmd` (Rust) — delete `%APPDATA%\rushcut\proxies\<clip_id>.mp4` and `<clip_id>_sprite.jpg` for each clip before removing DB rows
-2. `src/pages/Library.tsx` — surface `analysis_summary` per project card (render time, clip count, resolution badge)
-
-**Gate:**
-- [ ] Deleting a project removes its proxy and sprite files from disk
-- [ ] Library card shows: clips used, total duration, max resolution, render time (from `analysis_summary`)
-
----
+14e-hotfix: `REVIEW_THRESHOLD` removed — Upload always routes to `/review`. Product direction pivot: task-based screen architecture confirmed (Upload→Trimmer→Transitions→Sound→Render); explicit-add assembly model confirmed for Batch 15a. `docs/trimmer-designs.html` created (Design A selected).
 
 ### Batch 14 Gate
 
@@ -160,23 +61,57 @@ Reorganise SettingsPanel into tabs: **Music/Sound · Effects · Text** (intro/ou
 - [x] Per-clip in_ms, out_ms, focal_x/y, zoom_mode passed through manifest to pipeline (14c)
 - [x] Pipeline applies user IN/OUT over silence trim when set (14c)
 - [x] Skipped clips excluded from render (14c)
-- [ ] Upload shows progressive animated cards (14d)
-- [ ] "Build Your Film" screen with filmstrip trim + sprite + focal feedback + clip nav strip (14e)
-- [ ] "Polish" screen with Skip to Render + cosmetics-only scope (14f)
+- [x] Upload shows progressive animated cards (14d)
+- [x] "Build Your Film" screen with clip nav strip, focal feedback, Skip demoted (14e)
+- [x] All projects route to Review/Trimmer regardless of clip count (14e-hotfix)
 
 ---
 
-## Batch 14f — Benchmarking + Project Cleanup
+## Batch 15 — Task-Based Screen Architecture
 
-> **Scope:** Pipeline telemetry surfaced in UI + proper resource cleanup on project delete.
+> **Architecture decision (2026-04-05):** Replace the single Review + Editor flow with discrete task-based screens. Each screen = one decision type. Screens: Upload → Trimmer → Transitions → Sound → Render.
+> **Assembly model:** Explicit add — user adds clips to film (include starts 0). All-IN default changes when Batch 15a ships.
 
-1. `delete_project_cmd` (Rust) — delete `%APPDATA%\rushcut\proxies\<clip_id>.mp4` for each clip before removing DB rows
-2. `src/pages/Library.tsx` — surface `analysis_summary` per project card (render time, clip count, resolution badge)
+### 15a — Trimmer screen (**NEXT**)
 
-### Gate
+New route `/trimmer/:projectId`. Replace `/review/:projectId`.
 
-- [ ] Deleting a project removes its proxy files from disk
-- [ ] Library card shows: clips used, total duration, max resolution, render time (from `analysis_summary`)
+**Layout (Design A — pantry grid):**
+- **Left — Media Pantry:** 2-col thumbnail grid of all clips; green badge on clips in film; click selects clip into centre preview
+- **Centre — Video player:** paused by default; play/pause + volume controls; per-clip trim bar with draggable handles below player; handles seek video to that point on drag; `in_ms`/`out_ms` saved on handle release via `update_clip_review_cmd`
+- **Right panel:** Prev/Next clip nav; "Add to film" CTA (sets `include=1`, lights up green badge in pantry); "Next: Transitions →" button (navigates when ≥1 clip in film)
+- **Bottom — Film So Far:** horizontal scrollable strip of in-film clips in order; click plays trimmed version in preview; red bin sets `include=0`
+
+**Assembly model change (this batch):**
+- `include` default for new clips = 0 (change DB default or set in scan path)
+- "Add to film" = the primary action (not Skip)
+- `start_job` already filters `include==0` — no pipeline change needed
+
+**Gate:**
+- [ ] `/trimmer/:projectId` route exists; Upload navigates here
+- [ ] Media Pantry shows thumbnails; green badge on in-film clips
+- [ ] Video player is paused by default; play/pause + volume work
+- [ ] Trim bar handles are draggable; video seeks on drag; saves on release
+- [ ] "Add to film" sets include=1; clip appears in Film So Far
+- [ ] Film So Far bin sets include=0; clip disappears from strip
+- [ ] "Next: Transitions →" is active only when ≥1 clip in film
+- [ ] Old `/review/:projectId` route removed or redirects
+
+### 15b — Persistent step nav
+
+Top navigation bar showing: Upload · Trimmer · Transitions · Sound · Render. Active step highlighted (peach). Completed steps clickable (navigate back). Pending steps dimmed.
+
+### 15c — Transitions screen (`/transitions/:projectId`)
+
+Current Editor transition picker extracted into a standalone screen. Options: None / Crossfade / Dip to black. Preview of selected transition (CSS or short proxy clip).
+
+### 15d — Sound screen (`/sound/:projectId`)
+
+Current Editor music settings extracted: music mood selector, volume preset chips (Subtle/Balanced/Prominent). Music preview (30s loop from selected track).
+
+### 15e — Render screen (`/render/:projectId`)
+
+Merges the current Editor "Start Rendering" flow and Output page into one screen. Shows summary of decisions (clip count, duration, music, transition). One "Render Film" CTA. Progress bar + output playback on completion.
 
 ---
 

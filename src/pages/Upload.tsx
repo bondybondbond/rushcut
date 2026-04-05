@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ClipMeta, Clip, ProjectSummary } from "@/types/project";
-import { REVIEW_THRESHOLD } from "@/lib/constants";
 import { UploadZone } from "@/components/upload/UploadZone";
 import { ClipList } from "@/components/upload/ClipList";
 
@@ -176,11 +175,7 @@ export default function Upload() {
         clips: orderedMetas,
       });
 
-      if (clips.length > REVIEW_THRESHOLD) {
-        navigate(`/review/${projectId}`);
-      } else {
-        navigate(`/editor/${projectId}`);
-      }
+      navigate(`/review/${projectId}`);
     } catch (e) {
       setError(`Failed to create project: ${e}`);
       setCreating(false);

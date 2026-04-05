@@ -15,28 +15,43 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 14a/b/c/d complete. Next: Batch 14e ("Build Your Film" — Screen 2 Redesign).**
+**Phase 2 — Batch 14e complete (+ hotfix). Next: Batch 15a — Trimmer screen.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 14e — "Build Your Film" — Screen 2 Redesign**
+**Batch 15a — Trimmer screen** (`/trimmer/:projectId`)
 
-Full redesign of `/review/:projectId`:
-- Rename title to "Build Your Film"
-- Replace Include/Skip binary as primary action — trimming is primary
-- Clip nav thumbnail strip (replaces text counter); clicking jumps to clip
-- Drag-to-reorder (adds `sort_order` column to `clips` table)
-- Interactive filmstrip trim bar (replaces IN/OUT sliders)
-- Sprite generation in `proxy.py` (frames stitched to JPEG per clip, post-render)
-- Fallback state: clean poster + grey overlay label for first-session (no sprite yet)
-- Focal point feedback: pulsing dot + 1.5s zoom preview CSS animation on click
-- Running total duration counter (sum of trimmed included clips)
+Full replacement for `/review/:projectId`. Task-based screen — one job: trim each clip.
+
+- **Left — Media Pantry:** 2-col thumbnail grid; green badge for clips in film; click selects clip for preview
+- **Centre — Video player:** paused by default, play/pause + volume slider; per-clip trim bar with draggable handles (handles seek video to that point on drag); `in_ms`/`out_ms` saved on handle release
+- **Right panel:** Prev/Next clip nav; "Add to film" CTA (sets `include=1`); "Next: Transitions →" button
+- **Bottom — Film So Far timeline:** horizontal strip of in-film clips; click plays trimmed clip in preview player; red bin removes from film (sets `include=0`)
+- **Assembly model:** explicit add — `include` starts as 0; "Add to film" sets 1 (change from current all-IN default is deferred until this screen ships)
+- Remove `REVIEW_THRESHOLD` entirely — all projects route to `/trimmer`
+- Persistent top step nav (Upload · Trimmer · Transitions · Sound · Render) — can be Batch 15b
 
 ---
 
 ## Recently Completed
+
+**Batch 14e-core — "Build Your Film" redesign (2026-04-05)**
+
+- `src-tauri/src/db.rs`: `reorder_clips()` helper (transaction, sort_order UPDATE per clip)
+- `src-tauri/src/lib.rs`: `reorder_clips_cmd` Tauri command; registered in `generate_handler![]`
+- `src/globals.css`: `rc-focal-pulse` + `rc-zoom-preview` keyframes
+- `src/components/review/ClipNavStrip.tsx` (new): DnD thumbnail strip, auto-scroll, duration counter
+- `src/pages/Review.tsx`: title → "Build Your Film", ClipNavStrip wired, focal animation, `saveCurrentClip()` helper, `isSaving` guard, `[review]` log instrumentation, Skip demoted to text-link, "Next →" primary CTA, autoPlay removed, progress bar removed, "Finish & Go to Editor" CTA removed
+- 25/25 E2E PASS
+
+**Batch 14e-hotfix (2026-04-05)**
+
+- `Upload.tsx`: removed `REVIEW_THRESHOLD` — always routes to `/review/:projectId`
+- Product direction pivot: task-based screen architecture decided (Upload→Trimmer→Transitions→Sound→Render)
+- Explicit-add assembly model confirmed (was all-IN; changing in 15a when Trimmer ships)
+- `docs/trimmer-designs.html`: Design A (pantry grid) chosen as Batch 15a blueprint
 
 **Batch 14d — Quick Wins + Upload Delight (2026-04-03)**
 

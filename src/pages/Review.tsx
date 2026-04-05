@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Clip, ProjectWithClips } from "@/types/project";
+import { ClipNavStrip } from "@/components/review/ClipNavStrip";
 
 function fmtMs(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -17,6 +18,12 @@ const ZOOM_PRESETS: { label: string; value: string | null }[] = [
   { label: "Medium", value: "medium" },
   { label: "Tight", value: "tight" },
 ];
+
+function zoomScale(mode: string | null): number {
+  if (mode === "tight") return 1.5;
+  if (mode === "medium") return 1.3;
+  return 1.2; // gentle or null defaults to gentle preview
+}
 
 export default function Review() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -35,6 +42,10 @@ export default function Review() {
   const [outMs, setOutMs] = useState<number>(0);
   const [zoomMode, setZoomMode] = useState<string | null>(null);
 
+  // Focal point animation
+  const [showZoomPreview, setShowZoomPreview] = useState(false);
+  const zoomPreviewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const isSaving = useRef(false);
@@ -45,7 +56,6 @@ export default function Review() {
       .then((data) => {
         setClips(data.clips);
         setProjectName(data.project.name);
-        // Resume from sessionStorage if the user is returning to this review
         const stored = sessionStorage.getItem(`review_index_${projectId}`);
         const idx = stored
           ? Math.min(parseInt(stored, 10), data.clips.length - 1)
@@ -75,16 +85,52 @@ export default function Review() {
     setFocalY(clip.focal_y);
     setZoomMode(clip.zoom_mode);
     setExpandedPrecise(false);
+    setShowZoomPreview(false);
   }, [currentIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Clear zoom preview timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (zoomPreviewTimer.current) clearTimeout(zoomPreviewTimer.current);
+    };
+  }, []);
+
+  // Dismiss zoom preview after 1.5s
+  useEffect(() => {
+    if (!showZoomPreview) return;
+    if (zoomPreviewTimer.current) clearTimeout(zoomPreviewTimer.current);
+    zoomPreviewTimer.current = setTimeout(() => setShowZoomPreview(false), 1500);
+  }, [showZoomPreview]);
+
+  /** Save current clip's review data without advancing. */
+  const saveCurrentClip = useCallback(async () => {
+    if (!clip || !projectId || isSaving.current) return;
+    isSaving.current = true;
+    try {
+      console.log("[review] save clip", clip.id, { include: clip.include, inMs, outMs, focalX, focalY, zoomMode });
+      await invoke("update_clip_review_cmd", {
+        clipId: clip.id,
+        inMs: inMs > 0 ? inMs : null,
+        outMs: outMs < clip.duration_ms ? outMs : null,
+        focalX,
+        focalY,
+        zoomMode,
+        include: clip.include,
+      });
+    } finally {
+      isSaving.current = false;
+    }
+  }, [clip, projectId, inMs, outMs, focalX, focalY, zoomMode]);
+
+  /** Save current clip with the given include value and advance to next clip or editor. */
   const saveAndAdvance = useCallback(
     async (include: number) => {
       if (!clip || !projectId || isSaving.current) return;
       isSaving.current = true;
       try {
+        console.log("[review] save clip", clip.id, { include, inMs, outMs, focalX, focalY, zoomMode });
         await invoke("update_clip_review_cmd", {
           clipId: clip.id,
-          // Only send non-trivial trim values — null signals "no user trim preference"
           inMs: inMs > 0 ? inMs : null,
           outMs: outMs < clip.duration_ms ? outMs : null,
           focalX,
@@ -107,34 +153,39 @@ export default function Review() {
     [clip, projectId, inMs, outMs, focalX, focalY, zoomMode, currentIndex, clips.length, navigate]
   );
 
-  // Keyboard shortcuts: Enter = include, Space = skip
+  // Keyboard shortcuts: Enter = save & next (neutral), Space = skip (include=0)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      // Don't intercept when focus is in a form control
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (e.key === "Enter") {
         e.preventDefault();
-        saveAndAdvance(1);
+        console.log("[review] keyboard next (include=current)");
+        saveAndAdvance(clip?.include ?? 1);
       } else if (e.key === " ") {
         e.preventDefault();
+        console.log("[review] keyboard skip (include=0)");
         saveAndAdvance(0);
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [saveAndAdvance]);
+  }, [saveAndAdvance, clip]);
 
   function handleOverlayClick(e: React.MouseEvent<HTMLDivElement>) {
     const el = overlayRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    setFocalX((e.clientX - rect.left) / rect.width);
-    setFocalY((e.clientY - rect.top) / rect.height);
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    setFocalX(x);
+    setFocalY(y);
+    setShowZoomPreview(true);
+    console.log("[review] focal set", { focalX: x, focalY: y, zoomMode });
   }
 
   function handleInChange(val: number) {
-    const clamped = Math.min(val, outMs - 500); // keep at least 0.5s gap
+    const clamped = Math.min(val, outMs - 500);
     setInMs(Math.max(0, clamped));
     if (videoRef.current) videoRef.current.currentTime = clamped / 1000;
   }
@@ -144,6 +195,27 @@ export default function Review() {
     const clamped = Math.max(val, inMs + 500);
     setOutMs(Math.min(clip.duration_ms, clamped));
     if (videoRef.current) videoRef.current.currentTime = clamped / 1000;
+  }
+
+  async function handleStripSelect(idx: number) {
+    if (idx === currentIndex) return;
+    if (isSaving.current) return;
+    console.log("[review] save-before-jump idx=" + idx);
+    await saveCurrentClip();
+    sessionStorage.setItem(`review_index_${projectId}`, String(idx));
+    setCurrentIndex(idx);
+  }
+
+  async function handleStripReorder(reordered: Clip[]) {
+    const previous = clips;
+    setClips(reordered); // optimistic
+    try {
+      await invoke("reorder_clips_cmd", { clipIds: reordered.map((c) => c.id) });
+      console.log("[review] reorder saved", reordered.map((c) => c.id));
+    } catch (err) {
+      console.error("[review] reorder failed, rolling back", err);
+      setClips(previous); // rollback
+    }
   }
 
   if (loading) {
@@ -171,7 +243,6 @@ export default function Review() {
   }
 
   const total = clips.length;
-  const remaining = total - currentIndex - 1;
   const videoSrc = convertFileSrc(clip.proxy_path ?? clip.local_path);
 
   return (
@@ -188,34 +259,23 @@ export default function Review() {
           <span className="text-[#a3a3a3] text-sm hidden sm:inline">{projectName}</span>
         </div>
         <div className="text-center">
-          <span className="text-[#FF8A65] font-semibold text-sm">
-            Clip {currentIndex + 1} of {total}
-          </span>
-          {remaining > 0 && (
-            <span className="text-[#a3a3a3] text-sm ml-2">
-              &mdash; {remaining} remaining
-            </span>
-          )}
+          <h1 className="text-[#FF8A65] font-semibold text-base leading-tight">Build Your Film</h1>
+          <p className="text-[#a3a3a3] text-sm">Clip {currentIndex + 1} of {total}</p>
         </div>
-        <button
-          onClick={() => navigate(`/editor/${projectId}`)}
-          title="All clips included in full — skip straight to effects and music"
-          className="px-4 py-1.5 border border-white/25 text-[#e5e5e5] text-sm rounded-md hover:bg-white/5 transition-colors"
-        >
-          Skip Review &#8594;
-        </button>
-      </div>
-
-      {/* Progress bar */}
-      <div className="h-1 bg-white/10">
-        <div
-          className="h-full bg-[#22c55e] transition-all duration-300"
-          style={{ width: `${((currentIndex) / total) * 100}%` }}
-        />
+        {/* Spacer to balance the back button */}
+        <div className="w-[80px]" />
       </div>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col items-center px-4 py-6 gap-6 max-w-4xl mx-auto w-full">
+      <div className="flex-1 flex flex-col items-center px-4 py-6 gap-4 max-w-4xl mx-auto w-full">
+
+        {/* Clip nav thumbnail strip */}
+        <ClipNavStrip
+          clips={clips}
+          currentIndex={currentIndex}
+          onSelect={handleStripSelect}
+          onReorder={handleStripReorder}
+        />
 
         {/* Video player with focal point overlay */}
         <div className="w-full rounded-xl overflow-hidden bg-black relative" style={{ aspectRatio: "16/9" }}>
@@ -223,24 +283,41 @@ export default function Review() {
             ref={videoRef}
             key={clip.id}
             src={videoSrc}
-            autoPlay
             loop
             muted
             playsInline
             className="w-full h-full object-contain"
           />
+          {/* Zoom preview overlay — brief CSS animation on focal click */}
+          {focalX !== null && focalY !== null && (
+            <div
+              className="absolute inset-0 pointer-events-none bg-black/10 rounded-xl"
+              style={
+                {
+                  transformOrigin: `${focalX * 100}% ${focalY * 100}%`,
+                  animation: showZoomPreview
+                    ? "rc-zoom-preview 1.5s ease-out forwards"
+                    : "none",
+                  "--zoom-scale": zoomScale(zoomMode),
+                } as React.CSSProperties
+              }
+            />
+          )}
           {/* Transparent overlay for focal point picking */}
           <div
             ref={overlayRef}
             onClick={handleOverlayClick}
             className="absolute inset-0 cursor-crosshair"
-            title="Click to set focal point"
           />
-          {/* Focal point dot */}
+          {/* Focal point dot — pulses when set */}
           {focalX !== null && focalY !== null && (
             <div
-              className="absolute w-6 h-6 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
-              style={{ left: `${focalX * 100}%`, top: `${focalY * 100}%` }}
+              className="absolute w-6 h-6 pointer-events-none"
+              style={{
+                left: `${focalX * 100}%`,
+                top: `${focalY * 100}%`,
+                animation: "rc-focal-pulse 2s ease-in-out infinite",
+              }}
             >
               <div className="w-full h-full rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/30 shadow-lg" />
             </div>
@@ -257,21 +334,23 @@ export default function Review() {
           </p>
         </div>
 
-        {/* Quick controls: Include / Skip */}
-        <div className="flex items-center gap-4 w-full justify-center">
+        {/* Primary action: Next / Finish */}
+        <div className="flex flex-col items-center gap-2 w-full">
+          <button
+            onClick={() => saveAndAdvance(clip.include ?? 1)}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Next
+            <span className="text-xs text-[#0a0a0a]/60 font-normal">Enter</span>
+            <span className="ml-1">&#8594;</span>
+          </button>
+          {/* Skip is a secondary / destructive action */}
           <button
             onClick={() => saveAndAdvance(0)}
-            className="flex-1 max-w-[180px] px-5 py-3 border border-white/25 text-[#e5e5e5] font-semibold rounded-md hover:bg-white/5 transition-colors text-base"
+            className="text-sm text-[#a3a3a3] underline underline-offset-2 hover:text-red-400 transition-colors"
           >
-            Skip
-            <span className="ml-2 text-xs text-[#555555] font-normal">Space</span>
-          </button>
-          <button
-            onClick={() => saveAndAdvance(1)}
-            className="flex-1 max-w-[180px] px-5 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors text-base"
-          >
-            Include
-            <span className="ml-2 text-xs text-[#0a0a0a]/60 font-normal">Enter</span>
+            Skip this clip
+            <span className="ml-1.5 text-xs no-underline text-[#555555]">Space</span>
           </button>
         </div>
 
@@ -300,7 +379,6 @@ export default function Review() {
             <div className="space-y-4">
               <p className="text-sm font-medium text-[#e5e5e5]">Trim</p>
               <div className="space-y-3">
-                {/* IN point */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs text-[#a3a3a3]">
                     <span>IN point</span>
@@ -316,7 +394,6 @@ export default function Review() {
                     className="w-full accent-[#FF8A65]"
                   />
                 </div>
-                {/* OUT point */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs text-[#a3a3a3]">
                     <span>OUT point</span>
@@ -362,16 +439,6 @@ export default function Review() {
               </div>
             </div>
           </div>
-        )}
-
-        {/* "Continue to Editor" shortcut once all clips reviewed */}
-        {currentIndex === total - 1 && (
-          <button
-            onClick={() => saveAndAdvance(1)}
-            className="px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors"
-          >
-            Include &amp; Continue to Editor &#8594;
-          </button>
         )}
       </div>
     </div>
