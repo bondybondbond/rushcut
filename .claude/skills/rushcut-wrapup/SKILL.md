@@ -9,6 +9,78 @@ Work through each step in order. Skip any step that has nothing to do — don't 
 
 ---
 
+## Step 0 — Scan for `[TRAP]` flags
+
+Scan the current session for any lines prefixed `[TRAP]:`. These are system bugs, broken assumptions, missing tools/plugins, or more-effective routes discovered during development — things that were not known at the start of the session.
+
+For each `[TRAP]` found, categorise it:
+- **System bug / broken API / previously-described-as-working thing that isn't** → route to `docs/LEARNINGS.md` (Step 1)
+- **Path-specific technical rule (FFmpeg, Tauri, pipeline, E2E)** → route to the relevant `.claude/rules/` file (Step 2)
+- **UI/design pattern gap or violation** → route to `docs/DESIGN.md` (extend it with the missing pattern)
+- **Ways-of-working / tooling shortcut / workflow insight** → route to `docs/LEARNINGS.md` with a "Workflow" heading
+- **Token/context waste discovered** → route to `docs/LEARNINGS.md` Workflow section (Step 0.8 handles this automatically — note it here for routing)
+
+If no `[TRAP]` flags exist in the session, skip this step. Do not invent entries.
+
+After routing each trap, proceed to the relevant steps below to write the actual content.
+
+---
+
+## Step 0.5 — Smoke test (5 min max)
+
+Run the fast spec suite only. No screenshots. No MCP. No CDP required — just WDIO counts.
+
+```bash
+powershell.exe -Command "Stop-Process -Name rushcut -Force -ErrorAction SilentlyContinue; Stop-Process -Name msedgedriver -Force -ErrorAction SilentlyContinue"
+cmd.exe /c "set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 && start C:\apps\rushcut\src-tauri\target\debug\rushcut.exe"
+```
+
+Wait 5s, then:
+
+```bash
+powershell.exe -Command "Set-Location C:/apps/rushcut; pnpm test:e2e 2>&1"
+```
+
+Record PASS/FAIL count only. If the session touched editor or trimmer flows, also run those suites:
+
+```bash
+powershell.exe -Command "Set-Location C:/apps/rushcut; pnpm test:e2e:editor 2>&1"
+powershell.exe -Command "Set-Location C:/apps/rushcut; pnpm test:e2e:trimmer 2>&1"
+```
+
+**On failures:** List the failing test names in the wrapup report. Do not attempt to fix during wrapup unless the cause is trivially obvious (one-line typo, wrong constant). Non-trivial failures → note as a blocker for the next session.
+
+Skip this step if the session was docs-only, config-only, or if all specs were already run as part of the dev session's in-build eval within the last 30 minutes.
+
+---
+
+## Step 0.8 — Efficiency review (token & context waste)
+
+Scan the session for patterns that burned context needlessly or caused extra round trips. Look for:
+
+- **Unnecessary full-file reads** — was a large file (`lib.rs`, `db.rs`, `PRD-DEV.md`) read in full when Serena `get_symbols_overview` or `find_symbol` would have been enough?
+- **Repeated reads of the same file** — was the same file read 2+ times without a write in between?
+- **Web searches that returned nothing useful** — query returned generic results; the answer was already in LEARNINGS.md or the rules files
+- **Debugging loops** — the same fix was tried 2+ times with minor variation before the root cause was identified
+- **Asking the user for output** — pipeline logs, stack traces, or stdout was requested from the user when it could have been read directly (`pipeline-latest.log`, WSL2 output, etc.)
+- **Wrong tool for the job** — Bash used where Read/Grep/Glob would have been faster and cleaner
+- **Context-heavy speculation** — large amounts of code written or read before confirming the approach with the user
+
+For each pattern spotted, **immediately write a LEARNINGS.md Workflow entry** using:
+
+```
+## [Workflow: Pattern Name]
+**Problem:** [what caused the waste]
+**Solution:** [the faster/cheaper route]
+**Context:** [when this applies — which file type, which task, which tool]
+```
+
+If the pattern is severe enough to change default behaviour in all future sessions (not just a reminder — a rule), also add a one-line bullet to CLAUDE.md under a "## Efficiency rules" section (create it if it doesn't exist).
+
+Do NOT invent patterns. Only write entries for waste that actually occurred this session. Skip the step entirely if the session was efficient.
+
+---
+
 ## Step 1 — LEARNINGS.md (`C:\apps\rushcut\docs\LEARNINGS.md`)
 
 Add an entry **only** if the pattern is genuinely reusable in future sessions — a technical insight that isn't obvious and isn't already covered.
@@ -28,14 +100,16 @@ Use native **Edit** tool.
 
 ---
 
-## Step 2 — `.claude/rules/` files
+## Step 2 — `.claude/rules/` files and `docs/DESIGN.md`
 
 If the session introduced or confirmed path-specific technical rules (FFmpeg, pipeline, Tauri, E2E), update the relevant rules file:
 - `.claude/rules/pipeline.md` — pipeline invocation, FFmpeg quirks, Python pitfalls
 - `.claude/rules/rust-tauri.md` — Tauri commands, permissions, capabilities
 - `.claude/rules/e2e.md` — WDIO setup, rushcut-eval skill rules
 
-Only update if a rule changed or a new important constraint was discovered. Do NOT duplicate content from LEARNINGS.md.
+If the session added or surfaced a new UI pattern not yet in the design system (component layout, animation, new token usage, spacing convention), extend `docs/DESIGN.md`. DESIGN.md should be comprehensive enough that a fresh session never needs to invent a pattern. Add the missing pattern as a new section with a brief rationale and the exact Tailwind/CSS classes used.
+
+Only update if a rule changed, a new constraint was discovered, or a DESIGN.md gap was found. Do NOT duplicate content from LEARNINGS.md.
 
 Use native **Edit** tool.
 
@@ -120,9 +194,17 @@ Check `git status` before staging — don't use `git add -A`.
 
 ---
 
-## Step 7 — Prompt tips
+## Step 7 — Session efficiency actions
 
-Give 2–3 concise, specific recommendations on how the user could have prompted more efficiently this session — fewer round trips, earlier use of the right tool, clearer scope. Reference actual exchanges from the session. Skip if nothing notable.
+Review the session for prompt or workflow patterns that caused extra round trips, unclear scope, or wasted effort on both sides.
+
+For each pattern found, **act on it immediately** — don't just state the tip:
+
+- If it's a recurring user prompt pattern (e.g. scope too vague, missing constraints) → save a `feedback_*` memory file noting the pattern and better phrasing
+- If it's a workflow shortcut the user could use more → note it verbally as a "next session tip" (2 sentences max)
+- If it revealed a gap in how the session was kicked off (e.g. no batch spec, missing context) → update the dev-plan skill's Step 2 "Ingest the request" checklist
+
+Skip if the session was efficient and nothing stands out. Do not invent tips.
 
 ---
 

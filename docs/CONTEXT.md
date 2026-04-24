@@ -15,27 +15,50 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 14e complete (+ hotfix). Next: Batch 15a — Trimmer screen.**
+**Phase 2 — Batch 15c Package 1 COMPLETE. Next: Batch 15c Packages 2 + 3.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15a — Trimmer screen** (`/trimmer/:projectId`)
+**Batch 15c Package 2 — TrimBar behaviour** (C4 + C5): `TrimBar.tsx` only
+- **C4** click on track = seek (`video.currentTime`); handles only move on explicit drag.
+- **C5** playhead `w-0.5` → `w-1` (4px).
 
-Full replacement for `/review/:projectId`. Task-based screen — one job: trim each clip.
-
-- **Left — Media Pantry:** 2-col thumbnail grid; green badge for clips in film; click selects clip for preview
-- **Centre — Video player:** paused by default, play/pause + volume slider; per-clip trim bar with draggable handles (handles seek video to that point on drag); `in_ms`/`out_ms` saved on handle release
-- **Right panel:** Prev/Next clip nav; "Add to film" CTA (sets `include=1`); "Next: Transitions →" button
-- **Bottom — Film So Far timeline:** horizontal strip of in-film clips; click plays trimmed clip in preview player; red bin removes from film (sets `include=0`)
-- **Assembly model:** explicit add — `include` starts as 0; "Add to film" sets 1 (change from current all-IN default is deferred until this screen ships)
-- Remove `REVIEW_THRESHOLD` entirely — all projects route to `/trimmer`
-- Persistent top step nav (Upload · Trimmer · Transitions · Sound · Render) — can be Batch 15b
+**Batch 15c Package 3 — Trimmer page** (C2 + C3 + C6): `Trimmer.tsx` + `FilmStrip.tsx`
+- **C2** layout fix — text between TrimBar and FilmStrip occluded by drawer z-index.
+- **C3** remove "In Film" button state; always show "Add to Film"; each add creates a new filmstrip entry (distinct in_ms/out_ms snapshot, same source path).
+- **C6** drag-handle on bottom edge of video; `videoHeight` state (min 200px, max 70vh).
 
 ---
 
 ## Recently Completed
+
+**Batch 15c Package 1 — Pipeline + DB (C1 + C7) (2026-04-24)**
+
+- `pipeline/proxy.py`: `extract_thumbnail()` extracts JPEG from source at 1s seek, emits `THUMBNAIL_DONE:clip_id=<id>,data=<data_uri>`. `extract_waveform()` renders 120×80 waveform PNG via `showwavespic=s=120x80:colors=0x22c55e:scale=cbrt`, emits `WAVEFORM_DONE:clip_id=<id>,data=<data_uri>`. Both run before proxy encode (fast-first ordering). `is_valid_proxy()` validates existing proxy files via ffprobe before skipping re-encode — catches corrupt files (missing moov atom). Proxy encode timeout raised to 600s. `-preset ultrafast -vf scale=-2:480`.
+- `src-tauri/src/db.rs`: `waveform_data TEXT` additive migration (col 18), `update_clip_thumbnail()`, `update_clip_waveform()`. `Clip` struct + `get_project_with_clips` SELECT updated.
+- `src-tauri/src/lib.rs`: manifest JSON per clip now includes `needs_thumbnail`, `needs_waveform`. `run_proxy_gen` parses `THUMBNAIL_DONE:` and `WAVEFORM_DONE:` lines, calls DB updaters, emits `thumbnail-progress` / `waveform-progress` Tauri events.
+- `src/types/project.ts`: `waveform_data: string | null` added to `Clip` interface.
+- `src/pages/Trimmer.tsx`: listeners for `thumbnail-progress` and `waveform-progress` events update clip state incrementally. Proxy status row ("Generating previews…" pulse + "Preview optimised" badge) removed — video player spinner overlay is sufficient feedback. `preload="auto"` + `play().then(pause)` first-frame paint fix (WebView2 black frame issue). `loadeddata` event gate ensures the paint runs after buffering.
+- `src/components/trimmer/TrimBar.tsx`: `waveformData` prop renders waveform `<img>` at z-2 with `mix-blend-mode: screen` opacity 0.9.
+
+**Batch 15a Groups A+B — Trimmer Polish (2026-04-05)**
+
+- **A1** `src-tauri/src/db.rs`: `insert_clip` now explicitly writes `include = 0` in INSERT SQL — never relies on column DEFAULT (was `DEFAULT 1` from Batch 14c, so existing DBs still defaulted to 1). Root cause fixed.
+- **A1** `src-tauri/src/lib.rs`: `include: 0` in `create_project` Clip struct for clarity
+- **A1** `src/pages/Upload.tsx`: `metaToClip` `include: 0`
+- **A2** `src/pages/Upload.tsx`: removed `view === "clips"` staging screen entirely — after scan completes, name modal appears directly over home view. Removed `handleContinueClick`, `ClipList` import, `handleDelete`, `handleReorder`. Derive project name inline from scan results.
+- **A3** `src/components/trimmer/TrimBar.tsx`: timer row redesigned — static `0:00` far-left, static `fmtMs(durationMs)` far-right, centered `selected` label; floating handle labels above IN/OUT handles (position: absolute, `clampLabelPct` prevents overflow)
+- **A4** All grey text → `#e5e5e5` in Trimmer.tsx, TrimBar.tsx, FilmStrip.tsx, MediaPantry.tsx, StepNav.tsx. Separator chars updated. Exception: TrimBar hint text stays subdued.
+- **A5** `src/pages/Trimmer.tsx`: proxy status row — orange pulse during generation → green checkmark + "Preview optimised" static when `proxiesReady === true`
+- **A6** `src/pages/Trimmer.tsx`: `onClick={togglePlay}` + `cursor-pointer` placed directly on `<video>` element (not wrapper div — video has no interactive children, no guard needed)
+- **A7** `src/components/trimmer/TrimBar.tsx`: track base changed from `bg-black/50` to `rgba(255,255,255,0.08)` dark neutral surface; inactive regions are `rgba(0,0,0,0.55)` darker overlay on top
+- **A8** `src/components/trimmer/TrimBar.tsx`: `currentMs: number` prop added; white vertical playhead line (`w-0.5 h-full bg-white/80 z-10`) positioned at `${playheadPct}%`. `src/pages/Trimmer.tsx`: `currentMs` state, `onTimeUpdate` + `onSeeked` on video element, reset to `inMs` on clip change.
+- **B1** `src/components/trimmer/MediaPantry.tsx`: `draggable={true}` + `onDragStart={(e) => e.dataTransfer.setData("clipId", clip.id)}` on each tile. `src/components/trimmer/FilmStrip.tsx`: `onDragOver` + `onDrop` on container; `onAdd` prop; empty state text updated to "Drag clips here or use Add to Film". `src/pages/Trimmer.tsx`: `onAdd={(c) => handleToggleInclude(c, 1)}` wired.
+- **TrimBar z-index documented:** z-0 base surface → z-1 inactive overlays → z-2 (future waveform slot) → z-3 selected region → z-10 playhead → z-20 handles
+- `e2e/trimmer.spec.ts` written (12 assertions, 3 screenshots A/B/C auto-saved). `pnpm test:e2e:trimmer` added to package.json.
+- E2E: 26/26 PASS (7 fast + 7 editor + 12 trimmer + 0 console errors)
 
 **Batch 14e-core — "Build Your Film" redesign (2026-04-05)**
 

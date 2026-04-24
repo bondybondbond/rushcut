@@ -36,6 +36,7 @@ Run these in parallel:
 2. **Context doc** — `docs/CONTEXT.md` — current sprint state, next priority, deferred items
 3. **LEARNINGS.md** — `docs/LEARNINGS.md` — known failure patterns relevant to the request
 4. **Relevant rules file** — pick the matching file(s) from `.claude/rules/` (pipeline.md / rust-tauri.md / e2e.md) based on which layer is touched
+5. **Design system** — `docs/DESIGN.md` — **always read this when the request touches any UI component** (new screen, modified component, copy change, colour/layout decision)
 
 Only read additional source files if a specific function, config, or data structure is directly relevant to the plan. Use Serena's `get_symbols_overview` or `find_symbol` — do not read entire files unless unavoidable.
 
@@ -70,6 +71,38 @@ Output a concise, numbered implementation plan. Use this structure:
 - Any gotchas, known failure modes, or constraints that apply
 - Web research highlights (if Step 4 ran)
 
+### Design compliance (UI work only — skip if no UI changes)
+
+For every UI element proposed (new component, modified screen, copy change):
+- State which DESIGN.md tokens apply: background, surface, text colour, button pattern, chip accent
+- Flag any risk of deviation — e.g. "this tooltip needs `text-[#a3a3a3]` not Tailwind `text-gray-400`"
+- If DESIGN.md does not cover a pattern needed for this batch (new component type, layout pattern, animation), explicitly note: "DESIGN.md gap — `docs/DESIGN.md` should be extended with [X] before or during this batch"
+- **Hard rules from DESIGN.md (never violate):**
+  - No `text-gray-*` — only `#e5e5e5` (primary) or `#a3a3a3` (secondary)
+  - No `text-xs` for readable content — minimum `text-sm`
+  - Headings: `text-[#FF8A65]`; body: `text-[#e5e5e5]`; secondary: `text-[#a3a3a3]`
+  - Primary CTA: peach `#FF8A65` on dark `#0a0a0a`; secondary: outlined `border-white/30`
+  - Chip active accent: `#99B3FF` (blue); card colour picker ring: `#FF8A65` (peach only)
+  - Progress bars: always green `#22c55e`
+
+### Acceptance checks (define before building)
+
+For each screen or component being changed, list concrete binary pass/fail checks. These drive the targeted eval during build — not a final checklist.
+
+Format: `[ ] Screen/component — what must be true`
+
+Examples:
+- `[ ] Trimmer — film strip starts empty on fresh project`
+- `[ ] TrimBar — playhead moves when track is clicked`
+- `[ ] Transitions — chip highlights in #99B3FF when selected`
+- `[ ] No console errors on any navigated route`
+
+Keep to ≤5 checks per screen. If a check can't be stated as binary pass/fail, it's too vague — rewrite it.
+
+For UI checks, always include at minimum:
+- `[ ] [Screen] — headings are peach, body text is white, no grey text visible`
+- `[ ] [Screen] — no missing thumbnails or broken images`
+
 ### Refactoring consideration
 - State explicitly: should any refactoring happen **before** or **after** the feature/fix?
 - If before: one bullet explaining why (e.g. the fix is blocked by a structural issue)
@@ -80,6 +113,7 @@ Output a concise, numbered implementation plan. Use this structure:
 1. Numbered steps — each step is one atomic change (one file, one function, one config)
 2. Flag any step that touches a "critical constraint" from MEMORY.md
 3. If log-first is needed (from Step 5), step 1 must be: "Add [X] logging to [file/function], then render and paste output before proceeding"
+4. After the last step touching each screen, insert: `→ EVAL: run targeted check on [screen name]` — this is where in-build eval happens
 
 ### Questions / blockers
 - List anything that must be confirmed before starting (missing requirements, ambiguous scope)
@@ -87,12 +121,36 @@ Output a concise, numbered implementation plan. Use this structure:
 
 ---
 
-## Step 7 — Eval reminder
+## Step 7 — In-build eval cadence
 
-End the plan with this line (always):
+After implementing each screen or component (not at the end of the whole batch), run a targeted eval on **only that changed screen**.
 
-> **On completion:** Run `/rushcut-eval` to verify the full UI flow.
+**This step is MANDATORY and non-negotiable. E2E spec passing does NOT substitute for it.**
+E2E tests verify DOM structure and element presence. They do NOT verify visual rendering —
+broken images, invisible overlays, wrong colours, and corrupt data all pass E2E. Screenshots
+are the only way to confirm what the user will actually see.
 
+1. Launch app if not running (`mcp__chrome-devtools__list_pages` to check, `preview_start` or launch binary if needed)
+2. Navigate to the changed screen using `mcp__chrome-devtools__navigate_page`
+3. `mcp__chrome-devtools__take_screenshot` — Screenshot A: **IMMEDIATE** load state (thumbnails should be visible NOW from scan.py DB data — no pipeline wait needed)
+4. **Pipeline-dependent assets (waveforms, proxies):** If the screen has assets that require the proxy pipeline (waveforms, video playback), you MUST wait for the pipeline to complete before screenshotting them. Do NOT skip this wait and claim success.
+   - **How to wait:** Watch for the "Preview optimised" green indicator in the Trimmer status row (polls every 4s). Use `mcp__chrome-devtools__wait_for` with a selector matching that element, or poll with `mcp__chrome-devtools__take_screenshot` every 10s until waveform is visible. Maximum wait: 120s for a 3-clip project.
+   - **Thumbnails specifically:** These come from scan.py and are in the DB at load time. If thumbnails are NOT visible in Screenshot A (immediately on load), the fix has NOT worked — do not wait for the pipeline.
+5. `mcp__chrome-devtools__take_screenshot` — Screenshot B: post-pipeline state (waveform visible, video playing)
+6. Perform the primary interaction for that screen
+7. `mcp__chrome-devtools__take_screenshot` — Screenshot C: post-interaction state
+8. Check the acceptance checks defined above — mark each `[x]` or `[FAIL: reason]`
+9. `mcp__chrome-devtools__list_console_messages` — note any errors
+
+**Special rules for specific change types:**
+- **Thumbnail / image rendering fixes:** Screenshot A (immediate load) must show actual image content in pantry tiles and filmstrip, not placeholder icons or broken img elements. Thumbnails come from scan.py — they are in the DB and must be visible with zero pipeline wait. If tiles show a broken-image icon or the placeholder SVG at load time, the fix has NOT worked — do not mark as passing.
+- **Waveform / overlay changes:** Screenshot B (post-pipeline) must show the waveform visibly rendered on the TrimBar. You MUST wait for the pipeline to emit WAVEFORM_DONE events (watch for waveform texture in the TrimBar). If the TrimBar looks identical to before (no waveform texture) in Screenshot B, the fix has NOT worked.
+- **Video playback (proxy):** Screenshot B must show a video frame playing, not a spinner. Use `mcp__chrome-devtools__click` on the play button and wait before screenshotting.
+- **Colour / text changes:** Screenshot must confirm actual hex values match the design system — do not rely on Tailwind class names alone (a class can be applied and still render wrong).
+
+**Diagnose before fixing.** If a check fails: read the source, understand why, then fix. Do not guess and re-screenshot in a loop.
+
+Do NOT run `/rushcut-eval` (full smoke test) during build — that is wrapup's job.
 Do NOT run `/rushcut-wrapup` — the user will decide when to wrap.
 
 ---
@@ -103,3 +161,5 @@ Do NOT run `/rushcut-wrapup` — the user will decide when to wrap.
 - Never exceed 3 levels of nesting in bullet lists
 - If the request is a continuation of a deferred batch, re-state what was deferred and why before proposing the plan
 - If the plan has more than 8 steps, flag it and ask the user if scope should be reduced
+- **`[TRAP]` convention:** During implementation (after this plan is approved and dev begins), whenever a system bug, broken assumption, or more-effective route is discovered — things like "a previously described approach doesn't work", "a required plugin/tool is missing", "the documented API changed" — output a line prefixed `[TRAP]:` inline in the response. The wrapup skill will scan for these and route them to LEARNINGS.md, rules files, or DESIGN.md.
+- **DESIGN.md gaps:** If implementation reveals a UI pattern not covered by `docs/DESIGN.md` (new component type, animation, responsive rule), add the gap to the "DESIGN.md gap" section in the plan output AND flag it as a `[TRAP]` so wrapup extends the design system.

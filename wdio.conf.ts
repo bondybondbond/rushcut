@@ -177,6 +177,31 @@ export const config: WebdriverIO.Config = {
     await new Promise<void>((r) => setTimeout(r, 3000));
   },
 
+  // Splash screen introduces a second webview window. msedgedriver may attach to
+  // the closed splash handle (showing about:blank) instead of the main app window.
+  // Switch to whichever handle has the live app route before any spec runs.
+  before: async () => {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      try {
+        const handles = await browser.getWindowHandles();
+        for (const handle of handles) {
+          await browser.switchToWindow(handle);
+          const url = await browser.getUrl();
+          if (
+            url.includes("/upload") ||
+            url.includes("/library") ||
+            url.includes("/editor") ||
+            url.includes("/trimmer")
+          ) {
+            return;
+          }
+        }
+      } catch {}
+      await new Promise<void>((r) => setTimeout(r, 300));
+    }
+  },
+
   afterTest: async (test, _ctx, result) => {
     if (result.error) {
       const screenshotsDir = path.resolve(__dirname, "e2e", "screenshots");

@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ClipMeta, Clip, ProjectSummary } from "@/types/project";
 import { UploadZone } from "@/components/upload/UploadZone";
-import { ClipList } from "@/components/upload/ClipList";
 
 // Convert ClipMeta (from scan) to Clip (for UI display)
 function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
@@ -15,27 +14,25 @@ function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
     sort_order: existingCount + idx,
     thumbnail_data: meta.thumbnail_data ?? null,
     created_at: new Date().toISOString(),
-    // Review fields — defaults until Review screen sets them
+    // Review fields — defaults until Trimmer screen sets them
     in_ms: null,
     out_ms: null,
     focal_x: null,
     focal_y: null,
     zoom_mode: null,
-    include: 1,
+    include: 0, // explicit-add model: clips start excluded; user adds in Trimmer
     proxy_path: null,
   };
 }
 
 export default function Upload() {
   const navigate = useNavigate();
-  const [view, setView] = useState<"home" | "clips">("home");
   const [scanning, setScanning] = useState(false);
   // knownCount: exact clip count (file picker) or null (folder scan — count unknown until done)
   const [knownCount, setKnownCount] = useState<number | null>(null);
   const [visibleSkeletons, setVisibleSkeletons] = useState(0);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [folderPath, setFolderPath] = useState<string | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [showNameModal, setShowNameModal] = useState(false);
   const [pendingName, setPendingName] = useState("");
@@ -95,11 +92,13 @@ export default function Upload() {
         if (metas.length === 0) {
           setError("No valid video files found in selection.");
         } else {
-          setClips((prev) => {
-            const newClips = metas.map((m, i) => metaToClip(m, i, prev.length));
-            return [...prev, ...newClips];
-          });
-          setView("clips");
+          const newClips = metas.map((m, i) => metaToClip(m, i));
+          setClips(newClips);
+          // Derive name from the folder containing the first file
+          const parts = metas[0].local_path.split(/[/\\]/).filter(Boolean);
+          const suggested = parts.length >= 2 ? parts[parts.length - 2] : "My Project";
+          setPendingName(suggested);
+          setShowNameModal(true);
         }
       } catch (e) {
         setError(`Probe failed: ${e}`);
@@ -115,41 +114,24 @@ export default function Upload() {
     setError(null);
     setKnownCount(null);
     setScanning(true);
-    setFolderPath(path);
     setClips([]);
 
     try {
       const metas = await invoke<ClipMeta[]>("scan_folder", { folderPath: path });
       if (metas.length === 0) {
         setError("No video files found in that folder (MP4, MOV, MKV).");
-        setFolderPath(null);
       } else {
         setClips(metas.map((m, i) => metaToClip(m, i)));
-        setView("clips");
+        // Derive name from folder path
+        const suggested = path.split(/[/\\]/).filter(Boolean).pop() ?? "My Project";
+        setPendingName(suggested);
+        setShowNameModal(true);
       }
     } catch (e) {
       setError(`Scan failed: ${e}`);
-      setFolderPath(null);
     } finally {
       setScanning(false);
     }
-  }
-
-  function deriveProjectName(): string {
-    if (folderPath) {
-      return folderPath.split(/[/\\]/).filter(Boolean).pop() ?? "My Project";
-    }
-    if (clips.length > 0) {
-      const parts = clips[0].local_path.split(/[/\\]/).filter(Boolean);
-      if (parts.length >= 2) return parts[parts.length - 2];
-    }
-    return "My Project";
-  }
-
-  // Intercept point for ClipList's onContinue — show name modal
-  function handleContinueClick() {
-    setPendingName("");
-    setShowNameModal(true);
   }
 
   async function handleContinue(name: string) {
@@ -175,22 +157,14 @@ export default function Upload() {
         clips: orderedMetas,
       });
 
-      navigate(`/review/${projectId}`);
+      navigate(`/trimmer/${projectId}`);
     } catch (e) {
       setError(`Failed to create project: ${e}`);
       setCreating(false);
     }
   }
 
-  function handleDelete(clipId: string) {
-    setClips((prev) => prev.filter((c) => c.id !== clipId));
-  }
-
-  function handleReorder(reordered: Clip[]) {
-    setClips(reordered);
-  }
-
-  // ----- Scanning overlay (shown in any view while scan is in progress) -----
+  // ----- Scanning overlay (shown while scan is in progress) -----
   if (scanning) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
@@ -198,7 +172,7 @@ export default function Upload() {
           {/* Spinner + label */}
           <div data-testid="scan-spinner" className="flex items-center gap-3">
             <span className="inline-block w-5 h-5 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            <span className="text-[#a3a3a3] text-sm">Scanning your clips...</span>
+            <span className="text-[#e5e5e5] text-sm">Scanning your clips...</span>
           </div>
           {/* Progressive skeleton grid */}
           {visibleSkeletons > 0 && (
@@ -227,171 +201,129 @@ export default function Upload() {
   }
 
   // ----- Home view -----
-  if (view === "home") {
-    return (
-      <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
-        <div className="max-w-4xl mx-auto space-y-10 pt-8">
-          {/* Wordmark */}
-          <div className="text-center">
-            <h1 className="text-4xl font-bold text-[#e5e5e5] tracking-tight">RushCut</h1>
-            <p className="text-[#a3a3a3] text-sm mt-2">Turn raw clips into a film in minutes.</p>
-          </div>
-
-          {/* Two-card layout */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            {/* Left: Start New Project */}
-            <div className="border border-[#FF8A65]/40 rounded-xl p-6 space-y-5 bg-[#FF8A65]/5">
-              <div className="space-y-1">
-                <p className="text-lg font-semibold text-[#e5e5e5]">Start New Project</p>
-                <p className="text-sm text-[#a3a3a3]">Create a film in minutes.</p>
-              </div>
-              <div className="space-y-3">
-                <button
-                  data-testid="btn-choose-folder"
-                  onClick={handlePickFolder}
-                  className="w-full px-4 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors text-sm"
-                >
-                  Choose Folder
-                </button>
-                <button
-                  data-testid="btn-add-files"
-                  onClick={handlePickFiles}
-                  className="w-full px-4 py-2.5 border border-white/30 text-[#e5e5e5] font-semibold rounded-md hover:bg-white/10 transition-colors text-sm"
-                >
-                  Add Files
-                </button>
-              </div>
-              <UploadZone onFolderPath={scanFolder} disabled={false} />
-              <p className="text-xs text-[#a3a3a3]">
-                Output: 1080p &middot; <span className="text-[#C9A96E]">4K coming soon</span>
-              </p>
-            </div>
-
-            {/* Right: Resume a Project */}
-            <div className="border border-[#C9A96E]/40 rounded-xl p-6 space-y-4 bg-[#C9A96E]/5">
-              <div className="space-y-1">
-                <p className="text-lg font-semibold text-[#e5e5e5]">Resume a Project</p>
-                <p className="text-sm text-[#a3a3a3]">Pick up where you left off.</p>
-              </div>
-              {loadingRecents ? (
-                <p className="text-[#a3a3a3] text-sm">Loading...</p>
-              ) : recentProjects.length === 0 ? (
-                <p className="text-[#a3a3a3] text-sm">No projects yet.</p>
-              ) : (
-                <div className="space-y-2">
-                  {recentProjects.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => navigate(`/editor/${p.id}`)}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-colors text-left"
-                    >
-                      <div className="w-10 h-8 rounded bg-[#1a1a1a] border border-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
-                        {p.first_clip_thumbnail ? (
-                          <img src={p.first_clip_thumbnail} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <svg className="w-4 h-4 text-[#a3a3a3]" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z" />
-                          </svg>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-[#e5e5e5] text-sm font-medium truncate">{p.name}</p>
-                        <p className="text-[#a3a3a3] text-xs">
-                          {new Date(p.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
-                          {" · "}{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}
-                        </p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <button
-                onClick={() => navigate("/library")}
-                className="text-xs text-[#a3a3a3] hover:text-[#C9A96E] transition-colors"
-              >
-                View all projects -&gt;
-              </button>
-            </div>
-          </div>
-
-          {error && <p data-testid="upload-error" className="text-red-400 text-sm">{error}</p>}
-        </div>
-      </div>
-    );
-  }
-
-  // ----- Clips view -----
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] p-8">
-      <div className="max-w-3xl mx-auto space-y-8">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold text-[#e5e5e5]">New Project</h1>
+      <div className="max-w-4xl mx-auto space-y-10 pt-8">
+        {/* Wordmark */}
+        <div className="text-center">
+          <h1 className="text-4xl font-bold text-[#e5e5e5] tracking-tight">RushCut</h1>
+          <p className="text-[#e5e5e5]/60 text-sm mt-2">Turn raw clips into a film in minutes.</p>
+        </div>
+
+        {/* Two-card layout */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          {/* Left: Start New Project */}
+          <div className="border border-[#FF8A65]/40 rounded-xl p-6 space-y-5 bg-[#FF8A65]/5">
+            <div className="space-y-1">
+              <p className="text-lg font-semibold text-[#e5e5e5]">Start New Project</p>
+              <p className="text-sm text-[#e5e5e5]/60">Create a film in minutes.</p>
+            </div>
+            <div className="space-y-3">
+              <button
+                data-testid="btn-choose-folder"
+                onClick={handlePickFolder}
+                className="w-full px-4 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors text-sm"
+              >
+                Choose Folder
+              </button>
+              <button
+                data-testid="btn-add-files"
+                onClick={handlePickFiles}
+                className="w-full px-4 py-2.5 border border-white/30 text-[#e5e5e5] font-semibold rounded-md hover:bg-white/10 transition-colors text-sm"
+              >
+                Add Files
+              </button>
+            </div>
+            <UploadZone onFolderPath={scanFolder} disabled={false} />
+            <p className="text-xs text-[#e5e5e5]/50">
+              Output: 1080p &middot; <span className="text-[#C9A96E]">4K coming soon</span>
+            </p>
           </div>
-          <div className="flex items-center gap-3">
+
+          {/* Right: Resume a Project */}
+          <div className="border border-[#C9A96E]/40 rounded-xl p-6 space-y-4 bg-[#C9A96E]/5">
+            <div className="space-y-1">
+              <p className="text-lg font-semibold text-[#e5e5e5]">Resume a Project</p>
+              <p className="text-sm text-[#e5e5e5]/60">Pick up where you left off.</p>
+            </div>
+            {loadingRecents ? (
+              <p className="text-[#e5e5e5]/60 text-sm">Loading...</p>
+            ) : recentProjects.length === 0 ? (
+              <p className="text-[#e5e5e5]/60 text-sm">No projects yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {recentProjects.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => navigate(`/trimmer/${p.id}`)}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-colors text-left"
+                  >
+                    <div className="w-10 h-8 rounded bg-[#1a1a1a] border border-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
+                      {p.first_clip_thumbnail ? (
+                        <img src={p.first_clip_thumbnail} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <svg className="w-4 h-4 text-[#e5e5e5]/60" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z" />
+                        </svg>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[#e5e5e5] text-sm font-medium truncate">{p.name}</p>
+                      <p className="text-[#e5e5e5]/50 text-xs">
+                        {new Date(p.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                        {" · "}{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}
+                      </p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
             <button
-              data-testid="btn-add-files"
-              onClick={handlePickFiles}
-              disabled={creating}
-              className="px-4 py-2 border border-white/30 text-[#e5e5e5] text-sm font-medium rounded-md hover:bg-white/10 transition-colors disabled:opacity-40"
+              onClick={() => navigate("/library")}
+              className="text-xs text-[#e5e5e5]/50 hover:text-[#C9A96E] transition-colors"
             >
-              + Add Files
-            </button>
-            <button
-              onClick={() => { setView("home"); setClips([]); setFolderPath(null); setError(null); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-[#C5FFF9]/40 text-[#C5FFF9] text-sm font-medium rounded-md hover:bg-[#C5FFF9]/10 transition-colors"
-            >
-              &#8592; Back
+              View all projects -&gt;
             </button>
           </div>
         </div>
 
         {error && <p data-testid="upload-error" className="text-red-400 text-sm">{error}</p>}
-
-        <ClipList
-          clips={clips}
-          onDelete={handleDelete}
-          onReorder={handleReorder}
-          onContinue={handleContinueClick}
-        />
-
         {creating && (
-          <p className="text-[#a3a3a3] text-sm text-center">Creating project...</p>
-        )}
-
-        {/* Name modal */}
-        {showNameModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-            <div className="bg-[#111111] border border-white/15 rounded-xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
-              <h2 className="text-lg font-semibold text-[#e5e5e5]">Name your project</h2>
-              <input
-                data-testid="input-project-name-modal"
-                type="text"
-                autoFocus
-                placeholder="e.g. Dolomites Trip, Summer 2026"
-                value={pendingName}
-                onChange={(e) => setPendingName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && pendingName.trim().length >= 2) {
-                    handleContinue(pendingName.trim());
-                  }
-                  if (e.key === "Escape") setShowNameModal(false);
-                }}
-                className="w-full bg-white/5 border border-white/20 rounded-md px-3 py-2.5 text-[#e5e5e5] placeholder:text-[#555555] focus:outline-none focus:border-[#C9A96E]/60"
-              />
-              <button
-                data-testid="btn-create-project"
-                onClick={() => handleContinue(pendingName.trim())}
-                disabled={pendingName.trim().length < 2}
-                className="w-full px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Create Project
-              </button>
-            </div>
-          </div>
+          <p className="text-[#e5e5e5]/60 text-sm text-center">Creating project...</p>
         )}
       </div>
+
+      {/* Name modal — appears directly after scan completes */}
+      {showNameModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-[#111111] border border-white/15 rounded-xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+            <h2 className="text-lg font-semibold text-[#e5e5e5]">Name your project</h2>
+            <input
+              data-testid="input-project-name-modal"
+              type="text"
+              autoFocus
+              placeholder="e.g. Dolomites Trip, Summer 2026"
+              value={pendingName}
+              onChange={(e) => setPendingName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && pendingName.trim().length >= 2) {
+                  handleContinue(pendingName.trim());
+                }
+                if (e.key === "Escape") setShowNameModal(false);
+              }}
+              className="w-full bg-white/5 border border-white/20 rounded-md px-3 py-2.5 text-[#e5e5e5] placeholder:text-[#555555] focus:outline-none focus:border-[#C9A96E]/60"
+            />
+            <button
+              data-testid="btn-create-project"
+              onClick={() => handleContinue(pendingName.trim())}
+              disabled={pendingName.trim().length < 2}
+              className="w-full px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Create Project
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

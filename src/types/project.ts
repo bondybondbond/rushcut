@@ -32,6 +32,7 @@ export interface Clip extends ClipMeta {
   zoom_mode: string | null;     // "gentle" | "medium" | "tight"
   include: number;              // 1 = include, 0 = skip
   proxy_path: string | null;
+  waveform_data: string | null;
 }
 
 export interface ProjectWithClips {

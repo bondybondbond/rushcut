@@ -72,44 +72,52 @@ Review.tsx: back button `ml-10` clears hamburger, proxy pending badge removed, c
 > **Architecture decision (2026-04-05):** Replace the single Review + Editor flow with discrete task-based screens. Each screen = one decision type. Screens: Upload → Trimmer → Transitions → Sound → Render.
 > **Assembly model:** Explicit add — user adds clips to film (include starts 0). All-IN default changes when Batch 15a ships.
 
-### 15a — Trimmer screen (**NEXT**)
+### 15a — Trimmer screen (**DONE 2026-04-05**)
 
-New route `/trimmer/:projectId`. Replace `/review/:projectId`.
+`/trimmer/:projectId` route, Media Pantry (2-col grid, HTML5 DnD), video player (click-to-play), TrimBar (floating handle labels, dark surface, white playhead, `currentMs` seek), FilmStrip (drag-to-add), StepNav. include=0 fix at INSERT. Staging screen removed. 26/26 E2E PASS.
 
-**Layout (Design A — pantry grid):**
-- **Left — Media Pantry:** 2-col thumbnail grid of all clips; green badge on clips in film; click selects clip into centre preview
-- **Centre — Video player:** paused by default; play/pause + volume controls; per-clip trim bar with draggable handles below player; handles seek video to that point on drag; `in_ms`/`out_ms` saved on handle release via `update_clip_review_cmd`
-- **Right panel:** Prev/Next clip nav; "Add to film" CTA (sets `include=1`, lights up green badge in pantry); "Next: Transitions →" button (navigates when ≥1 clip in film)
-- **Bottom — Film So Far:** horizontal scrollable strip of in-film clips in order; click plays trimmed version in preview; red bin sets `include=0`
+### 15b — Persistent step nav (**DONE 2026-04-05**)
 
-**Assembly model change (this batch):**
-- `include` default for new clips = 0 (change DB default or set in scan path)
-- "Add to film" = the primary action (not Skip)
-- `start_job` already filters `include==0` — no pipeline change needed
+`StepNav.tsx` component — Upload · Trim · Transitions · Sound · Render. Active step peach, completed steps clickable, pending steps dimmed. Shipped as part of 15a.
+
+### 15c — Trimmer Bug Fixes + UX Polish (**NEXT**)
+
+Six items from founder review session (2026-04-23):
+
+**Bugs:**
+
+- **C1 — Broken thumbnails:** Clip thumbnails show as broken images in both Media Pantry and FilmStrip. `proxy.py` generates H.264 proxies but no poster frames. Fix: extract one frame per clip via FFmpeg (`-ss 2 -vframes 1 thumbnail.jpg`) in `proxy.py` during proxy gen; emit `THUMBNAIL_DONE:clip_id:base64`; store in new `thumbnail_data TEXT` column on `clips` (pos 18, ahead of waveform at 19). Pantry tiles and FilmStrip use `<img src={clip.thumbnail_data}>`.
+- **C2 — Text hidden under FilmStrip:** Text between TrimBar and the bottom FilmStrip drawer is occluded by the drawer's z-index. Fix: audit layout stacking; add padding or restructure so TrimBar hint text is always visible.
+- **C3 — "In Film" blocks multiple cuts:** After adding a clip, the Add button reads "In Film" and the user cannot add further trim cuts from the same source. Fix: remove "In Film" button state entirely (the green tick in the pantry is sufficient). Always show "Add to Film". Per-clip multiple-cut model: each "add" creates a new row in the film strip with the current `in_ms`/`out_ms` snapshot — same source path, distinct cut. DB supports multiple rows per source clip already (no unique constraint on `file_path`).
+
+**UX improvements:**
+
+- **C4 — TrimBar: click = seek, drag handles = trim only:** Currently any click on the TrimBar moves the nearest handle. New behaviour: clicking anywhere on the track seeks the video to that position (`video.currentTime = clickPct * durationMs / 1000`). Trim handles only move when the user explicitly drags them. The playhead should be the visual target for clicks — make it clear the track is a seek surface.
+- **C5 — Thicker playhead:** White playhead line is `w-0.5` (2px). Increase to `w-1` (4px) for visibility, keep `bg-white/80`.
+- **C6 — Resizable video preview:** Add a drag handle on the bottom edge of the video container. Dragging it up/down adjusts a `videoHeight` state (CSS `height` on the video wrapper, min 200px, max 70vh). No library needed — `onMouseDown` on the handle div, `mousemove`/`mouseup` on `window`. This matches the DaVinci "drag timeline rail to resize preview" pattern.
+
+**Deferred from 15a Group C — Waveform:**
+
+- **C7 — Waveform in TrimBar:** `proxy.py` emits `showwavespic` PNG as base64 (`WAVEFORM_DONE:clip_id:base64`). New `waveform_data TEXT` column (pos 19, after thumbnail). TrimBar renders `<img z-2 opacity-40>` below selected region. FilmStrip gets a timecode ruler above the strip.
 
 **Gate:**
-- [ ] `/trimmer/:projectId` route exists; Upload navigates here
-- [ ] Media Pantry shows thumbnails; green badge on in-film clips
-- [ ] Video player is paused by default; play/pause + volume work
-- [ ] Trim bar handles are draggable; video seeks on drag; saves on release
-- [ ] "Add to film" sets include=1; clip appears in Film So Far
-- [ ] Film So Far bin sets include=0; clip disappears from strip
-- [ ] "Next: Transitions →" is active only when ≥1 clip in film
-- [ ] Old `/review/:projectId` route removed or redirects
+- [ ] Thumbnails visible in Media Pantry tiles and FilmStrip (not broken)
+- [ ] TrimBar hint text / any text between TrimBar and FilmStrip is not occluded
+- [ ] "In Film" state removed; Add button always active; multiple cuts from same source create distinct filmstrip entries
+- [ ] Click on TrimBar track seeks video; handles only move on drag
+- [ ] Playhead is visibly thicker (4px)
+- [ ] Video preview height is user-resizable via drag handle
+- [ ] (C7 stretch) Waveform renders as dim overlay in TrimBar
 
-### 15b — Persistent step nav
-
-Top navigation bar showing: Upload · Trimmer · Transitions · Sound · Render. Active step highlighted (peach). Completed steps clickable (navigate back). Pending steps dimmed.
-
-### 15c — Transitions screen (`/transitions/:projectId`)
+### 15e — Transitions screen (`/transitions/:projectId`)
 
 Current Editor transition picker extracted into a standalone screen. Options: None / Crossfade / Dip to black. Preview of selected transition (CSS or short proxy clip).
 
-### 15d — Sound screen (`/sound/:projectId`)
+### 15f — Sound screen (`/sound/:projectId`)
 
 Current Editor music settings extracted: music mood selector, volume preset chips (Subtle/Balanced/Prominent). Music preview (30s loop from selected track).
 
-### 15e — Render screen (`/render/:projectId`)
+### 15g — Render screen (`/render/:projectId`)
 
 Merges the current Editor "Start Rendering" flow and Output page into one screen. Shows summary of decisions (clip count, duration, music, transition). One "Render Film" CTA. Progress bar + output playback on completion.
 

@@ -2,6 +2,13 @@
 
 Applies when working on `pipeline/**`, `src-tauri/src/lib.rs` (pipeline spawn), or `src/pages/Output.tsx`.
 
+## Proxy pipeline rules
+
+- **`generate_proxy()` timeout must be 600s** — 120s is too short for 4K HEVC clips > 60s at software decode. FFmpeg killed by timeout leaves a corrupt partial file.
+- **Validate existing proxies before skipping re-encode** — `Path(proxy_wsl).exists()` is not sufficient. Run `ffprobe -v quiet -show_format <file>` and check `returncode == 0`. A missing moov atom (FFmpeg killed mid-write) makes the file unplayable in WebView2 but `Path.exists()` still returns True. See `is_valid_proxy()` in `proxy.py`.
+- **proxy.py manifest /tmp path must be a WSL path** — writing the manifest to Git Bash `/tmp/file.json` makes it invisible to WSL (`/tmp/` is a different filesystem). Always write manifests to a Windows path (`%TEMP%\rushcut\*.json`) and reference as `/mnt/c/Users/.../AppData/Local/Temp/rushcut/file.json` in WSL.
+- **Proxy re-encode order: thumbnail → waveform → encode** — extract thumbnail and waveform from source first (fast: ~2s each), then run the slow H.264 encode. This ensures the TrimBar gets visual data within ~5s of proxy gen starting, regardless of how long the encode takes.
+
 ## Sync / performance fixes — logs first
 
 Before writing any A/V sync fix or normalise speed fix, run a real render and read the `[sync-check]` log output. Identify WHERE drift enters (normalise output? post-trim? concat?) before touching code. `aresample=async` worsens DJI monotonic drift — see LEARNINGS.md. WSL2 normalise is I/O-bound; ProcessPoolExecutor makes it slower — see LEARNINGS.md.
