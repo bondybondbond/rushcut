@@ -85,9 +85,15 @@ For every UI element proposed (new component, modified screen, copy change):
   - Chip active accent: `#99B3FF` (blue); card colour picker ring: `#FF8A65` (peach only)
   - Progress bars: always green `#22c55e`
 
-### Acceptance checks (define before building)
+### Acceptance checks (define before building — user must confirm)
 
-For each screen or component being changed, list concrete binary pass/fail checks. These drive the targeted eval during build — not a final checklist.
+**MANDATORY:** Before writing a single line of code, ask the user:
+
+> "Before I start — what does success look like for you? Describe what you'd need to see (or interact with) to call this done. I'll use your description to set the acceptance criteria and take screenshots as proof when I'm finished."
+
+Wait for the user's response. Do not proceed to the implementation plan until you have it.
+
+From the user's description, derive concrete binary pass/fail checks. These drive the targeted eval during build — not a final checklist.
 
 Format: `[ ] Screen/component — what must be true`
 
@@ -149,6 +155,18 @@ are the only way to confirm what the user will actually see.
 - **Colour / text changes:** Screenshot must confirm actual hex values match the design system — do not rely on Tailwind class names alone (a class can be applied and still render wrong).
 
 **Diagnose before fixing.** If a check fails: read the source, understand why, then fix. Do not guess and re-screenshot in a loop.
+
+### Step 7.9 — Show screenshots to user for sign-off (MANDATORY)
+
+After all acceptance checks are marked and screenshots A/B/C are taken, **show the screenshots to the user directly**. Do not summarise or describe them — display the actual images. Then state:
+
+- Which acceptance checks passed `[x]`
+- Which failed `[FAIL: reason]`
+- Whether this constitutes a pass against the user's original success description
+
+Then explicitly ask: **"Does this match what you described as success? If yes, I'll proceed to wrapup. If no, describe what's still missing."**
+
+**This step is non-negotiable. Completion is NOT declared until the user confirms the screenshots show success.** If the user says something is wrong or missing, treat it as a `[FAIL]` on the relevant check and iterate — do not move to wrapup.
 
 Do NOT run `/rushcut-eval` (full smoke test) during build — that is wrapup's job.
 Do NOT run `/rushcut-wrapup` — the user will decide when to wrap.
