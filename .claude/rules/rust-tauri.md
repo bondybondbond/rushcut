@@ -39,6 +39,26 @@ For large Rust files (`lib.rs`, `db.rs`), prefer Serena over full-file reads:
 - `mcp__serena__find_symbol` with `include_body=true` — read one function only
 - `mcp__serena__find_referencing_symbols` — find all callers before refactoring
 
+## Managed state + async spawn
+
+`tauri::State<'_, T>` is not `Send` and cannot be moved into `tauri::async_runtime::spawn(async move { ... })`. Pattern when `T = Arc<Mutex<...>>`:
+
+```rust
+// In run() builder, before .setup():
+.manage(Arc::new(Mutex::new(HashSet::<String>::new())))
+
+// In the command:
+async fn my_cmd(state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>, ...) {
+    let guard = Arc::clone(&*state);  // clone before spawn — State is not Send
+    tauri::async_runtime::spawn(async move {
+        do_work().await;
+        guard.lock().unwrap().remove(&id);  // cleanup
+    });
+}
+```
+
+`.manage()` must appear **before** `.setup()` in the builder chain (not after `.invoke_handler()`).
+
 ## Cargo / PATH
 
 After `winget install Rustlang.Rustup`, `cargo` is only available in new terminals. Existing shells: `$env:PATH += ";$env:USERPROFILE\.cargo\bin"`.

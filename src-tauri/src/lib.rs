@@ -1,14 +1,17 @@
 mod db;
 
 use db::{
-    delete_project, get_job, get_project_with_clips, insert_clip, insert_job, insert_project,
-    list_projects, rename_project, reorder_clips, update_clip_proxy, update_clip_review,
+    delete_project, get_job, get_project_output_paths, get_project_with_clips, insert_clip,
+    insert_job, insert_project, list_projects, rename_project, reorder_clips, update_clip_proxy,
+    update_clip_review, update_clip_thumbnail, update_clip_waveform,
     update_job_analysis, update_job_done, update_job_error, update_job_progress, Clip, ClipMeta,
     Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
-use tauri::{AppHandle, Emitter};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -92,8 +95,14 @@ fn scan_folder(folder_path: String) -> Result<Vec<ClipMeta>, String> {
 }
 
 /// Delete a project and all associated clips and jobs.
+/// Also removes rendered output MP4 files from disk (best-effort; missing files are silently ignored).
 #[tauri::command]
 fn delete_project_cmd(project_id: String) -> Result<(), String> {
+    // Collect output file paths before deleting DB rows
+    let paths = get_project_output_paths(&project_id).unwrap_or_default();
+    for p in &paths {
+        let _ = std::fs::remove_file(p); // best-effort: file may already be gone
+    }
     delete_project(&project_id).map_err(|e| format!("Failed to delete project: {}", e))
 }
 
@@ -196,8 +205,9 @@ fn create_project(name: String, clips: Vec<ClipMeta>) -> Result<String, String> 
             focal_x: None,
             focal_y: None,
             zoom_mode: None,
-            include: 1,
+            include: 0, // explicit-add model: insert_clip SQL enforces 0; this matches for clarity
             proxy_path: None,
+            waveform_data: None,
         };
         insert_clip(&clip).map_err(|e| format!("DB error (insert clip {}): {}", meta.filename, e))?;
     }
@@ -419,20 +429,37 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
 /// Kick off H.264 720p proxy generation for all un-proxied clips in a project.
 /// Returns immediately; proxies are written in a background WSL task.
 #[tauri::command]
-async fn generate_proxies_cmd(app: AppHandle, project_id: String) -> Result<(), String> {
+async fn generate_proxies_cmd(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>,
+    project_id: String,
+) -> Result<(), String> {
+    // Concurrency guard: only one proxy generation per project at a time.
+    // Upload.tsx fires this immediately after create_project; Trimmer.tsx also fires it as a
+    // safety net on mount. Without this guard, both calls spawn concurrent WSL FFmpeg processes
+    // that race to write the same proxy .mp4, producing a corrupt file (missing moov atom).
+    {
+        let mut set = state.lock().unwrap();
+        if set.contains(&project_id) {
+            eprintln!("[proxy] already running for project {}, skipping duplicate call", project_id);
+            return Ok(());
+        }
+        set.insert(project_id.clone());
+    }
+
     let project_data = get_project_with_clips(&project_id)
         .map_err(|e| format!("DB error (get clips): {}", e))?;
 
-    // Filter to included clips that don't have a proxy yet.
-    // Skipped clips (include==0) get no proxy — if user later re-includes them,
-    // on-demand proxy generation (Batch 14a) will handle it.
-    let pending: Vec<_> = project_data
-        .clips
-        .iter()
-        .filter(|c| c.include != 0 && c.proxy_path.is_none())
-        .collect();
+    // Include ALL clips: proxies needed for scrubbing, thumbnails/waveforms for UI.
+    // proxy.py skips proxy encode if file already exists (fast path).
+    // needs_thumbnail is ALWAYS true — scan.py thumbnails are unreliable (corrupt for HEVC).
+    //   proxy.py always overwrites with a clean FFmpeg-extracted JPEG from the proxy.
+    // needs_waveform skips if waveform already extracted.
+    let all_clips = &project_data.clips;
 
-    if pending.is_empty() {
+    if all_clips.is_empty() {
+        // Nothing to do — remove from in-progress set before returning.
+        state.lock().unwrap().remove(&project_id);
         return Ok(());
     }
 
@@ -448,9 +475,11 @@ async fn generate_proxies_cmd(app: AppHandle, project_id: String) -> Result<(), 
     let manifest = serde_json::json!({
         "project_id": project_id,
         "proxy_dir": proxy_wsl_dir,
-        "clips": pending.iter().map(|c| serde_json::json!({
+        "clips": all_clips.iter().map(|c| serde_json::json!({
             "id": c.id,
             "local_path": c.local_path,
+            "needs_thumbnail": true,
+            "needs_waveform": c.waveform_data.is_none(),
         })).collect::<Vec<_>>(),
     });
     let temp_dir = std::env::temp_dir().join("rushcut");
@@ -461,8 +490,13 @@ async fn generate_proxies_cmd(app: AppHandle, project_id: String) -> Result<(), 
         .map_err(|e| format!("Failed to write proxy manifest: {}", e))?;
     let wsl_manifest = win_to_wsl(&manifest_path.to_string_lossy());
 
+    // Clone the Arc so it can be moved into the async spawn (tauri::State is not Send).
+    let guard = Arc::clone(&*state);
+    let pid = project_id.clone();
     tauri::async_runtime::spawn(async move {
-        run_proxy_gen(app, project_id, wsl_manifest).await;
+        run_proxy_gen(app, pid.clone(), wsl_manifest).await;
+        // Release the in-progress slot so subsequent calls (e.g. re-opening the project) work.
+        guard.lock().unwrap().remove(&pid);
     });
 
     Ok(())
@@ -514,6 +548,35 @@ async fn run_proxy_gen(app: AppHandle, project_id: String, wsl_manifest_path: St
                     "clipId": clip_id,
                     "winPath": win_path,
                 }));
+            }
+        } else if let Some(rest) = line.strip_prefix("THUMBNAIL_DONE:clip_id=") {
+            // Format: THUMBNAIL_DONE:clip_id=<id>,data=<base64>
+            // Base64 alphabet contains no commas, so find(",data=") is unambiguous.
+            if let Some(comma_idx) = rest.find(",data=") {
+                let clip_id = &rest[..comma_idx];
+                let data = &rest[comma_idx + 6..];
+                if !clip_id.is_empty() && !data.is_empty() {
+                    let _ = update_clip_thumbnail(clip_id, data);
+                    let _ = app.emit("thumbnail-progress", json!({
+                        "projectId": project_id,
+                        "clipId": clip_id,
+                        "thumbnailData": data,
+                    }));
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("WAVEFORM_DONE:clip_id=") {
+            // Format: WAVEFORM_DONE:clip_id=<id>,data=<base64>
+            if let Some(comma_idx) = rest.find(",data=") {
+                let clip_id = &rest[..comma_idx];
+                let data = &rest[comma_idx + 6..];
+                if !clip_id.is_empty() && !data.is_empty() {
+                    let _ = update_clip_waveform(clip_id, data);
+                    let _ = app.emit("waveform-progress", json!({
+                        "projectId": project_id,
+                        "clipId": clip_id,
+                        "waveformData": data,
+                    }));
+                }
             }
         } else if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
             let pct: i64 = pct_str.trim().parse().unwrap_or(0);
@@ -572,11 +635,53 @@ fn wsl_to_win(path: &str) -> String {
 // App entry point
 // ---------------------------------------------------------------------------
 
+fn create_splash_window(app: &tauri::App) {
+    // In dev mode Vite serves the file; in production it comes from the app bundle.
+    let url = if tauri::is_dev() {
+        WebviewUrl::External(
+            url::Url::parse("http://localhost:1420/splashscreen.html")
+                .expect("valid splash URL"),
+        )
+    } else {
+        WebviewUrl::App("splashscreen.html".into())
+    };
+
+    let _ = WebviewWindowBuilder::new(app, "splashscreen", url)
+        .title("")
+        .inner_size(480.0, 280.0)
+        .decorations(false)
+        .center()
+        .resizable(false)
+        .always_on_top(true)
+        .build();
+}
+
+fn close_splash(app: &tauri::App) {
+    // Main window is always visible and has been loading in the background.
+    // Just close the splash overlay -- no need to show/hide the main window.
+    if let Some(w) = app.get_webview_window("splashscreen") {
+        w.close().ok();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Tracks which project IDs currently have a proxy generation in progress.
+        // Prevents two concurrent WSL FFmpeg processes writing to the same proxy file
+        // when Upload.tsx and Trimmer.tsx both call generate_proxies_cmd.
+        .manage(Arc::new(Mutex::new(HashSet::<String>::new())))
         .setup(|app| {
-            db::init(app.handle())?;
+            create_splash_window(app);
+
+            app.emit("splash-step", "db").ok();
+
+            if let Err(e) = db::init(app.handle()) {
+                close_splash(app);
+                return Err(e);
+            }
+
+            app.emit("splash-step", "wsl").ok();
 
             let wsl_ok = std::process::Command::new("wsl")
                 .arg("--status")
@@ -591,6 +696,10 @@ pub fn run() {
                 app.emit("wsl-check-failed", ()).ok();
             }
 
+            app.emit("splash-step", "done").ok();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            close_splash(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

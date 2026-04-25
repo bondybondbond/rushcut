@@ -23,6 +23,17 @@ export default function Trimmer() {
   const [filmActiveId, setFilmActiveId] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(0.8);
+  // True once the video element fires onCanPlay (browser confirmed it can play the current src).
+  // Resets on clip change. Used to enable/disable the play button and hide the proxy badge.
+  // No videoWidth guard here -- onCanPlay is sufficient; the videoWidth > 0 guard was too strict
+  // and prevented enabling play even when HEVC decoded successfully with the HEVC extension.
+  const [videoCanPlay, setVideoCanPlay] = useState(false);
+  // True when the video element fires onError (e.g. HEVC not decodable without Video Extension,
+  // or corrupt partial proxy). Hides the video element and shows the thumbnail img fallback.
+  // Resets to false on clip change so a freshly-generated proxy can load cleanly.
+  const [sourceFailed, setSourceFailed] = useState(false);
+  // Tracks the proxy_path that was loaded last time paintFrame ran, to detect new proxy arrivals.
+  const lastPaintedProxy = useRef<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   // isSaving guard — early-return if already saving to prevent double-save
@@ -135,25 +146,42 @@ export default function Trimmer() {
   // Paint the first frame whenever clip or proxy changes.
   // WebView2 renders black if currentTime stays at 0 on a paused video.
   // Fix: play() forces a decode + paint; we pause immediately after.
-  // Waits for loadeddata if the video hasn't buffered yet (readyState < 2).
+  // Only fires when proxy_path is set -- source video (HEVC without extension) may not decode;
+  // showing nothing is fine (poster thumbnail covers), no play/pause flicker needed.
+  // When proxy arrives (including H.264 source used directly), paint the IN point and
+  // auto-play so the user does not need to click play after waiting for the proxy.
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !selectedClip?.proxy_path) return;
 
-    function paintFrame() {
+    const isNewProxy = lastPaintedProxy.current !== selectedClip.proxy_path;
+    lastPaintedProxy.current = selectedClip.proxy_path;
+
+    function paintAndPlay() {
       if (!v) return;
       const target = inMs / 1000;
-      v.currentTime = target > 0 ? target : 0.05; // avoid exact 0 — some H.264 proxies paint black at PTS 0
-      v.play()
-        .then(() => { v.pause(); v.currentTime = inMs / 1000; })
-        .catch(() => { v.currentTime = inMs / 1000; }); // autoplay blocked — seek is best-effort
+      v.currentTime = target > 0 ? target : 0.05; // avoid exact 0 -- some H.264 proxies paint black at PTS 0
+      if (isNewProxy) {
+        // Auto-play when proxy first arrives so user doesn't need to click after waiting.
+        v.play()
+          .then(() => setIsPlaying(true))
+          .catch(() => {
+            // Autoplay blocked -- at least seek to the IN point so poster is replaced.
+            v.currentTime = inMs / 1000;
+          });
+      } else {
+        // Clip change on existing proxy -- paint first frame, stay paused.
+        v.play()
+          .then(() => { v.pause(); v.currentTime = inMs / 1000; })
+          .catch(() => { v.currentTime = inMs / 1000; });
+      }
     }
 
     if (v.readyState >= 2) {
-      paintFrame();
+      paintAndPlay();
     } else {
-      v.addEventListener("loadeddata", paintFrame, { once: true });
-      return () => v.removeEventListener("loadeddata", paintFrame);
+      v.addEventListener("loadeddata", paintAndPlay, { once: true });
+      return () => v.removeEventListener("loadeddata", paintAndPlay);
     }
   }, [selectedClip?.id, selectedClip?.proxy_path]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -200,6 +228,8 @@ export default function Trimmer() {
     setCurrentMs(newClip.in_ms ?? 0); // A8: reset playhead to new clip's IN point
     setFilmActiveId(null);
     setIsPlaying(false);
+    setVideoCanPlay(false); // reset: new clip's video element has not confirmed canplay yet
+    setSourceFailed(false); // reset: allow new proxy to load cleanly
   }
 
   /** Prev/Next nav — save current first. */
@@ -216,6 +246,8 @@ export default function Trimmer() {
     setCurrentMs(next.in_ms ?? 0); // A8: reset playhead on nav
     setFilmActiveId(null);
     setIsPlaying(false);
+    setVideoCanPlay(false); // reset: new clip's video element has not confirmed canplay yet
+    setSourceFailed(false); // reset: allow new proxy to load cleanly
   }
 
   /** Toggle include with optimistic update + DB save + rollback on error. */
@@ -344,42 +376,51 @@ export default function Trimmer() {
         {/* Centre — Video player + controls + TrimBar */}
         <main className="flex-1 flex flex-col items-center justify-center gap-3 px-6 py-3 overflow-hidden min-w-0">
 
-          {/* Video — A6: click directly on video to play/pause */}
+          {/* Video — always rendered.
+               Proxy path = source path for H.264 clips (WebView2 native decode, instant play).
+               Proxy path = transcoded 480p H.264 for HEVC clips (set when proxy.py finishes).
+               poster = thumbnail so the user always sees a still frame while waiting.
+               onCanPlay fires when browser can play the src -- enables the play button. */}
           <div
             className="w-full rounded-xl overflow-hidden bg-black relative flex-shrink-0"
             style={{ aspectRatio: "16/9", maxHeight: "calc(100vh - 320px)" }}
           >
-            {clip.proxy_path ? (
-              <video
-                ref={videoRef}
-                key={clip.id}
-                src={convertFileSrc(clip.proxy_path)}
-                preload="auto"
-                playsInline
-                loop
-                className="w-full h-full object-contain cursor-pointer"
-                onClick={togglePlay}
-                onPause={() => setIsPlaying(false)}
-                onPlay={() => setIsPlaying(true)}
-                onTimeUpdate={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
-                onSeeked={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
+            <video
+              ref={videoRef}
+              key={clip.id}
+              src={clip.proxy_path ? convertFileSrc(clip.proxy_path) : undefined}
+              poster={clip.thumbnail_data ?? undefined}
+              preload="auto"
+              playsInline
+              loop
+              style={{ display: sourceFailed ? "none" : undefined }}
+              className="w-full h-full object-contain cursor-pointer"
+              onClick={togglePlay}
+              onPause={() => setIsPlaying(false)}
+              onPlay={() => setIsPlaying(true)}
+              onTimeUpdate={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
+              onSeeked={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
+              onCanPlay={() => setVideoCanPlay(true)}
+              onError={() => {
+                // Proxy decode failed (HEVC without Video Extension, or corrupt file).
+                // Hide the broken video icon and fall back to the thumbnail image.
+                setSourceFailed(true);
+                setVideoCanPlay(false);
+              }}
+            />
+            {/* Thumbnail fallback — shown when video decode fails (HEVC without extension etc.) */}
+            {sourceFailed && clip.thumbnail_data && (
+              <img
+                src={clip.thumbnail_data}
+                alt=""
+                className="absolute inset-0 w-full h-full object-contain"
               />
-            ) : (
-              /* Proxy not ready yet — show thumbnail + generating message.
-                 Raw DJI HEVC won't decode in WebView2; showing it produces silent black video. */
-              <div className="w-full h-full flex flex-col items-center justify-center gap-3 relative">
-                {clip.thumbnail_data && (
-                  <img
-                    src={clip.thumbnail_data}
-                    alt=""
-                    className="absolute inset-0 w-full h-full object-cover opacity-25"
-                    draggable={false}
-                  />
-                )}
-                <div className="relative flex flex-col items-center gap-2">
-                  <span className="inline-block w-6 h-6 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin" />
-                  <p className="text-[#e5e5e5]/60 text-xs">Generating preview...</p>
-                </div>
+            )}
+            {/* Generating preview badge -- visible only while proxy is not yet ready */}
+            {!clip.proxy_path && (
+              <div className="absolute bottom-2 right-2 flex items-center gap-1.5 bg-black/70 px-2.5 py-1.5 rounded-md pointer-events-none">
+                <span className="w-3 h-3 border border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                <span className="text-[10px] text-[#e5e5e5]/80 leading-none">Generating video...</span>
               </div>
             )}
           </div>
@@ -388,7 +429,9 @@ export default function Trimmer() {
           <div className="flex items-center gap-3 w-full">
             <button
               onClick={togglePlay}
-              className="w-8 h-8 rounded-full border border-white/20 flex items-center justify-center hover:border-white/40 transition-colors flex-shrink-0"
+              disabled={!videoCanPlay}
+              title={!videoCanPlay ? "Generating video preview, please wait..." : undefined}
+              className="w-8 h-8 rounded-full border border-white/20 flex items-center justify-center hover:border-white/40 transition-colors flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {isPlaying ? (
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">

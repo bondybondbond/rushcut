@@ -58,6 +58,7 @@ pub struct Clip {
     pub zoom_mode: Option<String>,  // "gentle" | "medium" | "tight"
     pub include: i64,               // 1 = include, 0 = skip
     pub proxy_path: Option<String>,
+    pub waveform_data: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -144,15 +145,16 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         conn.execute("ALTER TABLE jobs ADD COLUMN analysis_summary TEXT", [])?;
     }
 
-    // Additive migrations: per-clip review fields (Batch 14c).
+    // Additive migrations: per-clip review fields (Batch 14c) + waveform (Batch 15c).
     let clip_cols = [
-        ("in_ms",      "INTEGER"),
-        ("out_ms",     "INTEGER"),
-        ("focal_x",    "REAL"),
-        ("focal_y",    "REAL"),
-        ("zoom_mode",  "TEXT"),
-        ("include",    "INTEGER DEFAULT 1"),
-        ("proxy_path", "TEXT"),
+        ("in_ms",        "INTEGER"),
+        ("out_ms",       "INTEGER"),
+        ("focal_x",      "REAL"),
+        ("focal_y",      "REAL"),
+        ("zoom_mode",    "TEXT"),
+        ("include",      "INTEGER DEFAULT 0"),
+        ("proxy_path",   "TEXT"),
+        ("waveform_data","TEXT"),
     ];
     for (col_name, col_type) in &clip_cols {
         let exists: bool = conn.query_row(
@@ -166,6 +168,27 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 [],
             )?;
         }
+    }
+
+    // Settings table — key/value store for one-time migrations (Batch 15a+).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )?;
+
+    // Batch 15a: one-time reset to explicit-add model (include=0).
+    // Guarded by settings key so it only runs once, not on every startup.
+    let already_reset: bool = conn.query_row(
+        "SELECT COUNT(*) FROM settings WHERE key='batch15a_include_reset'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !already_reset {
+        conn.execute("UPDATE clips SET include = 0", [])?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('batch15a_include_reset', 'done')",
+            [],
+        )?;
     }
 
     Ok(())
@@ -194,6 +217,20 @@ pub fn rename_project(project_id: &str, name: &str) -> Result<(), rusqlite::Erro
     Ok(())
 }
 
+/// Return all local_output_path values for jobs belonging to a project.
+/// Used by delete_project_cmd to clean up rendered MP4 files from disk before removing DB rows.
+pub fn get_project_output_paths(project_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare(
+        "SELECT local_output_path FROM jobs WHERE project_id = ?1 AND local_output_path IS NOT NULL",
+    )?;
+    let paths: Vec<String> = stmt
+        .query_map(params![project_id], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(paths)
+}
+
 /// Delete a project and all its clips and jobs.
 /// Schema has no ON DELETE CASCADE, so order matters: clips -> jobs -> projects.
 pub fn delete_project(project_id: &str) -> Result<(), rusqlite::Error> {
@@ -209,13 +246,16 @@ pub fn delete_project(project_id: &str) -> Result<(), rusqlite::Error> {
 // ---------------------------------------------------------------------------
 
 /// Insert a clip with core metadata only.
-/// Review fields (in_ms, out_ms, focal_x/y, zoom_mode, include, proxy_path)
+/// `include` is explicitly written as 0 — explicit-add model; user adds clips to film in Trimmer.
+/// Never rely on the SQLite column DEFAULT — it was historically DEFAULT 1 and existing DBs
+/// would keep that default even after migration code changes.
+/// Other review fields (in_ms, out_ms, focal_x/y, zoom_mode, proxy_path)
 /// intentionally omitted — set via update_clip_review / update_clip_proxy.
 pub fn insert_clip(clip: &Clip) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.execute(
-        "INSERT INTO clips (id, project_id, filename, local_path, duration_ms, width, height, has_audio, thumbnail_data, sort_order, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO clips (id, project_id, filename, local_path, duration_ms, width, height, has_audio, thumbnail_data, sort_order, created_at, include)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)",
         params![
             clip.id,
             clip.project_id,
@@ -261,6 +301,26 @@ pub fn update_clip_proxy(clip_id: &str, proxy_path: &str) -> Result<(), rusqlite
     conn.execute(
         "UPDATE clips SET proxy_path = ?1 WHERE id = ?2",
         params![proxy_path, clip_id],
+    )?;
+    Ok(())
+}
+
+/// Update the thumbnail data for a clip (raw base64 JPEG, no data URI prefix).
+pub fn update_clip_thumbnail(clip_id: &str, thumbnail_data: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "UPDATE clips SET thumbnail_data = ?1 WHERE id = ?2",
+        params![thumbnail_data, clip_id],
+    )?;
+    Ok(())
+}
+
+/// Update the waveform PNG data for a clip (raw base64 PNG, no data URI prefix).
+pub fn update_clip_waveform(clip_id: &str, waveform_data: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "UPDATE clips SET waveform_data = ?1 WHERE id = ?2",
+        params![waveform_data, clip_id],
     )?;
     Ok(())
 }
@@ -367,10 +427,10 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
         //  0:id  1:project_id  2:filename  3:local_path  4:duration_ms
         //  5:width  6:height  7:has_audio  8:thumbnail_data  9:sort_order
         // 10:created_at  11:in_ms  12:out_ms  13:focal_x  14:focal_y
-        // 15:zoom_mode  16:include  17:proxy_path
+        // 15:zoom_mode  16:include  17:proxy_path  18:waveform_data
         "SELECT id, project_id, filename, local_path, duration_ms, width, height,
                 has_audio, thumbnail_data, sort_order, created_at,
-                in_ms, out_ms, focal_x, focal_y, zoom_mode, include, proxy_path
+                in_ms, out_ms, focal_x, focal_y, zoom_mode, include, proxy_path, waveform_data
          FROM clips WHERE project_id = ?1 ORDER BY sort_order ASC",
     )?;
     let clips: Vec<Clip> = stmt
@@ -393,8 +453,9 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
                 focal_x: row.get(13)?,        // 13
                 focal_y: row.get(14)?,        // 14
                 zoom_mode: row.get(15)?,      // 15
-                include: row.get::<_, Option<i64>>(16)?.unwrap_or(1), // 16 — default 1
+                include: row.get::<_, Option<i64>>(16)?.unwrap_or(0), // 16 — default 0 (explicit-add)
                 proxy_path: row.get(17)?,     // 17
+                waveform_data: row.get(18)?,  // 18
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

@@ -157,6 +157,11 @@ export default function Upload() {
         clips: orderedMetas,
       });
 
+      // Start proxy generation immediately — fire and forget before navigation so that
+      // by the time the user finishes trimming clip 1, clips 2+ may already have proxies.
+      // Safe here: brand-new project has no concurrent render job.
+      invoke("generate_proxies_cmd", { projectId }).catch(() => {});
+
       navigate(`/trimmer/${projectId}`);
     } catch (e) {
       setError(`Failed to create project: ${e}`);

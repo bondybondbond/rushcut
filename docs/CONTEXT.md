@@ -15,17 +15,15 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 15c Package 1 COMPLETE. Next: Batch 15c Packages 2 + 3.**
+**Phase 2 — Batch 15c Package 2 UX fixes COMPLETE. Next: preview generation speed (new batch).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15c Package 2 — TrimBar behaviour** (C4 + C5): `TrimBar.tsx` only
-- **C4** click on track = seek (`video.currentTime`); handles only move on explicit drag.
-- **C5** playhead `w-0.5` → `w-1` (4px).
+**Next batch — Preview generation speed.** The 30-60s HEVC proxy encode per clip blocks playback. User complaint: "I want to press play immediately when I see the clips." Investigate keyframe-only preview approach or web worker pre-buffering. Log [sync-check] and pipeline timings before writing any fix.
 
-**Batch 15c Package 3 — Trimmer page** (C2 + C3 + C6): `Trimmer.tsx` + `FilmStrip.tsx`
+**Batch 15c Package 3 (deferred) — Trimmer page** (C2 + C3 + C6): `Trimmer.tsx` + `FilmStrip.tsx`
 - **C2** layout fix — text between TrimBar and FilmStrip occluded by drawer z-index.
 - **C3** remove "In Film" button state; always show "Add to Film"; each add creates a new filmstrip entry (distinct in_ms/out_ms snapshot, same source path).
 - **C6** drag-handle on bottom edge of video; `videoHeight` state (min 200px, max 70vh).
@@ -33,6 +31,15 @@
 ---
 
 ## Recently Completed
+
+**Batch 15c Package 2 — UX fixes (2026-04-25)**
+
+- `pipeline/proxy.py`: waveform: `s=800x80` (was 120×80), `scale=cbrt` with two-pass `volumedetect` normalization (boost by -peak_db so loudest = 0 dBFS = full bar height, capped at 40 dB). Codec-aware proxy: H.264/VP8/VP9 sources → emit `PROXY` with source path (WebView2 native, instant); HEVC/unknown → transcode 480p H.264.
+- `src-tauri/src/db.rs`: `get_project_output_paths()` — queries `local_output_path` from `jobs` for a project.
+- `src-tauri/src/lib.rs`: `delete_project_cmd` — calls `get_project_output_paths` + `remove_file` (best-effort) before DB rows deleted. Concurrency guard: `Arc<Mutex<HashSet<String>>>` managed state; `generate_proxies_cmd` skips duplicate calls for in-progress projects.
+- `src/pages/Library.tsx`: `pendingDelete` state replaces `window.confirm()` (which is silently swallowed by WebView2). Inline confirmation panel per row; copy describes whether a render file will be removed.
+- `src/pages/Upload.tsx`: `generate_proxies_cmd` fires immediately after `create_project`, before `navigate` — proxy gen starts while user is still on Trimmer clip 1.
+- `src/pages/Trimmer.tsx`: `sourceFailed` boolean state — `onError` hides `<video>` and shows `<img src={thumbnail_data}>` fallback when WebView2 cannot decode the proxy (HEVC without extension, corrupt file). Reset on clip change. `videoCanPlay` state and disabled play button already in place.
 
 **Batch 15c Package 1 — Pipeline + DB (C1 + C7) (2026-04-24)**
 
