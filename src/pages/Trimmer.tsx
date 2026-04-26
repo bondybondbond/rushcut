@@ -297,6 +297,11 @@ export default function Trimmer() {
     if (videoRef.current) videoRef.current.currentTime = ms / 1000;
   }
 
+  function handleSeek(ms: number) {
+    if (videoRef.current) videoRef.current.currentTime = ms / 1000;
+    setCurrentMs(ms);
+  }
+
   /** Film strip clip click — seek centre player to that clip's in point. */
   async function handleFilmSelect(filmClip: Clip) {
     if (filmClip.id !== clip?.id) {
@@ -506,6 +511,7 @@ export default function Trimmer() {
               onInChange={handleInChange}
               onOutChange={handleOutChange}
               onCommit={saveCurrentClip}
+              onSeek={handleSeek}
             />
           </div>
         </main>

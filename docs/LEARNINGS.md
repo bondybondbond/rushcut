@@ -150,6 +150,18 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Solution:** 3-layer fix: (1) `--disable-bidi` flag on msedgedriver spawn (primary — kills BiDi negotiation entirely), (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list` before spawning msedgedriver. Reduced blind delay from 6s to 2s (only covers DOM hydration gap now).
 **Context:** `wdio.conf.ts` — msedgedriver spawn args, capabilities block, `waitForAppRoute()` helper. See `docs/E2E-DEBUGGING.md` for full history.
 
+## [getHTML(false) causes spec timeout when body contains base64 thumbnails]
+
+**Problem:** `$("body").getHTML(false)` in WDIO specs transfers the entire body innerHTML (~1.9MB when MediaPantry clips have base64 thumbnail data) through WebDriver, taking >10 minutes and exceeding the Mocha 600s spec timeout.
+**Solution:** Never call `getHTML(false)` to check for a string in specs — use targeted element selectors (`$('[data-testid="..."]').getText()` or `$$("button").find()`) or `browser.execute(() => document.querySelector("...").textContent)` to check specific nodes. Only use `getHTML` on small, known-bounded DOM subtrees.
+**Context:** `e2e/trimmer.spec.ts` — any spec that runs after clips are loaded into MediaPantry. The thumbnail base64 data is embedded in every `<img>` in the pantry grid and makes the full body HTML enormous.
+
+## [gap-editor.spec.ts waitForURL /editor/ is stale after flow redesign]
+
+**Problem:** `gap-editor.spec.ts` navigates to Library, opens a project, then waits for `/editor/` — but the app now routes "Open project" to `/trimmer/:projectId` (changed in Batch 15+). The `before` hook times out at 8s.
+**Solution:** Update `gap-editor.spec.ts` to wait for `/trimmer/` instead of `/editor/`, and update all assertions that rely on the old editor screen. Or rename to `trimmer-extended.spec.ts` and rewrite for the Trimmer screen.
+**Context:** `e2e/gap-editor.spec.ts` line 66 — the `waitUntil` URL check. Pre-existing failure since Batch 15a.
+
 ## [Stale WebView2 subprocess holds CDP port between test runs]
 
 **Problem:** Killing `rushcut.exe` does not kill the WebView2 subprocess (a separate OS process). The stale subprocess holds port 9222 across test runs; the next run attaches to a dead WebView2, causing `getUrl()` to time out.

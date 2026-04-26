@@ -10,8 +10,10 @@ interface TrimBarProps {
   waveformData?: string | null;
   onInChange: (ms: number) => void;
   onOutChange: (ms: number) => void;
-  /** Called on pointerup or click-to-place — triggers save. Never during drag. */
+  /** Called on pointerup after handle drag — triggers save. Never during drag move. */
   onCommit: () => void;
+  /** Called on track click (not handle drag) — seek video to that timestamp. */
+  onSeek?: (ms: number) => void;
 }
 
 function fmtMs(ms: number): string {
@@ -35,6 +37,7 @@ export function TrimBar({
   onInChange,
   onOutChange,
   onCommit,
+  onSeek,
 }: TrimBarProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef<"in" | "out" | null>(null);
@@ -49,25 +52,15 @@ export function TrimBar({
     return Math.round(pct * durationMs);
   }
 
-  // --- Track click-to-place: move nearest handle to click position ---
+  // --- Track click-to-seek: move video playhead to clicked position ---
   function onTrackClick(e: React.MouseEvent<HTMLDivElement>) {
-    // Suppress if this was the end of a drag
+    // Suppress if this was the end of a handle drag
     if (didDrag.current) {
       didDrag.current = false;
       return;
     }
     const ms = msFromClientX(e.clientX);
-    const distIn = Math.abs(ms - inMs);
-    const distOut = Math.abs(ms - outMs);
-    if (distIn <= distOut) {
-      const clamped = Math.max(0, Math.min(ms, outMs - 500));
-      onInChange(clamped);
-    } else {
-      const clamped = Math.min(durationMs, Math.max(ms, inMs + 500));
-      onOutChange(clamped);
-    }
-    // Immediate save on click-to-place (discrete action, not a drag)
-    onCommit();
+    onSeek?.(ms);
   }
 
   // --- Handle pointer drag ---
@@ -186,11 +179,26 @@ export function TrimBar({
           }}
         />
 
-        {/* Playhead — thin white vertical line tracking current position — z-10 */}
+        {/* Playhead — 4px line + downward triangle pip at top — z-10 */}
         <div
-          className="absolute top-0 w-0.5 h-full bg-white/80 pointer-events-none rounded-full"
-          style={{ left: `${playheadPct}%`, zIndex: 10 }}
-        />
+          className="absolute top-0 h-full pointer-events-none"
+          style={{ left: `${playheadPct}%`, zIndex: 10, transform: "translateX(-50%)" }}
+        >
+          {/* Downward triangle pip above track */}
+          <div
+            className="absolute left-1/2 -translate-x-1/2"
+            style={{
+              top: -8,
+              width: 0,
+              height: 0,
+              borderLeft: "5px solid transparent",
+              borderRight: "5px solid transparent",
+              borderTop: "7px solid rgba(255,255,255,0.8)",
+            }}
+          />
+          {/* 4px vertical line */}
+          <div className="w-1 h-full bg-white/80 rounded-full" />
+        </div>
 
         {/* IN handle — z-20 */}
         <div
@@ -218,7 +226,7 @@ export function TrimBar({
       </div>
 
       <p className="text-[10px] text-[#e5e5e5]/30 mt-1.5 text-center">
-        Click track to place handle &middot; drag to adjust &middot; saves on release
+        Click to seek &middot; drag handles to trim &middot; saves on release
       </p>
     </div>
   );

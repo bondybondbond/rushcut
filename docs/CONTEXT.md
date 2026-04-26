@@ -15,17 +15,27 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 16 + 16b COMPLETE. Trimmer playback is now instant (native-res for most users). Next: Transitions screen (15e).**
+**Phase 2 — Batch 15c remaining (C4+C5) COMPLETE. TrimBar click-to-seek + 4px playhead with pip shipped. Next: Transitions screen (15b/15e) or E2E spec fixes.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black.
+**Batch 15b/15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black.
+
+**OR** fix stale E2E specs first:
+- `gap-editor.spec.ts` — waits for `/editor/` URL; now routes to `/trimmer/` (pre-existing since Batch 15a)
+- `trimmer.spec.ts` line 167 — `getHTML(false)` times out at 600s on 1.9MB body; replace with targeted element selector
 
 ---
 
 ## Recently Completed
+
+**Batch 15c remaining (C4 + C5) — TrimBar seek + playhead pip (2026-04-26)**
+
+- `src/components/trimmer/TrimBar.tsx`: `onSeek?: (ms: number) => void` prop added. `onTrackClick` changed to seek-only — no longer moves handles. Playhead thickened from `w-0.5` (2px) to `w-1` (4px). Triangle pip added above track (`top: -8px`, CSS border triangle, `rgba(255,255,255,0.8)`). Hint text updated to "Click to seek · drag handles to trim · saves on release". `didDrag` ref guard suppresses seek after handle drag-end.
+- `src/pages/Trimmer.tsx`: `handleSeek(ms)` added — sets `videoRef.current.currentTime = ms / 1000` + `setCurrentMs(ms)`. `onSeek={handleSeek}` wired to `<TrimBar>`.
+- E2E: 7/7 fast PASS. 10/12 trimmer (2 pre-existing getHTML timeouts). 0/1 editor (pre-existing /editor/ URL regression since Batch 15a).
 
 **Batch 16 + 16b — Native FFmpeg + Source-First Playback (2026-04-26)**
 

@@ -104,8 +104,8 @@ Six items from founder review session (2026-04-23):
 - [x] Thumbnails visible in Media Pantry tiles and FilmStrip (not broken) — done 15c Pkg 1
 - [x] TrimBar hint text / any text between TrimBar and FilmStrip is not occluded — done 16b (overflow-y-auto)
 - [x] "In Film" state removed; Add button always active — done 16b (C3)
-- [ ] Click on TrimBar track seeks video; handles only move on drag (C4)
-- [ ] Playhead is visibly thicker (4px) (C5)
+- [x] Click on TrimBar track seeks video; handles only move on drag (C4) — done 15c remaining
+- [x] Playhead is visibly thicker (4px) + triangle pip above track (C5) — done 15c remaining
 - [x] Video preview height is user-resizable via drag handle — done 16b (C6)
 - [x] (C7 stretch) Waveform renders as dim overlay in TrimBar — done 15c Pkg 1
 
@@ -188,6 +188,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.4     | 2026-04-26 | Batch 15c remaining (C4+C5) — TrimBar click-to-seek (seek-only, handles don't move); 4px playhead + downward triangle pip above track; hint text updated. E2E: 7/7 fast PASS; 10/12 trimmer (2 pre-existing getHTML timeouts). |
 | 1.3     | 2026-04-26 | Batch 16+16b — Native FFmpeg scan/proxy (Rust, no WSL); source-first playback (local_path direct, proxy only on onError); OnceLock GPU encoder detection (nvenc→qsv→amf→libx264); lazy per-clip `generate_proxy_for_clip` cmd; `run_media_batch` (thumbnail+waveform only upfront); 4s poll replaced with `proxy-progress` event listener; C2 overflow fix, C3 "In Film" removed, C6 video resize handle; `generatingProxyRef` double-fire guard. E2E: 7/7 PASS. |
 | 1.2     | 2026-04-02 | Batch 14a — Review Screen UI: `/review/:projectId`, Quick + Precise modes, keyboard shortcuts, focal point overlay, IN/OUT sliders, zoom chips, sessionStorage resume, Skip Review escape hatch, `REVIEW_THRESHOLD` constant, asset scope expanded for source clips. E2E: 25/25. |
 | 1.1     | 2026-04-02 | Batch 14b — proxy generation: `proxy.py`, `generate_proxies_cmd`, post-render firing (avoids FFmpeg contention), `-c:a copy`, `include`-filter. Hygiene: `/tmp/<job_id>` cleanup in `run.py`, rich `ANALYSIS:` line in `render.py`, wrapup temp cleanup. Next: 14a (Review screen). |
