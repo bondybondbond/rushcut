@@ -36,11 +36,18 @@ export default function Trimmer() {
   const lastPaintedProxy = useRef<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
+  // C6: user-resizable video preview height (min 200px, max 70vh)
+  const [videoHeight, setVideoHeight] = useState<number | null>(null);
+  const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   // isSaving guard — early-return if already saving to prevent double-save
   const isSaving = useRef(false);
-  const proxyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Tracks clip IDs for which lazy proxy gen has already been triggered.
+  // Prevents re-triggering onError if proxy encode fails silently and proxy_path is never set.
+  const generatingProxyRef = useRef<Set<string>>(new Set());
 
-  // Load project and trigger proxy generation for smooth scrubbing
+  // Load project and kick off upfront media batch (thumbnail + waveform for all clips).
+  // Proxy gen is now lazy — triggered per-clip by onError when WebView2 can't decode the source.
   useEffect(() => {
     if (!projectId) return;
     invoke<ProjectWithClips>("get_project", { projectId })
@@ -54,42 +61,15 @@ export default function Trimmer() {
           setOutMs(first.out_ms ?? first.duration_ms);
           setCurrentMs(first.in_ms ?? 0); // A8: init playhead to IN point
         }
-        // Kick off proxy/thumbnail/waveform generation for all clips that need any of them
-        const anyWork = data.clips.some((c) => !c.proxy_path || !c.thumbnail_data || !c.waveform_data);
+        // Kick off thumbnail + waveform generation for clips that need it.
+        // Thumbnail/waveform events are picked up by their listeners below.
+        const anyWork = data.clips.some((c) => !c.thumbnail_data || !c.waveform_data);
         if (anyWork) {
           invoke("generate_proxies_cmd", { projectId }).catch(() => {});
-          // Poll every 4s to pick up proxy_path as WSL generates them
-          proxyPollRef.current = setInterval(() => {
-            invoke<ProjectWithClips>("get_project", { projectId })
-              .then((refreshed) => {
-                setClips((prev) =>
-                  prev.map((c) => {
-                    const updated = refreshed.clips.find((r) => r.id === c.id);
-                    return updated ?? c;
-                  })
-                );
-                // Also update selectedClip's proxy_path
-                setSelectedClip((prev) => {
-                  if (!prev) return prev;
-                  const updated = refreshed.clips.find((r) => r.id === prev.id);
-                  return updated ? { ...prev, proxy_path: updated.proxy_path } : prev;
-                });
-                // Stop polling when all proxies are generated
-                const allReady = refreshed.clips.every((c) => c.proxy_path);
-                if (allReady) {
-                  if (proxyPollRef.current) clearInterval(proxyPollRef.current);
-                }
-              })
-              .catch(() => {});
-          }, 4000);
         }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-
-    return () => {
-      if (proxyPollRef.current) clearInterval(proxyPollRef.current);
-    };
   }, [projectId]);
 
   // Listen for thumbnail-progress events — update clip thumbnail_data in state incrementally
@@ -138,39 +118,61 @@ export default function Trimmer() {
     return () => { unlisten?.(); };
   }, [projectId]);
 
+  // Listen for proxy-progress events — update clip proxy_path in state and clear sourceFailed
+  // so the video element picks up the newly available proxy src.
+  useEffect(() => {
+    if (!projectId) return;
+    let unlisten: (() => void) | undefined;
+    listen<{ projectId: string; clipId: string; winPath: string }>(
+      "proxy-progress",
+      (ev) => {
+        if (ev.payload.projectId !== projectId) return;
+        const { clipId, winPath } = ev.payload;
+        setClips((prev) =>
+          prev.map((c) => c.id === clipId ? { ...c, proxy_path: winPath } : c)
+        );
+        setSelectedClip((prev) => {
+          if (!prev || prev.id !== clipId) return prev;
+          // Proxy is ready — unhide the video element so it can load the proxy src.
+          setSourceFailed(false);
+          return { ...prev, proxy_path: winPath };
+        });
+      }
+    ).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [projectId]);
+
   // Sync volume to video element
   useEffect(() => {
     if (videoRef.current) videoRef.current.volume = volume;
   }, [volume]);
 
-  // Paint the first frame whenever clip or proxy changes.
-  // WebView2 renders black if currentTime stays at 0 on a paused video.
-  // Fix: play() forces a decode + paint; we pause immediately after.
-  // Only fires when proxy_path is set -- source video (HEVC without extension) may not decode;
-  // showing nothing is fine (poster thumbnail covers), no play/pause flicker needed.
-  // When proxy arrives (including H.264 source used directly), paint the IN point and
-  // auto-play so the user does not need to click play after waiting for the proxy.
+  // Paint the first frame on clip change or when a proxy arrives.
+  // Fires for both native source (proxy_path null) and proxy-fallback playback.
+  // Auto-plays when a new proxy arrives (user was waiting) vs stay-paused on clip nav.
   useEffect(() => {
     const v = videoRef.current;
-    if (!v || !selectedClip?.proxy_path) return;
+    if (!v || !selectedClip) return;
 
-    const isNewProxy = lastPaintedProxy.current !== selectedClip.proxy_path;
-    lastPaintedProxy.current = selectedClip.proxy_path;
+    // Track whether the video source is new (drives auto-play vs paint-and-pause decision)
+    const currentSrc = selectedClip.proxy_path ?? selectedClip.local_path;
+    const isNewSrc = lastPaintedProxy.current !== currentSrc;
+    lastPaintedProxy.current = currentSrc;
 
     function paintAndPlay() {
       if (!v) return;
       const target = inMs / 1000;
-      v.currentTime = target > 0 ? target : 0.05; // avoid exact 0 -- some H.264 proxies paint black at PTS 0
-      if (isNewProxy) {
-        // Auto-play when proxy first arrives so user doesn't need to click after waiting.
+      v.currentTime = target > 0 ? target : 0.05; // avoid exact 0 -- some proxies paint black at PTS 0
+      if (isNewSrc) {
+        // New source (proxy just arrived, or first clip load) — auto-play.
         v.play()
           .then(() => setIsPlaying(true))
           .catch(() => {
-            // Autoplay blocked -- at least seek to the IN point so poster is replaced.
+            // Autoplay blocked — at least seek to IN point so poster is replaced.
             v.currentTime = inMs / 1000;
           });
       } else {
-        // Clip change on existing proxy -- paint first frame, stay paused.
+        // Clip navigation with existing src — paint first frame, stay paused.
         v.play()
           .then(() => { v.pause(); v.currentTime = inMs / 1000; })
           .catch(() => { v.currentTime = inMs / 1000; });
@@ -229,7 +231,9 @@ export default function Trimmer() {
     setFilmActiveId(null);
     setIsPlaying(false);
     setVideoCanPlay(false); // reset: new clip's video element has not confirmed canplay yet
-    setSourceFailed(false); // reset: allow new proxy to load cleanly
+    setSourceFailed(false); // reset: allow source to try loading for the new clip
+    // Reset proxy gen guard so the new clip can trigger lazy gen if needed
+    generatingProxyRef.current.delete(newClip.id);
   }
 
   /** Prev/Next nav — save current first. */
@@ -247,7 +251,9 @@ export default function Trimmer() {
     setFilmActiveId(null);
     setIsPlaying(false);
     setVideoCanPlay(false); // reset: new clip's video element has not confirmed canplay yet
-    setSourceFailed(false); // reset: allow new proxy to load cleanly
+    setSourceFailed(false); // reset: allow source to try loading for the new clip
+    // Reset proxy gen guard so the new clip can trigger lazy gen if needed
+    generatingProxyRef.current.delete(next.id);
   }
 
   /** Toggle include with optimistic update + DB save + rollback on error. */
@@ -314,6 +320,26 @@ export default function Trimmer() {
     }
   }
 
+  // C6: drag to resize video preview height
+  function onResizePointerDown(e: React.PointerEvent) {
+    const el = videoContainerRef.current;
+    if (!el) return;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    resizeDragRef.current = { startY: e.clientY, startH: el.getBoundingClientRect().height };
+  }
+
+  function onResizePointerMove(e: React.PointerEvent) {
+    if (!resizeDragRef.current) return;
+    const delta = e.clientY - resizeDragRef.current.startY;
+    const maxH = window.innerHeight * 0.7;
+    const next = Math.max(200, Math.min(maxH, resizeDragRef.current.startH + delta));
+    setVideoHeight(next);
+  }
+
+  function onResizePointerUp() {
+    resizeDragRef.current = null;
+  }
+
   const inFilmCount = clips.filter((c) => c.include === 1).length;
   const clipIdx = clip ? clips.findIndex((c) => c.id === clip.id) : -1;
   const canGoPrev = clipIdx > 0;
@@ -342,8 +368,6 @@ export default function Trimmer() {
       </div>
     );
   }
-
-  const clipInFilm = clip.include === 1;
 
   return (
     <div className="flex flex-col h-screen bg-[#0a0a0a] text-[#e5e5e5] overflow-hidden">
@@ -382,13 +406,14 @@ export default function Trimmer() {
                poster = thumbnail so the user always sees a still frame while waiting.
                onCanPlay fires when browser can play the src -- enables the play button. */}
           <div
+            ref={videoContainerRef}
             className="w-full rounded-xl overflow-hidden bg-black relative flex-shrink-0"
-            style={{ aspectRatio: "16/9", maxHeight: "calc(100vh - 320px)" }}
+            style={videoHeight != null ? { height: videoHeight } : { aspectRatio: "16/9", maxHeight: "calc(100vh - 320px)" }}
           >
             <video
               ref={videoRef}
               key={clip.id}
-              src={clip.proxy_path ? convertFileSrc(clip.proxy_path) : undefined}
+              src={clip.proxy_path ? convertFileSrc(clip.proxy_path) : convertFileSrc(clip.local_path)}
               poster={clip.thumbnail_data ?? undefined}
               preload="auto"
               playsInline
@@ -402,10 +427,15 @@ export default function Trimmer() {
               onSeeked={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
               onCanPlay={() => setVideoCanPlay(true)}
               onError={() => {
-                // Proxy decode failed (HEVC without Video Extension, or corrupt file).
-                // Hide the broken video icon and fall back to the thumbnail image.
+                // Source decode failed (HEVC without Video Extension, or unknown codec).
+                // Hide the broken video icon, show thumbnail fallback, trigger lazy proxy gen.
                 setSourceFailed(true);
                 setVideoCanPlay(false);
+                // Guard: only trigger once per clip — prevent re-fire if proxy gen fails silently
+                if (!clip.proxy_path && !generatingProxyRef.current.has(clip.id)) {
+                  generatingProxyRef.current.add(clip.id);
+                  invoke("generate_proxy_for_clip", { projectId, clipId: clip.id }).catch(() => {});
+                }
               }}
             />
             {/* Thumbnail fallback — shown when video decode fails (HEVC without extension etc.) */}
@@ -416,13 +446,23 @@ export default function Trimmer() {
                 className="absolute inset-0 w-full h-full object-contain"
               />
             )}
-            {/* Generating preview badge -- visible only while proxy is not yet ready */}
-            {!clip.proxy_path && (
+            {/* Generating preview badge — only when source failed decode AND no proxy yet */}
+            {sourceFailed && !clip.proxy_path && (
               <div className="absolute bottom-2 right-2 flex items-center gap-1.5 bg-black/70 px-2.5 py-1.5 rounded-md pointer-events-none">
                 <span className="w-3 h-3 border border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
                 <span className="text-[10px] text-[#e5e5e5]/80 leading-none">Generating video...</span>
               </div>
             )}
+          </div>
+
+          {/* C6: drag handle to resize video preview height */}
+          <div
+            className="w-full h-2 flex items-center justify-center cursor-ns-resize group flex-shrink-0"
+            onPointerDown={onResizePointerDown}
+            onPointerMove={onResizePointerMove}
+            onPointerUp={onResizePointerUp}
+          >
+            <div className="w-8 h-0.5 rounded-full bg-white/20 group-hover:bg-white/50 transition-colors" />
           </div>
 
           {/* Play/pause + volume row */}
@@ -471,7 +511,7 @@ export default function Trimmer() {
         </main>
 
         {/* Right — Nav + Add to film CTA */}
-        <aside className="w-44 flex-shrink-0 border-l border-white/10 flex flex-col items-center justify-center gap-4 px-4 py-6">
+        <aside className="w-44 flex-shrink-0 border-l border-white/10 flex flex-col items-center justify-center gap-4 px-4 py-6 overflow-y-auto">
           <p className="text-[10px] text-[#e5e5e5]/30">
             {clipIdx + 1} / {clips.length}
           </p>
@@ -493,21 +533,12 @@ export default function Trimmer() {
             </button>
           </div>
 
-          {clipInFilm ? (
-            <button
-              onClick={() => handleToggleInclude(clip, 0)}
-              className="w-full py-2.5 bg-[#22c55e]/15 border border-[#22c55e]/60 text-[#22c55e] font-semibold rounded-md text-sm hover:bg-[#22c55e]/10 transition-colors"
-            >
-              In Film &#10003;
-            </button>
-          ) : (
-            <button
-              onClick={() => handleToggleInclude(clip, 1)}
-              className="w-full py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md text-sm hover:bg-[#ff9e7a] transition-colors"
-            >
-              + Add to Film
-            </button>
-          )}
+          <button
+            onClick={() => handleToggleInclude(clip, 1)}
+            className="w-full py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md text-sm hover:bg-[#ff9e7a] transition-colors"
+          >
+            + Add to Film
+          </button>
 
           <p className="text-[10px] text-[#e5e5e5]/30 text-center leading-tight">
             {inFilmCount === 0

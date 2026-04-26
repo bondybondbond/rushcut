@@ -15,7 +15,8 @@ export interface ClipMeta {
   width: number;
   height: number;
   has_audio: boolean;
-  thumbnail_data?: string | null; // base64 data URI from scan.py
+  thumbnail_data?: string | null; // base64 data URI
+  codec_name?: string | null;     // e.g. "hevc", "h264"
 }
 
 export interface Clip extends ClipMeta {

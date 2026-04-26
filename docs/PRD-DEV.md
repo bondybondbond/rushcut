@@ -80,7 +80,7 @@ Review.tsx: back button `ml-10` clears hamburger, proxy pending badge removed, c
 
 `StepNav.tsx` component — Upload · Trim · Transitions · Sound · Render. Active step peach, completed steps clickable, pending steps dimmed. Shipped as part of 15a.
 
-### 15c — Trimmer Bug Fixes + UX Polish (**NEXT**)
+### 15c — Trimmer Bug Fixes + UX Polish (**PARTIAL — C2/C3/C6 done in Batch 16b**)
 
 Six items from founder review session (2026-04-23):
 
@@ -101,13 +101,13 @@ Six items from founder review session (2026-04-23):
 - **C7 — Waveform in TrimBar:** `proxy.py` emits `showwavespic` PNG as base64 (`WAVEFORM_DONE:clip_id:base64`). New `waveform_data TEXT` column (pos 19, after thumbnail). TrimBar renders `<img z-2 opacity-40>` below selected region. FilmStrip gets a timecode ruler above the strip.
 
 **Gate:**
-- [ ] Thumbnails visible in Media Pantry tiles and FilmStrip (not broken)
-- [ ] TrimBar hint text / any text between TrimBar and FilmStrip is not occluded
-- [ ] "In Film" state removed; Add button always active; multiple cuts from same source create distinct filmstrip entries
-- [ ] Click on TrimBar track seeks video; handles only move on drag
-- [ ] Playhead is visibly thicker (4px)
-- [ ] Video preview height is user-resizable via drag handle
-- [ ] (C7 stretch) Waveform renders as dim overlay in TrimBar
+- [x] Thumbnails visible in Media Pantry tiles and FilmStrip (not broken) — done 15c Pkg 1
+- [x] TrimBar hint text / any text between TrimBar and FilmStrip is not occluded — done 16b (overflow-y-auto)
+- [x] "In Film" state removed; Add button always active — done 16b (C3)
+- [ ] Click on TrimBar track seeks video; handles only move on drag (C4)
+- [ ] Playhead is visibly thicker (4px) (C5)
+- [x] Video preview height is user-resizable via drag handle — done 16b (C6)
+- [x] (C7 stretch) Waveform renders as dim overlay in TrimBar — done 15c Pkg 1
 
 ### 15e — Transitions screen (`/transitions/:projectId`)
 
@@ -188,6 +188,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.3     | 2026-04-26 | Batch 16+16b — Native FFmpeg scan/proxy (Rust, no WSL); source-first playback (local_path direct, proxy only on onError); OnceLock GPU encoder detection (nvenc→qsv→amf→libx264); lazy per-clip `generate_proxy_for_clip` cmd; `run_media_batch` (thumbnail+waveform only upfront); 4s poll replaced with `proxy-progress` event listener; C2 overflow fix, C3 "In Film" removed, C6 video resize handle; `generatingProxyRef` double-fire guard. E2E: 7/7 PASS. |
 | 1.2     | 2026-04-02 | Batch 14a — Review Screen UI: `/review/:projectId`, Quick + Precise modes, keyboard shortcuts, focal point overlay, IN/OUT sliders, zoom chips, sessionStorage resume, Skip Review escape hatch, `REVIEW_THRESHOLD` constant, asset scope expanded for source clips. E2E: 25/25. |
 | 1.1     | 2026-04-02 | Batch 14b — proxy generation: `proxy.py`, `generate_proxies_cmd`, post-render firing (avoids FFmpeg contention), `-c:a copy`, `include`-filter. Hygiene: `/tmp/<job_id>` cleanup in `run.py`, rich `ANALYSIS:` line in `render.py`, wrapup temp cleanup. Next: 14a (Review screen). |
 | 1.0     | 2026-04-01 | Batch 14c — per-clip data model: 7 DB columns, Rust/TS types, `update_clip_review` cmd, manifest filtering, `out_ms` clamp, pipeline trim override, focal-aware `zoom.py`. Next: 14b (proxies).                                                                                     |

@@ -16,7 +16,8 @@ pub struct ClipMeta {
     pub width: i64,
     pub height: i64,
     pub has_audio: bool,
-    pub thumbnail_data: Option<String>, // base64 data URI from scan.py
+    pub thumbnail_data: Option<String>, // base64 data URI
+    pub codec_name: Option<String>,     // e.g. "hevc", "h264"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -59,6 +60,7 @@ pub struct Clip {
     pub include: i64,               // 1 = include, 0 = skip
     pub proxy_path: Option<String>,
     pub waveform_data: Option<String>,
+    pub codec_name: Option<String>, // e.g. "hevc", "h264" — set at scan time, read by proxy gen
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -145,7 +147,7 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         conn.execute("ALTER TABLE jobs ADD COLUMN analysis_summary TEXT", [])?;
     }
 
-    // Additive migrations: per-clip review fields (Batch 14c) + waveform (Batch 15c).
+    // Additive migrations: per-clip review fields (Batch 14c) + waveform (Batch 15c) + codec (Batch 16).
     let clip_cols = [
         ("in_ms",        "INTEGER"),
         ("out_ms",       "INTEGER"),
@@ -155,6 +157,7 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         ("include",      "INTEGER DEFAULT 0"),
         ("proxy_path",   "TEXT"),
         ("waveform_data","TEXT"),
+        ("codec_name",   "TEXT"),
     ];
     for (col_name, col_type) in &clip_cols {
         let exists: bool = conn.query_row(
@@ -254,8 +257,8 @@ pub fn delete_project(project_id: &str) -> Result<(), rusqlite::Error> {
 pub fn insert_clip(clip: &Clip) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.execute(
-        "INSERT INTO clips (id, project_id, filename, local_path, duration_ms, width, height, has_audio, thumbnail_data, sort_order, created_at, include)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)",
+        "INSERT INTO clips (id, project_id, filename, local_path, duration_ms, width, height, has_audio, thumbnail_data, sort_order, created_at, include, codec_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)",
         params![
             clip.id,
             clip.project_id,
@@ -268,6 +271,7 @@ pub fn insert_clip(clip: &Clip) -> Result<(), rusqlite::Error> {
             clip.thumbnail_data,
             clip.sort_order,
             clip.created_at,
+            clip.codec_name,
         ],
     )?;
     Ok(())
@@ -427,10 +431,11 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
         //  0:id  1:project_id  2:filename  3:local_path  4:duration_ms
         //  5:width  6:height  7:has_audio  8:thumbnail_data  9:sort_order
         // 10:created_at  11:in_ms  12:out_ms  13:focal_x  14:focal_y
-        // 15:zoom_mode  16:include  17:proxy_path  18:waveform_data
+        // 15:zoom_mode  16:include  17:proxy_path  18:waveform_data  19:codec_name
         "SELECT id, project_id, filename, local_path, duration_ms, width, height,
                 has_audio, thumbnail_data, sort_order, created_at,
-                in_ms, out_ms, focal_x, focal_y, zoom_mode, include, proxy_path, waveform_data
+                in_ms, out_ms, focal_x, focal_y, zoom_mode, include, proxy_path, waveform_data,
+                codec_name
          FROM clips WHERE project_id = ?1 ORDER BY sort_order ASC",
     )?;
     let clips: Vec<Clip> = stmt
@@ -456,6 +461,7 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
                 include: row.get::<_, Option<i64>>(16)?.unwrap_or(0), // 16 — default 0 (explicit-add)
                 proxy_path: row.get(17)?,     // 17
                 waveform_data: row.get(18)?,  // 18
+                codec_name: row.get(19)?,     // 19
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

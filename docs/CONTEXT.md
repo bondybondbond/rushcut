@@ -15,22 +15,25 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 15c Package 2 UX fixes COMPLETE. Next: preview generation speed (new batch).**
+**Phase 2 — Batch 16 + 16b COMPLETE. Trimmer playback is now instant (native-res for most users). Next: Transitions screen (15e).**
 
 ---
 
 ## Immediate Next Task
 
-**Next batch — Preview generation speed.** The 30-60s HEVC proxy encode per clip blocks playback. User complaint: "I want to press play immediately when I see the clips." Investigate keyframe-only preview approach or web worker pre-buffering. Log [sync-check] and pipeline timings before writing any fix.
-
-**Batch 15c Package 3 (deferred) — Trimmer page** (C2 + C3 + C6): `Trimmer.tsx` + `FilmStrip.tsx`
-- **C2** layout fix — text between TrimBar and FilmStrip occluded by drawer z-index.
-- **C3** remove "In Film" button state; always show "Add to Film"; each add creates a new filmstrip entry (distinct in_ms/out_ms snapshot, same source path).
-- **C6** drag-handle on bottom edge of video; `videoHeight` state (min 200px, max 70vh).
+**Batch 15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black.
 
 ---
 
 ## Recently Completed
+
+**Batch 16 + 16b — Native FFmpeg + Source-First Playback (2026-04-26)**
+
+- `src-tauri/src/lib.rs`: Full Rust native scan (ffprobe) and proxy pipeline — no WSL Python for media work. `detect_best_encoder()` with `OnceLock` — one-time GPU probe (`h264_nvenc → h264_qsv → h264_amf → libx264`). `run_media_batch` (thumbnail + waveform upfront only). `run_single_proxy` + `generate_proxy_for_clip` Tauri command — lazy per-clip proxy gen on demand.
+- `src-tauri/src/db.rs`: `codec_name TEXT` additive migration; `Clip` struct + `get_project_with_clips` extended to 20 cols.
+- `src/pages/Trimmer.tsx`: Source-first `src = proxy_path ?? local_path`. `onError` triggers lazy proxy gen gated by `generatingProxyRef`. `proxy-progress` listener (with `unlisten`) clears `sourceFailed` when proxy ready. Badge shows only on source failure + no proxy. 4s poll removed — event-driven. C2 (overflow-y-auto on right aside), C3 (always-active Add to Film), C6 (resizable video with pointer drag handle).
+- `src/pages/Upload.tsx`: `waveform_data: null` added to `metaToClip`.
+- GPU encoder fallback: nvenc → qsv → amf → libx264. HEVC clips with HEVC Video Extension play instantly at native resolution; without extension ~3-5s GPU encode on demand.
 
 **Batch 15c Package 2 — UX fixes (2026-04-25)**
 

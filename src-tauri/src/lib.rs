@@ -1,5 +1,6 @@
 mod db;
 
+use base64::Engine as _;
 use db::{
     delete_project, get_job, get_project_output_paths, get_project_with_clips, insert_clip,
     insert_job, insert_project, list_projects, rename_project, reorder_clips, update_clip_proxy,
@@ -10,7 +11,7 @@ use db::{
 use serde_json::json;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
@@ -46,7 +47,7 @@ fn slugify(name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Translate a Windows path to WSL2 /mnt/... path.
-/// e.g. C:\clips\foo.mp4 -> /mnt/c/clips/foo.mp4
+/// Used only by start_job (render pipeline stays on WSL). Do not use for scan/proxy.
 fn win_to_wsl(path: &str) -> String {
     let p = path.replace('\\', "/");
     if p.len() >= 2 && p.chars().nth(1) == Some(':') {
@@ -59,39 +60,314 @@ fn win_to_wsl(path: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Native FFmpeg helpers (Batch 16 — replaces WSL scan.py / proxy.py)
+// ---------------------------------------------------------------------------
+
+/// FFmpeg executable name — resolved via system PATH (installed via WinGet).
+/// Falls back gracefully: if not in PATH, commands return errors logged to stderr.
+fn ffmpeg_exe() -> &'static str { "ffmpeg" }
+fn ffprobe_exe() -> &'static str { "ffprobe" }
+
+/// Detect the best available H.264 encoder once and cache the result.
+/// Order: h264_nvenc (Nvidia) → h264_qsv (Intel) → h264_amf (AMD) → libx264 (software).
+/// Each candidate is tested with a 1-frame lavfi encode to /dev/null.
+static BEST_ENCODER: OnceLock<String> = OnceLock::new();
+
+fn detect_best_encoder() -> &'static str {
+    BEST_ENCODER.get_or_init(|| {
+        for enc in &["h264_nvenc", "h264_qsv", "h264_amf"] {
+            let ok = std::process::Command::new(ffmpeg_exe())
+                .args([
+                    "-f", "lavfi", "-i", "color=black:s=128x72:r=1",
+                    "-vframes", "1", "-c:v", enc, "-f", "null", "-",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                eprintln!("[proxy] GPU encoder selected: {}", enc);
+                return enc.to_string();
+            }
+        }
+        eprintln!("[proxy] no GPU encoder available, using libx264 (software)");
+        "libx264".to_string()
+    })
+}
+
+/// Video extensions to scan (case-insensitive check applied by caller).
+const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "mts", "m2ts"];
+
+/// Probe a single video file with ffprobe. Returns ClipMeta on success.
+fn probe_single_file(path: &std::path::Path) -> Result<ClipMeta, String> {
+    let path_str = path.to_string_lossy().to_string();
+
+    let size_bytes = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+
+    let probe = std::process::Command::new(ffprobe_exe())
+        .args([
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-show_format",
+            &path_str,
+        ])
+        .output()
+        .map_err(|e| format!("ffprobe launch failed: {}", e))?;
+
+    if !probe.status.success() {
+        return Err(format!("ffprobe non-zero exit for {}", path_str));
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&probe.stdout)
+        .map_err(|e| format!("ffprobe JSON parse error: {}", e))?;
+
+    let empty_arr = serde_json::Value::Array(vec![]);
+    let streams = json["streams"].as_array().unwrap_or(
+        empty_arr.as_array().unwrap()
+    );
+
+    let video = streams.iter().find(|s| s["codec_type"].as_str() == Some("video"));
+    let codec_name = video
+        .and_then(|s| s["codec_name"].as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let width = video.and_then(|s| s["width"].as_i64()).unwrap_or(0);
+    let height = video.and_then(|s| s["height"].as_i64()).unwrap_or(0);
+    let has_audio = streams.iter().any(|s| s["codec_type"].as_str() == Some("audio"));
+
+    // Duration: prefer stream-level, fall back to format-level
+    let stream_dur = video.and_then(|s| s["duration"].as_str())
+        .and_then(|d| d.parse::<f64>().ok())
+        .filter(|&d| d > 0.0);
+    let format_dur = json["format"]["duration"].as_str()
+        .and_then(|d| d.parse::<f64>().ok());
+    let duration_s = stream_dur.or(format_dur).unwrap_or(0.0);
+    let duration_ms = (duration_s * 1000.0) as i64;
+
+    let thumbnail_data = extract_thumbnail_piped(&path_str);
+
+    let filename = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(ClipMeta {
+        filename,
+        local_path: path_str,
+        size_bytes,
+        duration_ms,
+        width,
+        height,
+        has_audio,
+        thumbnail_data,
+        codec_name,
+    })
+}
+
+/// Extract a JPEG thumbnail frame at 1s seek, piped to stdout, returned as a data URI.
+/// Uses -map 0:v:0 to skip DJI embedded MJPEG thumbnail in stream 1.
+fn extract_thumbnail_piped(src: &str) -> Option<String> {
+    let output = std::process::Command::new(ffmpeg_exe())
+        .args([
+            "-ss", "1",
+            "-i", src,
+            "-map", "0:v:0",
+            "-frames:v", "1",
+            "-q:v", "5",
+            "-vf", "scale=320:-1",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    if output.stdout.is_empty() {
+        return None;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&output.stdout);
+    Some(format!("data:image/jpeg;base64,{}", b64))
+}
+
+/// Extract a JPEG thumbnail and write to a temp file, return data URI.
+/// Used by proxy gen where -map 0:v:0 write-to-file is simpler than pipe.
+fn extract_thumbnail_to_file(src: &str, clip_id: &str) -> Option<String> {
+    let temp_dir = std::env::temp_dir().join("rushcut");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let tmp = temp_dir.join(format!("{}-thumb.jpg", clip_id));
+
+    let status = std::process::Command::new(ffmpeg_exe())
+        .args([
+            "-ss", "1",
+            "-i", src,
+            "-map", "0:v:0",
+            "-frames:v", "1",
+            "-q:v", "5",
+            "-y",
+            tmp.to_str().unwrap_or(""),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+
+    if !status.success() {
+        return None;
+    }
+    let bytes = std::fs::read(&tmp).ok()?;
+    let _ = std::fs::remove_file(&tmp);
+    if bytes.is_empty() { return None; }
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Some(format!("data:image/jpeg;base64,{}", b64))
+}
+
+/// Get peak volume in dBFS by running volumedetect on the audio.
+/// Returns None if the clip has no audio or ffmpeg fails.
+fn get_peak_volume_db(src: &str) -> Option<f64> {
+    let output = std::process::Command::new(ffmpeg_exe())
+        .args(["-i", src, "-filter:a", "volumedetect", "-vn", "-f", "null", "-"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        if line.contains("max_volume") {
+            if let Some(rest) = line.split("max_volume:").nth(1) {
+                if let Ok(val) = rest.trim().split_whitespace().next().unwrap_or("").parse::<f64>() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Render a volume-normalised waveform PNG (800x80, green cbrt) and return as data URI.
+/// Two-pass: volumedetect then showwavespic with boost so peak = 0 dBFS = full height.
+fn extract_waveform_data(src: &str, clip_id: &str) -> Option<String> {
+    let boost_db = get_peak_volume_db(src)
+        .map(|peak| (-peak).clamp(0.0, 40.0))
+        .unwrap_or(0.0);
+
+    let temp_dir = std::env::temp_dir().join("rushcut");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let tmp = temp_dir.join(format!("{}-wave.png", clip_id));
+
+    let filter = format!(
+        "[0:a]volume={:.1}dB,showwavespic=s=800x80:colors=0x22c55e:scale=cbrt",
+        boost_db
+    );
+
+    let status = std::process::Command::new(ffmpeg_exe())
+        .args([
+            "-i", src,
+            "-filter_complex", &filter,
+            "-frames:v", "1",
+            "-y",
+            tmp.to_str().unwrap_or(""),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+
+    if !status.success() {
+        return None;
+    }
+    let bytes = std::fs::read(&tmp).ok()?;
+    let _ = std::fs::remove_file(&tmp);
+    if bytes.is_empty() { return None; }
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Some(format!("data:image/png;base64,{}", b64))
+}
+
+/// Check that an MP4 proxy is complete (moov atom present) via ffprobe.
+/// A missing moov atom = FFmpeg was killed mid-write.
+fn is_valid_proxy_file(path: &str) -> bool {
+    std::process::Command::new(ffprobe_exe())
+        .args(["-v", "quiet", "-show_format", path])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Encode a 480p H.264 proxy using the best available GPU encoder (detected once via OnceLock).
+/// GPU encoders (nvenc/qsv/amf) handle their own hardware decode — no separate hwaccel flag needed.
+/// Returns true on success.
+fn generate_proxy_file(src: &str, dst: &str) -> bool {
+    let encoder = detect_best_encoder();
+    eprintln!("[proxy] encoding {} -> {} using {}", src, dst, encoder);
+    let ok = std::process::Command::new(ffmpeg_exe())
+        .args([
+            "-i", src,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c:v", encoder,
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-vf", "scale=-2:480",
+            "-c:a", "copy",
+            "-y",
+            dst,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        eprintln!("[proxy] encode OK: {}", dst);
+    } else {
+        eprintln!("[proxy] encode FAILED: {}", dst);
+    }
+    ok
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-/// Scan a folder for video clips via pipeline/scan.py.
+/// Scan a folder for video clips using native ffprobe (no WSL).
 /// folder_path: Windows path (e.g. C:\clips\)
 /// Returns array of ClipMeta with Windows local_path values.
 #[tauri::command]
 fn scan_folder(folder_path: String) -> Result<Vec<ClipMeta>, String> {
-    let wsl_folder = win_to_wsl(&folder_path);
-
-    let output = std::process::Command::new("wsl")
-        .args([
-            "-d", "Ubuntu-24.04",
-            "-u", "root",
-            "--",
-            "python3",
-            "/mnt/c/apps/rushcut/pipeline/scan.py",
-            "--folder",
-            &wsl_folder,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to launch scan.py: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("scan.py failed: {}", stderr));
+    let dir = std::path::Path::new(&folder_path);
+    if !dir.is_dir() {
+        return Ok(vec![]);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let clips: Vec<ClipMeta> = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("Failed to parse scan.py output: {}\n{}", e, stdout))?;
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read dir: {}", e))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file() && p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| VIDEO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .collect();
+    entries.sort();
 
-    Ok(clips)
+    let mut results = Vec::new();
+    for path in &entries {
+        match probe_single_file(path) {
+            Ok(meta) => results.push(meta),
+            Err(e) => eprintln!("[scan] skipping {:?}: {}", path.file_name().unwrap_or_default(), e),
+        }
+    }
+    Ok(results)
 }
 
 /// Delete a project and all associated clips and jobs.
@@ -146,35 +422,29 @@ fn update_clip_review_cmd(
         .map_err(|e| format!("DB error (update clip review): {}", e))
 }
 
-/// Probe a list of individual video files (Windows paths) via scan.py --files.
+/// Probe individual video files (Windows paths) using native ffprobe (no WSL).
 /// Returns ClipMeta for each valid video file.
 #[tauri::command]
 fn probe_files(paths: Vec<String>) -> Result<Vec<ClipMeta>, String> {
     if paths.is_empty() {
         return Ok(vec![]);
     }
-
-    let wsl_paths: Vec<String> = paths.iter().map(|p| win_to_wsl(p)).collect();
-
-    let mut cmd = std::process::Command::new("wsl");
-    cmd.args(["-d", "Ubuntu-24.04", "-u", "root", "--", "python3",
-              "/mnt/c/apps/rushcut/pipeline/scan.py", "--files"]);
-    for wp in &wsl_paths {
-        cmd.arg(wp);
+    let mut results = Vec::new();
+    for path_str in &paths {
+        let path = std::path::Path::new(path_str);
+        let ext_ok = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| VIDEO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+            .unwrap_or(false);
+        if !path.is_file() || !ext_ok {
+            continue;
+        }
+        match probe_single_file(path) {
+            Ok(meta) => results.push(meta),
+            Err(e) => eprintln!("[probe] skipping {:?}: {}", path.file_name().unwrap_or_default(), e),
+        }
     }
-
-    let output = cmd.output().map_err(|e| format!("Failed to launch scan.py: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("scan.py --files failed: {}", stderr));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let clips: Vec<ClipMeta> = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("Failed to parse scan.py output: {}\n{}", e, stdout))?;
-
-    Ok(clips)
+    Ok(results)
 }
 
 /// Create a project and persist clips to SQLite.
@@ -208,6 +478,7 @@ fn create_project(name: String, clips: Vec<ClipMeta>) -> Result<String, String> 
             include: 0, // explicit-add model: insert_clip SQL enforces 0; this matches for clarity
             proxy_path: None,
             waveform_data: None,
+            codec_name: meta.codec_name.clone(),
         };
         insert_clip(&clip).map_err(|e| format!("DB error (insert clip {}): {}", meta.filename, e))?;
     }
@@ -426,22 +697,20 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
 // Proxy generation (background)
 // ---------------------------------------------------------------------------
 
-/// Kick off H.264 720p proxy generation for all un-proxied clips in a project.
-/// Returns immediately; proxies are written in a background WSL task.
+/// Kick off the upfront media batch (thumbnail + waveform) for all clips in a project.
+/// Proxy gen is now lazy — see generate_proxy_for_clip.
+/// Returns immediately; batch runs in a background task.
 #[tauri::command]
 async fn generate_proxies_cmd(
     app: AppHandle,
     state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>,
     project_id: String,
 ) -> Result<(), String> {
-    // Concurrency guard: only one proxy generation per project at a time.
-    // Upload.tsx fires this immediately after create_project; Trimmer.tsx also fires it as a
-    // safety net on mount. Without this guard, both calls spawn concurrent WSL FFmpeg processes
-    // that race to write the same proxy .mp4, producing a corrupt file (missing moov atom).
+    // Concurrency guard: only one batch run per project at a time.
     {
         let mut set = state.lock().unwrap();
         if set.contains(&project_id) {
-            eprintln!("[proxy] already running for project {}, skipping duplicate call", project_id);
+            eprintln!("[proxy] batch already running for project {}, skipping", project_id);
             return Ok(());
         }
         set.insert(project_id.clone());
@@ -450,160 +719,138 @@ async fn generate_proxies_cmd(
     let project_data = get_project_with_clips(&project_id)
         .map_err(|e| format!("DB error (get clips): {}", e))?;
 
-    // Include ALL clips: proxies needed for scrubbing, thumbnails/waveforms for UI.
-    // proxy.py skips proxy encode if file already exists (fast path).
-    // needs_thumbnail is ALWAYS true — scan.py thumbnails are unreliable (corrupt for HEVC).
-    //   proxy.py always overwrites with a clean FFmpeg-extracted JPEG from the proxy.
-    // needs_waveform skips if waveform already extracted.
-    let all_clips = &project_data.clips;
-
+    let all_clips = project_data.clips;
     if all_clips.is_empty() {
-        // Nothing to do — remove from in-progress set before returning.
         state.lock().unwrap().remove(&project_id);
         return Ok(());
     }
 
-    // Proxy storage: %APPDATA%\rushcut\proxies
-    let appdata = std::env::var("APPDATA")
-        .map_err(|_| "APPDATA env var not set".to_string())?;
-    let proxy_win_dir = format!(r"{}\rushcut\proxies", appdata);
-    std::fs::create_dir_all(&proxy_win_dir)
-        .map_err(|e| format!("Failed to create proxy dir: {}", e))?;
-    let proxy_wsl_dir = win_to_wsl(&proxy_win_dir);
-
-    // Write proxy manifest to %TEMP%\rushcut\<project_id>-proxy.json
-    let manifest = serde_json::json!({
-        "project_id": project_id,
-        "proxy_dir": proxy_wsl_dir,
-        "clips": all_clips.iter().map(|c| serde_json::json!({
-            "id": c.id,
-            "local_path": c.local_path,
-            "needs_thumbnail": true,
-            "needs_waveform": c.waveform_data.is_none(),
-        })).collect::<Vec<_>>(),
-    });
-    let temp_dir = std::env::temp_dir().join("rushcut");
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    let manifest_path = temp_dir.join(format!("{}-proxy.json", project_id));
-    std::fs::write(&manifest_path, manifest.to_string())
-        .map_err(|e| format!("Failed to write proxy manifest: {}", e))?;
-    let wsl_manifest = win_to_wsl(&manifest_path.to_string_lossy());
-
-    // Clone the Arc so it can be moved into the async spawn (tauri::State is not Send).
     let guard = Arc::clone(&*state);
     let pid = project_id.clone();
     tauri::async_runtime::spawn(async move {
-        run_proxy_gen(app, pid.clone(), wsl_manifest).await;
-        // Release the in-progress slot so subsequent calls (e.g. re-opening the project) work.
+        run_media_batch(app, pid.clone(), all_clips).await;
         guard.lock().unwrap().remove(&pid);
     });
 
     Ok(())
 }
 
-async fn run_proxy_gen(app: AppHandle, project_id: String, wsl_manifest_path: String) {
-    let mut child = match std::process::Command::new("wsl")
-        .args([
-            "-d", "Ubuntu-24.04",
-            "-u", "root",
-            "--",
-            "python3",
-            "/mnt/c/apps/rushcut/pipeline/proxy.py",
-            "--manifest-path", &wsl_manifest_path,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+/// Generate a proxy for a single clip on demand.
+/// Called by Trimmer.tsx when WebView2 fires onError on the source video.
+/// Uses the best available GPU encoder (detected once via OnceLock).
+#[tauri::command]
+async fn generate_proxy_for_clip(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>,
+    project_id: String,
+    clip_id: String,
+) -> Result<(), String> {
+    // Concurrency guard keyed by clip to prevent duplicate encode if onError fires twice
+    let guard_key = format!("{}-{}", project_id, clip_id);
     {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[proxy] Failed to spawn: {}", e);
-            let _ = app.emit("proxy-error", json!({ "projectId": project_id, "message": e.to_string() }));
-            return;
+        let mut set = state.lock().unwrap();
+        if set.contains(&guard_key) {
+            eprintln!("[proxy] already generating proxy for clip {}, skipping", clip_id);
+            return Ok(());
         }
-    };
+        set.insert(guard_key.clone());
+    }
 
-    let stdout = child.stdout.take().expect("piped stdout");
-    let reader = BufReader::new(stdout);
+    let project_data = get_project_with_clips(&project_id)
+        .map_err(|e| format!("DB error (get clip): {}", e))?;
+    let clip = project_data.clips.into_iter().find(|c| c.id == clip_id)
+        .ok_or_else(|| format!("clip {} not found in project {}", clip_id, project_id))?;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    let guard = Arc::clone(&*state);
+    tauri::async_runtime::spawn(async move {
+        run_single_proxy(app, project_id, clip).await;
+        guard.lock().unwrap().remove(&guard_key);
+    });
 
-        if let Some(data) = line.strip_prefix("PROXY:") {
-            // Parse clip_id=<id>,win_path=<path>
-            let mut clip_id = "";
-            let mut win_path = "";
-            for part in data.split(',') {
-                if let Some(v) = part.strip_prefix("clip_id=") { clip_id = v; }
-                if let Some(v) = part.strip_prefix("win_path=") { win_path = v; }
-            }
-            if !clip_id.is_empty() && !win_path.is_empty() {
-                let _ = update_clip_proxy(clip_id, win_path);
-                let _ = app.emit("proxy-progress", json!({
+    Ok(())
+}
+
+/// Upfront media batch: thumbnail + waveform for all clips.
+/// Proxy generation is now lazy — triggered per-clip via generate_proxy_for_clip when
+/// WebView2 cannot decode the source file (onError in Trimmer.tsx).
+async fn run_media_batch(app: AppHandle, project_id: String, clips: Vec<Clip>) {
+    for clip in clips.iter() {
+        let clip_id = &clip.id;
+        let src = &clip.local_path;
+
+        // Step 1: Thumbnail — always refresh from source (~1s)
+        if let Some(data) = extract_thumbnail_to_file(src, clip_id) {
+            let _ = update_clip_thumbnail(clip_id, &data);
+            let _ = app.emit("thumbnail-progress", json!({
+                "projectId": project_id,
+                "clipId": clip_id,
+                "thumbnailData": data,
+            }));
+        }
+
+        // Step 2: Waveform — skip if already stored (~3-5s)
+        if clip.waveform_data.is_none() {
+            if let Some(data) = extract_waveform_data(src, clip_id) {
+                let _ = update_clip_waveform(clip_id, &data);
+                let _ = app.emit("waveform-progress", json!({
                     "projectId": project_id,
                     "clipId": clip_id,
-                    "winPath": win_path,
+                    "waveformData": data,
                 }));
             }
-        } else if let Some(rest) = line.strip_prefix("THUMBNAIL_DONE:clip_id=") {
-            // Format: THUMBNAIL_DONE:clip_id=<id>,data=<base64>
-            // Base64 alphabet contains no commas, so find(",data=") is unambiguous.
-            if let Some(comma_idx) = rest.find(",data=") {
-                let clip_id = &rest[..comma_idx];
-                let data = &rest[comma_idx + 6..];
-                if !clip_id.is_empty() && !data.is_empty() {
-                    let _ = update_clip_thumbnail(clip_id, data);
-                    let _ = app.emit("thumbnail-progress", json!({
-                        "projectId": project_id,
-                        "clipId": clip_id,
-                        "thumbnailData": data,
-                    }));
-                }
-            }
-        } else if let Some(rest) = line.strip_prefix("WAVEFORM_DONE:clip_id=") {
-            // Format: WAVEFORM_DONE:clip_id=<id>,data=<base64>
-            if let Some(comma_idx) = rest.find(",data=") {
-                let clip_id = &rest[..comma_idx];
-                let data = &rest[comma_idx + 6..];
-                if !clip_id.is_empty() && !data.is_empty() {
-                    let _ = update_clip_waveform(clip_id, data);
-                    let _ = app.emit("waveform-progress", json!({
-                        "projectId": project_id,
-                        "clipId": clip_id,
-                        "waveformData": data,
-                    }));
-                }
-            }
-        } else if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
-            let pct: i64 = pct_str.trim().parse().unwrap_or(0);
-            let _ = app.emit("proxy-progress", json!({
-                "projectId": project_id,
-                "progress": pct,
-            }));
-        } else if line.starts_with("DONE:") {
-            let _ = app.emit("proxy-done", json!({ "projectId": project_id }));
-            return;
-        } else if let Some(err_msg) = line.strip_prefix("ERROR:") {
-            eprintln!("[proxy] ERROR: {}", err_msg);
-            let _ = app.emit("proxy-error", json!({
-                "projectId": project_id,
-                "message": err_msg.trim(),
-            }));
-            return;
         }
     }
 
-    // Process exited without DONE/ERROR
-    let _ = child.wait();
-    eprintln!("[proxy] process exited without DONE/ERROR");
-    let _ = app.emit("proxy-error", json!({
-        "projectId": project_id,
-        "message": "Proxy process exited unexpectedly",
-    }));
+    let _ = app.emit("proxy-done", json!({ "projectId": project_id }));
+}
+
+/// Lazy single-clip proxy generation — called when WebView2 fires onError on the source clip.
+/// Encodes HEVC (or unknown codec) clips to 480p H.264 using the best available GPU encoder.
+async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
+    let appdata = match std::env::var("APPDATA") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("[proxy] APPDATA not set");
+            return;
+        }
+    };
+    let proxy_dir = format!(r"{}\rushcut\proxies", appdata);
+    if let Err(e) = std::fs::create_dir_all(&proxy_dir) {
+        eprintln!("[proxy] failed to create proxy dir: {}", e);
+    }
+
+    let clip_id = &clip.id;
+    let src = &clip.local_path;
+    let proxy_path = format!(r"{}\{}.mp4", proxy_dir, clip_id);
+
+    // Skip if a valid proxy already exists on disk
+    let needs_encode = if std::path::Path::new(&proxy_path).exists() {
+        !is_valid_proxy_file(&proxy_path)
+    } else {
+        true
+    };
+
+    if !needs_encode {
+        eprintln!("[proxy] valid proxy already on disk for {}, emitting path", clip_id);
+        let _ = update_clip_proxy(clip_id, &proxy_path);
+        let _ = app.emit("proxy-progress", json!({
+            "projectId": project_id,
+            "clipId": clip_id,
+            "winPath": proxy_path,
+        }));
+        return;
+    }
+
+    if generate_proxy_file(src, &proxy_path) {
+        let _ = update_clip_proxy(clip_id, &proxy_path);
+        let _ = app.emit("proxy-progress", json!({
+            "projectId": project_id,
+            "clipId": clip_id,
+            "winPath": proxy_path,
+        }));
+    } else {
+        eprintln!("[proxy] encode failed for clip {}", clip_id);
+    }
 }
 
 fn emit_error(app: &AppHandle, job_id: &str, message: &str) {
@@ -716,6 +963,7 @@ pub fn run() {
             delete_project_cmd,
             open_output_path,
             generate_proxies_cmd,
+            generate_proxy_for_clip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
