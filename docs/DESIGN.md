@@ -94,12 +94,14 @@ Always **green** (`#22c55e`), never white/grey.
 Chip active accent: `#99B3FF` (blue) — used for music mood, volume preset, transition chips.
 Card color-swatch selected ring: `#FF8A65` (peach) — kept for card background pickers only.
 
+**Chip text size: minimum `text-sm`.** Never `text-xs` — chip labels are readable interactive content, not decorative. Note: `SettingsPanel.tsx` currently uses `text-xs` on its chips (pre-15e deviation); new screens must use `text-sm`.
+
 ```tsx
 {/* Active */}
-"border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+"text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
 
 {/* Inactive */}
-"border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+"text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
 ```
 
 Toggle: ON = `bg-[#99B3FF]`, OFF = `bg-white/25`.

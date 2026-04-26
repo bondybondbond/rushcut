@@ -15,15 +15,15 @@
 
 ## Current Phase
 
-**Phase 2 — E2E spec debt cleared. Next: Transitions screen (Batch 15e).**
+**Phase 2 — Batch 15e complete. Next: 15f Sound screen (`/sound/:projectId`).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black. Must register the route in `App.tsx`. The CTA "Next: Transitions →" in Trimmer already points to `navigate(\`/editor/${projectId}\`)` — this must be updated to `/transitions/` when the screen exists.
+**Batch 15f — Sound screen (`/sound/:projectId`).** Extract music settings from the current Editor into a standalone screen: music mood selector (None / Cinematic / Upbeat / Chill / Electronic chips) + volume preset chips (Subtle / Balanced / Prominent). Persist selection in `sessionStorage` (`rc_sound_${projectId}`) matching the Transitions pattern. StepNav `active="sound"`, CTA "Next: Render →" bridges to `/editor/:projectId` until 15g ships.
 
-**Also note:** Editor "Back" button now goes to `/trimmer/:projectId` (fixed this session). Editor screen is a bridge until Transitions/Sound/Render screens ship. Once all three exist, the Editor screen should be retired.
+**Future — Edit screen rename (post-15f):** When text cards ship, rename `/transitions/` → `/edit/` and add tabs: Transitions / Text Cards / Animations. StepNav "Transitions" → "Edit". Sections stacked vertically with disabled states. See `docs/PRD-DEV.md` Batch 15e notes.
 
 ---
 

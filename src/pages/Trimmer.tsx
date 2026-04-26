@@ -381,7 +381,7 @@ export default function Trimmer() {
         active="trimmer"
         projectId={projectId}
         nextLabel="Next: Transitions"
-        onNext={() => navigate(`/editor/${projectId}`)}
+        onNext={() => navigate(`/transitions/${projectId}`)}
         nextDisabled={inFilmCount === 0}
       />
 

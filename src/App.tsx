@@ -7,6 +7,7 @@ import Output from "@/pages/Output";
 import Library from "@/pages/Library";
 import Review from "@/pages/Review";
 import Trimmer from "@/pages/Trimmer";
+import Transitions from "@/pages/Transitions";
 import { AppShell } from "@/components/AppShell";
 
 export default function App() {
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="/upload" element={<Upload />} />
         <Route path="/library" element={<Library />} />
         <Route path="/trimmer/:projectId" element={<Trimmer />} />
+        <Route path="/transitions/:projectId" element={<Transitions />} />
         <Route path="/review/:projectId" element={<Review />} />
         <Route path="/editor/:projectId" element={<Editor />} />
         <Route path="/output/:jobId" element={<Output />} />

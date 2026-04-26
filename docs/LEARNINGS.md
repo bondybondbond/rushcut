@@ -5,6 +5,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — Serena does not support TSX/JSX files
+
+**Problem:** `mcp__serena__get_symbols_overview` and `find_symbol` return "Cannot extract symbols — Active languages: []" on `.tsx`/`.jsx` files in this project. Calling them wastes a round trip.
+**Solution:** Skip Serena entirely for React component files. Use `Read` directly (small files) or `Grep` for targeted symbol searches. Serena is only useful for Rust files in this project (`lib.rs`, `db.rs`).
+**Context:** Any session touching `src/**/*.tsx` or `src/**/*.ts`.
+
+---
+
 ## Workflow — Worktree sessions
 
 - **Edits in a worktree are NOT visible to the running app** — `pnpm dev` launched from `C:\apps\rushcut` reads the main branch, not the worktree at `C:\apps\rushcut\.claude\worktrees\<name>`. Any fix applied only in the worktree appears to have no effect when the user tests. Always apply fixes to the main-branch files (`C:\apps\rushcut\src\...`) when the goal is immediate user-visible verification, or merge the worktree branch first.
