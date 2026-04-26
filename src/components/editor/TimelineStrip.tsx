@@ -124,7 +124,7 @@ function SortableClipTile({ clip, index, onDelete }: SortableClipTileProps) {
           {clip.filename}
         </p>
         <p className="text-[#a3a3a3] text-[9px] mt-0.5 font-mono">
-          {formatDuration(clip.duration_ms)}
+          {formatDuration(clip.out_ms != null && clip.in_ms != null ? clip.out_ms - clip.in_ms : clip.duration_ms)}
         </p>
       </div>
     </div>

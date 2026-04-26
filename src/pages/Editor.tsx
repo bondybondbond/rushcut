@@ -37,7 +37,7 @@ export default function Editor() {
     if (!projectId) return;
     invoke<ProjectWithClips>("get_project", { projectId })
       .then((data) => {
-        setClips(data.clips);
+        setClips(data.clips.filter((c) => c.include != 0));
         setProjectName(data.project.name);
         setNameInput(data.project.name);
       })

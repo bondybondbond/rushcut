@@ -15,13 +15,13 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 15c remaining (C4+C5) COMPLETE. TrimBar click-to-seek + 4px playhead with pip shipped. Next: Transitions screen (15b/15e) or E2E spec fixes.**
+**Phase 2 — Editor screen bug fix shipped. Next: Transitions screen (15e) or E2E spec fixes.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15b/15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black.
+**Batch 15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black.
 
 **OR** fix stale E2E specs first:
 - `gap-editor.spec.ts` — waits for `/editor/` URL; now routes to `/trimmer/` (pre-existing since Batch 15a)
@@ -30,6 +30,11 @@
 ---
 
 ## Recently Completed
+
+**Editor screen display fix (2026-04-26)**
+
+- `src/pages/Editor.tsx`: `setClips` now filters `c.include != 0` — excluded clips no longer appear in the Editor clip strip.
+- `src/components/editor/TimelineStrip.tsx`: duration badge now shows `out_ms - in_ms` when both are set, falling back to `duration_ms` when no trim data. Fixes raw durations being shown for trimmed clips.
 
 **Batch 15c remaining (C4 + C5) — TrimBar seek + playhead pip (2026-04-26)**
 
