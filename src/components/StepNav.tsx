@@ -58,14 +58,14 @@ export function StepNav({
                   isActive
                     ? "text-[#FF8A65] bg-[#FF8A65]/10 border border-[#FF8A65]/40"
                     : isPast
-                    ? "text-[#e5e5e5]/70 hover:text-[#e5e5e5] cursor-pointer"
-                    : "text-[#e5e5e5]/20 cursor-default"
+                    ? "text-[#e5e5e5] hover:text-[#e5e5e5] cursor-pointer"
+                    : "text-[#a3a3a3] cursor-default"
                 }`}
               >
                 {step.label}
               </button>
               {idx < STEPS.length - 1 && (
-                <span className={`text-xs ${isFuture ? "text-[#e5e5e5]/15" : "text-[#e5e5e5]/30"}`}>
+                <span className="text-xs text-[#555555]">
                   /
                 </span>
               )}

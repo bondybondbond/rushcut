@@ -140,7 +140,7 @@ export default function Editor() {
           <div className="flex items-center gap-3">
             <button
               data-testid="btn-back"
-              onClick={() => navigate("/library")}
+              onClick={() => navigate(projectId ? `/trimmer/${projectId}` : "/library")}
               className="flex items-center gap-1.5 px-3 py-1.5 border border-[#C5FFF9]/40 text-[#C5FFF9] text-sm font-medium rounded-md hover:bg-[#C5FFF9]/10 transition-colors"
             >
               &#8592; Back

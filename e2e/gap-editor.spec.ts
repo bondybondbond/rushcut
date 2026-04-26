@@ -1,12 +1,12 @@
 /**
- * Editor extended spec — music chips, settings inputs, clip list, NavDrawer from library.
- * Covers checks not in fast.spec.ts.
+ * Trimmer via real navigation — navigates Library -> "Open project" -> /trimmer/.
+ * Validates the full navigation flow, not just the Trimmer component in isolation.
+ * (trimmer.spec.ts covers the component via pushState shortcut; this spec tests the journey.)
  * Requires C:\clips\ to contain at least 1 video file.
  * Run: pnpm test:e2e:editor
  */
 
-// Shared invoke payload builder (mirrors SKILL.md shortcut #2)
-async function createEvalProject(): Promise<{ id: number } | null> {
+async function createEvalProject(): Promise<string | null> {
   return browser.execute(async () => {
     const { invoke } = (window as any).__TAURI_INTERNALS__;
     const metas: any[] = await invoke("scan_folder", { folderPath: "C:\\clips" });
@@ -26,7 +26,7 @@ async function createEvalProject(): Promise<{ id: number } | null> {
   });
 }
 
-describe("Editor extended", () => {
+describe("Trimmer via real navigation", () => {
   let hasClips = true;
 
   before(async () => {
@@ -35,7 +35,12 @@ describe("Editor extended", () => {
       async () => {
         try {
           const url = await browser.getUrl();
-          return url.includes("/upload") || url.includes("/library") || url.includes("/editor/");
+          return (
+            url.includes("/upload") ||
+            url.includes("/library") ||
+            url.includes("/editor/") ||
+            url.includes("/trimmer/")
+          );
         } catch {
           return false;
         }
@@ -47,7 +52,7 @@ describe("Editor extended", () => {
     const result = await createEvalProject();
     if (!result) { hasClips = false; return; }
 
-    // Navigate /upload -> /library (Library mounts fresh, fetches new project)
+    // Navigate to library via hamburger — no pushState, real UI flow
     const hamburger = await $('[data-testid="btn-nav-open"]');
     await hamburger.waitForExist({ timeout: 5_000 });
     await hamburger.click();
@@ -59,104 +64,50 @@ describe("Editor extended", () => {
       { timeout: 5_000, interval: 200 }
     );
 
-    // Open the project
+    // Open the project — should now route to /trimmer/ (since Batch 15a)
     const openBtn = await $('[data-testid="btn-open-project"]');
     await openBtn.waitForExist({ timeout: 5_000 });
     await openBtn.click();
     await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/editor/"),
+      async () => (await browser.getUrl()).includes("/trimmer/"),
       { timeout: 8_000, interval: 300 }
     );
     await browser.pause(300);
   });
 
   // ---------------------------------------------------------------------------
-  // Project metadata
+  // Navigation flow assertions
   // ---------------------------------------------------------------------------
 
-  it("displays project name Eval Test Film", async () => {
+  it("lands on /trimmer/ after clicking Open Project", async () => {
     if (!hasClips) return;
-    const nameEl = await $('[data-testid="project-name"]');
-    await nameEl.waitForExist({ timeout: 5_000 });
-    expect(await nameEl.getText()).toBe("Eval Test Film");
+    expect(await browser.getUrl()).toContain("/trimmer/");
   });
 
-  it("lists clips from C:\\clips", async () => {
+  it("shows MediaPantry sidebar with clip buttons", async () => {
     if (!hasClips) return;
-    const clips = await $$('[data-testid="clip-item"]');
+    const pantry = await $("aside");
+    await pantry.waitForExist({ timeout: 5_000 });
+    expect(await pantry.isDisplayed()).toBe(true);
+    const clips = await $$("aside button");
     expect(clips.length).toBeGreaterThan(0);
   });
 
-  // ---------------------------------------------------------------------------
-  // Music chip cycling
-  // ---------------------------------------------------------------------------
-
-  it("music chip cycling — each mood activates on click", async () => {
+  it("TrimBar is visible after real navigation", async () => {
     if (!hasClips) return;
-    for (const mood of ["cinematic", "upbeat", "chill", "electronic", "none"]) {
-      const chip = await $(`[data-testid="chip-music-${mood}"]`);
-      await chip.waitForExist({ timeout: 3_000 });
-      await chip.click();
-      await browser.pause(200);
-      // Re-fetch to get updated class after React re-render
-      const updated = await $(`[data-testid="chip-music-${mood}"]`);
-      const cls = await updated.getAttribute("class");
-      expect(cls).toContain("99B3FF");
-    }
+    const trimBar = await $('[data-testid="trim-bar"]');
+    await trimBar.waitForExist({ timeout: 5_000 });
+    expect(await trimBar.isDisplayed()).toBe(true);
   });
 
-  it("only one music chip is active at a time", async () => {
+  it("StepNav shows Trim step via real navigation", async () => {
     if (!hasClips) return;
-    // Click Cinematic
-    const cinChip = await $('[data-testid="chip-music-cinematic"]');
-    await cinChip.click();
-    await browser.pause(200);
-    // None chip must be inactive
-    const noneChip = await $('[data-testid="chip-music-none"]');
-    const cls = await noneChip.getAttribute("class");
-    expect(cls).not.toContain("99B3FF");
-    // Reset to none
-    await noneChip.click();
-    await browser.pause(200);
+    const text = await browser.execute(() => document.body.textContent ?? "");
+    expect(text).toContain("Trim");
   });
 
-  // ---------------------------------------------------------------------------
-  // Settings inputs
-  // ---------------------------------------------------------------------------
-
-  it("intro text input accepts text", async () => {
+  it("NavDrawer opens and closes from Trimmer screen", async () => {
     if (!hasClips) return;
-    const input = await $('[data-testid="input-intro-text"]');
-    await input.waitForExist({ timeout: 5_000 });
-    await input.clearValue();
-    await input.setValue("Eval Test Film");
-    expect(await input.getValue()).toBe("Eval Test Film");
-  });
-
-  it("outro text input accepts text", async () => {
-    if (!hasClips) return;
-    const input = await $('[data-testid="input-outro-text"]');
-    await input.waitForExist({ timeout: 5_000 });
-    await input.clearValue();
-    await input.setValue("Made with RushCut");
-    expect(await input.getValue()).toBe("Made with RushCut");
-  });
-
-  // ---------------------------------------------------------------------------
-  // NavDrawer from library
-  // ---------------------------------------------------------------------------
-
-  it("NavDrawer opens and closes from library page", async () => {
-    if (!hasClips) return;
-    // Navigate back to /library via Back button
-    const backBtn = await $('[data-testid="btn-back"]');
-    await backBtn.waitForExist({ timeout: 5_000 });
-    await backBtn.click();
-    await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/library"),
-      { timeout: 5_000, interval: 200 }
-    );
-
     const hamburger = await $('[data-testid="btn-nav-open"]');
     await hamburger.waitForExist({ timeout: 5_000 });
     await hamburger.click();

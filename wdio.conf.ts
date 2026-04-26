@@ -92,7 +92,8 @@ async function waitForAppRoute(timeoutMs = 30_000): Promise<void> {
             const ready = targets.some((t) =>
               t.url.includes("/upload") ||
               t.url.includes("/library") ||
-              t.url.includes("/editor/")
+              t.url.includes("/editor/") ||
+              t.url.includes("/trimmer/")
             );
             if (ready) { resolve(); return; }
           } catch {}

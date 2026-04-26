@@ -15,21 +15,29 @@
 
 ## Current Phase
 
-**Phase 2 — Editor screen bug fix shipped. Next: Transitions screen (15e) or E2E spec fixes.**
+**Phase 2 — E2E spec debt cleared. Next: Transitions screen (Batch 15e).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black.
+**Batch 15e — Transitions screen (`/transitions/:projectId`).** Extract transition picker from the current Editor into a standalone screen. Options: None / Crossfade / Dip to black. Must register the route in `App.tsx`. The CTA "Next: Transitions →" in Trimmer already points to `navigate(\`/editor/${projectId}\`)` — this must be updated to `/transitions/` when the screen exists.
 
-**OR** fix stale E2E specs first:
-- `gap-editor.spec.ts` — waits for `/editor/` URL; now routes to `/trimmer/` (pre-existing since Batch 15a)
-- `trimmer.spec.ts` line 167 — `getHTML(false)` times out at 600s on 1.9MB body; replace with targeted element selector
+**Also note:** Editor "Back" button now goes to `/trimmer/:projectId` (fixed this session). Editor screen is a bridge until Transitions/Sound/Render screens ship. Once all three exist, the Editor screen should be retired.
 
 ---
 
 ## Recently Completed
+
+**E2E spec debt + UX fixes (2026-04-26)**
+
+- `e2e/trimmer.spec.ts`: All 3× `$("body").getHTML(false)` replaced with `browser.execute(() => document.body.textContent ?? "")`. "In Film" assertion (removed in Batch 16b C3) updated to "Total" (FilmStrip duration label). `// TODO` comment added to `pushState` block explaining the permitted exception. 12/12 PASS.
+- `e2e/gap-editor.spec.ts`: Full rewrite as "Trimmer via real navigation" — `before()` drives real UI (hamburger → My Projects → "Open project"), waits for `/trimmer/` (was `/editor/`). All Editor-specific assertions replaced with 5 Trimmer assertions. 5/5 PASS.
+- `src/pages/Editor.tsx`: Back button `navigate("/library")` → `navigate(projectId ? \`/trimmer/${projectId}\` : "/library")` — user returns to same project's Trimmer, not library.
+- `src/components/StepNav.tsx`: Breadcrumb text colours corrected — past steps `#e5e5e5` (was `/70` opacity), future steps `#a3a3a3` (was `/20` opacity), separators `#555555` flat. No opacity tricks.
+- `wdio.conf.ts`: `/trimmer/` added to `waitForAppRoute()` URL check list.
+- `e2e.md` rules: "Known stale specs" cleared; "No pushState in before() hooks" rule added; `getHTML(false)` rule generalised to all specs.
+- `docs/DESIGN.md`: StepNav breadcrumb pattern added (flat hex tokens, no opacity).
 
 **Editor screen display fix (2026-04-26)**
 

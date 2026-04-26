@@ -106,6 +106,31 @@ Toggle: ON = `bg-[#99B3FF]`, OFF = `bg-white/25`.
 
 ---
 
+## StepNav Breadcrumb
+
+Five steps: Upload · Trim · Transitions · Sound · Render. `src/components/StepNav.tsx`.
+
+```tsx
+{/* Active step */}
+"text-[#FF8A65] bg-[#FF8A65]/10 border border-[#FF8A65]/40"
+
+{/* Past step (completed, clickable) */}
+"text-[#e5e5e5] hover:text-[#e5e5e5] cursor-pointer"
+
+{/* Future step (not yet reachable, disabled button) */}
+"text-[#a3a3a3] cursor-default"
+
+{/* Separator "/" between steps */}
+"text-[#555555]"  {/* decorative only — muted token */}
+```
+
+Rules:
+- **No opacity tricks** — do not use `text-[#e5e5e5]/70`, `text-[#e5e5e5]/20` etc. Use flat hex values only.
+- Future/disabled steps: `#a3a3a3` is the minimum (readable, secondary). `#555555` is reserved for the decorative `/` separators only, not step labels.
+- The `disabled` prop blocks clicks on future steps; `handleStepClick` also guards `idx >= activeIdx`.
+
+---
+
 ## Upload Flow UX Rules
 
 1. Files appear in the list **immediately** when selected — before upload starts.

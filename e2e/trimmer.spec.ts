@@ -63,6 +63,9 @@ describe("Trimmer screen", () => {
     projectId = await createTrimmerProject();
     if (!projectId) return;
 
+    // TODO: replace pushState with UI navigation once create_project triggers React routing
+    // (scan_folder + create_project via invoke() bypass Upload.tsx React state — no auto-nav fires).
+    // Permitted exception per .claude/rules/e2e.md: OS file dialogs can't be automated.
     await browser.execute((id: string) => {
       (window as any).__TAURI_INTERNALS__.invoke("get_project", { projectId: id });
       (window as any).history.pushState({}, "", `/trimmer/${id}`);
@@ -87,7 +90,7 @@ describe("Trimmer screen", () => {
     if (!projectId) return;
     const stepNav = await $('[class*="border-b"]'); // StepNav has border-b
     await stepNav.waitForExist({ timeout: 5_000 });
-    const html = await $("body").getHTML(false);
+    const html = await browser.execute(() => document.body.textContent ?? "");
     expect(html).toContain("Trim");
   });
 
@@ -104,7 +107,7 @@ describe("Trimmer screen", () => {
 
   it("shows film strip in empty state with drag hint text", async () => {
     if (!projectId) return;
-    const html = await $("body").getHTML(false);
+    const html = await browser.execute(() => document.body.textContent ?? "");
     // Empty state text: "Drag clips here or use Add to Film"
     expect(html).toContain("Drag clips here");
   });
@@ -163,10 +166,10 @@ describe("Trimmer screen", () => {
     }
     await browser.pause(500); // let optimistic update render
 
-    // Film strip should now show a clip (no longer empty state)
-    const html = await $("body").getHTML(false);
-    // "In Film" button should appear (replaces "Add to Film")
-    expect(html).toContain("In Film");
+    // Film strip should now show a clip — "Total" duration label replaces empty state
+    // ("In Film" button text was removed in Batch 16b; green dot badge is SVG, not text)
+    const html = await browser.execute(() => document.body.textContent ?? "");
+    expect(html).toContain("Total");
   });
 
   it("screenshot B: after Add to Film (green badge, clip in film strip, Next enabled)", async () => {

@@ -23,13 +23,21 @@ WebView2 subprocess survives `rushcut.exe` kill and holds the port.
 
 Hangs indefinitely — Vite HMR WebSocket blocks `readyState === "complete"`. Poll via `browser.waitUntil(() => browser.getUrl())`.
 
-## Never use `getHTML(false)` on the full body in trimmer specs
+## Never use `getHTML(false)` on the full body in any spec
 
-`$("body").getHTML(false)` fetches ~1.9MB of body HTML (MediaPantry thumbnails are base64-embedded) through WebDriver, causing >10 min transfers that exceed the 600s Mocha timeout. Use targeted selectors instead: `$$("button").find(b => b.getText() === "...")` or `browser.execute(() => document.querySelector("[data-testid=...]").textContent)`.
+`$("body").getHTML(false)` fetches ~1.9MB of body HTML (MediaPantry thumbnails are base64-embedded as `src="data:image/jpeg;base64,..."` attributes) through WebDriver, causing >10 min transfers that exceed the 600s Mocha timeout. Replacement: `browser.execute(() => document.body.textContent ?? "")` — returns text nodes only, no attribute values, no base64. For targeted checks: `$('[data-testid="..."]').getText()` or `$$("button").find(b => b.getText() === "...")`.
 
-## Known stale specs (do not count as regressions)
+## No `pushState` in `before()` hooks — drive the real UI
 
-- `gap-editor.spec.ts` — waits for `/editor/` URL but app now routes to `/trimmer/` after "Open project". Pre-existing since Batch 15a flow redesign. Needs rewrite targeting Trimmer screen.
+Every spec `before()` hook must navigate via real UI clicks, not `history.pushState`. Shortcuts blind tests to broken transitions and missing state; the navigation path is part of what is being tested.
+
+**Only permitted shortcut:** `scan_folder` + `create_project` via `browser.execute(invoke(...))` — OS file dialogs cannot be automated. After calling these, navigate forward exclusively via UI clicks.
+
+**Exception in `trimmer.spec.ts`:** `pushState` is used after `create_project` because the invoke call bypasses Upload.tsx React state (no auto-navigation fires). Documented in the spec with a `// TODO` comment. All future specs (`transitions.spec.ts`, `sound.spec.ts`) must walk the full flow from their starting screen.
+
+## Known stale specs
+
+None — all specs current as of 2026-04-26.
 
 ## rushcut-eval skill (`/rushcut-eval`)
 
