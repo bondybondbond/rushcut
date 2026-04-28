@@ -15,19 +15,31 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 15e complete. Next: 15f Sound screen (`/sound/:projectId`).**
+**Phase 2 — Batch 15f complete. Next: 15g Render screen (`/render/:projectId`).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15f — Sound screen (`/sound/:projectId`).** Extract music settings from the current Editor into a standalone screen: music mood selector (None / Cinematic / Upbeat / Chill / Electronic chips) + volume preset chips (Subtle / Balanced / Prominent). Persist selection in `sessionStorage` (`rc_sound_${projectId}`) matching the Transitions pattern. StepNav `active="sound"`, CTA "Next: Render →" bridges to `/editor/:projectId` until 15g ships.
+**Batch 15g — Render screen (`/render/:projectId`).** Merge the current Editor "Start Rendering" flow and Output page into one screen. Shows a summary of decisions (clip count, transition, music mood + volume). One "Render Film" CTA. Progress bar + output video playback on completion. StepNav `active="render"`. Editor and Output pages remain until 15g is fully confirmed.
 
 **Future — Edit screen rename (post-15f):** When text cards ship, rename `/transitions/` → `/edit/` and add tabs: Transitions / Text Cards / Animations. StepNav "Transitions" → "Edit". Sections stacked vertically with disabled states. See `docs/PRD-DEV.md` Batch 15e notes.
 
 ---
 
 ## Recently Completed
+
+**Batch 15f — Sound screen (2026-04-28)**
+
+- `src/pages/Sound.tsx` (new): `/sound/:projectId` route. Music mood chips (No Music / Cinematic / Upbeat / Chill / Electronic) + conditional volume chips (Subtle / Balanced / Prominent, hidden when mood = "none"). `sessionStorage` key `rc_sound_${projectId}` stores JSON `{ mood, volume }`. StepNav `active="sound"`, CTA "Next: Render →" bridges to `/editor/` until 15g ships.
+- `src/App.tsx`: `/sound/:projectId` route + `Sound` import added.
+- `src/pages/Transitions.tsx`: CTA `onNext` updated to navigate to `/sound/${projectId}` (was `/editor/`). Footer text updated.
+- `src/pages/Editor.tsx`: `VALID_MOODS`, `VALID_VOLUMES`, `VALID_TRANSITIONS` const arrays; `setConfig` seeded from `rc_transition_${projectId}` + `rc_sound_${projectId}` sessionStorage on project load. Strict `.includes()` validation guards.
+- `wdio.conf.ts`: `/transitions/` and `/sound/` added to `waitForAppRoute()` URL check list.
+- `e2e/sound.spec.ts` (new): 13 assertions — load, URL, heading, StepNav, screenshots A/B/C, chip presence, default active, volume hidden/shown, sessionStorage persistence, reload restore.
+- `package.json`: `test:e2e:sound` script added.
+- `docs/DESIGN.md`: Conditional chip row pattern documented (Sound screen).
+- E2E: 13/13 sound PASS · 12/12 transitions PASS · 7/7 fast PASS.
 
 **E2E spec debt + UX fixes (2026-04-26)**
 

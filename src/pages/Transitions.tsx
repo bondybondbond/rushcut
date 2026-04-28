@@ -45,7 +45,7 @@ export default function Transitions() {
         active="transitions"
         projectId={projectId}
         nextLabel="Next: Sound"
-        onNext={() => navigate(`/editor/${projectId}`)}
+        onNext={() => navigate(`/sound/${projectId}`)}
         nextDisabled={false}
       />
 
@@ -97,7 +97,7 @@ export default function Transitions() {
 
           {/* Output info */}
           <p className="text-sm text-[#a3a3a3]">
-            Your choice is saved automatically. Continue to Sound to choose music, or render directly from the Editor.
+            Your choice is saved automatically. Continue to Sound to choose music for your film.
           </p>
 
         </div>

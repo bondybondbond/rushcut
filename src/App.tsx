@@ -8,6 +8,7 @@ import Library from "@/pages/Library";
 import Review from "@/pages/Review";
 import Trimmer from "@/pages/Trimmer";
 import Transitions from "@/pages/Transitions";
+import Sound from "@/pages/Sound";
 import { AppShell } from "@/components/AppShell";
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="/library" element={<Library />} />
         <Route path="/trimmer/:projectId" element={<Trimmer />} />
         <Route path="/transitions/:projectId" element={<Transitions />} />
+        <Route path="/sound/:projectId" element={<Sound />} />
         <Route path="/review/:projectId" element={<Review />} />
         <Route path="/editor/:projectId" element={<Editor />} />
         <Route path="/output/:jobId" element={<Output />} />

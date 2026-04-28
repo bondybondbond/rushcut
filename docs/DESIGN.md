@@ -106,6 +106,24 @@ Card color-swatch selected ring: `#FF8A65` (peach) — kept for card background 
 
 Toggle: ON = `bg-[#99B3FF]`, OFF = `bg-white/25`.
 
+### Conditional chip row (Sound screen pattern)
+
+When a secondary chip group only applies in certain states (e.g. volume only when a music mood is selected), render it conditionally — no animation, plain `{condition && <div>...</div>}`. Separate from the primary chip group with `border-t border-white/10 pt-2 space-y-3`. Sub-heading uses `text-base font-medium text-[#e5e5e5]` + description `text-sm text-[#a3a3a3]`.
+
+```tsx
+{primaryValue !== "none" && (
+  <div className="pt-2 border-t border-white/10 space-y-3">
+    <div>
+      <p className="text-base font-medium text-[#e5e5e5]">Sub-heading</p>
+      <p className="text-sm text-[#a3a3a3] mt-0.5">Description.</p>
+    </div>
+    <div className="flex flex-wrap gap-3">
+      {/* chips */}
+    </div>
+  </div>
+)}
+```
+
 ---
 
 ## StepNav Breadcrumb
