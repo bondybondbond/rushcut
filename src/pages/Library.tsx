@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectSummary } from "@/types/project";
@@ -30,6 +30,11 @@ interface PendingDelete {
   hasRenders: boolean;
 }
 
+interface RenamingState {
+  id: string;
+  value: string;
+}
+
 export default function Library() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -38,6 +43,8 @@ export default function Library() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   // Inline confirmation state -- replaces window.confirm which Tauri WebView2 swallows silently.
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [renaming, setRenaming] = useState<RenamingState | null>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     invoke<ProjectSummary[]>("list_projects_cmd")
@@ -45,6 +52,24 @@ export default function Library() {
       .catch((e) => setError(`Failed to load projects: ${e}`))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (renaming) renameInputRef.current?.focus();
+  }, [renaming]);
+
+  async function commitRename(projectId: string, newName: string) {
+    const trimmed = newName.trim();
+    const original = projects.find((p) => p.id === projectId)?.name ?? "";
+    setRenaming(null);
+    if (!trimmed || trimmed === original) return;
+    setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, name: trimmed } : p));
+    try {
+      await invoke("rename_project_cmd", { projectId, name: trimmed });
+    } catch {
+      // revert on failure
+      setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, name: original } : p));
+    }
+  }
 
   async function confirmDelete(projectId: string) {
     setDeletingId(projectId);
@@ -94,11 +119,38 @@ export default function Library() {
         {projects.length > 0 && (
           <div className="space-y-2">
             {projects.map((p) => (
-              <div key={p.id} data-testid="project-card">
+              <div key={p.id} data-testid="project-card" className="group">
                 {/* Project row */}
                 <div className="flex items-center justify-between px-4 py-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/8 transition-colors">
                   <div className="min-w-0 flex-1">
-                    <p className="text-[#e5e5e5] font-medium truncate">{p.name}</p>
+                    {renaming?.id === p.id ? (
+                      <input
+                        ref={renameInputRef}
+                        data-testid="input-project-name"
+                        value={renaming.value}
+                        onChange={(e) => setRenaming({ id: p.id, value: e.target.value })}
+                        onBlur={() => commitRename(p.id, renaming.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename(p.id, renaming.value);
+                          if (e.key === "Escape") setRenaming(null);
+                        }}
+                        className="text-base font-medium bg-transparent border-b border-[#C9A96E] text-[#e5e5e5] focus:outline-none w-64"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-[#e5e5e5] font-medium truncate">{p.name}</p>
+                        <button
+                          data-testid="btn-rename-project"
+                          onClick={() => setRenaming({ id: p.id, value: p.name })}
+                          className="opacity-0 group-hover:opacity-100 p-0.5 text-[#a3a3a3] hover:text-[#e5e5e5] transition-all"
+                          aria-label="Rename project"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M15.232 5.232l3.536 3.536M9 13l-4 1 1-4L14.586 2.414a2 2 0 012.828 0l1.172 1.172a2 2 0 010 2.828L9 13z" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
                     <div className="flex items-center gap-3 mt-0.5">
                       <span className="text-[#a3a3a3] text-xs">{formatDate(p.created_at)}</span>
                       <span className="text-[#a3a3a3] text-xs">{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}</span>
@@ -106,19 +158,9 @@ export default function Library() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                    {p.last_job_id && p.last_job_status === "done" && (
-                      <button
-                        onClick={() => navigate(`/output/${p.last_job_id}`)}
-                        className="px-3 py-1.5 text-xs text-[#22c55e] border border-[#22c55e]/30 rounded-md hover:bg-[#22c55e]/10 transition-colors"
-                      >
-                        Watch
-                      </button>
-                    )}
                     <button
                       data-testid="btn-open-project"
-                      onClick={() => p.last_job_id && p.last_job_status === "processing"
-                        ? navigate(`/output/${p.last_job_id}`)
-                        : navigate(`/trimmer/${p.id}`)}
+                      onClick={() => navigate(`/trimmer/${p.id}`)}
                       className="px-3 py-1.5 text-xs text-[#a3a3a3] border border-white/20 rounded-md hover:text-[#e5e5e5] hover:border-white/40 transition-colors"
                     >
                       Open

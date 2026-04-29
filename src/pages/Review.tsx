@@ -141,7 +141,7 @@ export default function Review() {
         const nextIndex = currentIndex + 1;
         if (nextIndex >= clips.length) {
           sessionStorage.removeItem(`review_index_${projectId}`);
-          navigate(`/editor/${projectId}`);
+          navigate(`/trimmer/${projectId}`);
         } else {
           sessionStorage.setItem(`review_index_${projectId}`, String(nextIndex));
           setCurrentIndex(nextIndex);
@@ -232,10 +232,10 @@ export default function Review() {
         <div className="text-center space-y-4">
           <p className="text-[#a3a3a3]">No clips to review.</p>
           <button
-            onClick={() => navigate(`/editor/${projectId}`)}
+            onClick={() => navigate(`/trimmer/${projectId}`)}
             className="px-5 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-colors"
           >
-            Go to Editor
+            Go to Trimmer
           </button>
         </div>
       </div>
@@ -251,7 +251,7 @@ export default function Review() {
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
         <div className="flex items-center gap-3 ml-10">
           <button
-            onClick={() => navigate(`/editor/${projectId}`)}
+            onClick={() => navigate(`/trimmer/${projectId}`)}
             className="flex items-center gap-1.5 px-3 py-1.5 border border-[#C5FFF9]/40 text-[#C5FFF9] text-sm font-medium rounded-md hover:bg-[#C5FFF9]/10 transition-colors"
           >
             &#8592; Back

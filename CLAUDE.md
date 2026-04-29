@@ -10,7 +10,7 @@
 
 ### UX flow
 
-`/upload` → `/editor/:projectId` → `/output/:jobId`
+`/upload` → `/trimmer/:projectId` → `/transitions/:projectId` → `/sound/:projectId` → `/render/:projectId`
 
 ### Dev command
 

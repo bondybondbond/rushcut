@@ -15,19 +15,34 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 15f complete. Next: 15g Render screen (`/render/:projectId`).**
+**Phase 2 — Batch 15g complete. Full Upload→Trim→Transitions→Sound→Render flow working end-to-end. Next: Batch 16+ (sticky filmstrip / format selector / music+transition preview).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch 15g — Render screen (`/render/:projectId`).** Merge the current Editor "Start Rendering" flow and Output page into one screen. Shows a summary of decisions (clip count, transition, music mood + volume). One "Render Film" CTA. Progress bar + output video playback on completion. StepNav `active="render"`. Editor and Output pages remain until 15g is fully confirmed.
+**Post-15g deferred items (candidate for Batch 16):**
+- Sticky filmstrip in bottom nav — updates across all screens as clips are added; render CTA lives in it
+- Format selector on Render screen — 4K output, file-size presets, codec choice
+- Music preview (30s loop on chip select) + Transition preview (CSS loop demo) — ship together
+- Edit screen rename: `/transitions/` → `/edit/` when text cards ship; StepNav "Transitions" → "Edit"
 
 **Future — Edit screen rename (post-15f):** When text cards ship, rename `/transitions/` → `/edit/` and add tabs: Transitions / Text Cards / Animations. StepNav "Transitions" → "Edit". Sections stacked vertically with disabled states. See `docs/PRD-DEV.md` Batch 15e notes.
 
 ---
 
 ## Recently Completed
+
+**Batch 15g — Render screen (2026-04-29)**
+
+- `src/pages/Render.tsx` (new): `/render/:projectId`. Auto-starts render on mount — no idle phase, no "Render Film" button. Phase state machine: `"starting" | "rendering" | "done" | "error"`. `buildConfig()` reads `rc_transition_` + `rc_sound_` sessionStorage. Progress bar (green), stage label, elapsed timer, 10-min inactivity timeout. Done state: video player, output filename, Open in Explorer, My Projects. Error state: Try Again (if clips > 0).
+- `src/App.tsx`: `/render/:projectId` route added; `/editor/` and `/output/` routes removed.
+- `src/pages/Sound.tsx`: CTA updated to navigate to `/render/` (was `/editor/`).
+- `src/pages/Library.tsx`: rename (pencil + inline input) added. Processing projects route to `/trimmer/` (was `/output/`).
+- `src/pages/Review.tsx`: 3× `navigate('/editor/${projectId}')` changed to `/trimmer/`.
+- Deleted: `src/pages/Editor.tsx`, `src/pages/Output.tsx`, `src/components/editor/SettingsPanel.tsx`, `src/components/editor/TimelineStrip.tsx`.
+- `e2e/render.spec.ts` rewritten: full Upload→Trim→Transitions→Sound→Render pipeline flow. `btn-render-film` tests removed (auto-start). Duration threshold `> 3` (1 clip = ~7s output). 15/15 PASS in 2m 37s.
+- `wdio.conf.ts`: `/render/` added to `waitForAppRoute()`.
 
 **Batch 15f — Sound screen (2026-04-28)**
 

@@ -78,6 +78,7 @@ export function FilmStrip({ clips, activeId, onSelect, onRemove, onAdd }: FilmSt
           return (
             <div
               key={clip.id}
+              data-testid="filmstrip-clip"
               className={`relative flex-shrink-0 rounded-md overflow-hidden border-2 transition-all duration-150 group ${
                 isActive ? "border-[#FF8A65]" : "border-white/15 hover:border-white/40"
               }`}

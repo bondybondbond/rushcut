@@ -1,43 +1,28 @@
 /**
- * Full E2E render spec — slow (~5 min).
+ * Full E2E render spec — slow (~5-8 min including pipeline).
  *
  * Run separately: pnpm test:e2e:render
  *
  * Pre-conditions:
  * - C:\clips\ contains at least 1 video file (MP4/MOV/MKV)
- * - Tauri binary compiled: pnpm build
+ * - Tauri binary compiled: pnpm build or pnpm dev (debug)
  * - msedgedriver.exe in PATH matching Edge/WebView2 version
  */
 
 import { execFileSync } from "child_process";
 
-describe("Full E2E render", () => {
-  let jobUrl: string;
+describe("Full E2E render — /render/:projectId", () => {
   let videoSrc: string;
 
   before(async () => {
     await browser.pause(1500);
   });
 
-  it("scans C:\\clips\\ and shows clip items", async () => {
-    // Click Choose Folder (this opens native dialog — tauri-driver can interact
-    // with the Tauri invoke layer, but the OS dialog itself is not WebDriver-accessible.
-    // We work around this by invoking the command directly via executeScript if needed,
-    // or by testing the scan flow after folder selection state is set.)
-    //
-    // For the smoke test, verify the button is present and clickable.
-    const chooseBtn = await $('[data-testid="btn-choose-folder"]');
-    await chooseBtn.waitForExist({ timeout: 10_000 });
-    expect(await chooseBtn.isEnabled()).toBe(true);
-  });
-
-  it("creates a project and navigates to editor", async () => {
-    // Create project via invoke shortcut (native dialog cannot be automated)
+  it("scans C:\\clips\\ and creates a project via invoke shortcuts", async () => {
     const result = await browser.execute(async () => {
       const { invoke } = (window as any).__TAURI_INTERNALS__;
       const metas: any[] = await invoke("scan_folder", { folderPath: "C:\\clips" });
       if (!metas || metas.length === 0) throw new Error("No clips in C:\\clips");
-      // Limit to first 3 clips — keeps render time under test timeout regardless of folder size
       const clips = metas.slice(0, 3).map((m: any) => ({
         filename: m.filename,
         local_path: m.local_path,
@@ -51,8 +36,9 @@ describe("Full E2E render", () => {
       return invoke("create_project", { name: "Eval Test Film", clips });
     });
     expect(result).toBeTruthy();
+  });
 
-    // Navigate to library (Library mounts fresh, fetches the new project)
+  it("navigates to project in Library and opens to /trimmer/", async () => {
     const hamburger = await $('[data-testid="btn-nav-open"]');
     await hamburger.click();
     const myProjects = await $('[data-testid="nav-item-my-projects"]');
@@ -64,53 +50,90 @@ describe("Full E2E render", () => {
       { timeout: 5_000, interval: 200 }
     );
 
-    // Open the project via stable btn-open-project selector
     const openBtn = await $('[data-testid="btn-open-project"]');
     await openBtn.waitForExist({ timeout: 5_000 });
     await openBtn.click();
 
     await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/editor/"),
+      async () => (await browser.getUrl()).includes("/trimmer/"),
       { timeout: 8_000, interval: 300 }
     );
   });
 
-  it("clicks Render and navigates to output page", async () => {
-    const renderBtn = await $('[data-testid="btn-render"]');
-    await renderBtn.waitForExist({ timeout: 5_000 });
+  it("adds first clip to film in Trimmer", async () => {
+    // Click first pantry tile to select it
+    const firstTile = await $('[data-testid="pantry-tile"]');
+    await firstTile.waitForExist({ timeout: 5_000 });
+    await firstTile.click();
 
-    const isDisabled = await renderBtn.getAttribute("disabled");
-    if (isDisabled !== null) {
-      throw new Error("Render button is disabled — no clips in project");
-    }
+    // Click Add to Film
+    const addBtn = await $('[data-testid="btn-add-to-film"]');
+    await addBtn.waitForExist({ timeout: 3_000 });
+    await addBtn.click();
 
-    await renderBtn.click();
+    // Confirm at least 1 clip appears in film strip
+    const filmClip = await $('[data-testid="filmstrip-clip"]');
+    await filmClip.waitForExist({ timeout: 3_000 });
+  });
 
-    // Should navigate to /output/:jobId
+  it("navigates to /transitions/ via StepNav CTA", async () => {
+    const nextBtn = await $('button*=Next: Transitions');
+    await nextBtn.waitForExist({ timeout: 5_000 });
+    await nextBtn.click();
+
     await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/output/"),
-      { timeout: 10_000, interval: 500 }
+      async () => (await browser.getUrl()).includes("/transitions/"),
+      { timeout: 5_000, interval: 200 }
     );
+  });
 
-    jobUrl = await browser.getUrl();
+  it("selects a transition chip and navigates to /sound/", async () => {
+    const noneChip = await $('[data-testid="chip-transition-none"]');
+    await noneChip.waitForExist({ timeout: 3_000 });
+    await noneChip.click();
 
-    // Stage label should appear almost immediately after navigation
+    const nextBtn = await $('button*=Next: Sound');
+    await nextBtn.waitForExist({ timeout: 3_000 });
+    await nextBtn.click();
+
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/sound/"),
+      { timeout: 5_000, interval: 200 }
+    );
+  });
+
+  it("selects a music mood and navigates to /render/", async () => {
+    const cinematicChip = await $('[data-testid="chip-mood-cinematic"]');
+    await cinematicChip.waitForExist({ timeout: 3_000 });
+    await cinematicChip.click();
+
+    const nextBtn = await $('button*=Next: Render');
+    await nextBtn.waitForExist({ timeout: 3_000 });
+    await nextBtn.click();
+
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/render/"),
+      { timeout: 5_000, interval: 200 }
+    );
+  });
+
+  it("pipeline starts automatically — heading and stage label appear", async () => {
+    const heading = await $('h1');
+    await heading.waitForExist({ timeout: 5_000 });
+    expect(await heading.getText()).toBe("Render Your Film");
+
+    // Render starts without user interaction — wait for stage label
     const stageLabel = await $('[data-testid="stage-label"]');
     await stageLabel.waitForExist({ timeout: 30_000 });
-    const stageText = await stageLabel.getText();
-    expect(stageText.length).toBeGreaterThan(0);
+    const text = await stageLabel.getText();
+    expect(text.length).toBeGreaterThan(0);
   });
 
   it("progress bar increments and pipeline completes", async () => {
-    // Poll every 2s until progress hits 100 OR the done heading appears.
-    // The done state removes the progress element before the next poll fires,
-    // so checking both conditions prevents a false timeout.
     await browser.waitUntil(
       async () => {
-        // Done state: heading already rendered
         const h1 = await $("h1");
         if (await h1.isExisting() && (await h1.getText()) === "Your film is ready") return true;
-        // Progress still running
         const pct = await $('[data-testid="progress-pct"]');
         if (!(await pct.isExisting())) return false;
         const value = parseInt(await pct.getText(), 10);
@@ -146,7 +169,7 @@ describe("Full E2E render", () => {
     expect(text).toMatch(/\.mp4$/);
   });
 
-  it("video element is fully loaded — readyState 4, no errors, duration >10s", async () => {
+  it("video element is fully loaded — readyState 4, no errors, duration >3s", async () => {
     const info: any = await browser.execute(() => {
       const v = document.querySelector('[data-testid="video-player"]') as HTMLVideoElement;
       return v ? {
@@ -158,18 +181,16 @@ describe("Full E2E render", () => {
     expect(info).not.toBeNull();
     expect(info.readyState).toBe(4);
     expect(info.error).toBeNull();
-    expect(info.duration).toBeGreaterThan(10);
+    expect(info.duration).toBeGreaterThan(3);
   });
 
   it("video codec is h264 Main, 1080p output, audio AAC", async () => {
-    // Parse Windows path from asset URL (e.g. http://asset.localhost/C:/clips/processed/x.mp4)
     const decoded = decodeURIComponent(videoSrc);
     const pathMatch = decoded.match(/asset\.localhost\/([A-Za-z]:[/\\].+\.mp4)/i);
     if (!pathMatch) throw new Error(`Cannot parse Windows path from src: ${videoSrc}`);
     const winPath = pathMatch[1].replace(/\//g, "\\");
     const wslPath = "/mnt/" + winPath[0].toLowerCase() + "/" + winPath.slice(3).replace(/\\/g, "/");
 
-    // Use execFileSync (no shell spawn) to invoke powershell, which shells into WSL
     const out = execFileSync(
       "powershell.exe",
       ["-Command", `wsl -d Ubuntu-24.04 -u root -- ffprobe -v quiet -print_format json -show_streams '${wslPath}'`],
@@ -183,12 +204,11 @@ describe("Full E2E render", () => {
     if (!audioStream) throw new Error("audio stream missing from ffprobe output");
     expect(videoStream.codec_name).toBe("h264");
     expect(videoStream.profile).toMatch(/Main/i);
-    // Height always 1080 — width varies by clip aspect ratio (portrait or landscape)
     expect(videoStream.height).toBe(1080);
     expect(audioStream.codec_name).toBe("aac");
   });
 
-  it("My Projects button navigates from output page to library", async () => {
+  it("My Projects button navigates to library", async () => {
     const myProjects = await $('[data-testid="btn-my-projects"]');
     await myProjects.waitForExist({ timeout: 5_000 });
     await myProjects.click();

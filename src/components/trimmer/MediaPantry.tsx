@@ -19,6 +19,7 @@ export function MediaPantry({ clips, selectedId, onSelect }: MediaPantryProps) {
           return (
             <button
               key={clip.id}
+              data-testid="pantry-tile"
               draggable
               onDragStart={(e) => e.dataTransfer.setData("clipId", clip.id)}
               onClick={() => onSelect(clip)}

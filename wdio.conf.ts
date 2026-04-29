@@ -92,10 +92,10 @@ async function waitForAppRoute(timeoutMs = 30_000): Promise<void> {
             const ready = targets.some((t) =>
               t.url.includes("/upload") ||
               t.url.includes("/library") ||
-              t.url.includes("/editor/") ||
               t.url.includes("/trimmer/") ||
               t.url.includes("/transitions/") ||
-              t.url.includes("/sound/")
+              t.url.includes("/sound/") ||
+              t.url.includes("/render/")
             );
             if (ready) { resolve(); return; }
           } catch {}
@@ -194,8 +194,8 @@ export const config: WebdriverIO.Config = {
           if (
             url.includes("/upload") ||
             url.includes("/library") ||
-            url.includes("/editor") ||
-            url.includes("/trimmer")
+            url.includes("/trimmer") ||
+            url.includes("/render")
           ) {
             return;
           }

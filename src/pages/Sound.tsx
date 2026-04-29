@@ -82,7 +82,7 @@ export default function Sound() {
         active="sound"
         projectId={projectId}
         nextLabel="Next: Render"
-        onNext={() => navigate(`/editor/${projectId}`)}
+        onNext={() => navigate(`/render/${projectId}`)}
         nextDisabled={false}
       />
 

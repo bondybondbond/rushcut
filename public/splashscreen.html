@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RushCut</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #0a0a0a;
+      color: #e5e5e5;
+      font-family: system-ui, -apple-system, sans-serif;
+      user-select: none;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 24px;
+    }
+
+    .wordmark {
+      font-size: 32px;
+      font-weight: 700;
+      color: #FF8A65;
+      letter-spacing: -0.5px;
+    }
+
+    .spinner-wrap {
+      position: relative;
+      width: 48px;
+      height: 48px;
+    }
+
+    .spinner-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 3px solid rgba(255, 138, 101, 0.15);
+    }
+
+    .spinner-arc {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 3px solid transparent;
+      border-top-color: #FF8A65;
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .status {
+      font-size: 14px;
+      color: #a3a3a3;
+      min-height: 20px;
+      text-align: center;
+    }
+
+    .progress-bar-track {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: rgba(255, 138, 101, 0.12);
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: #FF8A65;
+      width: 0%;
+      transition: width 0.4s ease;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="wordmark">RushCut</div>
+    <div class="spinner-wrap">
+      <div class="spinner-track"></div>
+      <div class="spinner-arc"></div>
+    </div>
+    <div class="status" id="status">Starting...</div>
+  </div>
+
+  <div class="progress-bar-track">
+    <div class="progress-bar-fill" id="progress"></div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const progressEl = document.getElementById('progress');
+
+    const steps = {
+      db:   { text: 'Initialising database...', pct: '30%' },
+      wsl:  { text: 'Checking WSL2...',          pct: '70%' },
+      done: { text: 'Ready',                     pct: '100%' },
+    };
+
+    function applyStep(step) {
+      const s = steps[step];
+      if (!s) return;
+      statusEl.textContent = s.text;
+      progressEl.style.width = s.pct;
+    }
+
+    // Wait for Tauri global to be available, then listen
+    function attachListener() {
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('splash-step', (event) => {
+          applyStep(event.payload);
+        });
+      } else {
+        setTimeout(attachListener, 50);
+      }
+    }
+
+    attachListener();
+  </script>
+</body>
+</html>

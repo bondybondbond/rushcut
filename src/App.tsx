@@ -2,13 +2,12 @@ import { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import Upload from "@/pages/Upload";
-import Editor from "@/pages/Editor";
-import Output from "@/pages/Output";
 import Library from "@/pages/Library";
 import Review from "@/pages/Review";
 import Trimmer from "@/pages/Trimmer";
 import Transitions from "@/pages/Transitions";
 import Sound from "@/pages/Sound";
+import Render from "@/pages/Render";
 import { AppShell } from "@/components/AppShell";
 
 export default function App() {
@@ -33,8 +32,7 @@ export default function App() {
         <Route path="/transitions/:projectId" element={<Transitions />} />
         <Route path="/sound/:projectId" element={<Sound />} />
         <Route path="/review/:projectId" element={<Review />} />
-        <Route path="/editor/:projectId" element={<Editor />} />
-        <Route path="/output/:jobId" element={<Output />} />
+        <Route path="/render/:projectId" element={<Render />} />
       </Routes>
     </AppShell>
   );

@@ -128,9 +128,9 @@ All major commercial editors (Premiere, DaVinci, CapCut, iMovie) show a looping 
 
 **Music preview (deferred):** 30s looping audio preview on chip select. Deferred alongside Transition Preview — both will ship together once the full flow (15g Render) is confirmed working end-to-end.
 
-### 15g — Render screen (`/render/:projectId`)
+### 15g — Render screen (`/render/:projectId`) (**DONE 2026-04-29**)
 
-Merges the current Editor "Start Rendering" flow and Output page into one screen. Shows summary of decisions (clip count, duration, music, transition). One "Render Film" CTA. Progress bar + output playback on completion.
+`/render/:projectId`. Auto-starts render on mount — no idle phase. `buildConfig()` reads sessionStorage transition + sound settings. Phase machine: starting → rendering → done/error. Progress bar, stage label, elapsed timer, 10-min inactivity timeout. Done: video player + output filename + Open in Explorer + My Projects. Error: Try Again. Editor + Output pages deleted. Library rename added. Review.tsx stale `/editor/` routes fixed. 15/15 E2E PASS. Deferred: sticky filmstrip + format selector + music/transition preview.
 
 ---
 

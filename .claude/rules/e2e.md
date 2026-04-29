@@ -37,7 +37,11 @@ Every spec `before()` hook must navigate via real UI clicks, not `history.pushSt
 
 ## Known stale specs
 
-None — all specs current as of 2026-04-26.
+None — all specs current as of 2026-04-29.
+
+## render.spec.ts duration assertion
+
+`expect(info.duration).toBeGreaterThan(3)` — threshold is `3`, not `10`. With 1 clip added the output is ~7s. `> 3` is a "non-trivial output" check; don't tie it to expected clip count.
 
 ## rushcut-eval skill (`/rushcut-eval`)
 

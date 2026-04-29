@@ -232,6 +232,18 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow: CDP eval requires a pre-running app — do not orchestrate from tool calls
+
+**Problem:** Attempts to start Vite (`pnpm dev:vite`) and the Tauri binary from inside Bash/PowerShell tool calls fail silently — the processes die between tool calls because each tool call runs in a fresh child shell. Diagnostic confusion follows when CDP port 9222 is occupied by a wrong process or is empty.
+**Solution:** Visual eval (MCP screenshots) and E2E runs both require the app to already be running. Check `netstat -ano | findstr :9222` first; if not live, ask the user to run `pnpm dev` in their terminal. Do NOT attempt to orchestrate Vite + binary from within tool calls.
+**Context:** `rushcut-eval` skill — pre-flight check before any MCP screenshot or WDIO run.
+
+## [Render screen: auto-start is better UX than idle-with-button]
+
+**Problem:** An idle render screen with a single "Render Film" button adds unnecessary friction — user has already made all decisions (clips, transition, sound) on prior screens. The single button buys nothing.
+**Solution:** Auto-start render on mount: `get_project` → `start_job` immediately in `useEffect`. Show a "starting" spinner state while the project loads, then transition directly to the progress bar. No idle phase. "Try Again" in the error state is the only explicit re-trigger.
+**Context:** `src/pages/Render.tsx` — applies to any screen where the user has no further decisions to make before the action fires.
+
 ## UX / timing feedback
 
 - **Rolling inactivity timeout beats wall-clock timeout for long pipelines** — a hard `setTimeout(10min)` fires even when the pipeline is making steady forward progress, producing a false "timed out" error. Instead: start the timer on mount and reset it on each `pipeline-stage` event. Do NOT reset on every `pipeline-progress` tick — a hung pipeline that emits noisy progress would never time out. The timer fires only when no stage change has arrived for the full timeout window.

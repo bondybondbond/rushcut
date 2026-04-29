@@ -540,6 +540,7 @@ export default function Trimmer() {
           </div>
 
           <button
+            data-testid="btn-add-to-film"
             onClick={() => handleToggleInclude(clip, 1)}
             className="w-full py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md text-sm hover:bg-[#ff9e7a] transition-colors"
           >
