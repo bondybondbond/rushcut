@@ -2,17 +2,17 @@ mod db;
 
 use base64::Engine as _;
 use db::{
-    delete_project, get_job, get_project_output_paths, get_project_with_clips, insert_clip,
-    insert_job, insert_project, list_projects, rename_project, reorder_clips, update_clip_proxy,
-    update_clip_review, update_clip_thumbnail, update_clip_waveform,
-    update_job_analysis, update_job_done, update_job_error, update_job_progress, Clip, ClipMeta,
-    Job, ProjectSummary, ProjectWithClips,
+    add_clip_cut, delete_clip, delete_project, get_job, get_project_output_paths,
+    get_project_with_clips, insert_clip, insert_job, insert_project, list_projects,
+    rename_project, reorder_clips, update_clip_proxy, update_clip_review, update_clip_thumbnail,
+    update_clip_waveform, update_job_analysis, update_job_done, update_job_error,
+    update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -420,6 +420,60 @@ fn update_clip_review_cmd(
 ) -> Result<(), String> {
     update_clip_review(&clip_id, in_ms, out_ms, focal_x, focal_y, zoom_mode, include)
         .map_err(|e| format!("DB error (update clip review): {}", e))
+}
+
+/// Create a new cut row for a source clip (multi-cut model, Batch A).
+/// Clones metadata from the source clip and sets the caller-supplied in_ms/out_ms.
+/// Returns the new Clip row so the frontend can update its state immediately.
+#[tauri::command]
+fn add_clip_cut_cmd(
+    project_id: String,
+    source_clip_id: String,
+    in_ms: Option<i64>,
+    out_ms: Option<i64>,
+) -> Result<Clip, String> {
+    let project_data = get_project_with_clips(&project_id)
+        .map_err(|e| format!("DB error (get project): {}", e))?;
+
+    let source = project_data.clips.iter()
+        .find(|c| c.id == source_clip_id)
+        .ok_or_else(|| format!("source clip {} not found", source_clip_id))?;
+
+    // Cut row gets sort_order after all existing rows so filmstrip order is stable
+    let max_order = project_data.clips.iter().map(|c| c.sort_order).max().unwrap_or(0);
+
+    let cut = Clip {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.clone(),
+        filename: source.filename.clone(),
+        local_path: source.local_path.clone(),
+        duration_ms: source.duration_ms,
+        width: source.width,
+        height: source.height,
+        has_audio: source.has_audio,
+        thumbnail_data: source.thumbnail_data.clone(),
+        sort_order: max_order + 1,
+        created_at: db::now(),
+        in_ms,
+        out_ms,
+        focal_x: None,
+        focal_y: None,
+        zoom_mode: None,
+        include: 1,
+        proxy_path: source.proxy_path.clone(),
+        waveform_data: source.waveform_data.clone(),
+        codec_name: source.codec_name.clone(),
+    };
+
+    add_clip_cut(&cut).map_err(|e| format!("DB error (add clip cut): {}", e))?;
+    Ok(cut)
+}
+
+/// Delete a single cut row by id (multi-cut model, Batch A).
+/// Only removes the specific cut — never removes the source row.
+#[tauri::command]
+fn delete_clip_cmd(clip_id: String) -> Result<(), String> {
+    delete_clip(&clip_id).map_err(|e| format!("DB error (delete clip): {}", e))
 }
 
 /// Probe individual video files (Windows paths) using native ffprobe (no WSL).
@@ -882,35 +936,6 @@ fn wsl_to_win(path: &str) -> String {
 // App entry point
 // ---------------------------------------------------------------------------
 
-fn create_splash_window(app: &tauri::App) {
-    // In dev mode Vite serves the file; in production it comes from the app bundle.
-    let url = if tauri::is_dev() {
-        WebviewUrl::External(
-            url::Url::parse("http://localhost:1420/splashscreen.html")
-                .expect("valid splash URL"),
-        )
-    } else {
-        WebviewUrl::App("splashscreen.html".into())
-    };
-
-    let _ = WebviewWindowBuilder::new(app, "splashscreen", url)
-        .title("")
-        .inner_size(480.0, 280.0)
-        .decorations(false)
-        .center()
-        .resizable(false)
-        .always_on_top(true)
-        .build();
-}
-
-fn close_splash(app: &tauri::App) {
-    // Main window is always visible and has been loading in the background.
-    // Just close the splash overlay -- no need to show/hide the main window.
-    if let Some(w) = app.get_webview_window("splashscreen") {
-        w.close().ok();
-    }
-}
-
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -919,16 +944,11 @@ pub fn run() {
         // when Upload.tsx and Trimmer.tsx both call generate_proxies_cmd.
         .manage(Arc::new(Mutex::new(HashSet::<String>::new())))
         .setup(|app| {
-            create_splash_window(app);
-
-            app.emit("splash-step", "db").ok();
-
+            // Step E splash fix (Batch A): inline overlay in index.html shows on WebView2 load.
+            // Emit app-ready once db + WSL check are done — React removes the overlay on this event.
             if let Err(e) = db::init(app.handle()) {
-                close_splash(app);
                 return Err(e);
             }
-
-            app.emit("splash-step", "wsl").ok();
 
             let wsl_ok = std::process::Command::new("wsl")
                 .arg("--status")
@@ -943,10 +963,7 @@ pub fn run() {
                 app.emit("wsl-check-failed", ()).ok();
             }
 
-            app.emit("splash-step", "done").ok();
-            std::thread::sleep(std::time::Duration::from_millis(300));
-
-            close_splash(app);
+            app.emit("app-ready", ()).ok();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -955,6 +972,8 @@ pub fn run() {
             create_project,
             rename_project_cmd,
             update_clip_review_cmd,
+            add_clip_cut_cmd,
+            delete_clip_cmd,
             reorder_clips_cmd,
             get_project,
             start_job,

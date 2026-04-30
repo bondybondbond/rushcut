@@ -34,6 +34,8 @@ export default function Trimmer() {
   const [sourceFailed, setSourceFailed] = useState(false);
   // Tracks the proxy_path that was loaded last time paintFrame ran, to detect new proxy arrivals.
   const lastPaintedProxy = useRef<string | null>(null);
+  // Toast for duplicate-cut guard
+  const [toast, setToast] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
@@ -54,12 +56,13 @@ export default function Trimmer() {
       .then((data) => {
         setClips(data.clips);
         setProjectName(data.project.name);
-        if (data.clips.length > 0) {
-          const first = data.clips[0];
-          setSelectedClip(first);
-          setInMs(first.in_ms ?? 0);
-          setOutMs(first.out_ms ?? first.duration_ms);
-          setCurrentMs(first.in_ms ?? 0); // A8: init playhead to IN point
+        // Select the first source row (include=0) as the initial clip
+        const firstSource = data.clips.find(c => c.include === 0);
+        if (firstSource) {
+          setSelectedClip(firstSource);
+          setInMs(firstSource.in_ms ?? 0);
+          setOutMs(firstSource.out_ms ?? firstSource.duration_ms);
+          setCurrentMs(firstSource.in_ms ?? 0); // A8: init playhead to IN point
         }
         // Kick off thumbnail + waveform generation for clips that need it.
         // Thumbnail/waveform events are picked up by their listeners below.
@@ -236,14 +239,18 @@ export default function Trimmer() {
     generatingProxyRef.current.delete(newClip.id);
   }
 
-  /** Prev/Next nav — save current first. */
+  /** Prev/Next nav — navigates source rows (include=0) only. */
   async function handleNav(dir: -1 | 1) {
     if (!clip) return;
-    const idx = clips.findIndex((c) => c.id === clip.id);
+    const sourceClips = clips.filter(c => c.include === 0);
+    // If current clip is a cut row, find the matching source row by local_path
+    const effectiveId = clip.include === 0 ? clip.id
+      : sourceClips.find(sc => sc.local_path === clip.local_path)?.id;
+    const idx = sourceClips.findIndex((c) => c.id === effectiveId);
     const nextIdx = idx + dir;
-    if (nextIdx < 0 || nextIdx >= clips.length) return;
+    if (nextIdx < 0 || nextIdx >= sourceClips.length) return;
     await saveCurrentClip();
-    const next = clips[nextIdx];
+    const next = sourceClips[nextIdx];
     setSelectedClip(next);
     setInMs(next.in_ms ?? 0);
     setOutMs(next.out_ms ?? next.duration_ms);
@@ -256,34 +263,51 @@ export default function Trimmer() {
     generatingProxyRef.current.delete(next.id);
   }
 
-  /** Toggle include with optimistic update + DB save + rollback on error. */
-  async function handleToggleInclude(targetClip: Clip, include: 0 | 1) {
-    if (isSaving.current) return;
-    isSaving.current = true;
-    const currentInMs = targetClip.id === clip?.id ? inMs : (targetClip.in_ms ?? 0);
-    const currentOutMs = targetClip.id === clip?.id ? outMs : (targetClip.out_ms ?? targetClip.duration_ms);
-    setClips((prev) => prev.map((c) => (c.id === targetClip.id ? { ...c, include } : c)));
-    if (selectedClip?.id === targetClip.id) {
-      setSelectedClip((prev) => (prev ? { ...prev, include } : null));
+  /**
+   * Add a cut for the given clip with the specified handles.
+   * Creates a new include=1 row via add_clip_cut_cmd.
+   * Duplicate guard: if identical local_path + handles already exist in filmstrip, shows a toast.
+   */
+  async function handleAddCutForClip(targetClip: Clip, cutInMs: number, cutOutMs: number) {
+    const isDuplicate = clips.some(
+      c =>
+        c.include === 1 &&
+        c.local_path === targetClip.local_path &&
+        (c.in_ms ?? 0) === cutInMs &&
+        (c.out_ms ?? c.duration_ms) === cutOutMs
+    );
+    if (isDuplicate) {
+      setToast("Already added — adjust handles to add a different cut");
+      setTimeout(() => setToast(null), 2500);
+      return;
     }
+
+    // Find the source row's id for metadata cloning (add_clip_cut_cmd reads from DB by id)
+    const sourceRow = clips.find(c => c.include === 0 && c.local_path === targetClip.local_path);
+    const sourceId = sourceRow?.id ?? targetClip.id;
+
     try {
-      await invoke("update_clip_review_cmd", {
-        clipId: targetClip.id,
-        inMs: currentInMs > 0 ? currentInMs : null,
-        outMs: currentOutMs < targetClip.duration_ms ? currentOutMs : null,
-        focalX: null,
-        focalY: null,
-        zoomMode: null,
-        include,
+      const newCut = await invoke<Clip>("add_clip_cut_cmd", {
+        projectId,
+        sourceClipId: sourceId,
+        inMs: cutInMs > 0 ? cutInMs : null,
+        outMs: cutOutMs < targetClip.duration_ms ? cutOutMs : null,
       });
+      setClips(prev => [...prev, newCut]);
     } catch (err) {
-      console.error("[trimmer] toggle include failed, rolling back", err);
-      setClips((prev) => prev.map((c) => (c.id === targetClip.id ? { ...c, include: targetClip.include } : c)));
-      if (selectedClip?.id === targetClip.id) {
-        setSelectedClip((prev) => (prev ? { ...prev, include: targetClip.include } : null));
-      }
-    } finally {
-      isSaving.current = false;
+      console.error("[trimmer] add cut failed", err);
+    }
+  }
+
+  /** Remove a cut row from the filmstrip by deleting it from DB. */
+  async function handleDeleteCut(cutClip: Clip) {
+    // Optimistic remove
+    setClips(prev => prev.filter(c => c.id !== cutClip.id));
+    try {
+      await invoke("delete_clip_cmd", { clipId: cutClip.id });
+    } catch (err) {
+      console.error("[trimmer] delete cut failed, rolling back", err);
+      setClips(prev => [...prev, cutClip]);
     }
   }
 
@@ -302,11 +326,23 @@ export default function Trimmer() {
     setCurrentMs(ms);
   }
 
-  /** Film strip clip click — seek centre player to that clip's in point. */
+  /** Film strip clip click — load source row in player with this cut's handles. */
   async function handleFilmSelect(filmClip: Clip) {
-    if (filmClip.id !== clip?.id) {
-      await handlePantrySelect(filmClip);
+    // Always load the source row in the player (not the cut row itself)
+    const sourceRow = clips.find(c => c.include === 0 && c.local_path === filmClip.local_path);
+    const workClip = sourceRow ?? filmClip;
+    if (workClip.id !== clip?.id) {
+      await saveCurrentClip();
+      setSelectedClip(workClip);
+      setIsPlaying(false);
+      setVideoCanPlay(false);
+      setSourceFailed(false);
+      generatingProxyRef.current.delete(workClip.id);
     }
+    // Show this cut's trim handles in the player
+    setInMs(filmClip.in_ms ?? 0);
+    setOutMs(filmClip.out_ms ?? filmClip.duration_ms);
+    setCurrentMs(filmClip.in_ms ?? 0);
     setFilmActiveId(filmClip.id);
     if (videoRef.current) {
       videoRef.current.currentTime = (filmClip.in_ms ?? 0) / 1000;
@@ -345,10 +381,25 @@ export default function Trimmer() {
     resizeDragRef.current = null;
   }
 
+  // Source rows only — used for MediaPantry, Prev/Next nav, and clip counter
+  const sourceClips = clips.filter(c => c.include === 0);
   const inFilmCount = clips.filter((c) => c.include === 1).length;
-  const clipIdx = clip ? clips.findIndex((c) => c.id === clip.id) : -1;
-  const canGoPrev = clipIdx > 0;
-  const canGoNext = clipIdx < clips.length - 1;
+
+  // Compute pantry clips: source rows with include overridden to 1 if any cut exists for that path
+  const cutPaths = new Set(clips.filter(c => c.include === 1).map(c => c.local_path));
+  const pantryClips = sourceClips.map(c => ({
+    ...c,
+    include: cutPaths.has(c.local_path) ? 1 : 0,
+  })) as Clip[];
+
+  // Clip index within source rows (for Prev/Next counter display)
+  const sourceIdx = clip
+    ? (clip.include === 0
+        ? sourceClips.findIndex(c => c.id === clip.id)
+        : sourceClips.findIndex(c => c.local_path === clip.local_path))
+    : -1;
+  const canGoPrev = sourceIdx > 0;
+  const canGoNext = sourceIdx < sourceClips.length - 1;
 
   if (loading) {
     return (
@@ -393,11 +444,11 @@ export default function Trimmer() {
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* Left — Media Pantry */}
+        {/* Left — Media Pantry (source rows only) */}
         <aside className="w-52 flex-shrink-0 border-r border-white/10 overflow-hidden">
           <MediaPantry
-            clips={clips}
-            selectedId={clip.id}
+            clips={pantryClips}
+            selectedId={clip.include === 0 ? clip.id : sourceClips.find(sc => sc.local_path === clip.local_path)?.id ?? null}
             onSelect={handlePantrySelect}
           />
         </aside>
@@ -409,7 +460,8 @@ export default function Trimmer() {
                Proxy path = source path for H.264 clips (WebView2 native decode, instant play).
                Proxy path = transcoded 480p H.264 for HEVC clips (set when proxy.py finishes).
                poster = thumbnail so the user always sees a still frame while waiting.
-               onCanPlay fires when browser can play the src -- enables the play button. */}
+               onCanPlay fires when browser can play the src -- enables the play button.
+               loop removed (A2): onTimeUpdate guard handles looping within IN/OUT selection. */}
           <div
             ref={videoContainerRef}
             className="w-full rounded-xl overflow-hidden bg-black relative flex-shrink-0"
@@ -422,13 +474,19 @@ export default function Trimmer() {
               poster={clip.thumbnail_data ?? undefined}
               preload="auto"
               playsInline
-              loop
               style={{ display: sourceFailed ? "none" : undefined }}
               className="w-full h-full object-contain cursor-pointer"
               onClick={togglePlay}
               onPause={() => setIsPlaying(false)}
               onPlay={() => setIsPlaying(true)}
-              onTimeUpdate={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
+              onTimeUpdate={(e) => {
+                const ms = Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000);
+                setCurrentMs(ms);
+                // A2: loop within IN/OUT selection — seek back to inMs when playback crosses outMs
+                if (isPlaying && ms >= outMs) {
+                  (e.currentTarget as HTMLVideoElement).currentTime = inMs / 1000;
+                }
+              }}
               onSeeked={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
               onCanPlay={() => setVideoCanPlay(true)}
               onError={() => {
@@ -519,7 +577,7 @@ export default function Trimmer() {
         {/* Right — Nav + Add to film CTA */}
         <aside className="w-44 flex-shrink-0 border-l border-white/10 flex flex-col items-center justify-center gap-4 px-4 py-6 overflow-y-auto">
           <p className="text-[10px] text-[#e5e5e5]/30">
-            {clipIdx + 1} / {clips.length}
+            {sourceIdx + 1} / {sourceClips.length}
           </p>
 
           <div className="flex gap-1.5 w-full">
@@ -541,7 +599,10 @@ export default function Trimmer() {
 
           <button
             data-testid="btn-add-to-film"
-            onClick={() => handleToggleInclude(clip, 1)}
+            onClick={() => {
+              const sourceRow = clips.find(c => c.include === 0 && c.local_path === clip.local_path);
+              handleAddCutForClip(sourceRow ?? clip, inMs, outMs);
+            }}
             className="w-full py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md text-sm hover:bg-[#ff9e7a] transition-colors"
           >
             + Add to Film
@@ -564,10 +625,23 @@ export default function Trimmer() {
           clips={clips}
           activeId={filmActiveId}
           onSelect={handleFilmSelect}
-          onRemove={(c) => handleToggleInclude(c, 0)}
-          onAdd={(c) => handleToggleInclude(c, 1)}
+          onRemove={handleDeleteCut}
+          onAdd={(c) => {
+            // Drag-from-pantry: use current handles if it's the selected clip,
+            // else use the source row's stored handles (null = full clip)
+            const cutIn = c.id === clip?.id ? inMs : (c.in_ms ?? 0);
+            const cutOut = c.id === clip?.id ? outMs : (c.out_ms ?? c.duration_ms);
+            handleAddCutForClip(c, cutIn, cutOut);
+          }}
         />
       </div>
+
+      {/* Toast — duplicate cut guard */}
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
+          <p className="text-sm text-[#e5e5e5] whitespace-nowrap">{toast}</p>
+        </div>
+      )}
     </div>
   );
 }

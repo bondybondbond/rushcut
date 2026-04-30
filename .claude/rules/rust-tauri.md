@@ -7,6 +7,10 @@ Applies when working on `src-tauri/**`.
 - All Tauri commands in a **single** `generate_handler![]`. A second `invoke_handler()` silently drops the first.
 - JS `invoke("name")` must match Rust `fn name` exactly — mismatch is a runtime error, not a compile error.
 
+## setup() must not block on slow system calls
+
+`setup()` runs synchronously on the main thread. Blocking calls (e.g. `std::process::Command::new("wsl").arg("--status").output()`) stall the splash/spinner for the duration of the call — confirmed 5–7s on this machine. Move slow checks to `tauri::async_runtime::spawn` and emit the result as an event, or deferred to after the first window renders. The `app-ready` event should fire as soon as DB init is done; WSL availability can be checked lazily.
+
 ## Permissions & config
 
 - Plugin commands must be declared in `src-tauri/capabilities/default.json`. Missing = `not allowed` at runtime (silent at compile/check time).

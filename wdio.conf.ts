@@ -180,9 +180,8 @@ export const config: WebdriverIO.Config = {
     await new Promise<void>((r) => setTimeout(r, 3000));
   },
 
-  // Splash screen introduces a second webview window. msedgedriver may attach to
-  // the closed splash handle (showing about:blank) instead of the main app window.
-  // Switch to whichever handle has the live app route before any spec runs.
+  // Batch A: second Tauri splash window removed. This guard is now a no-op (only one window
+  // handle exists), but kept for safety in case msedgedriver still attaches to a stale handle.
   before: async () => {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {

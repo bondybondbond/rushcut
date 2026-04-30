@@ -13,6 +13,30 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — chrome-devtools MCP conflicts with WDIO on port 9222
+
+**Problem:** Calling any `mcp__chrome-devtools__*` tool (including `list_pages`, `take_screenshot`) starts an Edge browser owned by the MCP on port 9222. This silently squats the port for the rest of the Claude Code session — WDIO's `waitForPort(9222)` resolves immediately (finding the MCP browser, not the Tauri WebView2), msedgedriver attaches to the MCP browser, and `getUrl()` always returns `about:blank`. The Tauri app's WebView2 cannot use port 9222 for remote debugging either, because the port is taken.
+**Solution:** Never call chrome-devtools MCP tools during a session that also runs WDIO E2E tests. Use PowerShell `CopyFromScreen` screenshots for visual verification instead. If the MCP browser must be killed, `Get-NetTCPConnection -LocalPort 9222 | Stop-Process` frees the port, but the next chrome-devtools call re-claims it.
+**Context:** Any session using `pnpm test:e2e` or manually connecting msedgedriver to port 9222. Applies for the lifetime of the Claude Code session once any chrome-devtools tool is called.
+
+---
+
+## Workflow — WebView2 cold-start race with Vite
+
+**Problem:** If the Tauri binary starts before Vite is serving on port 1420, WebView2 navigates to localhost:1420, gets a connection-refused response, shows a chrome-error page, and does NOT retry. The window shows black forever. `wdio.conf.ts`'s `ensureViteRunning()` guards against this for WDIO runs, but manual binary launches are vulnerable.
+**Solution:** Always confirm Vite is serving (`curl -s http://localhost:1420/ -o /dev/null`) before launching the binary. Use `pnpm dev` (which sequences Vite first, then cargo run) rather than launching the binary directly when possible.
+**Context:** Manual debugging sessions where binary is launched from PowerShell or bash separately from Vite.
+
+---
+
+## Workflow — `Start-Process` in PowerShell does not inherit `$env:` vars reliably
+
+**Problem:** Setting `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "..."` in PowerShell and then using `Start-Process -FilePath rushcut.exe` does not propagate the variable to the child process on Windows PowerShell 5.x. The variable is silently dropped, so WebView2 never enters remote-debugging mode.
+**Solution:** Use Node.js `child_process.spawn()` with an explicit `env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "..." }` (as WDIO does), or use `cmd.exe /c "set VAR=val && rushcut.exe"` syntax from a shell that correctly inherits Win32 env blocks. Alternatively, run the WDIO setup which handles this correctly via `wdio.conf.ts` `beforeSession`.
+**Context:** Any session that manually launches the Tauri debug binary with CDP remote-debugging flags.
+
+---
+
 ## Workflow — Worktree sessions
 
 - **Edits in a worktree are NOT visible to the running app** — `pnpm dev` launched from `C:\apps\rushcut` reads the main branch, not the worktree at `C:\apps\rushcut\.claude\worktrees\<name>`. Any fix applied only in the worktree appears to have no effect when the user tests. Always apply fixes to the main-branch files (`C:\apps\rushcut\src\...`) when the goal is immediate user-visible verification, or merge the worktree branch first.

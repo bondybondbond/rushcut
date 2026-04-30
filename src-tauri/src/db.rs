@@ -329,6 +329,45 @@ pub fn update_clip_waveform(clip_id: &str, waveform_data: &str) -> Result<(), ru
     Ok(())
 }
 
+/// Insert a new cut row created by the user in the Trimmer (multi-cut model, Batch A).
+/// Cut rows have include=1 and represent a specific trim selection of a source clip.
+/// Source rows (include=0) are the pantry templates and are never modified by this function.
+pub fn add_clip_cut(cut: &Clip) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "INSERT INTO clips (id, project_id, filename, local_path, duration_ms, width, height,
+         has_audio, thumbnail_data, waveform_data, codec_name, proxy_path, sort_order, created_at,
+         in_ms, out_ms, include)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)",
+        params![
+            cut.id,
+            cut.project_id,
+            cut.filename,
+            cut.local_path,
+            cut.duration_ms,
+            cut.width,
+            cut.height,
+            cut.has_audio as i64,
+            cut.thumbnail_data,
+            cut.waveform_data,
+            cut.codec_name,
+            cut.proxy_path,
+            cut.sort_order,
+            cut.created_at,
+            cut.in_ms,
+            cut.out_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Delete a single clip row by id. Used to remove cut rows from the filmstrip.
+pub fn delete_clip(clip_id: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute("DELETE FROM clips WHERE id = ?1", params![clip_id])?;
+    Ok(())
+}
+
 /// Update sort_order for a list of clip IDs. Caller passes clips in desired order;
 /// each clip gets sort_order = its index in the list.
 pub fn reorder_clips(clip_ids: &[String]) -> Result<(), rusqlite::Error> {

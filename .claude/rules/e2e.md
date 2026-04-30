@@ -9,6 +9,10 @@ Applies when working on `e2e/**`, `wdio.conf.ts`, or running `/rushcut-eval`.
 - Debug binary first (`src-tauri/target/debug/rushcut.exe`), release as fallback. Debug loads from live Vite dev server — always reflects current source without `tauri build`.
 - CDP port 9222: launch binary with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`.
 
+## chrome-devtools MCP conflicts with WDIO (critical — do not mix in same session)
+
+Calling any `mcp__chrome-devtools__*` tool starts an Edge browser on port 9222 for the lifetime of the Claude Code session. This squats the port: WDIO's `waitForPort(9222)` resolves to the MCP browser (not the Tauri WebView2), msedgedriver attaches to the MCP browser, and `getUrl()` always returns `about:blank`. **Do not use chrome-devtools MCP tools in any session that also runs WDIO E2E tests.** For visual verification during dev use PowerShell `CopyFromScreen` screenshots instead.
+
 ## Stale process cleanup (beforeSession)
 
 Kill `rushcut.exe`, `msedgedriver.exe`, and the process holding port 9222:

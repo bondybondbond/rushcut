@@ -163,6 +163,27 @@ Rules:
 
 ---
 
+## Toast / Snackbar
+
+Used for transient feedback (e.g. duplicate-cut guard). Not a modal — no blocking, no close button.
+
+- **Position:** `fixed bottom-6 left-1/2 -translate-x-1/2 z-50`
+- **Background:** `bg-[#1a1a1a] border border-white/15`
+- **Warning accent:** `border-l-2 border-l-[#FF8A65]` (left border only)
+- **Text:** `text-sm text-[#e5e5e5]`
+- **Auto-dismiss:** 2500ms via `setTimeout(() => setToast(null), 2500)`
+- **Pointer events:** `pointer-events-none` — never blocks clicks underneath
+
+```tsx
+{toast && (
+  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
+    <p className="text-sm text-[#e5e5e5] whitespace-nowrap">{toast}</p>
+  </div>
+)}
+```
+
+---
+
 ## Key Copy Decisions
 
 | Old                                 | New                                              | Reason                                        |

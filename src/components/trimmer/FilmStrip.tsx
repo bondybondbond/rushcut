@@ -37,7 +37,8 @@ export function FilmStrip({ clips, activeId, onSelect, onRemove, onAdd }: FilmSt
     const clipId = e.dataTransfer.getData("clipId");
     if (!clipId) return;
     const clip = clips.find((c) => c.id === clipId);
-    if (clip && clip.include !== 1) {
+    // Multi-cut model (Batch A): any source row can be dropped to add a new cut
+    if (clip) {
       onAdd(clip);
     }
   }

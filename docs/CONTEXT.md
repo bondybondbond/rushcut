@@ -15,11 +15,18 @@
 
 ## Current Phase
 
-**Phase 2 — Batch 15g complete. Full Upload→Trim→Transitions→Sound→Render flow working end-to-end. Next: Batch 16+ (sticky filmstrip / format selector / music+transition preview).**
+**Phase 2 — Batch A (Trimmer Core) complete. Multi-cut model working, trim-selection loop working, splash screen fixed. Next: interactive real-session test (10-clip session), then Batch B.**
 
 ---
 
 ## Immediate Next Task
+
+**Gate for Batch B:** Do a real 10-clip session end-to-end with multi-cut trimmer before starting Batch B.
+
+**Startup performance (deferred — exclusive batch):**
+- 32s black screen before spinner: ~17s cargo compile (dev only) + ~15s WebView2 cold start
+- 6-8s spinner: `wsl --status` running synchronously in `setup()` — move to async spawn
+- Candidate: Batch B, C, or D depending on priority vs other features
 
 **Post-15g deferred items (candidate for Batch 16):**
 - Sticky filmstrip in bottom nav — updates across all screens as clips are added; render CTA lives in it
@@ -27,11 +34,18 @@
 - Music preview (30s loop on chip select) + Transition preview (CSS loop demo) — ship together
 - Edit screen rename: `/transitions/` → `/edit/` when text cards ship; StepNav "Transitions" → "Edit"
 
-**Future — Edit screen rename (post-15f):** When text cards ship, rename `/transitions/` → `/edit/` and add tabs: Transitions / Text Cards / Animations. StepNav "Transitions" → "Edit". Sections stacked vertically with disabled states. See `docs/PRD-DEV.md` Batch 15e notes.
-
 ---
 
 ## Recently Completed
+
+**Batch A — Trimmer Core (2026-04-30)**
+
+- **A1 — Multi-cut:** Source rows permanently `include=0` (pantry templates). Each "Add to Film" click INSERTs a new `include=1` cut row via `add_clip_cut_cmd`. `delete_clip_cmd` DELETEs cut rows (source stays in pantry). Duplicate handles guarded with toast. `MediaPantry` filters to `include===0` rows only.
+- **A2 — Trim-selection loop:** Removed `loop` attribute from `<video>`. `onTimeUpdate` guard seeks back to `inMs` when `currentMs >= outMs`.
+- **A3 — Splash screen (Step E):** Inline `#rc-splash` overlay in `index.html` (appears immediately on WebView2 load). Rust emits `app-ready` after db init + WSL check. React removes overlay on event; 5s timeout fallback. Second Tauri splash window removed from `lib.rs`.
+- `docs/DESIGN.md`: Toast/snackbar pattern documented.
+- `wdio.conf.ts`: `before` hook comment updated (second window removed, guard now no-op).
+- E2E: 7/7 fast PASS · 12/12 trimmer PASS.
 
 **Batch 15g — Render screen (2026-04-29)**
 

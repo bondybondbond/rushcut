@@ -6,6 +6,13 @@
     <title>RushCut</title>
   </head>
   <body>
+    <!-- Splash overlay (Step E, Batch A): shows immediately on WebView2 load, no race with setup().
+         Removed by main.tsx when Rust emits app-ready. Fallback setTimeout in main.tsx at 5000ms. -->
+    <div id="rc-splash" style="position:fixed;inset:0;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;font-family:system-ui,-apple-system,sans-serif">
+      <div style="font-size:32px;font-weight:700;color:#FF8A65;letter-spacing:-0.5px">RushCut</div>
+      <div style="margin-top:24px;width:40px;height:40px;border-radius:50%;border:3px solid rgba(255,138,101,0.15);border-top-color:#FF8A65;animation:spin 0.9s linear infinite"></div>
+      <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
