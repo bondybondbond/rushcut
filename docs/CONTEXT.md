@@ -15,13 +15,20 @@
 
 ## Current Phase
 
-**Phase 2 — Batch A complete (all items including A4 native splash). Next: 10-clip real session gate, then Batch B.**
+**Phase 2 — Batch B Run 1 complete. Next: Batch B Run 2 (4K chip, custom music, render resize).**
 
 ---
 
 ## Immediate Next Task
 
-**Gate for Batch B:** Do a real 10-clip session end-to-end with multi-cut trimmer before starting Batch B.
+**Batch B Run 2:** 4K export chip on Render screen, custom music upload (rfd dialog), render screen video resize handle. Start in a fresh chat with the plan file: `C:\Users\Manasak\.claude\plans\run-dev-plan-skill-wise-cascade.md` (Run 2 section).
+
+**Batch B Run 1 — Pipeline perf + music ducking (2026-05-02):**
+- B-0 pre-trim: render.py copy-trims each clip to `[in_s-2s, out_s+0.5s]` before normalise → files land in WSL2 tmpfs. Biggest single speedup: 10 min → ~3 min for 1m26s DJI 4K film.
+- Parallel normalise: `ThreadPoolExecutor(max_workers=min(4, os.cpu_count()))` in normalise.py. Per-worker `-threads N` cap. 4 workers, 10 clips → 80s (floor = 4K HEVC software decode speed).
+- Render preset: `slow` → `medium` (-25s on 86s film).
+- Music ducking: `_build_filter()` ducks movie audio by `movie_vol` before amix. Prominent = movie at 0.3×, music at 0.7× → music clearly dominates.
+- Proxy reuse candidate flagged (Batch C): using H.264 1080p proxies as normalise input would cut 80s → ~20-30s.
 
 **Startup performance — DONE (Batch A4, 2026-05-02):**
 - Native Win32 splash visible ~200ms from binary launch (covers WebView2 cold start entirely)

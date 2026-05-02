@@ -11,12 +11,20 @@ Key constraints (from CLAUDE.md):
 """
 
 import logging
+import os
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .utils import FFMPEG, ffmpeg_run, log_av_sync
 
 log = logging.getLogger(__name__)
+
+# Max parallel FFmpeg normalise workers. After B-0 pre-trim, input files are in
+# WSL2 tmpfs (RAM) so HEVC decode is CPU-bound, not I/O-bound — parallelism helps.
+# 4 workers ≈ 4-8 cores used concurrently; safe on 8+ core machines.
+MAX_PARALLEL_NORMALISE = min(4, os.cpu_count() or 1)
 
 
 def normalise(
@@ -48,17 +56,25 @@ def normalise(
     # -hwaccel auto probed 2026-03-30: /dev/dxg present but Vulkan video decode extension
     # not supported; CUDA/VDPAU absent. All hw paths fall back to software. Skip hwaccel.
 
-    norm_paths: list[Path] = []
+    total = len(clip_paths)
+    norm_paths: list[Path] = [tmp_dir / f"norm_{i}.mp4" for i in range(total)]
+    done_count = 0
+    lock = threading.Lock()
 
-    for i, src in enumerate(clip_paths):
-        out = tmp_dir / f"norm_{i}.mp4"
+    def _worker(i: int, src: Path) -> None:
+        nonlocal done_count
+        out = norm_paths[i]
         log.info("[normalise] %s -> %s (mode=%s)", src.name, out.name, mode)
-
+        # Cap threads per worker so N parallel workers don't oversubscribe.
+        # Default: libx264 grabs all nproc (16) threads. With 4 workers:
+        # 4 × 16 = 64 threads on 16 cores → thrash. Cap to cores / workers.
+        threads_per_worker = max(1, (os.cpu_count() or 4) // MAX_PARALLEL_NORMALISE)
         ffmpeg_run([
             FFMPEG, "-y",
+            "-threads", str(threads_per_worker),  # global: caps both HEVC decode + x264 encode
             "-i", str(src),
-            "-map", "0:v:0",    # First video stream (skips DJI thumbnail stream)
-            "-map", "0:a:0?",   # First audio stream, optional
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
             "-vf", scale_filter,
             "-r", "25",
             "-fps_mode", "cfr",
@@ -69,11 +85,17 @@ def normalise(
             "-ar", "48000",
             str(out),
         ])
-
         log_av_sync(out, f"norm_{i}")
-        norm_paths.append(out)
+        with lock:
+            done_count += 1
+            n = done_count
         if on_clip_done:
-            on_clip_done(i + 1, len(clip_paths))
+            on_clip_done(n, total)
 
-    log.info("[normalise] Done — %d clips normalised", len(norm_paths))
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_NORMALISE) as pool:
+        futures = [pool.submit(_worker, i, src) for i, src in enumerate(clip_paths)]
+        for f in futures:
+            f.result()  # re-raise any worker exception
+
+    log.info("[normalise] Done -- %d clips normalised", len(norm_paths))
     return norm_paths

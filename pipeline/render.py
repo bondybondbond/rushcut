@@ -16,8 +16,10 @@ Entry points:
 """
 
 import logging
+import os
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .cards import make_card
@@ -34,6 +36,10 @@ log = logging.getLogger(__name__)
 
 MUSIC_DIR = Path(__file__).parent.parent / "music"
 TMP_BASE = Path("/tmp")
+
+# Movie audio ducking per music_volume preset (0.2=subtle, 0.4=balanced, 0.7=prominent).
+# As music gets louder, movie audio is ducked proportionally so music actually dominates.
+_MOVIE_VOL = {0.2: 1.0, 0.4: 0.7, 0.7: 0.3}
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +154,49 @@ def run_pipeline(
     report(10)
     t0 = time.time()
 
+    # Pre-trim: extract only the needed segment from each source clip before normalise.
+    # DJI clips can be 60-120s; user typically uses 5-30s. Normalising the full clip
+    # wastes 4-10x time. Fast copy-seek to [in_s - 2s, out_s + 0.5s], then normalise
+    # only the short segment. Step 2 fine-trims the normalised file with adjusted offsets.
+    # Original `clips` preserved intact for ANALYSIS metrics (source duration/resolution).
+    n_clips = len(clip_paths)
+    pre_trimmed_paths: list = [None] * n_clips
+    pipeline_clips:    list = [None] * n_clips
+
+    def _pretrim_worker(i: int, src_p: Path, cm: dict) -> None:
+        u_in  = cm.get("in_ms")
+        u_out = cm.get("out_ms")
+        if u_in is not None or u_out is not None:
+            in_s    = (u_in  / 1000.0) if u_in  is not None else 0.0
+            out_s   = (u_out / 1000.0) if u_out is not None else None
+            a_start = max(0.0, in_s - 2.0)   # 2s pre-roll for keyframe alignment
+            out_path = tmp / f"pretrim_{i}.mp4"
+            cmd = [FFMPEG, "-y", "-ss", f"{a_start:.4f}"]
+            if out_s is not None:
+                cmd += ["-to", f"{out_s + 0.5:.4f}"]
+            cmd += ["-i", str(src_p), "-c", "copy", str(out_path)]
+            end_label = f"{out_s + 0.5:.2f}s" if out_s is not None else "EOF"
+            log.info("[B0] clip %d: pre-trim %.2fs -> %s (src=%s)", i, a_start, end_label, src_p.name)
+            ffmpeg_run(cmd)
+            adj_in  = int((in_s  - a_start) * 1000) if u_in  is not None else None
+            adj_out = int((out_s - a_start) * 1000) if out_s is not None else None
+            pre_trimmed_paths[i] = out_path
+            pipeline_clips[i]    = {**cm, "in_ms": adj_in, "out_ms": adj_out}
+        else:
+            pre_trimmed_paths[i] = src_p
+            pipeline_clips[i]    = cm
+
+    with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as pool:
+        futures = [pool.submit(_pretrim_worker, i, src_p, cm)
+                   for i, (src_p, cm) in enumerate(zip(clip_paths, clips))]
+        for f in futures:
+            f.result()
+
     def _normalise_progress(done: int, total: int) -> None:
         report_stage(f"Normalising clip {done} of {total}")
         report(10 + int(done / total * 40))  # 10% -> 50%
 
-    current_paths = normalise(clip_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
+    current_paths = normalise(pre_trimmed_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
     normalise_s = time.time() - t0
     print(f"TIMING:normalise={normalise_s:.1f}s", flush=True)
 
@@ -162,13 +206,13 @@ def run_pipeline(
     t0 = time.time()
 
     # Check if any clip has user-set trim points (in_ms/out_ms from Review screen).
-    has_user_trims = any(c.get("in_ms") is not None or c.get("out_ms") is not None for c in clips)
+    has_user_trims = any(c.get("in_ms") is not None or c.get("out_ms") is not None for c in pipeline_clips)
 
     if has_user_trims or config.get("silence_removal", False):
         log.info("[render] Step 2: trim (user overrides: %s, silence_removal: %s)",
                  has_user_trims, config.get("silence_removal", False))
         trimmed = []
-        for i, (p, clip_meta) in enumerate(zip(current_paths, clips)):
+        for i, (p, clip_meta) in enumerate(zip(current_paths, pipeline_clips)):
             user_in = clip_meta.get("in_ms")
             user_out = clip_meta.get("out_ms")
             if user_in is not None or user_out is not None:
@@ -199,13 +243,13 @@ def run_pipeline(
     # Per-clip zoom_mode from Review screen takes precedence over global config.zoom.
     report_stage("zoom")
     report(55)
-    has_per_clip_zoom = any(c.get("zoom_mode") for c in clips)
+    has_per_clip_zoom = any(c.get("zoom_mode") for c in pipeline_clips)
     global_zoom = config.get("zoom", False) and mode == "final"
 
     if has_per_clip_zoom or global_zoom:
         log.info("[render] Step 3: zoom (per_clip=%s, global=%s)", has_per_clip_zoom, global_zoom)
         zoomed = []
-        for i, (p, clip_meta) in enumerate(zip(current_paths, clips)):
+        for i, (p, clip_meta) in enumerate(zip(current_paths, pipeline_clips)):
             clip_zoom = clip_meta.get("zoom_mode")
             if clip_zoom:
                 # Per-clip zoom with focal point
@@ -279,7 +323,7 @@ def run_pipeline(
         current_paths, durations, audio_flags, tmp
     )
 
-    crf, preset = (35, "ultrafast") if mode == "draft" else (22, "slow")
+    crf, preset = (35, "ultrafast") if mode == "draft" else (22, "medium")
     scale_h = "360" if mode == "draft" else "1080"
 
     if len(current_paths) == 1:
@@ -336,7 +380,10 @@ def run_pipeline(
         log.info("[render] Step 6: mix music (%s)", music_mood)
         music_out = tmp / "with_music.mp4"
         music_volume = float(config.get("music_volume", 0.4))
-        output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out, music_volume=music_volume)
+        movie_vol = _MOVIE_VOL.get(round(music_volume, 1), 0.7)
+        log.info("[vol] music_vol=%.2f movie_vol=%.2f", music_volume, movie_vol)
+        output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out,
+                           music_volume=music_volume, movie_vol=movie_vol)
     else:
         log.info("[render] Step 6: music skipped")
     print(f"TIMING:music={time.time()-t0:.1f}s", flush=True)

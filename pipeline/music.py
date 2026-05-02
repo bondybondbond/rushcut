@@ -74,6 +74,7 @@ def _build_filter(
     crossfade_s: float,
     video_dur: float,
     music_volume: float,
+    movie_vol: float = 1.0,
 ) -> str:
     """Build filter_complex for n_copies inputs (FFmpeg indices 1..n_copies).
 
@@ -85,12 +86,14 @@ def _build_filter(
     # Pre-trim string applied to every input copy
     pre = f"atrim={active_start:.4f}:{active_end:.4f},asetpts=PTS-STARTPTS"
 
-    # Final trim + volume + fade + mix tail (applied after all acrossfade ops)
+    # Final trim + volume + fade + mix tail (applied after all acrossfade ops).
+    # Movie audio is ducked by movie_vol so prominent music actually dominates.
     tail = (
         f"atrim=0:{video_dur:.4f},asetpts=PTS-STARTPTS,"
         f"volume={music_volume:.4f},"
         f"afade=t=out:st={fade_start:.4f}:d={FADE_OUT_S}[mus];"
-        f"[0:a][mus]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+        f"[0:a]volume={movie_vol:.4f}[movaudio];"
+        f"[movaudio][mus]amix=inputs=2:duration=first:dropout_transition=3[aout]"
     )
 
     if n_copies == 1:
@@ -118,6 +121,7 @@ def mix_music(
     music_dir: Path,
     out_path: Path,
     music_volume: float = 0.4,
+    movie_vol: float = 1.0,
 ) -> Path:
     """
     Mix a background music track into video_path.
@@ -153,7 +157,7 @@ def mix_music(
         track_name, active_start, active_end, video_duration_s, n_copies, crossfade_s, music_volume,
     )
 
-    fc = _build_filter(n_copies, active_start, active_end, crossfade_s, video_duration_s, music_volume)
+    fc = _build_filter(n_copies, active_start, active_end, crossfade_s, video_duration_s, music_volume, movie_vol)
     log.info("[music] filter_complex: %s", fc)
 
     cmd = [FFMPEG, "-y", "-i", str(video_path)]

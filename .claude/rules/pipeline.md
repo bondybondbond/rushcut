@@ -11,7 +11,11 @@ Applies when working on `pipeline/**`, `src-tauri/src/lib.rs` (pipeline spawn), 
 
 ## Sync / performance fixes — logs first
 
-Before writing any A/V sync fix or normalise speed fix, run a real render and read the `[sync-check]` log output. Identify WHERE drift enters (normalise output? post-trim? concat?) before touching code. `aresample=async` worsens DJI monotonic drift — see LEARNINGS.md. WSL2 normalise is I/O-bound; ProcessPoolExecutor makes it slower — see LEARNINGS.md.
+Before writing any A/V sync fix or normalise speed fix, run a real render and read the `[sync-check]` log output. Identify WHERE drift enters (normalise output? post-trim? concat?) before touching code. `aresample=async` worsens DJI monotonic drift — see LEARNINGS.md.
+
+**Normalise performance (post-Batch B):** render.py now pre-trims each clip to `[in_s - 2s, out_s + 0.5s]` via FFmpeg copy before calling `normalise()`. Files land in WSL2 `/tmp` (tmpfs = RAM). `normalise()` uses `ThreadPoolExecutor(max_workers=min(4, os.cpu_count()))` with per-worker `-threads N` flag. Result: 10 min → ~3 min for a 1m26s 10-clip DJI 4K film. The 80s normalise floor is 4K HEVC software decode speed — no further gain without proxy reuse (see LEARNINGS.md). The I/O-bound warning still applies to pre-trim (reads from NTFS): parallelising pre-trim across clips on the same drive does not improve total time.
+
+**Music volume ducking (post-Batch B):** `music.py` `_build_filter()` now applies `[0:a]volume={movie_vol}[movaudio]` to the movie audio stream before amix. `movie_vol` is preset-driven: `{subtle: 1.0, balanced: 0.7, prominent: 0.3}`. The `mix_music()` signature takes `movie_vol: float = 1.0`. Callers in `render.py` pass `movie_vol = _MOVIE_VOL.get(round(music_volume, 1), 0.7)`.
 
 ## Invocation
 
