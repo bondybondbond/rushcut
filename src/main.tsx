@@ -5,12 +5,12 @@ import { listen } from "@tauri-apps/api/event";
 import App from "./App";
 import "./globals.css";
 
-// Step E splash fix (Batch A): remove the inline overlay once Rust emits app-ready
-// (db init + WSL check complete). Fallback removes after 5s in case event never fires.
-listen("app-ready", () => {
-  document.getElementById("rc-splash")?.remove();
-});
-setTimeout(() => document.getElementById("rc-splash")?.remove(), 5000);
+// Remove #rc-splash when Rust emits app-ready (db init done).
+// 500ms fallback covers the case where app-ready fires before React's listen() registers
+// (async WSL in Batch A4 means app-ready fires ~50ms after binary starts).
+const removeOverlay = () => document.getElementById("rc-splash")?.remove();
+listen("app-ready", removeOverlay);
+setTimeout(removeOverlay, 500);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

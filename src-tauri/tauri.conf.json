@@ -9,7 +9,7 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "RushCut", "width": 1280, "height": 800 }
+      { "title": "RushCut", "width": 1280, "height": 800, "visible": false }
     ],
     "security": {
       "assetProtocol": {

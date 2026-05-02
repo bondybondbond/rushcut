@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import Upload from "@/pages/Upload";
 import Library from "@/pages/Library";
 import Review from "@/pages/Review";
@@ -11,6 +12,11 @@ import Render from "@/pages/Render";
 import { AppShell } from "@/components/AppShell";
 
 export default function App() {
+  useEffect(() => {
+    // Close the native Win32 splash (Batch A4) — fires when React has actually mounted.
+    invoke("confirm_app_loaded").catch(() => {});
+  }, []);
+
   useEffect(() => {
     const unlisten = listen("wsl-check-failed", () => {
       alert(

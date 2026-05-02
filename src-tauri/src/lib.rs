@@ -1,4 +1,6 @@
 mod db;
+#[cfg(target_os = "windows")]
+mod splash;
 
 use base64::Engine as _;
 use db::{
@@ -12,7 +14,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -380,6 +382,15 @@ fn delete_project_cmd(project_id: String) -> Result<(), String> {
         let _ = std::fs::remove_file(p); // best-effort: file may already be gone
     }
     delete_project(&project_id).map_err(|e| format!("Failed to delete project: {}", e))
+}
+
+/// Called by React on first mount — closes the native splash (Batch A4).
+/// The main window is already visible (shown from setup()). The splash sits WS_EX_TOPMOST
+/// and physically covers it, so the user only sees splash → app with no intermediate state.
+#[tauri::command]
+fn confirm_app_loaded(_app: tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    splash::hide();
 }
 
 /// Open a file in Windows Explorer with the file selected.
@@ -937,6 +948,11 @@ fn wsl_to_win(path: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn run() {
+    // Show native Win32 splash immediately — before WebView2 initialises.
+    // Covers the black screen that the HTML #rc-splash overlay cannot address.
+    #[cfg(target_os = "windows")]
+    splash::show();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // Tracks which project IDs currently have a proxy generation in progress.
@@ -944,29 +960,48 @@ pub fn run() {
         // when Upload.tsx and Trimmer.tsx both call generate_proxies_cmd.
         .manage(Arc::new(Mutex::new(HashSet::<String>::new())))
         .setup(|app| {
-            // Step E splash fix (Batch A): inline overlay in index.html shows on WebView2 load.
-            // Emit app-ready once db + WSL check are done — React removes the overlay on this event.
+            // Batch A3: inline #rc-splash overlay in index.html shows on WebView2 load.
+            // Batch A4: native Win32 splash covers the earlier black screen (before WebView2 loads).
             if let Err(e) = db::init(app.handle()) {
                 return Err(e);
             }
 
-            let wsl_ok = std::process::Command::new("wsl")
-                .arg("--status")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-
-            if wsl_ok {
-                eprintln!("[wsl_check] ok");
-            } else {
-                eprintln!("[wsl_check] FAILED - WSL2 not available");
-                app.emit("wsl-check-failed", ()).ok();
+            // Show the main window so WebView2 / E2E can interact with it.
+            // The native splash (WS_EX_TOPMOST) covers it physically until confirm_app_loaded fires.
+            if let Some(win) = app.get_webview_window("main") {
+                win.show().ok();
             }
 
             app.emit("app-ready", ()).ok();
+            // Native splash is closed by confirm_app_loaded (called from React on first mount).
+
+            // WSL check moved async — was blocking setup() for 6-8s on every launch.
+            // spawn_blocking required: std::process::Command is blocking I/O and must
+            // not run directly inside an async task (would stall the thread pool).
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let wsl_ok = tokio::task::spawn_blocking(|| {
+                    std::process::Command::new("wsl")
+                        .arg("--status")
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                })
+                .await
+                .unwrap_or(false);
+
+                if wsl_ok {
+                    eprintln!("[wsl_check] ok");
+                } else {
+                    eprintln!("[wsl_check] FAILED - WSL2 not available");
+                    handle.emit("wsl-check-failed", ()).ok();
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            confirm_app_loaded,
             scan_folder,
             probe_files,
             create_project,

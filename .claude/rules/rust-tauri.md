@@ -63,6 +63,52 @@ async fn my_cmd(state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>, ...) {
 
 `.manage()` must appear **before** `.setup()` in the builder chain (not after `.invoke_handler()`).
 
+## Native Win32 splash (Windows-only)
+
+Pattern for a borderless splash that appears before WebView2 initialises:
+
+```rust
+// splash.rs — #![cfg(target_os = "windows")]
+// Uses windows crate 0.58 (Win32_UI_WindowsAndMessaging, Win32_Foundation, Win32_Graphics_Gdi, Win32_System_LibraryLoader)
+// HWND type in 0.58: HWND(*mut core::ffi::c_void) — NOT isize
+static SPLASH_HWND: AtomicUsize = AtomicUsize::new(0);
+
+pub fn show() { std::thread::spawn(|| unsafe { /* CreateWindowExW WS_POPUP|WS_EX_TOPMOST|WS_EX_TOOLWINDOW */ }); }
+pub fn hide() { PostMessageW(hwnd, WM_CLOSE, ...) }  // thread-safe async close
+// WM_DESTROY: Box::from_raw(ptr) to drop heap state, then PostQuitMessage(0)
+```
+
+- `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_POPUP` — borderless, always-on-top, no taskbar entry
+- `AtomicUsize` stores `HWND.0 as usize` for cross-thread access; reconstruct as `HWND(val as *mut core::ffi::c_void)`
+- `UpdateWindow` is absent in windows 0.58 — use `ShowWindow` + let `WM_TIMER`/`InvalidateRect` trigger first paint
+- `WM_DESTROY` must call `Box::from_raw(GWLP_USERDATA ptr)` before `PostQuitMessage` — prevents heap leak every close
+- `PostMessageW(WM_CLOSE)` from any thread triggers `KillTimer` + `DestroyWindow` on the splash thread
+
+## visible: false + show from setup()
+
+For splash-covered launch: set `"visible": false` in `tauri.conf.json` window config. Show in `setup()` immediately after db::init:
+
+```rust
+if let Some(win) = app.get_webview_window("main") { win.show().ok(); }
+```
+
+This keeps the window accessible to WebDriver (E2E) at all times while the native splash (topmost) covers it visually. `use tauri::Manager;` must be imported — `get_webview_window` is not available without it.
+
+## spawn_blocking for blocking I/O in async
+
+`tauri::async_runtime::spawn(async move { std::process::Command::new("wsl")... })` blocks an async pool thread. Wrap with `tokio::task::spawn_blocking`:
+
+```rust
+let ok = tokio::task::spawn_blocking(|| {
+    std::process::Command::new("wsl").arg("--status")
+        .output().map(|o| o.status.success()).unwrap_or(false)
+}).await.unwrap_or(false);
+```
+
+## dataDirectory does not redirect WebView2 user data
+
+Adding `"dataDirectory": "webview-data"` to a window in `tauri.conf.json` has no effect — the directory is never created and WebView2 ignores it. WebView2 already persists its cache to `%LOCALAPPDATA%\<identifier>\EBWebView` by default. Do not add this key.
+
 ## Cargo / PATH
 
 After `winget install Rustlang.Rustup`, `cargo` is only available in new terminals. Existing shells: `$env:PATH += ";$env:USERPROFILE\.cargo\bin"`.

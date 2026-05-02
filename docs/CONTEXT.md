@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch A (Trimmer Core) complete. Multi-cut model working, trim-selection loop working, splash screen fixed. Next: interactive real-session test (10-clip session), then Batch B.**
+**Phase 2 — Batch A complete (all items including A4 native splash). Next: 10-clip real session gate, then Batch B.**
 
 ---
 
@@ -23,10 +23,11 @@
 
 **Gate for Batch B:** Do a real 10-clip session end-to-end with multi-cut trimmer before starting Batch B.
 
-**Startup performance (deferred — exclusive batch):**
-- 32s black screen before spinner: ~17s cargo compile (dev only) + ~15s WebView2 cold start
-- 6-8s spinner: `wsl --status` running synchronously in `setup()` — move to async spawn
-- Candidate: Batch B, C, or D depending on priority vs other features
+**Startup performance — DONE (Batch A4, 2026-05-02):**
+- Native Win32 splash visible ~200ms from binary launch (covers WebView2 cold start entirely)
+- Async WSL check — no longer blocks `setup()`; `app-ready` fires as soon as db::init completes
+- Repeat launch: ~2-3s (user-confirmed)
+- `pnpm dev` is NOT the test vehicle — use `pnpm dev:vite` + direct binary double-click
 
 **Post-15g deferred items (candidate for Batch 16):**
 - Sticky filmstrip in bottom nav — updates across all screens as clips are added; render CTA lives in it
@@ -37,6 +38,17 @@
 ---
 
 ## Recently Completed
+
+**Batch A4 — Native Splash + Async WSL (2026-05-02)**
+
+- `src-tauri/src/splash.rs` (new): Win32 borderless splash. `WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_POPUP`, GDI paint (`#0a0a0a` bg, "RushCut" Segoe UI Semibold 42pt, green progress bar), 50ms timer, `AtomicUsize` HWND cross-thread, `PostMessageW(WM_CLOSE)` async hide.
+- `src-tauri/Cargo.toml`: `windows = "0.58"` Windows-platform dep (4 features).
+- `src-tauri/tauri.conf.json`: `"visible": false` — window starts hidden, covered by native splash.
+- `src-tauri/src/lib.rs`: `mod splash`; `splash::show()` before `tauri::Builder`; `setup()` calls `win.show()` (E2E compat) + async WSL with `spawn_blocking`; `confirm_app_loaded` command calls `splash::hide()` from React mount.
+- `src/App.tsx`: `invoke("confirm_app_loaded")` in first `useEffect` — closes splash when React mounts.
+- `src/main.tsx`: fallback reduced 5000ms → 500ms (async WSL fires `app-ready` ~50ms after binary start, before React loads).
+- Result: ~2-3s repeat launch (user-confirmed). Native splash visible within ~200ms. Single unified loading experience (no two-window flash).
+- E2E: 7/7 fast PASS.
 
 **Batch A — Trimmer Core (2026-04-30)**
 
