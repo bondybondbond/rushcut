@@ -4,7 +4,7 @@ mod splash;
 
 use base64::Engine as _;
 use db::{
-    add_clip_cut, delete_clip, delete_project, get_job, get_project_output_paths,
+    add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_job, get_project_output_paths,
     get_project_with_clips, has_4k_clips, insert_clip, insert_job, insert_project, list_projects,
     rename_project, reorder_clips, update_clip_proxy, update_clip_review, update_clip_thumbnail,
     update_clip_waveform, update_job_analysis, update_job_done, update_job_error,
@@ -308,17 +308,24 @@ fn is_valid_proxy_file(path: &str) -> bool {
 /// Returns true on success.
 fn generate_proxy_file(src: &str, dst: &str) -> bool {
     let encoder = detect_best_encoder();
-    eprintln!("[proxy] encoding {} -> {} using {}", src, dst, encoder);
+    eprintln!("[C-proxy] encoding 1080p proxy {} -> {} using {}", src, dst, encoder);
+    // Spec matches normalise.py output so render.py can skip normalise on re-renders:
+    //   scale=-2:1080 yuv420p, 25fps CFR, libx264/GPU ultrafast, AAC 48kHz
+    // -c:a aac + -ar 48000: DJI records at 96kHz — must re-encode, not stream-copy.
     let ok = std::process::Command::new(ffmpeg_exe())
         .args([
             "-i", src,
             "-map", "0:v:0",
             "-map", "0:a:0?",
+            "-vf", "scale=-2:1080,format=yuv420p",
+            "-r", "25",
+            "-fps_mode", "cfr",
             "-c:v", encoder,
             "-preset", "ultrafast",
-            "-crf", "28",
-            "-vf", "scale=-2:480",
-            "-c:a", "copy",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "48000",
             "-y",
             dst,
         ])
@@ -328,9 +335,9 @@ fn generate_proxy_file(src: &str, dst: &str) -> bool {
         .map(|s| s.success())
         .unwrap_or(false);
     if ok {
-        eprintln!("[proxy] encode OK: {}", dst);
+        eprintln!("[C-proxy] encode OK: {}", dst);
     } else {
-        eprintln!("[proxy] encode FAILED: {}", dst);
+        eprintln!("[C-proxy] encode FAILED: {}", dst);
     }
     ok
 }
@@ -619,6 +626,7 @@ async fn start_job(
                 "focal_x": c.focal_x,
                 "focal_y": c.focal_y,
                 "zoom_mode": c.zoom_mode,
+                "proxy_path": c.proxy_path,
             })
         }).collect::<Vec<_>>(),
         "settings": serde_json::from_str::<serde_json::Value>(&settings_json)
@@ -744,6 +752,8 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
                     "outputPath": win_out
                 }),
             );
+            // Fire-and-forget proxy vacuum — delete orphaned/stale proxies on a background thread.
+            tauri::async_runtime::spawn_blocking(|| { vacuum_proxies_cmd(); });
             return;
         } else if let Some(err_msg) = line.strip_prefix("ERROR:") {
             let msg = err_msg.trim().to_string();
@@ -924,6 +934,69 @@ async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
     }
 }
 
+/// Delete proxy files that are orphaned (clip no longer in DB) or stale (>30 days old).
+/// Called fire-and-forget after each pipeline-done to keep proxy storage clean.
+#[tauri::command]
+fn vacuum_proxies_cmd() -> String {
+    use std::time::{Duration, SystemTime};
+
+    let appdata = match std::env::var("APPDATA") {
+        Ok(v) => v,
+        Err(_) => return "error=APPDATA not set".to_string(),
+    };
+    let proxy_dir = format!(r"{}\rushcut\proxies", appdata);
+
+    // Ensure dir exists — no crash on fresh install with no proxies yet
+    if let Err(e) = std::fs::create_dir_all(&proxy_dir) {
+        return format!("error=cannot create proxy dir: {}", e);
+    }
+
+    // Collect all clip IDs currently in the DB
+    let known_ids: std::collections::HashSet<String> =
+        get_all_clip_ids().unwrap_or_default().into_iter().collect();
+
+    let thirty_days = Duration::from_secs(30 * 24 * 3600);
+    let cutoff = SystemTime::now()
+        .checked_sub(thirty_days)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    let entries = match std::fs::read_dir(&proxy_dir) {
+        Ok(e) => e,
+        Err(e) => return format!("error=read_dir failed: {}", e),
+    };
+
+    let mut deleted_orphaned: u32 = 0;
+    let mut deleted_stale: u32 = 0;
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("mp4") {
+            continue;
+        }
+        let clip_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        let orphaned = !clip_id.is_empty() && !known_ids.contains(&clip_id);
+        let stale = !orphaned && entry.metadata()
+            .and_then(|m| m.modified())
+            .map(|mtime| mtime < cutoff)
+            .unwrap_or(false);
+
+        if orphaned || stale {
+            if std::fs::remove_file(&path).is_ok() {
+                if orphaned { deleted_orphaned += 1; } else { deleted_stale += 1; }
+            }
+        }
+    }
+
+    let result = format!("deleted_orphaned={},deleted_stale={}", deleted_orphaned, deleted_stale);
+    eprintln!("[vacuum] {}", result);
+    result
+}
+
 fn emit_error(app: &AppHandle, job_id: &str, message: &str) {
     let _ = app.emit(
         "pipeline-error",
@@ -1025,6 +1098,7 @@ pub fn run() {
             open_output_path,
             generate_proxies_cmd,
             generate_proxy_for_clip,
+            vacuum_proxies_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -109,13 +109,19 @@ def is_valid_proxy(proxy_wsl: str) -> bool:
 
 def generate_proxy(src_wsl: str, proxy_wsl: str) -> bool:
     """
-    Encode a 480p H.264 proxy from src_wsl -> proxy_wsl.
-    Returns True on success, False on failure.
-    Uses -map 0:v:0 to skip DJI embedded MJPEG thumbnail stream.
-    Audio is stream-copied (not re-encoded) -- proxies are for scrubbing only.
-    -preset ultrafast: ~4x faster than default medium; quality irrelevant for proxies.
-    480p (vs 720p) halves pixel count -> further speedup with no UX loss at scrubbing size.
+    Encode a 1080p H.264 proxy from src_wsl -> proxy_wsl.
+
+    Spec matches normalise.py output exactly so render.py can use the proxy as a
+    normalised intermediate and skip the normalise step entirely on re-renders:
+      - scale=-2:1080, format=yuv420p
+      - 25fps CFR (-r 25 -fps_mode cfr)
+      - libx264 ultrafast crf=23
+      - AAC 128k -ar 48000  (DJI source is 96kHz — must re-encode, not copy)
+      - -map 0:v:0 / -map 0:a:0?  (DJI has embedded MJPEG as stream 1)
+
+    Timeout 600s: HEVC decode is the bottleneck regardless of output resolution.
     """
+    print(f"[C-proxy] generating 1080p H.264 proxy for {proxy_wsl}", file=sys.stderr)
     try:
         result = subprocess.run(
             [
@@ -123,16 +129,20 @@ def generate_proxy(src_wsl: str, proxy_wsl: str) -> bool:
                 "-i", src_wsl,
                 "-map", "0:v:0",
                 "-map", "0:a:0?",
+                "-vf", "scale=-2:1080,format=yuv420p",
+                "-r", "25",
+                "-fps_mode", "cfr",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
-                "-crf", "28",
-                "-vf", "scale=-2:480",
-                "-c:a", "copy",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ar", "48000",
                 "-y",
                 proxy_wsl,
             ],
             capture_output=True,
-            timeout=600,  # 10 min ceiling: 4K HEVC software decode at 480p ultrafast
+            timeout=600,  # 10 min ceiling: 4K HEVC software decode
         )
         return result.returncode == 0
     except Exception as e:

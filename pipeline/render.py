@@ -22,17 +22,43 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import subprocess
+
 from .cards import make_card
 from .detect import detect_trim_points
 from .loudnorm import loudnorm
 from .music import mix_music
 from .normalise import normalise
+from .proxy import is_valid_proxy
 from .transitions import build_filter_complex
 from .trim import trim
 from .utils import FFMPEG, ffmpeg_run, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import apply_zoom
 
 log = logging.getLogger(__name__)
+
+
+def _proxy_height(proxy_wsl: str) -> int:
+    """Return video stream height of proxy file, or 0 on error.
+
+    Used to detect legacy 480p proxies — those cannot substitute for a 1080p
+    normalised intermediate and must fall back to the normalise path.
+    """
+    try:
+        r = subprocess.run(
+            [
+                "/usr/bin/ffprobe", "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=height",
+                "-of", "csv=p=0",
+                proxy_wsl,
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        return int(r.stdout.decode().strip())
+    except Exception:
+        return 0
 
 MUSIC_DIR = Path(__file__).parent.parent / "music"
 TMP_BASE = Path("/tmp")
@@ -200,14 +226,70 @@ def run_pipeline(
         for f in futures:
             f.result()
 
-    def _normalise_progress(done: int, total: int) -> None:
-        report_stage(f"Normalising clip {done} of {total}")
-        report(10 + int(done / total * 40))  # 10% -> 50%
+    # Partition clips: use 1080p proxy as normalise substitute where available.
+    # A proxy qualifies only if it is valid (moov atom present) AND height >= 1080
+    # (height < 1080 means it is a legacy 480p proxy from before Batch C — reject it).
+    proxy_clip_indices: set[int] = set()
+    norm_clip_indices:  list[int] = []
 
-    current_paths = normalise(pre_trimmed_paths, tmp, mode=mode, on_clip_done=_normalise_progress,
-                              output_resolution=output_resolution)
+    for i, cm in enumerate(pipeline_clips):
+        pwsl = cm.get("proxy_path_wsl")
+        # Cache both checks to avoid two ffprobe calls per clip
+        valid = bool(pwsl and is_valid_proxy(pwsl))
+        height = _proxy_height(pwsl) if valid else 0
+        if valid and height >= 1080:
+            proxy_clip_indices.add(i)
+            log.info("[C-proxy] clip %d: using 1080p proxy, skipping normalise", i)
+        else:
+            norm_clip_indices.append(i)
+            reason = (
+                "no proxy" if not pwsl
+                else ("invalid" if not valid else f"<1080p (h={height})")
+            )
+            log.info("[C-proxy] clip %d: %s, normalising from source", i, reason)
+
+    log.info("[C-proxy] %d proxy-skip / %d normalise", len(proxy_clip_indices), len(norm_clip_indices))
+
+    # Initialise merged output array
+    current_paths: list = [None] * n_clips
+
+    # Proxy clips: proxy IS the normalised intermediate — point directly at it.
+    # _pretrim_worker already ran for all clips and wrote B-0-adjusted in_ms/out_ms into
+    # pipeline_clips[i] (offsets relative to the pretrim window start). Proxy covers the
+    # FULL clip so those adjusted offsets are wrong — restore the original in_ms/out_ms
+    # from `clips` so Step 2 applies the correct absolute offsets to the proxy.
+    for i in proxy_clip_indices:
+        current_paths[i] = Path(pipeline_clips[i]["proxy_path_wsl"])
+        pipeline_clips[i] = {
+            **pipeline_clips[i],
+            "in_ms": clips[i].get("in_ms"),
+            "out_ms": clips[i].get("out_ms"),
+        }
+
+    # Non-proxy clips: normalise from pre-trimmed source (existing B-0 path)
+    if norm_clip_indices:
+        norm_src = [pre_trimmed_paths[i] for i in norm_clip_indices]
+
+        def _normalise_progress(done: int, total: int) -> None:
+            report_stage(f"Normalising clip {done} of {total}")
+            report(10 + int(done / total * 40))  # 10% -> 50%
+
+        normed = normalise(
+            norm_src, tmp, mode=mode,
+            on_clip_done=_normalise_progress,
+            output_resolution=output_resolution,
+        )
+        for j, i in enumerate(norm_clip_indices):
+            current_paths[i] = normed[j]
+    else:
+        report(50)  # all proxy — skip normalise progress arc
+
     normalise_s = time.time() - t0
-    print(f"TIMING:normalise={normalise_s:.1f}s", flush=True)
+    print(
+        f"TIMING:normalise={normalise_s:.1f}s"
+        f" (proxy_skip={len(proxy_clip_indices)}/{n_clips})",
+        flush=True,
+    )
 
     # 2. Silence trim.
     report_stage("Trimming clips")

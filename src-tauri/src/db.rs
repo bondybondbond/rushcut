@@ -368,6 +368,15 @@ pub fn delete_clip(clip_id: &str) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// Returns all clip IDs across all projects. Used by vacuum_proxies_cmd to detect orphaned proxies.
+pub fn get_all_clip_ids() -> Result<Vec<String>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare("SELECT id FROM clips")?;
+    let ids = stmt.query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+    Ok(ids)
+}
+
 /// Returns true if the project has any clip with width >= 3840 or height >= 2160.
 pub fn has_4k_clips(project_id: &str) -> Result<bool, rusqlite::Error> {
     let conn = Connection::open(db_path())?;

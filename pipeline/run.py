@@ -110,6 +110,11 @@ def main() -> None:
     # Resolve WSL2 paths from local_path (stored as Windows paths in DB)
     clip_paths = [Path(win_to_wsl(c["local_path"])) for c in clips]
 
+    # Enrich clip dicts with WSL proxy path so render.py can use proxies as normalise skip.
+    # proxy_path is a Windows path (or null) — convert to WSL for Python pipeline use.
+    for c in clips:
+        c["proxy_path_wsl"] = win_to_wsl(c["proxy_path"]) if c.get("proxy_path") else None
+
     # Ensure output directory exists
     output_wsl = Path(win_to_wsl(output_path_win))
     output_wsl.parent.mkdir(parents=True, exist_ok=True)

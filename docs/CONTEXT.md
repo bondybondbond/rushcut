@@ -15,14 +15,25 @@
 
 ## Current Phase
 
-**Phase 2 — Batch B ALL COMPLETE. Next: Batch C (trimmer UX polish — proxy reuse, transition shuffle, rough-cut preview).**
+**Phase 2 — Batch C COMPLETE (2026-05-03). Next: Batch D — Sound screen UX polish + any remaining UX debt.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch C — See `docs/PRD-DEV.md` Batch C section and `whats-next-on-the-delightful-wadler.md` for spec.**
-Priority candidates: (1) proxy reuse as normalise input (~20-30s normalise vs 80s current), (2) Sound screen UX polish (see PRD-DEV backlog entry added 2026-05-03).
+**Batch D — Sound screen UX polish (from founder feedback 2026-05-03):**
+- "No Music" chip needs stronger visual differentiation (currently indistinguishable from deselected mood chips)
+- Custom Track needs file-picker affordance (currently bare chip with no icon/hint)
+- Volume "Balanced" `movie_vol=0.7` may compete with clip audio — consider tuning to `0.5`
+- Music preview (30s loop on chip select) — deferred from Batch 15f
+
+**Batch C — Proxy reuse as normalise input COMPLETE (2026-05-03):**
+- Proxies upgraded from 480p to 1080p normalise-compatible spec (`scale=-2:1080 -r 25 -fps_mode cfr -c:a aac -ar 48000`)
+- `start_job` manifest includes `proxy_path` per clip; `run.py` threads `proxy_path_wsl`
+- `render.py` two-path logic: proxy clips skip normalise (→ 1.8s), non-proxy clips normalise from HEVC source
+- Legacy 480p proxies detected by height check and routed to normalise path automatically
+- `vacuum_proxies_cmd` Rust command: deletes orphaned (not in DB) or stale (>30d) proxies, called fire-and-forget after pipeline-done
+- Bug found+fixed: `_pretrim_worker` B-0 offset mutation required restoring original `in_ms`/`out_ms` from `clips[i]` for proxy clips
 
 **Batch B Run 3 — Custom music (B2) COMPLETE (2026-05-03):**
 - "Custom Track" chip on Sound screen — calls `open()` from `@tauri-apps/plugin-dialog` (no new Rust command). Returns plain `string` on Windows desktop.
@@ -65,6 +76,15 @@ Priority candidates: (1) proxy reuse as normalise input (~20-30s normalise vs 80
 ---
 
 ## Recently Completed
+
+**Batch C — Proxy reuse as normalise input (2026-05-03)**
+
+- `pipeline/proxy.py` `generate_proxy()`: upgraded to 1080p normalise-compatible spec (`scale=-2:1080 format=yuv420p -r 25 -fps_mode cfr -c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k -ar 48000`). Was 480p with `-c:a copy` (96kHz DJI audio passthrough bug). Timeout 600s kept.
+- `pipeline/run.py`: `proxy_path_wsl` threaded through clip dicts after `clip_paths` construction.
+- `pipeline/render.py`: `_proxy_height()` helper; `from .proxy import is_valid_proxy`; two-path normalise orchestration (`proxy_clip_indices` + `norm_clip_indices`); `TIMING:normalise=` now shows `proxy_skip=N/N`. Bug fix: proxy clips restore original `in_ms`/`out_ms` from `clips[i]` (B-0 offset mutation patch).
+- `src-tauri/src/lib.rs`: `generate_proxy_file()` upgraded to 1080p spec; `start_job` manifest includes `"proxy_path": c.proxy_path`; `vacuum_proxies_cmd` new command (orphaned+stale deletion, `create_dir_all` guard, `SystemTime` mtime, registered in `generate_handler![]`); fire-and-forget vacuum call after `DONE:`.
+- `src-tauri/src/db.rs`: `get_all_clip_ids()` added.
+- Eval: first render `proxy_skip=0/4, normalise=45s`; re-render `proxy_skip=4/4, normalise=1.8s`; output 1920×1080 H.264 AAC 48kHz; sync drift < 34ms (sub-frame).
 
 **Batch A4 — Native Splash + Async WSL (2026-05-02)**
 
