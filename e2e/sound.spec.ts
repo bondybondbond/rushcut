@@ -112,7 +112,7 @@ describe("Sound screen", () => {
     await browser.saveScreenshot(path.join(SCREENSHOTS, "sound-A-initial.png"));
   });
 
-  it("shows all 5 mood chips", async () => {
+  it("shows all 6 mood chips including Custom Track", async () => {
     if (!projectId) return;
     const chips = [
       await $('[data-testid="chip-mood-none"]'),
@@ -120,6 +120,8 @@ describe("Sound screen", () => {
       await $('[data-testid="chip-mood-upbeat"]'),
       await $('[data-testid="chip-mood-chill"]'),
       await $('[data-testid="chip-mood-electronic"]'),
+      await $('[data-testid="chip-mood-custom"]'),
+      // SKIP: clicking chip-mood-custom triggers OS file dialog -- cannot be automated in WDIO
     ];
     await chips[0].waitForExist({ timeout: 5_000 });
     for (const chip of chips) {

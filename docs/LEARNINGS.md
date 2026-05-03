@@ -280,7 +280,8 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 **Problem:** Attempts to start Vite (`pnpm dev:vite`) and the Tauri binary from inside Bash/PowerShell tool calls fail silently — the processes die between tool calls because each tool call runs in a fresh child shell. Diagnostic confusion follows when CDP port 9222 is occupied by a wrong process or is empty.
 **Solution:** Visual eval (MCP screenshots) and E2E runs both require the app to already be running. Check `netstat -ano | findstr :9222` first; if not live, ask the user to run `pnpm dev` in their terminal. Do NOT attempt to orchestrate Vite + binary from within tool calls.
-**Context:** `rushcut-eval` skill — pre-flight check before any MCP screenshot or WDIO run.
+**If Vite + binary must be launched from tools:** Use a single PowerShell call that starts Vite as a `Start-Job` AND launches the binary before the call returns. Background jobs from PowerShell persist for the lifetime of that PowerShell invocation — they die when the shell exits. Bash `&` background processes die immediately. The only reliable pattern: `$viteJob = Start-Job { cd C:\apps\rushcut; pnpm dev:vite }; Start-Sleep 12; Start-Process rushcut.exe`. Both operations must be in the same PowerShell tool call.
+**Context:** `rushcut-eval` skill — pre-flight check before any MCP screenshot or WDIO run. Confirmed Batch B Run 3 (2026-05-03): Bash background Vite died between calls, requiring 8 extra round trips.
 
 ## [Render screen: auto-start is better UX than idle-with-button]
 

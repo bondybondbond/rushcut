@@ -1,23 +1,26 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { ProjectWithClips } from "@/types/project";
 import { StepNav } from "@/components/StepNav";
 
-type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic";
+type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
 type MusicVolume = "subtle" | "balanced" | "prominent";
 
 interface SoundState {
   mood: MusicMood;
   volume: MusicVolume;
+  customPath?: string;
 }
 
 const MOODS: { value: MusicMood; label: string; description: string }[] = [
-  { value: "none",       label: "No Music",   description: "Film renders without a music track." },
-  { value: "cinematic",  label: "Cinematic",  description: "Epic orchestral score — great for travel and nature." },
-  { value: "upbeat",     label: "Upbeat",     description: "Energetic and positive — great for action and sport." },
-  { value: "chill",      label: "Chill",      description: "Laid-back and warm — great for everyday memories." },
-  { value: "electronic", label: "Electronic", description: "Driving synth beats — great for fast-cut montages." },
+  { value: "none",       label: "No Music",    description: "Film renders without a music track." },
+  { value: "cinematic",  label: "Cinematic",   description: "Epic orchestral score — great for travel and nature." },
+  { value: "upbeat",     label: "Upbeat",      description: "Energetic and positive — great for action and sport." },
+  { value: "chill",      label: "Chill",       description: "Laid-back and warm — great for everyday memories." },
+  { value: "electronic", label: "Electronic",  description: "Driving synth beats — great for fast-cut montages." },
+  { value: "custom",     label: "Custom Track", description: "Use your own audio file." },
 ];
 
 const VOLUMES: { value: MusicVolume; label: string }[] = [
@@ -33,11 +36,13 @@ function readStorage(key: string): SoundState {
     const raw = sessionStorage.getItem(key);
     if (!raw) return DEFAULT_SOUND;
     const parsed = JSON.parse(raw) as Partial<SoundState>;
-    const VALID_MOODS: MusicMood[] = ["none", "cinematic", "upbeat", "chill", "electronic"];
+    const VALID_MOODS: MusicMood[] = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"];
     const VALID_VOLUMES: MusicVolume[] = ["subtle", "balanced", "prominent"];
+    const mood = VALID_MOODS.includes(parsed.mood as MusicMood) ? (parsed.mood as MusicMood) : DEFAULT_SOUND.mood;
     return {
-      mood: VALID_MOODS.includes(parsed.mood as MusicMood) ? (parsed.mood as MusicMood) : DEFAULT_SOUND.mood,
+      mood,
       volume: VALID_VOLUMES.includes(parsed.volume as MusicVolume) ? (parsed.volume as MusicVolume) : DEFAULT_SOUND.volume,
+      customPath: mood === "custom" && typeof parsed.customPath === "string" ? parsed.customPath : undefined,
     };
   } catch {
     return DEFAULT_SOUND;
@@ -65,13 +70,24 @@ export default function Sound() {
   }, [projectId]);
 
   function handleMood(mood: MusicMood) {
-    const next = { ...sound, mood };
+    // Clear customPath when switching away from custom so stale path doesn't linger
+    const next: SoundState = { ...sound, mood, ...(mood !== "custom" ? { customPath: undefined } : {}) };
     setSound(next);
     sessionStorage.setItem(storageKey, JSON.stringify(next));
   }
 
   function handleVolume(volume: MusicVolume) {
     const next = { ...sound, volume };
+    setSound(next);
+    sessionStorage.setItem(storageKey, JSON.stringify(next));
+  }
+
+  async function handleCustomTrack() {
+    const result = await open({ filters: [{ name: "Audio", extensions: ["mp3", "m4a", "wav", "aac", "flac"] }] });
+    if (!result) return;
+    const customPath = typeof result === "string" ? result : Array.isArray(result) ? result[0] : null;
+    if (!customPath) return;
+    const next: SoundState = { ...sound, mood: "custom", customPath };
     setSound(next);
     sessionStorage.setItem(storageKey, JSON.stringify(next));
   }
@@ -114,7 +130,7 @@ export default function Sound() {
                   key={value}
                   type="button"
                   data-testid={`chip-mood-${value}`}
-                  onClick={() => handleMood(value)}
+                  onClick={value === "custom" ? handleCustomTrack : () => handleMood(value)}
                   className={`text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
                     sound.mood === value
                       ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
@@ -125,6 +141,13 @@ export default function Sound() {
                 </button>
               ))}
             </div>
+
+            {/* Filename badge — only when custom track is selected and a file was chosen */}
+            {sound.mood === "custom" && sound.customPath && (
+              <p className="text-sm text-[#a3a3a3] truncate">
+                {sound.customPath.split("\\").pop() ?? sound.customPath.split("/").pop()}
+              </p>
+            )}
 
             {/* Description of selected mood */}
             <p className="text-sm text-[#a3a3a3]">

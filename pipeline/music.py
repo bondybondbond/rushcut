@@ -122,27 +122,34 @@ def mix_music(
     out_path: Path,
     music_volume: float = 0.4,
     movie_vol: float = 1.0,
+    custom_track_path: "Path | None" = None,
 ) -> Path:
     """
     Mix a background music track into video_path.
 
     Args:
-        video_path:       Input video (with existing audio).
-        video_duration_s: Total video duration in seconds.
-        track_name:       Filename of music track in music_dir (e.g. "track_01.mp3").
-                          None or missing file -> return video_path unchanged.
-        music_dir:        Directory containing music tracks.
-        out_path:         Output path for mixed video.
-        music_volume:     Float 0.0-1.0 mix level for the music track.
+        video_path:        Input video (with existing audio).
+        video_duration_s:  Total video duration in seconds.
+        track_name:        Filename of bundled track in music_dir (e.g. "cinematic.mp3").
+                           None -> use custom_track_path or skip.
+        music_dir:         Directory containing bundled music tracks.
+        out_path:          Output path for mixed video.
+        music_volume:      Float 0.0-1.0 mix level for the music track.
+        custom_track_path: Full WSL path to a user-supplied audio file. Takes priority over
+                           track_name when set.
 
     Returns:
         out_path if music was mixed, video_path if skipped.
     """
-    if not track_name:
+    if custom_track_path:
+        track_path = custom_track_path
+        log.info("[B2] custom track: %s", track_path)
+    elif track_name:
+        track_path = music_dir / track_name
+    else:
         log.info("[music] No track specified -- skipping")
         return video_path
 
-    track_path = music_dir / track_name
     if not track_path.exists():
         log.warning("[music] Track not found: %s -- skipping", track_path)
         return video_path

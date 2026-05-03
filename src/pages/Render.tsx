@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { ProjectWithClips, JobConfig, PipelineProgressEvent } from "@/types/project";
 import { StepNav } from "@/components/StepNav";
 
-const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic"] as const;
+const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
 const VALID_TRANSITIONS = ["none", "crossfade", "dip_to_black"] as const;
 
@@ -47,12 +47,15 @@ function buildConfig(projectId: string): JobConfig {
   try {
     const raw = sessionStorage.getItem(`rc_sound_${projectId}`);
     if (raw) {
-      const s = JSON.parse(raw) as { mood?: string; volume?: string };
+      const s = JSON.parse(raw) as { mood?: string; volume?: string; customPath?: string };
       if (s.mood && (VALID_MOODS as readonly string[]).includes(s.mood)) {
         config.music_mood = s.mood as JobConfig["music_mood"];
       }
       if (s.volume && (VALID_VOLUMES as readonly string[]).includes(s.volume)) {
         config.music_volume = s.volume as JobConfig["music_volume"];
+      }
+      if (s.mood === "custom" && s.customPath) {
+        config.custom_music_path = s.customPath;
       }
     }
   } catch { /* ignore */ }

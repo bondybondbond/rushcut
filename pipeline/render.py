@@ -141,8 +141,15 @@ def run_pipeline(
 
     # Compute music path early -- needed for beat detection before Step 5.
     music_mood = config.get("music_mood", "none")
-    music_filename = f"{music_mood}.mp3" if music_mood and music_mood != "none" else None
+    # "custom" mood uses a user-supplied file path, not a bundled track
+    music_filename = (
+        f"{music_mood}.mp3" if music_mood and music_mood not in ("none", "custom") else None
+    )
     music_path = MUSIC_DIR / music_filename if music_filename else None
+    custom_music_path_wsl = (
+        Path(config["custom_music_path"])
+        if music_mood == "custom" and config.get("custom_music_path") else None
+    )
 
     # ANALYSIS counters -- all clips used, no motion filtering.
     clips_total = len(clip_paths)
@@ -380,14 +387,15 @@ def run_pipeline(
     report_stage("Mixing music")
     report(80)
     t0 = time.time()
-    if music_filename:
-        log.info("[render] Step 6: mix music (%s)", music_mood)
+    if music_filename or custom_music_path_wsl:
+        log.info("[render] Step 6: mix music (mood=%s)", music_mood)
         music_out = tmp / "with_music.mp4"
         music_volume = float(config.get("music_volume", 0.4))
         movie_vol = _MOVIE_VOL.get(round(music_volume, 1), 0.7)
         log.info("[vol] music_vol=%.2f movie_vol=%.2f", music_volume, movie_vol)
         output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out,
-                           music_volume=music_volume, movie_vol=movie_vol)
+                           music_volume=music_volume, movie_vol=movie_vol,
+                           custom_track_path=custom_music_path_wsl)
     else:
         log.info("[render] Step 6: music skipped")
     print(f"TIMING:music={time.time()-t0:.1f}s", flush=True)

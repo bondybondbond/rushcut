@@ -165,6 +165,40 @@ When a secondary chip group only applies in certain states (e.g. volume only whe
 )}
 ```
 
+### Chip that triggers an OS dialog (Custom Track pattern)
+
+When a chip's action is to open an OS file picker rather than set a value directly, use the standard chip style but wire `onClick` to an async function that calls `open()` from `@tauri-apps/plugin-dialog`. The chip becomes active (`#99B3FF`) only once a file is returned — not on click.
+
+Show the selected filename as a `text-sm text-[#a3a3a3] truncate` line immediately below the chip row (inside the same card), rendered only when the chip is active and a path is stored. Use `.split("\\").pop() ?? .split("/").pop()` to extract just the basename.
+
+```tsx
+{/* Active only after file is picked — onClick calls open() not handleMood() */}
+<button
+  data-testid="chip-mood-custom"
+  onClick={handleCustomTrack}
+  className={`text-sm rounded-md px-4 py-2 border transition-all font-medium ${
+    mood === "custom"
+      ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+      : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+  }`}
+>
+  Custom Track
+</button>
+
+{/* Filename badge — only when custom is active and a file was chosen */}
+{mood === "custom" && customPath && (
+  <p className="text-sm text-[#a3a3a3] truncate">
+    {customPath.split("\\").pop() ?? customPath.split("/").pop()}
+  </p>
+)}
+```
+
+Implementation notes:
+- `@tauri-apps/plugin-dialog` `open()` returns a **plain `string`** (Windows path) on desktop — not a `FilePath` object. Guard: `typeof result === "string" ? result : Array.isArray(result) ? result[0] : null`.
+- `dialog:allow-open` capability and `tauri_plugin_dialog::init()` are already wired — no new Rust command needed.
+- Persist `customPath` in sessionStorage alongside `mood` so reload restores the filename badge. `readStorage()` must explicitly reconstruct `customPath` from the parsed object when `mood === "custom"`.
+- Clear `customPath` in `handleMood()` when switching away from `"custom"` to prevent stale path lingering.
+
 ---
 
 ## StepNav Breadcrumb

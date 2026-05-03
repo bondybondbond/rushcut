@@ -55,7 +55,7 @@ export interface Job {
 }
 
 export interface JobConfig {
-  music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic";
+  music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
   transition: "none" | "crossfade" | "dip_to_black";
   intro_text: string;
   intro_color: string; // #rrggbb background colour for intro card
@@ -65,6 +65,7 @@ export interface JobConfig {
   filter_boring: boolean;
   music_volume: "subtle" | "balanced" | "prominent";
   output_resolution?: "1080p" | "4k";
+  custom_music_path?: string;
 }
 
 export interface ProjectSummary {

@@ -15,13 +15,23 @@
 
 ## Current Phase
 
-**Phase 2 — Batch B Run 2 complete. Next: Batch B Run 3 (custom music B2).**
+**Phase 2 — Batch B ALL COMPLETE. Next: Batch C (trimmer UX polish — proxy reuse, transition shuffle, rough-cut preview).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch B Run 3 — Custom music (B2):** "Custom Track" chip on Sound screen + `open_audio_dialog_cmd` Rust command (use `tauri-plugin-dialog` already wired — do NOT add rfd) + `custom_music_path` forwarding in `run.py` + `mix_music()` override in `music.py`.
+**Batch C — See `docs/PRD-DEV.md` Batch C section and `whats-next-on-the-delightful-wadler.md` for spec.**
+Priority candidates: (1) proxy reuse as normalise input (~20-30s normalise vs 80s current), (2) Sound screen UX polish (see PRD-DEV backlog entry added 2026-05-03).
+
+**Batch B Run 3 — Custom music (B2) COMPLETE (2026-05-03):**
+- "Custom Track" chip on Sound screen — calls `open()` from `@tauri-apps/plugin-dialog` (no new Rust command). Returns plain `string` on Windows desktop.
+- Filename badge below chips when custom is active. Volume section shows automatically (`mood !== "none"` condition already covers `"custom"`).
+- `custom_music_path` forwarded through `buildConfig()` → `start_job` → `run.py` (`win_to_wsl` conversion at config-build time) → `render.py` (guards `"custom"` mood from building `music_filename = "custom.mp3"`) → `mix_music()` (`custom_track_path` param, priority over `track_name`).
+- `[B2]` log line in `music.py` confirms custom track path in pipeline log.
+- `readStorage()` explicitly restores `customPath` when `mood === "custom"`. `handleMood()` clears `customPath` on mood switch.
+- `e2e/sound.spec.ts`: updated "shows all 5 mood chips" → "shows all 6 mood chips including Custom Track". 13/13 PASS. 7/7 fast PASS.
+- Founder feedback: 2m48s for 38s film (4 clips, custom MP3 w/ silencedetect) — acceptable. Volume "Balanced" still lets clip audio compete — `movie_vol = 0.7` may need tuning to `0.5`. Sound screen UX improvements deferred (see PRD-DEV backlog).
 
 **Batch B Run 2 — 4K chip + render resize (2026-05-03):**
 - `has_4k_clips_cmd` Rust command + `has_4k_clips()` DB helper (clips WHERE width>=3840 OR height>=2160).
