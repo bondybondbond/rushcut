@@ -32,6 +32,7 @@ def normalise(
     tmp_dir: Path,
     mode: str = "draft",
     on_clip_done: "Callable[[int, int], None] | None" = None,
+    output_resolution: str = "1080p",
 ) -> list[Path]:
     """
     Normalise each clip to H.264/yuv420p/25fps/AAC 128k.
@@ -50,8 +51,14 @@ def normalise(
         scale_filter = "scale=-2:360,format=yuv420p"
         preset = "ultrafast"
     else:
-        scale_filter = "scale=-2:1080,format=yuv420p"
+        h = "2160" if output_resolution == "4k" else "1080"
+        scale_filter = f"scale=-2:{h},format=yuv420p"
         preset = "ultrafast"  # intermediates — re-encoded by render step, quality irrelevant
+        # BATCH-C: keep normalise at 1080p even for 4K output; upscale only in render.py / transitions.py.
+        # Intermediates are discarded after the render encode — 4K intermediates save ~0 quality but add
+        # ~20-30s encode time per clip. Moot once proxy reuse lands (H.264 proxies bypass HEVC decode
+        # entirely, eliminating the real bottleneck). Don't touch until Batch C proxy reuse ships.
+        log.info("[B1] normalise scale_h=%s (output_resolution=%s)", h, output_resolution)
 
     # -hwaccel auto probed 2026-03-30: /dev/dxg present but Vulkan video decode extension
     # not supported; CUDA/VDPAU absent. All hw paths fall back to software. Skip hwaccel.

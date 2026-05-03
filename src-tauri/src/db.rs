@@ -368,6 +368,17 @@ pub fn delete_clip(clip_id: &str) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// Returns true if the project has any clip with width >= 3840 or height >= 2160.
+pub fn has_4k_clips(project_id: &str) -> Result<bool, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM clips WHERE project_id = ?1 AND (width >= 3840 OR height >= 2160)",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 /// Update sort_order for a list of clip IDs. Caller passes clips in desired order;
 /// each clip gets sort_order = its index in the list.
 pub fn reorder_clips(clip_ids: &[String]) -> Result<(), rusqlite::Error> {

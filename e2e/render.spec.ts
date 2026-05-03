@@ -117,12 +117,19 @@ describe("Full E2E render — /render/:projectId", () => {
     );
   });
 
-  it("pipeline starts automatically — heading and stage label appear", async () => {
+  it("clicks Render Film if present (4K resolution gate), then stage label appears", async () => {
     const heading = await $('h1');
     await heading.waitForExist({ timeout: 5_000 });
     expect(await heading.getText()).toBe("Render Your Film");
 
-    // Render starts without user interaction — wait for stage label
+    // 4K projects show a resolution gate before rendering — click the button to commit.
+    // Non-4K projects auto-start; the button will not be present.
+    const renderBtn = await $('[data-testid="btn-render-film"]');
+    if (await renderBtn.isExisting()) {
+      await renderBtn.click();
+    }
+
+    // Wait for pipeline stage label (appears once rendering begins)
     const stageLabel = await $('[data-testid="stage-label"]');
     await stageLabel.waitForExist({ timeout: 30_000 });
     const text = await stageLabel.getText();

@@ -15,6 +15,7 @@ Applies when working on `src-tauri/**`.
 
 - Plugin commands must be declared in `src-tauri/capabilities/default.json`. Missing = `not allowed` at runtime (silent at compile/check time).
 - Plugin config in `tauri.conf.json`: use `null` for no-option plugins. Using `{}` causes a deserialization panic at startup.
+- **Check for existing plugin before adding a crate** — before adding `rfd` or similar, confirm `tauri-plugin-dialog` isn't already wired (`Cargo.toml` dep + `lib.rs` `.plugin(tauri_plugin_dialog::init())`). Already wired in this project with `dialog:allow-open` capability. Use `invoke("plugin:dialog|open", ...)` from TypeScript.
 
 ## DB
 

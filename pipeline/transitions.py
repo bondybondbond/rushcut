@@ -39,6 +39,7 @@ def build_filter_complex(
     transition: str = "crossfade",
     mode: str = "draft",
     xfade_dur: float = XFADE_DUR,
+    output_resolution: str = "1080p",
 ) -> tuple[str, str, str]:
     """
     Build filter_complex string for N clips with xfade transitions.
@@ -56,8 +57,12 @@ def build_filter_complex(
         audio_out_label is "" if no clips have audio.
     """
     n = len(clip_paths)
-    scale_h = "360" if mode == "draft" else "1080"
-    scale_w = "640" if mode == "draft" else "1920"
+    # scale_w/scale_h define the fixed canvas for ALL clips (portrait+landscape mixing).
+    # Must use exact WxH — NOT scale=-2:h — so all inputs are the same size before concat/xfade.
+    # 3840x2160 for 4K UHD (DJI Osmo Pocket 3); force_original_aspect_ratio=decrease + pad handles
+    # portrait clips correctly without hardcoding aspect ratio assumptions.
+    scale_h = "360" if mode == "draft" else ("2160" if output_resolution == "4k" else "1080")
+    scale_w = "640" if mode == "draft" else ("3840" if output_resolution == "4k" else "1920")
 
     # Fixed-canvas filter applied to every input stream before concat or xfade.
     # Scales to fit inside canvas (preserving AR), then pads remainder black.

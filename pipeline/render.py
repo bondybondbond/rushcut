@@ -111,6 +111,7 @@ def run_pipeline(
     job_id = job["id"]
     mode = job.get("mode", "draft")     # "draft" | "final"
     config = job.get("config") or {}
+    output_resolution = config.get("output_resolution", "1080p")  # "1080p" | "4k"
 
     def report(pct: int) -> None:
         if on_progress:
@@ -196,7 +197,8 @@ def run_pipeline(
         report_stage(f"Normalising clip {done} of {total}")
         report(10 + int(done / total * 40))  # 10% -> 50%
 
-    current_paths = normalise(pre_trimmed_paths, tmp, mode=mode, on_clip_done=_normalise_progress)
+    current_paths = normalise(pre_trimmed_paths, tmp, mode=mode, on_clip_done=_normalise_progress,
+                              output_resolution=output_resolution)
     normalise_s = time.time() - t0
     print(f"TIMING:normalise={normalise_s:.1f}s", flush=True)
 
@@ -324,7 +326,8 @@ def run_pipeline(
     )
 
     crf, preset = (35, "ultrafast") if mode == "draft" else (22, "medium")
-    scale_h = "360" if mode == "draft" else "1080"
+    scale_h = "360" if mode == "draft" else ("2160" if output_resolution == "4k" else "1080")
+    log.info("[B1] render scale_h=%s (output_resolution=%s)", scale_h, output_resolution)
 
     if len(current_paths) == 1:
         # Single-clip shortcut: no filter_complex needed (CLAUDE.md).
@@ -348,6 +351,7 @@ def run_pipeline(
             current_paths, durations, audio_flags,
             transition=config.get("transition", "crossfade"),
             mode=mode,
+            output_resolution=output_resolution,
         )
         log.info("[render] filter_complex:\n  %s", fc)
 

@@ -126,6 +126,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`app-ready` fires before React's `listen()` when WSL check is async** — with sync WSL check, `app-ready` fires ~6-8s after binary starts (after React has loaded Vite). With async check, `app-ready` fires ~50ms after binary starts — before WebView2 has even loaded `index.html` (~4-6s later). The `listen("app-ready", ...)` call never sees the event. Fix: add a short fallback timeout (500ms is sufficient — the window shows the `#rc-splash` dark overlay until then). Alternative: use `confirm_app_loaded` (React mount invoke) as the close signal instead of relying on `app-ready` timing.
 - **`pnpm dev` is the wrong test vehicle for native splash** — `pnpm dev` runs `tauri dev` which compiles Rust (~15-25s) before launching any binary. No native splash can appear during compilation. Correct test workflow: `pnpm dev:vite` once (stays running), then double-click `src-tauri\target\debug\rushcut.exe` directly. Rust only needs recompiling when `.rs` files change — keep Vite running and re-launch the binary.
 
+## Tauri — plugin audit before adding crates
+
+**Problem:** A plan specifies adding a native Rust crate (e.g. `rfd`) for a capability (file dialog, tray, notification) that may already be wired via a `tauri-plugin-*` package.
+**Solution:** Before adding any new Rust crate, check `src-tauri/Cargo.toml` for the matching `tauri-plugin-*` dependency AND `src-tauri/src/lib.rs` for `.plugin(tauri_plugin_*::init())`. A plugin that is registered in `lib.rs` and declared in `capabilities/default.json` is fully wired — calling `rfd` or similar is redundant and adds a second native file dialog stack.
+**Context:** Specifically confirmed: `tauri-plugin-dialog` is already wired in this project (`dialog:allow-open` capability, `tauri_plugin_dialog::init()`). Use `invoke("plugin:dialog|open", ...)` from TypeScript rather than adding `rfd`. Check this before any Batch B2+ file-picker work.
+
+---
+
 ## Tauri / Windows dev
 
 - **Rustup PATH only applies to new terminals** — after `winget install Rustlang.Rustup`, `cargo` is available in newly opened terminals only. Existing CMD/PowerShell windows don't inherit the updated PATH. Fix for the current session: `$env:PATH += ";$env:USERPROFILE\.cargo\bin"`. Fix permanently: `[System.Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$env:USERPROFILE\.cargo\bin", "Machine")` then reopen terminal.

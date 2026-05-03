@@ -15,13 +15,23 @@
 
 ## Current Phase
 
-**Phase 2 — Batch B Run 1 complete. Next: Batch B Run 2 (4K chip, custom music, render resize).**
+**Phase 2 — Batch B Run 2 complete. Next: Batch B Run 3 (custom music B2).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch B Run 2:** 4K export chip on Render screen, custom music upload (rfd dialog), render screen video resize handle. Start in a fresh chat with the plan file: `C:\Users\Manasak\.claude\plans\run-dev-plan-skill-wise-cascade.md` (Run 2 section).
+**Batch B Run 3 — Custom music (B2):** "Custom Track" chip on Sound screen + `open_audio_dialog_cmd` Rust command (use `tauri-plugin-dialog` already wired — do NOT add rfd) + `custom_music_path` forwarding in `run.py` + `mix_music()` override in `music.py`.
+
+**Batch B Run 2 — 4K chip + render resize (2026-05-03):**
+- `has_4k_clips_cmd` Rust command + `has_4k_clips()` DB helper (clips WHERE width>=3840 OR height>=2160).
+- Render screen Option B gate: `"ready"` phase shows resolution chips + peach CTA before committing. `buildConfig()` called at click time. Non-4K projects auto-start.
+- C6 resize handle on done-state video player (exact C6 copy from Trimmer.tsx).
+- `output_resolution` threaded through `run.py` → `render.py` → `normalise.py` + `transitions.py`. Default `"1080p"`.
+- 4K normalise: `scale=-2:2160`; transitions canvas: `3840×2160`. `ultrafast` preset kept for intermediates (BATCH-C comment: keep at 1080p once proxy reuse lands).
+- `[B1]` log markers in normalise.py + render.py for grep verification.
+- `e2e/render.spec.ts`: conditional `renderBtn.isExisting()` check (4K=click, non-4K=skip).
+- 7/7 fast E2E PASS.
 
 **Batch B Run 1 — Pipeline perf + music ducking (2026-05-02):**
 - B-0 pre-trim: render.py copy-trims each clip to `[in_s-2s, out_s+0.5s]` before normalise → files land in WSL2 tmpfs. Biggest single speedup: 10 min → ~3 min for 1m26s DJI 4K film.

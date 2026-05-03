@@ -64,6 +64,7 @@ export interface JobConfig {
   zoom: boolean;
   filter_boring: boolean;
   music_volume: "subtle" | "balanced" | "prominent";
+  output_resolution?: "1080p" | "4k";
 }
 
 export interface ProjectSummary {

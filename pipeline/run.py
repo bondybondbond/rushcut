@@ -99,6 +99,7 @@ def main() -> None:
             ),
             "max_clips": settings.get("max_clips", 20),
             "target_clip_dur": settings.get("target_clip_dur", 5.0),
+            "output_resolution": settings.get("output_resolution", "1080p"),
         },
     }
 

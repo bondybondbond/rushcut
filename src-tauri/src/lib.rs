@@ -5,7 +5,7 @@ mod splash;
 use base64::Engine as _;
 use db::{
     add_clip_cut, delete_clip, delete_project, get_job, get_project_output_paths,
-    get_project_with_clips, insert_clip, insert_job, insert_project, list_projects,
+    get_project_with_clips, has_4k_clips, insert_clip, insert_job, insert_project, list_projects,
     rename_project, reorder_clips, update_clip_proxy, update_clip_review, update_clip_thumbnail,
     update_clip_waveform, update_job_analysis, update_job_done, update_job_error,
     update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
@@ -558,6 +558,12 @@ fn get_project(project_id: String) -> Result<ProjectWithClips, String> {
         .map_err(|e| format!("DB error (get project): {}", e))
 }
 
+/// Returns true if the project has any clip with width >= 3840 or height >= 2160.
+#[tauri::command]
+fn has_4k_clips_cmd(project_id: String) -> Result<bool, String> {
+    has_4k_clips(&project_id).map_err(|e| format!("DB error (has_4k_clips): {}", e))
+}
+
 /// Start a render job: writes manifest, spawns run.py via WSL, streams progress events.
 /// Returns the new job_id immediately (pipeline runs in background).
 #[tauri::command]
@@ -1011,6 +1017,7 @@ pub fn run() {
             delete_clip_cmd,
             reorder_clips_cmd,
             get_project,
+            has_4k_clips_cmd,
             start_job,
             get_job_cmd,
             list_projects_cmd,

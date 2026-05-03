@@ -106,6 +106,47 @@ Card color-swatch selected ring: `#FF8A65` (peach) — kept for card background 
 
 Toggle: ON = `bg-[#99B3FF]`, OFF = `bg-white/25`.
 
+### Resolution gate chip (Render screen pattern)
+
+When a render setting must be locked before the render commits (e.g. output resolution), show the choice as a chip row inside a bordered card followed by a primary CTA. Once the CTA is clicked and the job starts, the entire chip row disappears — it only exists in the `"ready"` phase.
+
+Trigger: only show the gate when the project actually has the capability (e.g. 4K clips detected via `has_4k_clips_cmd`). Projects without 4K clips auto-start with no gate — no friction.
+
+```tsx
+{phase === "ready" && (
+  <div className="space-y-6">
+    <div className="border border-white/15 rounded-lg p-6 space-y-4">
+      <div>
+        <p className="text-xl font-medium text-[#e5e5e5]">Setting Heading</p>
+        <p className="text-sm text-[#a3a3a3] mt-0.5">Explanation of the choice.</p>
+      </div>
+      <div className="flex gap-3">
+        {(["option-a", "option-b"] as const).map((r) => (
+          <button key={r} type="button" data-testid={`chip-res-${r}`}
+            onClick={() => handleSelect(r)}
+            className={`text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
+              selected === r
+                ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+                : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+            }`}>
+            {r}
+          </button>
+        ))}
+      </div>
+    </div>
+    <button data-testid="btn-render-film" onClick={handleCommit}
+      className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base">
+      Render Film
+    </button>
+  </div>
+)}
+```
+
+Rules:
+- Selection persists to `sessionStorage` so Retry re-reads it.
+- `buildConfig()` is called at click time (not at mount) so it captures the current chip state.
+- `"ready"` phase is conditional: only entered when `is4K === true`. Non-4K projects skip directly to `"starting"`.
+
 ### Conditional chip row (Sound screen pattern)
 
 When a secondary chip group only applies in certain states (e.g. volume only when a music mood is selected), render it conditionally — no animation, plain `{condition && <div>...</div>}`. Separate from the primary chip group with `border-t border-white/10 pt-2 space-y-3`. Sub-heading uses `text-base font-medium text-[#e5e5e5]` + description `text-sm text-[#a3a3a3]`.

@@ -56,10 +56,20 @@ function buildConfig(projectId: string): JobConfig {
       }
     }
   } catch { /* ignore */ }
+  try {
+    const res = sessionStorage.getItem(`rc_render_res_${projectId}`);
+    if (res === "1080p" || res === "4k") {
+      config.output_resolution = res;
+    }
+  } catch { /* ignore */ }
   return config;
 }
 
-type Phase = "starting" | "rendering" | "done" | "error";
+// "ready" = 4K gate: show resolution chip + Render button before starting
+// "starting" = brief spinner while start_job resolves
+// "rendering" = pipeline running
+// "done" / "error" = terminal states
+type Phase = "ready" | "starting" | "rendering" | "done" | "error";
 
 export default function Render() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -74,52 +84,106 @@ export default function Render() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string | null>(null);
 
+  // 4K resolution selection — only meaningful before the job starts
+  const [has4K, setHas4K] = useState(false);
+  const [outputRes, setOutputRes] = useState<"1080p" | "4k">(() => {
+    try {
+      const stored = sessionStorage.getItem(`rc_render_res_${projectId}`);
+      return stored === "4k" ? "4k" : "1080p";
+    } catch {
+      return "1080p";
+    }
+  });
+
+  // Resize handle (C6 pattern — exact match to Trimmer.tsx)
+  const videoContainerRef = useRef<HTMLDivElement>(null);
+  const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const [videoHeight, setVideoHeight] = useState<number | null>(null);
+
   const startTimeRef = useRef<number>(Date.now());
   const [elapsedLabel, setElapsedLabel] = useState("0s");
   const completedRef = useRef(false);
   const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Mount: load project then auto-start render
+  function handleResSelect(res: "1080p" | "4k") {
+    setOutputRes(res);
+    try { sessionStorage.setItem(`rc_render_res_${projectId}`, res); } catch { /* ignore */ }
+  }
+
+  // C6: drag to resize video preview height
+  function onResizePointerDown(e: React.PointerEvent) {
+    const el = videoContainerRef.current;
+    if (!el) return;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    resizeDragRef.current = { startY: e.clientY, startH: el.getBoundingClientRect().height };
+  }
+
+  function onResizePointerMove(e: React.PointerEvent) {
+    if (!resizeDragRef.current) return;
+    const delta = e.clientY - resizeDragRef.current.startY;
+    const maxH = window.innerHeight * 0.7;
+    const next = Math.max(200, Math.min(maxH, resizeDragRef.current.startH + delta));
+    setVideoHeight(next);
+  }
+
+  function onResizePointerUp() {
+    resizeDragRef.current = null;
+  }
+
+  async function submitJob(pid: string) {
+    const config = buildConfig(pid);
+    setPhase("starting");
+    try {
+      const newJobId = await invoke<string>("start_job", {
+        projectId: pid,
+        settingsJson: JSON.stringify(config),
+      });
+      setJobId(newJobId);
+      setStage("Starting up the magic...");
+      setProgress(0);
+      setElapsedLabel("0s");
+      setPhase("rendering");
+    } catch (e) {
+      setErrorMsg(`Failed to start render: ${e}`);
+      setPhase("error");
+    }
+  }
+
+  // Mount: load project + check 4K clips, then either gate (ready) or auto-start
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
 
-    invoke<ProjectWithClips>("get_project", { projectId })
-      .then(async (data) => {
-        if (cancelled) return;
-        const count = data.clips.filter((c) => c.include !== 0).length;
-        setClipCount(count);
-        setProjectName(data.project.name);
+    Promise.all([
+      invoke<ProjectWithClips>("get_project", { projectId }),
+      invoke<boolean>("has_4k_clips_cmd", { projectId }).catch(() => false as boolean),
+    ]).then(async ([data, is4K]) => {
+      if (cancelled) return;
 
-        if (count === 0) {
-          setErrorMsg("No clips in film -- go back to Trimmer and add some.");
-          setPhase("error");
-          return;
-        }
+      const count = data.clips.filter((c) => c.include !== 0).length;
+      setClipCount(count);
+      setProjectName(data.project.name);
+      setHas4K(is4K);
 
-        const config = buildConfig(projectId);
-        try {
-          const newJobId = await invoke<string>("start_job", {
-            projectId,
-            settingsJson: JSON.stringify(config),
-          });
-          if (cancelled) return;
-          setJobId(newJobId);
-          setStage("Starting up the magic...");
-          setProgress(0);
-          setElapsedLabel("0s");
-          setPhase("rendering");
-        } catch (e) {
-          if (cancelled) return;
-          setErrorMsg(`Failed to start render: ${e}`);
-          setPhase("error");
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setErrorMsg("Failed to load project -- go back and try again.");
+      if (count === 0) {
+        setErrorMsg("No clips in film -- go back to Trimmer and add some.");
         setPhase("error");
-      });
+        return;
+      }
+
+      if (is4K) {
+        // 4K clips present — show resolution chip + Render button before committing
+        setPhase("ready");
+        return;
+      }
+
+      // No 4K clips — auto-start with zero friction (existing behaviour, unchanged)
+      await submitJob(projectId);
+    }).catch(() => {
+      if (cancelled) return;
+      setErrorMsg("Failed to load project -- go back and try again.");
+      setPhase("error");
+    });
 
     return () => { cancelled = true; };
   }, [projectId]);
@@ -202,19 +266,7 @@ export default function Render() {
     setErrorMsg(null);
     setElapsedLabel("0s");
     completedRef.current = false;
-
-    const config = buildConfig(projectId);
-    try {
-      const newJobId = await invoke<string>("start_job", {
-        projectId,
-        settingsJson: JSON.stringify(config),
-      });
-      setJobId(newJobId);
-      setPhase("rendering");
-    } catch (e) {
-      setErrorMsg(`Failed to start render: ${e}`);
-      setPhase("error");
-    }
+    await submitJob(projectId);
   }
 
   const assetUrl = outputPath ? convertFileSrc(outputPath) : null;
@@ -234,6 +286,45 @@ export default function Render() {
           <h1 className="text-3xl font-semibold text-[#FF8A65]">
             {phase === "done" ? "Your film is ready" : "Render Your Film"}
           </h1>
+
+          {/* Ready — 4K gate: show resolution chip + Render button */}
+          {phase === "ready" && (
+            <div className="space-y-6">
+              <div className="border border-white/15 rounded-lg p-6 space-y-4">
+                <div>
+                  <p className="text-xl font-medium text-[#e5e5e5]">Output Resolution</p>
+                  <p className="text-sm text-[#a3a3a3] mt-0.5">
+                    Your project contains 4K clips. Choose your output resolution before rendering.
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  {(["1080p", "4k"] as const).map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      data-testid={`chip-res-${r}`}
+                      onClick={() => handleResSelect(r)}
+                      className={`text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
+                        outputRes === r
+                          ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+                          : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+                      }`}
+                    >
+                      {r === "4k" ? "4K" : "1080p"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                data-testid="btn-render-film"
+                onClick={() => projectId && submitJob(projectId)}
+                className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base"
+              >
+                Render Film
+              </button>
+            </div>
+          )}
 
           {/* Starting / loading */}
           {phase === "starting" && (
@@ -263,16 +354,29 @@ export default function Render() {
 
           {/* Done */}
           {phase === "done" && assetUrl && (
-            <div className="space-y-4">
-              <div className="rounded-lg overflow-hidden bg-black border border-white/10">
+            <div className="space-y-3">
+              <div
+                ref={videoContainerRef}
+                className="rounded-lg overflow-hidden bg-black border border-white/10"
+                style={videoHeight != null ? { height: videoHeight } : { maxHeight: "480px" }}
+              >
                 <video
                   data-testid="video-player"
                   src={assetUrl}
                   controls
                   autoPlay={false}
-                  className="w-full max-h-[480px]"
+                  className="w-full h-full object-contain"
                 />
               </div>
+
+              {/* C6: drag handle to resize video height */}
+              <div
+                className="w-full h-2 flex items-center justify-center cursor-ns-resize border-t border-white/10"
+                onPointerDown={onResizePointerDown}
+                onPointerMove={onResizePointerMove}
+                onPointerUp={onResizePointerUp}
+              />
+
               <div className="flex items-center gap-3">
                 <button
                   data-testid="btn-open-in-explorer"
