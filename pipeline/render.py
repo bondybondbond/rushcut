@@ -65,7 +65,7 @@ TMP_BASE = Path("/tmp")
 
 # Movie audio ducking per music_volume preset (0.2=subtle, 0.4=balanced, 0.7=prominent).
 # As music gets louder, movie audio is ducked proportionally so music actually dominates.
-_MOVIE_VOL = {0.2: 1.0, 0.4: 0.7, 0.7: 0.3}
+_MOVIE_VOL = {0.2: 1.0, 0.4: 0.4, 0.7: 0.3}
 
 
 # ---------------------------------------------------------------------------

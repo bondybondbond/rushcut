@@ -165,39 +165,111 @@ When a secondary chip group only applies in certain states (e.g. volume only whe
 )}
 ```
 
-### Chip that triggers an OS dialog (Custom Track pattern)
+### Source selector pattern (Sound screen — three top-level sources)
 
-When a chip's action is to open an OS file picker rather than set a value directly, use the standard chip style but wire `onClick` to an async function that calls `open()` from `@tauri-apps/plugin-dialog`. The chip becomes active (`#99B3FF`) only once a file is returned — not on click.
+When the user chooses between fundamentally different content sources (e.g. No Music / Rushcut Library / Upload Own Track), render three source chips in a row at the top of the card. Selecting a source expands sub-content below with a thin separator.
 
-Show the selected filename as a `text-sm text-[#a3a3a3] truncate` line immediately below the chip row (inside the same card), rendered only when the chip is active and a path is stored. Use `.split("\\").pop() ?? .split("/").pop()` to extract just the basename.
+**Active state per source type:**
+- "Off" source (e.g. No Music): `border-white/60 text-white bg-white/15` — bright white signals "off" unambiguously, not music-blue
+- "On" sources (Library, Upload): standard `border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10`
+
+**Critical:** the off-state active class must use a token *not* present as a hover variant in the inactive class. Use `bg-white/15` (not `border-white/60`) as the E2E discriminator — inactive class has `hover:border-white/60` which would cause false matches.
 
 ```tsx
-{/* Active only after file is picked — onClick calls open() not handleMood() */}
-<button
-  data-testid="chip-mood-custom"
-  onClick={handleCustomTrack}
-  className={`text-sm rounded-md px-4 py-2 border transition-all font-medium ${
-    mood === "custom"
-      ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
-      : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
-  }`}
->
-  Custom Track
-</button>
-
-{/* Filename badge — only when custom is active and a file was chosen */}
-{mood === "custom" && customPath && (
-  <p className="text-sm text-[#a3a3a3] truncate">
-    {customPath.split("\\").pop() ?? customPath.split("/").pop()}
-  </p>
-)}
+function sourceChipClass(s: MusicSource): string {
+  const base = "text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium";
+  const isActive = source === s;
+  if (s === "none") {
+    return isActive
+      ? `${base} border-white/60 text-white bg-white/15`
+      : `${base} border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5`;
+  }
+  return isActive
+    ? `${base} border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10`
+    : `${base} border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5`;
+}
 ```
 
-Implementation notes:
-- `@tauri-apps/plugin-dialog` `open()` returns a **plain `string`** (Windows path) on desktop — not a `FilePath` object. Guard: `typeof result === "string" ? result : Array.isArray(result) ? result[0] : null`.
-- `dialog:allow-open` capability and `tauri_plugin_dialog::init()` are already wired — no new Rust command needed.
-- Persist `customPath` in sessionStorage alongside `mood` so reload restores the filename badge. `readStorage()` must explicitly reconstruct `customPath` from the parsed object when `mood === "custom"`.
-- Clear `customPath` in `handleMood()` when switching away from `"custom"` to prevent stale path lingering.
+Sub-chips (e.g. mood chips inside Library): separated by `border-t border-white/10`, rendered only when that source is active. Use standard `#99B3FF` active style.
+
+**Clicking a source chip must NOT open OS dialogs automatically** — clicking "Upload Own Track" expands the section; the file picker opens only via an explicit "Choose file" / "Change" button inside the expanded area. This prevents re-opening the dialog when the user has already picked a file and switches sources temporarily.
+
+**State persistence across source switches:** preserve `customPath` in all state mutations even when switching to Library or No Music, so switching back to "Upload Own Track" restores the previously picked file without requiring re-upload.
+
+### File picker empty/filled state (Upload Own Track pattern)
+
+When a source requires a file picked via OS dialog, show two distinct states inside the expanded section:
+
+**Empty state** — no file chosen yet:
+```tsx
+<button type="button" onClick={handleCustomTrack}
+  className="flex items-center gap-2 w-full px-4 py-3 rounded-md border border-dashed border-white/25 text-sm text-[#a3a3a3] hover:border-white/50 hover:text-[#e5e5e5] transition-all duration-200">
+  <UploadSVG className="w-4 h-4 shrink-0" />
+  Choose audio file...
+</button>
+```
+
+**File chosen** — filename (prominent) + preview button + change link in a single row:
+```tsx
+<div className="flex items-center gap-3">
+  <p className="text-base font-semibold text-[#e5e5e5] truncate flex-1">filename.mp3</p>
+  <button ...>Preview / Stop</button>    {/* bordered chip button */}
+  <button onClick={handleCustomTrack} className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors shrink-0">Change</button>
+</div>
+```
+
+Filename: `text-base font-semibold text-[#e5e5e5]` — 2 size steps above description text so it reads as a selected value, not a label. Extract basename only: `.split("\\").pop() ?? .split("/").pop()`.
+
+`open()` from `@tauri-apps/plugin-dialog` returns a plain `string` on Windows. Guard: `typeof result === "string" ? result : Array.isArray(result) ? result[0] : null`. `dialog:allow-open` capability is already wired.
+
+### Audio preview pattern (hidden `<audio>` + stop-link)
+
+For mood/track previewing without visible player controls:
+
+```tsx
+const audioRef = useRef<HTMLAudioElement>(null);
+const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);  // must be useRef, not useState
+
+// Render — hidden, no controls
+<audio ref={audioRef} />
+
+// Start preview
+function startPreview(mood: LibraryMood, volume: MusicVolume = sound.volume) {
+  if (!musicDir || !audioRef.current) return;
+  const audio = audioRef.current;
+  audio.src = convertFileSrc(musicDir + "\\" + mood + ".mp3");
+  audio.volume = VOLUME_LEVELS[volume];  // VOLUME_LEVELS = { subtle: 0.3, balanced: 0.6, prominent: 1.0 }
+  audio.currentTime = 0;
+  audio.play().catch(() => {});
+  setPreviewingMood(mood);
+  if (previewTimerRef.current !== null) clearTimeout(previewTimerRef.current);
+  previewTimerRef.current = setTimeout(() => {
+    audioRef.current?.pause();
+    setPreviewingMood(null);
+    previewTimerRef.current = null;
+  }, 30_000);
+}
+
+// Stop link — shown only while preview is active
+{previewingMood && (
+  <button onClick={stopPreview}
+    className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] cursor-pointer transition-colors">
+    Stop preview
+  </button>
+)}
+
+// Unmount cleanup
+useEffect(() => () => {
+  audioRef.current?.pause();
+  if (previewTimerRef.current !== null) clearTimeout(previewTimerRef.current);
+}, []);
+```
+
+**`previewTimerRef` must be `useRef`, never `useState` or `let`.** A plain `let` is re-created on every render — `clearTimeout` cancels the wrong ID. `useState` causes an extra render on set. `useRef` persists the timer handle identity across renders.
+
+Volume chip changes must update live preview volume: `if (audioRef.current && isPlaying) audioRef.current.volume = VOLUME_LEVELS[volume]`.
+
+Music dir is fetched on mount via `invoke<string>("get_music_dir_cmd")` — graceful degradation if it returns empty (preview silently disabled, chips still function normally). The `get_music_dir_cmd` Rust command uses `std::env::current_exe()` and strips `\\?\` UNC prefix from `canonicalize()` output before returning.
 
 ---
 

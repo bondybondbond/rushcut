@@ -239,6 +239,12 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Solution:** Use `/json/list` only to confirm the app has launched and navigated away from blank — not as a proxy for what WebDriver will return. Always use `browser.waitUntil(getUrl())` after attaching msedgedriver.
 **Context:** `wdio.conf.ts` `checkTargets` function.
 
+## [Tailwind hover variants appear in class attribute — toContain() matches inactive state]
+
+**Problem:** `expect(el.getAttribute("class")).toContain("border-white/60")` matches even when the element is *inactive*, because the inactive class string contains `hover:border-white/60`. The Tailwind class attribute is a literal space-separated string of utility names including all variants.
+**Solution:** When asserting active vs inactive state with `toContain`, pick a token that exists **only** in the active class — not also present as a hover variant of the inactive class. Prefer background tokens (`bg-white/15`) over border tokens when the inactive class uses a matching hover border (`hover:border-white/60`). For inactive negation use `not.toContain("bg-white/15")`.
+**Context:** Any WDIO spec asserting chip active/inactive state on elements whose inactive style has hover variants that share a colour token with the active style.
+
 ## [Prefer debug binary over release for E2E; release binary is stale after source changes]
 
 **Problem:** The release binary has the frontend embedded at build time. After adding `data-testid` attrs, a release binary built before those changes will fail all selector-based tests.

@@ -15,17 +15,28 @@
 
 ## Current Phase
 
-**Phase 2 — Batch C COMPLETE (2026-05-03). Next: Batch D — Sound screen UX polish + any remaining UX debt.**
+**Phase 2 — Batch D COMPLETE (2026-05-07). Next: Batch E — TBD (render screen deferred items or next founder feedback).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch D — Sound screen UX polish (from founder feedback 2026-05-03):**
-- "No Music" chip needs stronger visual differentiation (currently indistinguishable from deselected mood chips)
-- Custom Track needs file-picker affordance (currently bare chip with no icon/hint)
-- Volume "Balanced" `movie_vol=0.7` may compete with clip audio — consider tuning to `0.5`
-- Music preview (30s loop on chip select) — deferred from Batch 15f
+**Batch D shipped.** No immediate next task — awaiting founder direction. Candidates:
+- Sticky filmstrip (clips/duration/music visible across all screens, render CTA far-right)
+- Track duration vs. film duration display on Sound screen
+- Format selector (4K, file-size presets) on Render screen
+
+**Batch D — Sound screen UX polish COMPLETE (2026-05-07):**
+- Three-source selector: No Music / Rushcut Library / Upload Own Track (replaces flat chip row)
+- No Music: bright-white active state (`border-white/60 bg-white/15`) — visually distinct from music-blue
+- Rushcut Library: expands 4 mood sub-chips (Cinematic/Upbeat/Chill/Electronic) on click; NO auto-play — preview starts only on explicit mood chip click
+- Upload Own Track: clicking chip selects source without opening OS dialog; empty state shows dashed "Choose audio file..." button; filled state shows filename (bold, `text-base font-semibold`) + Preview chip button (teenyicons play SVG, MIT) + "Change" text link
+- Custom track preview: Play/Stop toggle button; same 30s timer; volume chips (Subtle/Balanced/Prominent) affect live preview `audioRef.current.volume` in real time (0.3 / 0.6 / 1.0)
+- `customPath` preserved across source switches (no re-upload needed when switching Library→Custom)
+- Pipeline: `_MOVIE_VOL` Balanced 0.7 → 0.4 (evenly spaced: subtle=1.0, balanced=0.4, prominent=0.3)
+- Rust: `get_music_dir_cmd` command returns music dir path (strips `\\?\` UNC prefix from canonicalize)
+- `LICENSES.md` created at project root (teenyicons MIT attribution)
+- E2E: 14/14 sound PASS · 7/7 fast PASS
 
 **Batch C — Proxy reuse as normalise input COMPLETE (2026-05-03):**
 - Proxies upgraded from 480p to 1080p normalise-compatible spec (`scale=-2:1080 -r 25 -fps_mode cfr -c:a aac -ar 48000`)

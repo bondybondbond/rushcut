@@ -1,7 +1,7 @@
 /**
  * Sound spec -- /sound/:projectId screen assertions.
- * Covers: page load, StepNav active step, chip rendering, chip selection,
- * volume chip visibility, sessionStorage persistence, and back-navigation.
+ * Covers: page load, StepNav active step, source chip rendering, Library expansion,
+ * mood chip selection, volume chip visibility, sessionStorage persistence, and back-navigation.
  * Run: pnpm test:e2e:sound
  *
  * Requires C:\clips\ to contain at least 1 video file.
@@ -112,34 +112,53 @@ describe("Sound screen", () => {
     await browser.saveScreenshot(path.join(SCREENSHOTS, "sound-A-initial.png"));
   });
 
-  it("shows all 6 mood chips including Custom Track", async () => {
+  it("shows 3 source chips: No Music, Rushcut Library, Upload Own Track", async () => {
     if (!projectId) return;
-    const chips = [
-      await $('[data-testid="chip-mood-none"]'),
-      await $('[data-testid="chip-mood-cinematic"]'),
-      await $('[data-testid="chip-mood-upbeat"]'),
-      await $('[data-testid="chip-mood-chill"]'),
-      await $('[data-testid="chip-mood-electronic"]'),
-      await $('[data-testid="chip-mood-custom"]'),
-      // SKIP: clicking chip-mood-custom triggers OS file dialog -- cannot be automated in WDIO
-    ];
-    await chips[0].waitForExist({ timeout: 5_000 });
-    for (const chip of chips) {
-      expect(await chip.isDisplayed()).toBe(true);
-    }
+    const noneChip    = await $('[data-testid="chip-mood-none"]');
+    const libraryChip = await $('[data-testid="chip-source-library"]');
+    const customChip  = await $('[data-testid="chip-mood-custom"]');
+
+    await noneChip.waitForExist({ timeout: 5_000 });
+    expect(await noneChip.isDisplayed()).toBe(true);
+    expect(await libraryChip.isDisplayed()).toBe(true);
+    expect(await customChip.isDisplayed()).toBe(true);
+    // SKIP: clicking chip-mood-custom triggers OS file dialog -- cannot be automated in WDIO
   });
 
   it("'No Music' chip is active by default", async () => {
     if (!projectId) return;
     const noneChip = await $('[data-testid="chip-mood-none"]');
     const className = await noneChip.getAttribute("class");
-    expect(className).toContain("99B3FF");
+    // No Music active state uses bg-white/15 (not present in hover or inactive classes)
+    expect(className).toContain("bg-white/15");
   });
 
   it("volume chips are hidden when 'No Music' is selected", async () => {
     if (!projectId) return;
     const volumeChip = await $('[data-testid="chip-volume-subtle"]');
     expect(await volumeChip.isExisting()).toBe(false);
+  });
+
+  it("clicking 'Rushcut Library' expands 4 mood chips", async () => {
+    if (!projectId) return;
+    const libraryChip = await $('[data-testid="chip-source-library"]');
+    await libraryChip.click();
+    await browser.pause(300);
+
+    const moodChips = [
+      await $('[data-testid="chip-mood-cinematic"]'),
+      await $('[data-testid="chip-mood-upbeat"]'),
+      await $('[data-testid="chip-mood-chill"]'),
+      await $('[data-testid="chip-mood-electronic"]'),
+    ];
+    for (const chip of moodChips) {
+      await chip.waitForExist({ timeout: 3_000 });
+      expect(await chip.isDisplayed()).toBe(true);
+    }
+
+    // Library source chip should now be active (music-blue)
+    const libraryClass = await libraryChip.getAttribute("class");
+    expect(libraryClass).toContain("99B3FF");
   });
 
   it("clicking 'Cinematic' chip makes it active and shows volume chips", async () => {
@@ -151,10 +170,10 @@ describe("Sound screen", () => {
     const className = await cinematicChip.getAttribute("class");
     expect(className).toContain("99B3FF");
 
-    // No Music chip should no longer be active
+    // No Music chip should not be active (bg-white/15 only present in active state)
     const noneChip = await $('[data-testid="chip-mood-none"]');
     const noneClass = await noneChip.getAttribute("class");
-    expect(noneClass).not.toContain("99B3FF");
+    expect(noneClass).not.toContain("bg-white/15");
 
     // Volume chips should now be visible
     const subtleChip = await $('[data-testid="chip-volume-subtle"]');
@@ -172,7 +191,7 @@ describe("Sound screen", () => {
     expect(parsed.mood).toBe("cinematic");
   });
 
-  it("screenshot B: after selecting Cinematic + Balanced volume", async () => {
+  it("screenshot B: after selecting Rushcut Library + Cinematic + Balanced volume", async () => {
     if (!projectId) return;
     // Balanced is the default volume — confirm its chip is active
     const balancedChip = await $('[data-testid="chip-volume-balanced"]');
@@ -193,13 +212,14 @@ describe("Sound screen", () => {
     }, projectId);
     await browser.pause(800);
 
+    // Library is restored (source=library) so mood chips should be visible
     const cinematicChip = await $('[data-testid="chip-mood-cinematic"]');
     await cinematicChip.waitForExist({ timeout: 5_000 });
     const className = await cinematicChip.getAttribute("class");
     expect(className).toContain("99B3FF");
   });
 
-  it("screenshot C: after reload — sessionStorage restored", async () => {
+  it("screenshot C: after reload -- sessionStorage restored", async () => {
     if (!projectId) return;
     ensureScreenshotsDir();
     await browser.saveScreenshot(path.join(SCREENSHOTS, "sound-C-restored.png"));

@@ -997,6 +997,38 @@ fn vacuum_proxies_cmd() -> String {
     result
 }
 
+/// Return the absolute Windows path to the bundled music directory.
+/// Checks for a dev layout (exe inside src-tauri/target/debug/) first,
+/// then falls back to a production layout (music/ beside the exe).
+#[tauri::command]
+fn get_music_dir_cmd() -> String {
+    let Ok(exe) = std::env::current_exe() else { return String::new() };
+    let Some(exe_dir) = exe.parent() else { return String::new() };
+
+    // Dev path: src-tauri/target/debug/rushcut.exe → ../../.. → project root → music/
+    let dev_candidate = exe_dir.join("..").join("..").join("..").join("music");
+    if dev_candidate.exists() {
+        if let Ok(resolved) = dev_candidate.canonicalize() {
+            let s = resolved.to_string_lossy().to_string();
+            // canonicalize on Windows may add \\?\ UNC prefix -- strip it so
+            // convertFileSrc receives a plain drive-letter path
+            return s.strip_prefix("\\\\?\\").map(|v| v.to_string()).unwrap_or(s);
+        }
+    }
+
+    // Production path: rushcut.exe lives alongside the bundled music/ dir
+    let prod_candidate = exe_dir.join("music");
+    if prod_candidate.exists() {
+        if let Ok(resolved) = prod_candidate.canonicalize() {
+            let s = resolved.to_string_lossy().to_string();
+            return s.strip_prefix("\\\\?\\").map(|v| v.to_string()).unwrap_or(s);
+        }
+        return prod_candidate.to_string_lossy().to_string();
+    }
+
+    String::new()
+}
+
 fn emit_error(app: &AppHandle, job_id: &str, message: &str) {
     let _ = app.emit(
         "pipeline-error",
@@ -1099,6 +1131,7 @@ pub fn run() {
             generate_proxies_cmd,
             generate_proxy_for_clip,
             vacuum_proxies_cmd,
+            get_music_dir_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
