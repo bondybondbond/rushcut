@@ -29,11 +29,17 @@ const VOLUMES: { value: MusicVolume; label: string }[] = [
   { value: "prominent", label: "Prominent" },
 ];
 
-// Preview audio volume levels for each volume preset
 const VOLUME_LEVELS: Record<MusicVolume, number> = { subtle: 0.3, balanced: 0.6, prominent: 1.0 };
 
 const DEFAULT_SOUND: SoundState = { mood: "none", volume: "balanced" };
 const PREVIEW_DURATION_MS = 30_000;
+
+function fmtMs(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 function deriveSource(mood: MusicMood): MusicSource {
   if (mood === "none") return "none";
@@ -57,7 +63,6 @@ function readStorage(key: string): SoundState {
     return {
       mood,
       volume: VALID_VOLUMES.includes(parsed.volume as MusicVolume) ? (parsed.volume as MusicVolume) : DEFAULT_SOUND.volume,
-      // Keep customPath regardless of current mood so it survives source-switching within a session
       customPath: typeof parsed.customPath === "string" ? parsed.customPath : undefined,
     };
   } catch {
@@ -71,7 +76,10 @@ export default function Sound() {
 
   const [projectName, setProjectName] = useState("");
   const [clipCount, setClipCount] = useState(0);
+  const [filmDurationMs, setFilmDurationMs] = useState(0);
   const [musicDir, setMusicDir] = useState<string | null>(null);
+  const [trackDurations, setTrackDurations] = useState<Partial<Record<LibraryMood, number>>>({});
+  const [customDurationMs, setCustomDurationMs] = useState<number | null>(null);
   const [previewingMood, setPreviewingMood] = useState<LibraryMood | null>(null);
   const [previewingCustom, setPreviewingCustom] = useState(false);
 
@@ -80,6 +88,7 @@ export default function Sound() {
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const probedRef = useRef(false);
 
   const source = deriveSource(sound.mood);
   const libraryMood = deriveLibraryMood(sound.mood);
@@ -89,11 +98,32 @@ export default function Sound() {
     invoke<ProjectWithClips>("get_project", { projectId })
       .then((data) => {
         setProjectName(data.project.name);
-        setClipCount(data.clips.filter((c) => c.include !== 0).length);
+        const included = data.clips.filter((c) => c.include !== 0);
+        setClipCount(included.length);
+        const durMs = included.reduce(
+          (sum, c) => sum + (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0),
+          0
+        );
+        setFilmDurationMs(durMs);
       })
       .catch(() => {});
     invoke<string>("get_music_dir_cmd")
-      .then((dir) => { if (dir) setMusicDir(dir); })
+      .then((dir) => {
+        if (!dir) return;
+        setMusicDir(dir);
+        // Gate against re-runs on hot reload / re-mount
+        if (probedRef.current) return;
+        probedRef.current = true;
+        const moods: LibraryMood[] = ["cinematic", "upbeat", "chill", "electronic"];
+        moods.forEach((mood) => {
+          const a = new Audio();
+          a.preload = "metadata";
+          a.src = convertFileSrc(dir + "\\" + mood + ".mp3");
+          a.addEventListener("loadedmetadata", () => {
+            setTrackDurations((prev) => ({ ...prev, [mood]: a.duration }));
+          }, { once: true });
+        });
+      })
       .catch(() => {});
   }, [projectId]);
 
@@ -154,24 +184,22 @@ export default function Sound() {
   function handleSourceClick(newSource: MusicSource) {
     if (newSource === "none") {
       stopPreview();
+      setCustomDurationMs(null);
       persist({ ...sound, mood: "none" });
     } else if (newSource === "library") {
       if (source === "library") return;
       stopPreview();
+      setCustomDurationMs(null);
       const targetMood = libraryMood ?? "cinematic";
-      // Preserve customPath so switching back to "Upload Own Track" restores the file
       persist({ ...sound, mood: targetMood });
-      // No auto-play — preview starts only when user explicitly clicks a mood chip
     } else {
-      if (source === "custom") return; // already on custom, no-op
+      if (source === "custom") return;
       stopPreview();
       persist({ ...sound, mood: "custom" });
-      // File picker opens only via explicit "Choose file" / "Change" button below
     }
   }
 
   function handleLibraryMoodClick(mood: LibraryMood) {
-    // Preserve customPath across mood changes so Upload Own Track state survives
     persist({ ...sound, mood });
     startPreview(mood);
   }
@@ -190,6 +218,15 @@ export default function Sound() {
     const customPath = typeof result === "string" ? result : Array.isArray(result) ? result[0] : null;
     if (!customPath) return;
     persist({ ...sound, mood: "custom", customPath });
+    // Probe duration via audioRef — reuse existing element, no second Audio object
+    if (audioRef.current) {
+      const handler = () => {
+        setCustomDurationMs((audioRef.current?.duration ?? 0) * 1000);
+      };
+      audioRef.current.addEventListener("loadedmetadata", handler, { once: true });
+      audioRef.current.preload = "metadata";
+      audioRef.current.src = convertFileSrc(customPath);
+    }
   }
 
   function sourceChipClass(s: MusicSource): string {
@@ -221,9 +258,24 @@ export default function Sound() {
       ? "Your film will render without a music track."
       : null;
 
+  // Comparison line — derived above return to avoid JSX IIFE
+  const selectedTrackMs =
+    source === "library" && libraryMood && trackDurations[libraryMood] !== undefined
+      ? trackDurations[libraryMood]! * 1000
+      : source === "custom" && customDurationMs !== null
+      ? customDurationMs
+      : null;
+
+  const showComparison = source !== "none" && filmDurationMs > 0 && selectedTrackMs !== null;
+
+  const loopNote: React.ReactNode =
+    !showComparison ? null
+    : selectedTrackMs! >= filmDurationMs
+    ? <span className="text-[#22c55e]"> &mdash; long enough</span>
+    : <span> &mdash; will loop ~{Math.ceil(filmDurationMs / selectedTrackMs!)}x</span>;
+
   return (
     <div className="flex flex-col h-screen bg-[#0a0a0a] text-[#e5e5e5]">
-      {/* Hidden audio element for mood preview */}
       <audio ref={audioRef} />
 
       <StepNav
@@ -242,7 +294,7 @@ export default function Sound() {
             <h1 className="text-3xl font-semibold text-[#FF8A65]">Sound</h1>
             <p className="text-base text-[#a3a3a3] mt-1">
               {projectName
-                ? `${projectName} · ${clipCount} clip${clipCount !== 1 ? "s" : ""}`
+                ? `${projectName} · ${clipCount} clip${clipCount !== 1 ? "s" : ""}${filmDurationMs > 0 ? ` · ${fmtMs(filmDurationMs)}` : ""}`
                 : "Loading..."}
             </p>
           </div>
@@ -310,14 +362,14 @@ export default function Sound() {
                       onClick={() => handleLibraryMoodClick(value)}
                       className={moodChipClass(value)}
                     >
-                      {label}
+                      {label}{trackDurations[value] !== undefined ? ` · ${fmtMs(trackDurations[value]! * 1000)}` : ""}
                     </button>
                   ))}
                 </div>
               </>
             )}
 
-            {/* Custom track — empty state: no file chosen yet */}
+            {/* Custom track — empty state */}
             {source === "custom" && !sound.customPath && (
               <button
                 type="button"
@@ -336,7 +388,7 @@ export default function Sound() {
               </button>
             )}
 
-            {/* Custom track — file chosen: filename + preview + change */}
+            {/* Custom track — file chosen */}
             {source === "custom" && sound.customPath && (
               <div className="flex items-center gap-3">
                 <p className="text-base font-semibold text-[#e5e5e5] truncate flex-1">
@@ -391,6 +443,13 @@ export default function Sound() {
             {/* Description of selected source / mood */}
             {moodDescription && (
               <p className="text-sm text-[#a3a3a3]">{moodDescription}</p>
+            )}
+
+            {/* Film vs track duration comparison */}
+            {showComparison && (
+              <p className="text-sm text-[#a3a3a3]">
+                Film: {fmtMs(filmDurationMs)} &middot; Track: {fmtMs(selectedTrackMs!)}{loopNote}
+              </p>
             )}
 
             {/* Volume row — visible when any music source is selected */}

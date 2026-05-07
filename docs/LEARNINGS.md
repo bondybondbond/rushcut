@@ -13,11 +13,11 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
-## Workflow — chrome-devtools MCP conflicts with WDIO on port 9222
+## Workflow — preview_* and chrome-devtools MCP both conflict with WDIO on port 9222
 
-**Problem:** Calling any `mcp__chrome-devtools__*` tool (including `list_pages`, `take_screenshot`) starts an Edge browser owned by the MCP on port 9222. This silently squats the port for the rest of the Claude Code session — WDIO's `waitForPort(9222)` resolves immediately (finding the MCP browser, not the Tauri WebView2), msedgedriver attaches to the MCP browser, and `getUrl()` always returns `about:blank`. The Tauri app's WebView2 cannot use port 9222 for remote debugging either, because the port is taken.
-**Solution:** Never call chrome-devtools MCP tools during a session that also runs WDIO E2E tests. Use PowerShell `CopyFromScreen` screenshots for visual verification instead. If the MCP browser must be killed, `Get-NetTCPConnection -LocalPort 9222 | Stop-Process` frees the port, but the next chrome-devtools call re-claims it.
-**Context:** Any session using `pnpm test:e2e` or manually connecting msedgedriver to port 9222. Applies for the lifetime of the Claude Code session once any chrome-devtools tool is called.
+**Problem:** Calling any `mcp__chrome-devtools__*` tool OR any `preview_*` MCP tool (including `preview_start`, `preview_screenshot`) starts a Chrome/Edge browser process that squats port 9222 for the lifetime of the Claude Code session. WDIO's `waitForPort(9222)` resolves to this MCP browser instead of the Tauri WebView2 — msedgedriver attaches to the wrong target and `getUrl()` always returns `about:blank`.
+**Solution:** Never call `preview_*` or `chrome-devtools` MCP tools during a session that also runs WDIO E2E tests. If already called, kill the Chrome process (`Get-NetTCPConnection -LocalPort 9222 | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }`) before launching the Tauri binary and running E2E.
+**Context:** Any session using `pnpm test:e2e*`. Both MCP tool families are affected — not just chrome-devtools.
 
 ---
 

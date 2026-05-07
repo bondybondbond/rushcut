@@ -222,6 +222,37 @@ Filename: `text-base font-semibold text-[#e5e5e5]` — 2 size steps above descri
 
 `open()` from `@tauri-apps/plugin-dialog` returns a plain `string` on Windows. Guard: `typeof result === "string" ? result : Array.isArray(result) ? result[0] : null`. `dialog:allow-open` capability is already wired.
 
+### Duration badge on chips
+
+When a chip represents content with a known duration (e.g. a music track), append the duration inline in the chip label: `"Cinematic · 2:34"`. The badge is part of the chip text node — not a separate element — so it inherits the chip's active/inactive colour automatically.
+
+Rules:
+- Use `·` (middle dot `&middot;`) as the separator, with a space on each side.
+- Format via `fmtMs(ms)` — `M:SS` (minutes + zero-padded seconds). Define inline per file, not as a shared util.
+- Only show the badge when the duration is known. Render the bare label while probing: `{label}{dur !== undefined ? \` · ${fmtMs(dur * 1000)}\` : ""}`.
+- Probe library track durations with `audio.preload = "metadata"` — fetches only ID3 headers, not the full file. Gate with a `probedRef` to prevent repeat probes on re-mount.
+- The `·` separator sits inside the chip text, so chip width grows naturally. No fixed-width layout needed.
+
+```tsx
+{label}{trackDurations[value] !== undefined ? ` · ${fmtMs(trackDurations[value]! * 1000)}` : ""}
+```
+
+### Film vs track duration comparison line
+
+When both film duration and selected track duration are known, show a one-line summary below the mood description, before the Volume row:
+
+```tsx
+<p className="text-sm text-[#a3a3a3]">
+  Film: {fmtMs(filmDurationMs)} &middot; Track: {fmtMs(selectedTrackMs)}{loopNote}
+</p>
+```
+
+Where `loopNote` is a derived `React.ReactNode` (computed above `return`, not an IIFE in JSX):
+- Track ≥ film: `<span className="text-[#22c55e]"> &mdash; long enough</span>` — green (`--rc-green`)
+- Track < film: `<span> &mdash; will loop ~{Math.ceil(filmDurationMs / selectedTrackMs)}x</span>` — secondary text, neutral
+
+Only render when `filmDurationMs > 0 && selectedTrackMs !== null` — never show "0:00" or an empty comparison while data is loading.
+
 ### Audio preview pattern (hidden `<audio>` + stop-link)
 
 For mood/track previewing without visible player controls:

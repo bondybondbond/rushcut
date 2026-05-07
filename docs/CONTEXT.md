@@ -15,16 +15,26 @@
 
 ## Current Phase
 
-**Phase 2 — Batch D COMPLETE (2026-05-07). Next: Batch E — TBD (render screen deferred items or next founder feedback).**
+**Phase 2 — Batch E COMPLETE (2026-05-08). Next: Batch F — TBD (sticky filmstrip or founder direction).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch D shipped.** No immediate next task — awaiting founder direction. Candidates:
+**Batch E shipped.** No immediate next task — awaiting founder direction. Candidates:
 - Sticky filmstrip (clips/duration/music visible across all screens, render CTA far-right)
-- Track duration vs. film duration display on Sound screen
 - Format selector (4K, file-size presets) on Render screen
+- Music fade-out setting (near-term precursor to smart track ending — see PRD backlog)
+
+**Batch E — Track duration vs. film duration on Sound screen COMPLETE (2026-05-08):**
+- Film duration computed from included clips (`sum of (out_ms ?? duration_ms) - (in_ms ?? 0)`) and shown in header subtitle: "ProjectName · N clips · M:SS" (hidden when 0 clips).
+- Library mood chips show track duration badge inline: "Cinematic · 2:34", "Upbeat · 1:30", etc. Probed via `audio.preload = "metadata"` on mount; `probedRef` guard prevents re-probe on re-mount.
+- Comparison line below mood description when both durations known: "Film: 1:23 · Track: 3:45 — long enough" (green) or "Film: 1:23 · Track: 0:45 — will loop ~2x". Derived as `React.ReactNode` variable above `return` (not IIFE).
+- Custom track duration probed via `audioRef` `loadedmetadata` listener after file pick — no second `Audio` object.
+- PRD: "Post-pick metadata" item marked DONE; new backlog item added: Smart Music Track Ending (crossfade-out optimisation / optimal track end point detection via librosa).
+- DESIGN.md: duration badge on chips + film vs track comparison line patterns documented.
+- e2e.md + LEARNINGS.md: `preview_*` MCP tools added to port-9222 conflict warning (same as chrome-devtools).
+- 14/14 sound E2E PASS · 7/7 fast E2E PASS.
 
 **Batch D — Sound screen UX polish COMPLETE (2026-05-07):**
 - Three-source selector: No Music / Rushcut Library / Upload Own Track (replaces flat chip row)

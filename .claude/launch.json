@@ -4,7 +4,7 @@
     {
       "name": "rushcut-dev",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["node_modules/vite/bin/vite.js", "--port", "1430", "--strictPort", "false"],
+      "runtimeArgs": ["C:/apps/rushcut/node_modules/vite/bin/vite.js", "--port", "1430", "--strictPort", "false"],
       "port": 1430,
       "autoPort": false
     }
