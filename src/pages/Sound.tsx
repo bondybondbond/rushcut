@@ -2,8 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectWithClips } from "@/types/project";
+import type { Clip, ProjectWithClips } from "@/types/project";
 import { StepNav } from "@/components/StepNav";
+import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
 type LibraryMood = "cinematic" | "upbeat" | "chill" | "electronic";
@@ -75,8 +76,7 @@ export default function Sound() {
   const navigate = useNavigate();
 
   const [projectName, setProjectName] = useState("");
-  const [clipCount, setClipCount] = useState(0);
-  const [filmDurationMs, setFilmDurationMs] = useState(0);
+  const [clips, setClips] = useState<Clip[]>([]);
   const [musicDir, setMusicDir] = useState<string | null>(null);
   const [trackDurations, setTrackDurations] = useState<Partial<Record<LibraryMood, number>>>({});
   const [customDurationMs, setCustomDurationMs] = useState<number | null>(null);
@@ -98,13 +98,7 @@ export default function Sound() {
     invoke<ProjectWithClips>("get_project", { projectId })
       .then((data) => {
         setProjectName(data.project.name);
-        const included = data.clips.filter((c) => c.include !== 0);
-        setClipCount(included.length);
-        const durMs = included.reduce(
-          (sum, c) => sum + (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0),
-          0
-        );
-        setFilmDurationMs(durMs);
+        setClips(data.clips);
       })
       .catch(() => {});
     invoke<string>("get_music_dir_cmd")
@@ -294,7 +288,11 @@ export default function Sound() {
             <h1 className="text-3xl font-semibold text-[#FF8A65]">Sound</h1>
             <p className="text-base text-[#a3a3a3] mt-1">
               {projectName
-                ? `${projectName} · ${clipCount} clip${clipCount !== 1 ? "s" : ""}${filmDurationMs > 0 ? ` · ${fmtMs(filmDurationMs)}` : ""}`
+                ? (() => {
+                    const included = clips.filter(c => c.include !== 0);
+                    const durMs = included.reduce((sum, c) => sum + (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0), 0);
+                    return `${projectName} · ${included.length} clip${included.length !== 1 ? "s" : ""}${durMs > 0 ? ` · ${fmtMs(durMs)}` : ""}`;
+                  })()
                 : "Loading..."}
             </p>
           </div>
@@ -489,6 +487,13 @@ export default function Sound() {
 
         </div>
       </div>
+
+      <StickyFilmStrip
+        clips={clips}
+        projectId={projectId!}
+        transitionValue={(() => { try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; } })()}
+        soundMood={sound.mood}
+      />
     </div>
   );
 }

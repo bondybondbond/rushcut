@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import type { ProjectWithClips } from "@/types/project";
+import type { Clip, ProjectWithClips } from "@/types/project";
 import { StepNav } from "@/components/StepNav";
+import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 
 type TransitionValue = "none" | "crossfade" | "dip_to_black";
 
@@ -17,7 +18,7 @@ export default function Transitions() {
   const navigate = useNavigate();
 
   const [projectName, setProjectName] = useState("");
-  const [clipCount, setClipCount] = useState(0);
+  const [clips, setClips] = useState<Clip[]>([]);
   // sessionStorage persistence — survives back-navigation within the same WebView session
   const storageKey = `rc_transition_${projectId}`;
   const [transition, setTransition] = useState<TransitionValue>(
@@ -29,7 +30,7 @@ export default function Transitions() {
     invoke<ProjectWithClips>("get_project", { projectId })
       .then((data) => {
         setProjectName(data.project.name);
-        setClipCount(data.clips.filter((c) => c.include !== 0).length);
+        setClips(data.clips);
       })
       .catch(() => {});
   }, [projectId]);
@@ -57,7 +58,7 @@ export default function Transitions() {
             <h1 className="text-3xl font-semibold text-[#FF8A65]">Transitions</h1>
             <p className="text-base text-[#a3a3a3] mt-1">
               {projectName
-                ? `${projectName} · ${clipCount} clip${clipCount !== 1 ? "s" : ""}`
+                ? `${projectName} · ${clips.filter(c => c.include !== 0).length} clip${clips.filter(c => c.include !== 0).length !== 1 ? "s" : ""}`
                 : "Loading…"}
             </p>
           </div>
@@ -102,6 +103,13 @@ export default function Transitions() {
 
         </div>
       </div>
+
+      <StickyFilmStrip
+        clips={clips}
+        projectId={projectId!}
+        transitionValue={transition}
+        soundMood={(() => { try { const raw = sessionStorage.getItem(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })()}
+      />
     </div>
   );
 }

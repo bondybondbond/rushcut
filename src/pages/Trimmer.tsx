@@ -7,7 +7,7 @@ import type { Clip, ProjectWithClips } from "@/types/project";
 import { StepNav } from "@/components/StepNav";
 import { MediaPantry } from "@/components/trimmer/MediaPantry";
 import { TrimBar } from "@/components/trimmer/TrimBar";
-import { FilmStrip } from "@/components/trimmer/FilmStrip";
+import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 
 export default function Trimmer() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -425,6 +425,9 @@ export default function Trimmer() {
     );
   }
 
+  // Suppress unused warning — handleFilmSelect is wired to StickyFilmStrip thumbnail clicks (future)
+  void handleFilmSelect;
+
   return (
     <div className="flex flex-col h-screen bg-[#0a0a0a] text-[#e5e5e5] overflow-hidden">
       {/* Step nav — replaces header, accounts for fixed AppShell NavDrawer at top-left */}
@@ -613,28 +616,33 @@ export default function Trimmer() {
               ? "No clips added yet"
               : `${inFilmCount} clip${inFilmCount !== 1 ? "s" : ""} in film`}
           </p>
+
+          {/* Remove selected cut from film */}
+          {filmActiveId && (
+            <button
+              onClick={() => {
+                const cut = clips.find(c => c.id === filmActiveId);
+                if (cut) {
+                  handleDeleteCut(cut);
+                  setFilmActiveId(null);
+                }
+              }}
+              className="w-full py-2 border border-red-500/40 text-red-400 text-xs rounded-md hover:border-red-500/70 hover:bg-red-500/10 transition-colors"
+            >
+              Remove from film
+            </button>
+          )}
         </aside>
       </div>
 
-      {/* Bottom — Film So Far strip */}
-      <div
-        className="flex-shrink-0 border-t border-white/10 bg-[#0a0a0a]"
-        style={{ height: 100 }}
-      >
-        <FilmStrip
-          clips={clips}
-          activeId={filmActiveId}
-          onSelect={handleFilmSelect}
-          onRemove={handleDeleteCut}
-          onAdd={(c) => {
-            // Drag-from-pantry: use current handles if it's the selected clip,
-            // else use the source row's stored handles (null = full clip)
-            const cutIn = c.id === clip?.id ? inMs : (c.in_ms ?? 0);
-            const cutOut = c.id === clip?.id ? outMs : (c.out_ms ?? c.duration_ms);
-            handleAddCutForClip(c, cutIn, cutOut);
-          }}
-        />
-      </div>
+      {/* Bottom — Global sticky filmstrip HUD */}
+      <StickyFilmStrip
+        clips={clips}
+        projectId={projectId!}
+        activeId={filmActiveId}
+        transitionValue={(() => { try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; } })()}
+        soundMood={(() => { try { const raw = sessionStorage.getItem(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })()}
+      />
 
       {/* Toast — duplicate cut guard */}
       {toast && (

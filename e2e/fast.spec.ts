@@ -75,37 +75,75 @@ describe("Editor page", () => {
     );
   });
 
-  it("shows Settings panel music chips with No Music active by default", async () => {
-    // Navigate into first project if one exists
+  it("opens project to /trimmer/ and sticky filmstrip is visible", async () => {
     const firstProject = await $('[data-testid="btn-open-project"]');
     if (!(await firstProject.isExisting())) return;
 
     await firstProject.click();
     await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/editor/"),
+      async () => (await browser.getUrl()).includes("/trimmer/"),
       { timeout: 5_000, interval: 200 }
     );
 
-    const noneChip = await $('[data-testid="chip-music-none"]');
-    await noneChip.waitForExist({ timeout: 5_000 });
-    const classes = await noneChip.getAttribute("class");
-    expect(classes).toContain("99B3FF");
+    const strip = await $('[data-testid="sticky-filmstrip"]');
+    await strip.waitForExist({ timeout: 5_000 });
+    expect(await strip.isDisplayed()).toBe(true);
   });
 
-  it("inline project name edit: click -> input appears -> Escape cancels", async () => {
-    const nameBtn = await $('[data-testid="project-name"]');
-    if (!(await nameBtn.isExisting())) return;
+  it("sticky filmstrip visible on Transitions screen", async () => {
+    const url = await browser.getUrl();
+    if (!url.includes("/trimmer/")) return;
+    const projectId = url.split("/trimmer/")[1];
 
-    const originalText = await nameBtn.getText();
-    await nameBtn.click();
+    await browser.execute(
+      (pid: string) => window.history.pushState({}, "", `/transitions/${pid}`),
+      projectId
+    );
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/transitions/"),
+      { timeout: 3_000, interval: 200 }
+    );
 
-    const nameInput = await $('[data-testid="input-project-name"]');
-    await nameInput.waitForDisplayed({ timeout: 3_000 });
-    expect(await nameInput.isDisplayed()).toBe(true);
+    const strip = await $('[data-testid="sticky-filmstrip"]');
+    await strip.waitForExist({ timeout: 5_000 });
+    expect(await strip.isDisplayed()).toBe(true);
+  });
 
-    await browser.keys(["Escape"]);
-    await nameBtn.waitForDisplayed({ timeout: 3_000 });
-    expect(await nameBtn.getText()).toBe(originalText);
+  it("sticky filmstrip visible on Sound screen", async () => {
+    const url = await browser.getUrl();
+    if (!url.includes("/transitions/")) return;
+    const projectId = url.split("/transitions/")[1];
+
+    await browser.execute(
+      (pid: string) => window.history.pushState({}, "", `/sound/${pid}`),
+      projectId
+    );
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/sound/"),
+      { timeout: 3_000, interval: 200 }
+    );
+
+    const strip = await $('[data-testid="sticky-filmstrip"]');
+    await strip.waitForExist({ timeout: 5_000 });
+    expect(await strip.isDisplayed()).toBe(true);
+  });
+
+  it("sticky filmstrip absent on Render screen", async () => {
+    const url = await browser.getUrl();
+    if (!url.includes("/sound/")) return;
+    const projectId = url.split("/sound/")[1];
+
+    await browser.execute(
+      (pid: string) => window.history.pushState({}, "", `/render/${pid}`),
+      projectId
+    );
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/render/"),
+      { timeout: 3_000, interval: 200 }
+    );
+
+    const strip = await $('[data-testid="sticky-filmstrip"]');
+    expect(await strip.isExisting()).toBe(false);
   });
 
   it("Back button navigates to /library", async () => {

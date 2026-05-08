@@ -15,16 +15,30 @@
 
 ## Current Phase
 
-**Phase 2 — Batch E COMPLETE (2026-05-08). Next: Batch F — TBD (sticky filmstrip or founder direction).**
+**Phase 2 — Batch F COMPLETE (2026-05-08). Next: Batch G — TBD (ruler-based proportional timeline for StickyFilmStrip, or next founder feedback).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch E shipped.** No immediate next task — awaiting founder direction. Candidates:
-- Sticky filmstrip (clips/duration/music visible across all screens, render CTA far-right)
+**Batch F shipped.** No immediate next task — awaiting founder direction. Candidates:
+- Ruler-based proportional timeline for StickyFilmStrip (deferred from Batch F — own sub-batch)
+- Music bar below clip track in StickyFilmStrip (deferred — cross-fade-out may be more elegant)
 - Format selector (4K, file-size presets) on Render screen
 - Music fade-out setting (near-term precursor to smart track ending — see PRD backlog)
+
+**Batch F — Sticky filmstrip HUD across trim/transitions/sound COMPLETE (2026-05-08):**
+- `StickyFilmStrip` component: 100px read-only bottom bar, `flex-shrink-0`, `border-t border-white/10 bg-[#0a0a0a]`
+- Clip thumbnails (90x56px, `MAX_VISIBLE=7`, +N overflow badge, `overflow: hidden` truncation)
+- Total duration summary cell (flex-shrink-0, "Total" label, M:SS, clip count)
+- Navigation chips: scissors→`/transitions/:projectId`, music note→`/sound/:projectId` — shown only when set and not "none"
+- No Render CTA — users must navigate via StepNav funnel by design
+- Music chip persists on Transitions screen: reads `rc_sound_${projectId}` from sessionStorage at render time
+- FilmStrip replaced in Trimmer.tsx; "Remove from film" button in right sidebar (conditional on `filmActiveId`)
+- Sound.tsx: `clips: Clip[]` state (replaces separate `clipCount`/`filmDurationMs`); header derives both inline
+- DESIGN.md: "Persistent Bottom Status HUD" section added
+- Deferred: ruler-based proportional timeline (own sub-batch), music bar below clip track
+- 9/9 fast E2E PASS
 
 **Batch E — Track duration vs. film duration on Sound screen COMPLETE (2026-05-08):**
 - Film duration computed from included clips (`sum of (out_ms ?? duration_ms) - (in_ms ?? 0)`) and shown in header subtitle: "ProjectName · N clips · M:SS" (hidden when 0 clips).

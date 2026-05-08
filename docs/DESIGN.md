@@ -362,6 +362,70 @@ Used for transient feedback (e.g. duplicate-cut guard). Not a modal — no block
 
 ---
 
+## Persistent Bottom Status HUD (`StickyFilmStrip`)
+
+A read-only film composition summary bar pinned at the bottom of editor screens (Trim, Transitions, Sound). Hidden on Render.
+
+### Layout contract
+
+- **Height:** `style={{ height: 100 }}` — fixed, never causes layout shift
+- **Placement:** `flex-shrink-0` child of `flex flex-col h-screen` root div. The scrollable body above must be `flex-1 overflow-auto` (or `overflow-y-auto`) so it fills remaining space and the strip never overlaps content.
+- **Background / border:** `bg-[#0a0a0a] border-t border-white/10` — matches StepNav bottom border token.
+- **Root classes:** `flex items-center px-3 gap-3`
+
+### Thumbnail row
+
+- Thumbnail cards: `width: 90px, height: 56px`, `rounded overflow-hidden border-2`
+- Active clip (Trimmer only): `border-[#FF8A65]`; inactive: `border-white/15`
+- **Non-interactive** — no hover bins, no drag handlers, `draggable={false}`
+- Sequence number badge: `text-[9px] text-white font-bold` on `bg-black/60` pill (top-left)
+- Duration overlay: `text-[8px] text-white/80 font-mono` gradient footer
+- Overflow truncation: CSS `overflow: hidden` on the row container (`flex-1 min-w-0`). Show up to `MAX_VISIBLE = 7` thumbnails, then a `+N` pill badge (`text-[10px] text-[#e5e5e5]/60 bg-white/10 rounded-md w-10 h-12`).
+- Empty state: filmstrip SVG icon + `"No clips yet"` in `text-sm text-[#e5e5e5]/30`
+
+### Duration summary cell
+
+- `flex-shrink-0`, `border-l border-white/10 pl-3`, `flex flex-col items-center gap-0.5`
+- Label: `text-[10px] text-[#e5e5e5]/40 uppercase tracking-wide` — "Total"
+- Value: `text-sm font-mono text-[#e5e5e5] font-semibold`
+- Count: `text-[10px] text-[#e5e5e5]/40` — "N clips"
+
+### Navigation chips (transition + music)
+
+Shown only when a non-"none" value is set — **no empty placeholder chips**.
+
+```tsx
+<button
+  onClick={() => navigate(`/transitions/${projectId}`)}
+  className="flex items-center gap-1.5 px-3 py-1.5 border border-white/20 text-[#e5e5e5] text-sm rounded-md hover:border-white/40 hover:bg-white/5 transition-all duration-200 whitespace-nowrap"
+>
+  <ScissorsIcon />  {/* inline SVG */}
+  Crossfade
+</button>
+```
+
+- **Icons:** inline SVG paths (same pattern as FilmStrip icons) — not Unicode codepoints in JSX text
+- **Labels:** friendly display names via a lookup map (e.g. `"dip_to_black"` → `"Dip to black"`)
+- **Tap action:** `navigate()` to the relevant screen — no popovers, no modals
+- **Separator:** `border-l border-white/10 pl-3` before the chip group
+
+### Render Film CTA
+
+- `flex-shrink-0 border-l border-white/10 pl-3`
+- Button: standard primary CTA — `bg-[#FF8A65] text-[#0a0a0a] font-semibold text-sm px-5 py-2 rounded-md hover:bg-[#ff9e7a] whitespace-nowrap`
+- `data-testid="btn-render-film-strip"` — always visible on Trim / Transitions / Sound screens
+- Navigates to `/render/:projectId`
+
+### Data flow
+
+- Props: `clips: Clip[]` (from parent page), `projectId`, `activeId?`, `transitionValue?`, `soundMood?`
+- Trimmer: passes live `clips` state + reads sessionStorage at render time for transition/mood (static values set before arriving at Trimmer)
+- Transitions: passes `transition` React state var directly as `transitionValue` — updates instantly on chip select
+- Sound: passes `sound.mood` directly as `soundMood` — updates instantly on source/mood change; reads sessionStorage for transition (static on Sound screen)
+- **No sessionStorage reads inside StickyFilmStrip itself** — all values come via props
+
+---
+
 ## Key Copy Decisions
 
 | Old                                 | New                                              | Reason                                        |
