@@ -29,6 +29,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — `preview_start` kills the Tauri HMR connection; Vite-only preview is useless for Tauri UI
+
+**Problem:** `preview_start` on port 1420 kills any already-running Vite dev server (which the Tauri binary's WebView2 is connected to via HMR). After this, the user's open Tauri window loses HMR and never receives source updates. Additionally, the Vite-only preview cannot render Tauri UI pages because all `invoke()` calls fail immediately without the backend — every editor page shows "No clips found" or the loading spinner, making screenshots meaningless.
+**Solution:** For UI verification of Tauri screens, use `chrome-devtools` MCP against the running Tauri WebView2 (port 9222) — NOT `preview_*` MCP. Do NOT call `preview_start` if the user has `pnpm dev` already running. HMR alone is sufficient proof of delivery; take screenshots via `mcp__chrome-devtools__take_screenshot` only when the user confirms the Tauri app is open.
+**Context:** Any session touching React UI components (`src/**/*.tsx`) with a running Tauri binary. Do not mix `preview_*` and E2E in the same session (port 9222 conflict — already documented above).
+
+---
+
 ## Workflow — `Start-Process` in PowerShell does not inherit `$env:` vars reliably
 
 **Problem:** Setting `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "..."` in PowerShell and then using `Start-Process -FilePath rushcut.exe` does not propagate the variable to the child process on Windows PowerShell 5.x. The variable is silently dropped, so WebView2 never enters remote-debugging mode.

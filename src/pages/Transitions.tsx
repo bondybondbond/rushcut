@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { Clip, ProjectWithClips } from "@/types/project";
-import { StepNav } from "@/components/StepNav";
+import { EditorShell } from "@/components/EditorShell";
 import { StickyFilmStrip } from "@/components/StickyFilmStrip";
+import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
+import { projectCache } from "@/utils/projectCache";
 
 type TransitionValue = "none" | "crossfade" | "dip_to_black";
 
@@ -15,20 +17,37 @@ const TRANSITIONS: { value: TransitionValue; label: string; description: string 
 
 export default function Transitions() {
   const { projectId } = useParams<{ projectId: string }>();
-  const navigate = useNavigate();
 
-  const [projectName, setProjectName] = useState("");
-  const [clips, setClips] = useState<Clip[]>([]);
-  // sessionStorage persistence — survives back-navigation within the same WebView session
+  const _cached = projectCache.get(projectId ?? "");
+  const [projectName, setProjectName] = useState(_cached?.name ?? "");
+  const [clips, setClips] = useState<Clip[]>(_cached?.clips ?? []);
   const storageKey = `rc_transition_${projectId}`;
   const [transition, setTransition] = useState<TransitionValue>(
     () => (sessionStorage.getItem(storageKey) as TransitionValue | null) ?? "none"
   );
 
+  const configured = useConfiguredTabs(projectId ?? "");
+
+  const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
+  const clipCount = inFilm.length;
+  const totalMs = inFilm.reduce((sum, c) => {
+    const start = c.in_ms ?? 0;
+    const end = c.out_ms ?? c.duration_ms;
+    return sum + Math.max(0, end - start);
+  }, 0);
+
+  const soundMoodVal = (() => {
+    try {
+      const raw = sessionStorage.getItem(`rc_sound_${projectId}`);
+      return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null;
+    } catch { return null; }
+  })();
+
   useEffect(() => {
     if (!projectId) return;
     invoke<ProjectWithClips>("get_project", { projectId })
       .then((data) => {
+        projectCache.set(projectId, { name: data.project.name, clips: data.clips });
         setProjectName(data.project.name);
         setClips(data.clips);
       })
@@ -41,36 +60,36 @@ export default function Transitions() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-[#0a0a0a] text-[#e5e5e5]">
-      <StepNav
-        active="transitions"
-        projectId={projectId}
-        nextLabel="Next: Sound"
-        onNext={() => navigate(`/sound/${projectId}`)}
-        nextDisabled={false}
-      />
-
+    <EditorShell
+      projectId={projectId ?? ""}
+      projectName={projectName}
+      clipCount={clipCount}
+      totalMs={totalMs}
+      activeTab="arrange"
+      configured={configured}
+      transitionValue={transition}
+      soundMood={soundMoodVal}
+      timelineHud={
+        <StickyFilmStrip
+          clips={clips}
+          projectId={projectId!}
+        />
+      }
+    >
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
 
           {/* Header */}
           <div>
-            <h1 className="text-3xl font-semibold text-[#FF8A65]">Transitions</h1>
+            <h1 className="text-3xl font-semibold text-[#FF8A65]">Arrange</h1>
             <p className="text-base text-[#a3a3a3] mt-1">
-              {projectName
-                ? `${projectName} · ${clips.filter(c => c.include !== 0).length} clip${clips.filter(c => c.include !== 0).length !== 1 ? "s" : ""}`
-                : "Loading…"}
+              How should RushCut cut between each clip in your film?
             </p>
           </div>
 
           {/* Transition picker */}
           <div className="border border-white/15 rounded-lg p-6 space-y-4">
-            <div>
-              <p className="text-xl font-medium text-[#e5e5e5]">Between clips</p>
-              <p className="text-sm text-[#a3a3a3] mt-0.5">
-                How should RushCut cut between each clip in your film?
-              </p>
-            </div>
+            <p className="text-xl font-medium text-[#e5e5e5]">Between clips</p>
 
             <div className="flex flex-wrap gap-3">
               {TRANSITIONS.map(({ value, label }) => (
@@ -96,20 +115,13 @@ export default function Transitions() {
             </p>
           </div>
 
-          {/* Output info */}
+          {/* Footer note */}
           <p className="text-sm text-[#a3a3a3]">
             Your choice is saved automatically. Continue to Sound to choose music for your film.
           </p>
 
         </div>
       </div>
-
-      <StickyFilmStrip
-        clips={clips}
-        projectId={projectId!}
-        transitionValue={transition}
-        soundMood={(() => { try { const raw = sessionStorage.getItem(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })()}
-      />
-    </div>
+    </EditorShell>
   );
 }

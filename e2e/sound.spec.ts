@@ -97,13 +97,12 @@ describe("Sound screen", () => {
     expect(text).toContain("Sound");
   });
 
-  it("shows StepNav with Sound step active", async () => {
+  it("shows bottom tab bar with Sound tab active (peach)", async () => {
     if (!projectId) return;
-    const text = await browser.execute(() => document.body.textContent ?? "");
-    expect(text).toContain("Trim");
-    expect(text).toContain("Transitions");
-    expect(text).toContain("Sound");
-    expect(text).toContain("Render");
+    const soundTab = await $('[data-testid="tab-sound"]');
+    await soundTab.waitForExist({ timeout: 5_000 });
+    const className = await soundTab.getAttribute("class");
+    expect(className).toContain("FF8A65");
   });
 
   it("screenshot A: Sound initial state (No Music active)", async () => {
@@ -179,6 +178,14 @@ describe("Sound screen", () => {
     const subtleChip = await $('[data-testid="chip-volume-subtle"]');
     await subtleChip.waitForExist({ timeout: 3_000 });
     expect(await subtleChip.isDisplayed()).toBe(true);
+  });
+
+  it("right column shows chosen-effects chip after selecting Cinematic", async () => {
+    if (!projectId) return;
+    const effects = await $('[data-testid="chosen-effects"]');
+    await effects.waitForExist({ timeout: 3_000 });
+    const text = await effects.getText();
+    expect(text.toLowerCase()).toContain("cinematic");
   });
 
   it("sessionStorage persists the selected mood", async () => {

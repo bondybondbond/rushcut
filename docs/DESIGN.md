@@ -304,28 +304,110 @@ Music dir is fetched on mount via `invoke<string>("get_music_dir_cmd")` — grac
 
 ---
 
-## StepNav Breadcrumb
+## StepNav Breadcrumb — RETIRED (Batch H)
 
-Five steps: Upload · Trim · Transitions · Sound · Render. `src/components/StepNav.tsx`.
+`StepNav.tsx` and `NavDrawer.tsx` deleted in Batch H. Replaced by `BottomTabBar` + `TopInfoBar` + `EditorShell`. Do not rebuild.
 
-```tsx
-{/* Active step */}
-"text-[#FF8A65] bg-[#FF8A65]/10 border border-[#FF8A65]/40"
+---
 
-{/* Past step (completed, clickable) */}
-"text-[#e5e5e5] hover:text-[#e5e5e5] cursor-pointer"
+## Bottom Tab Bar (`BottomTabBar`)
 
-{/* Future step (not yet reachable, disabled button) */}
-"text-[#a3a3a3] cursor-default"
+Fixed to the bottom of the viewport on all editor screens. `src/components/BottomTabBar.tsx`.
 
-{/* Separator "/" between steps */}
-"text-[#555555]"  {/* decorative only — muted token */}
+### Container
+```
+fixed bottom-0 left-0 right-0 h-12 bg-[#0a0a0a] border-t border-white/10 flex items-center px-2 gap-1 z-40
 ```
 
-Rules:
-- **No opacity tricks** — do not use `text-[#e5e5e5]/70`, `text-[#e5e5e5]/20` etc. Use flat hex values only.
-- Future/disabled steps: `#a3a3a3` is the minimum (readable, secondary). `#555555` is reserved for the decorative `/` separators only, not step labels.
-- The `disabled` prop blocks clicks on future steps; `handleStepClick` also guards `idx >= activeIdx`.
+### Tab states
+```tsx
+{/* Active tab — peach text + 2px bottom underline */}
+"flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-md text-[#FF8A65] relative"
+// underline: absolute bottom-0 left-2 right-2 h-0.5 bg-[#FF8A65]
+
+{/* Configured tab (non-active) — primary text */}
+"flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-md text-[#e5e5e5] hover:bg-white/5"
+
+{/* Unconfigured tab — secondary text */}
+"flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-md text-[#a3a3a3] hover:bg-white/5"
+```
+
+### Tab icons (lucide-react)
+| Tab | Icon | data-testid |
+|---|---|---|
+| Home | `Home` | `tab-home` |
+| Trim | `Scissors` | `tab-trim` |
+| Arrange | `Layers` | `tab-arrange` |
+| Sound | `Music` | `tab-sound` |
+| Render | `Clapperboard` | `tab-render` |
+
+Icons: `w-4 h-4`; labels: `text-[10px] leading-none font-medium`.
+
+### Configuration state
+- `useConfiguredTabs(projectId)` reads sessionStorage and returns `Set<"arrange" | "sound">`.
+- "arrange" configured: `rc_transition_${projectId}` is non-null and !== `"none"`.
+- "sound" configured: `rc_sound_${projectId}` parsed JSON has `mood` that is non-null and !== `"none"`.
+- Active tab always shows peach regardless of configuration state.
+
+### Render tab guard
+If `!configured.has("arrange") && !configured.has("sound")`, show `window.confirm("You haven't set transitions or music yet. Render anyway?")` before navigating to `/render/:id`. If user cancels, stay on current screen. If either is configured, navigate directly.
+
+### RC wordmark
+Far-right of the tab bar: `text-[#FF8A65] font-bold text-sm tracking-widest ml-auto pr-2` — text `"RC"`. Batch I will replace with SVG logo.
+
+### Layout note
+`EditorShell` uses `pb-12` on the outer `h-screen` container so center content scrolls above the fixed bar without overlap.
+
+---
+
+## `EditorShell` Layout
+
+Shared layout wrapper for all editor screens. `src/components/EditorShell.tsx`.
+
+### Layout structure
+```
+h-screen pb-12 bg-[#0a0a0a] text-[#e5e5e5] overflow-hidden  (flex col)
+├── TopInfoBar (h-7, flex-shrink-0)
+├── flex flex-col flex-1 overflow-hidden min-h-0
+│   ├── Main content row (flex flex-1 overflow-hidden min-h-0)
+│   │   ├── Left aside (w-52, optional — Trimmer only)
+│   │   │   border-r border-white/10, overflow-y-auto, bg-[#0a0a0a]
+│   │   └── <main> flex flex-1 overflow-hidden min-w-0  ← children
+│   │
+│   └── Timeline row (flex flex-shrink-0, only rendered when timelineHud present)
+│       border-t-2 border-[#99B3FF]/30  ← spans ALL columns for consistency
+│       ├── Left gutter (w-52, always present — mirrors pantry width, blank on non-Trim screens)
+│       │   bg-[#0a0a0a]
+│       ├── StickyFilmStrip (flex-1 min-w-0 overflow-hidden)
+│       └── ChosenEffects aside (w-48, flex-shrink-0)
+│           border-l border-white/10, bg-[#0a0a0a], overflow-hidden
+└── BottomTabBar (fixed bottom-0, placed by EditorShell, h-12)
+```
+
+### Width alignment rule
+The timeline row ALWAYS has `w-52 left gutter + filmstrip + w-48 effects`, regardless of whether the left panel (MediaPantry) is visible above. This keeps the filmstrip exactly the same width on every screen — no layout shift when navigating between Trim (with pantry) and Arrange/Sound (without). The left gutter is blank on Arrange/Sound screens and reserved for future per-screen timeline controls.
+
+**The controls column in Trimmer must be exactly `w-48`** (matching the effects aside) so the TrimBar and filmstrip share the same left/right edges.
+
+### Per-screen column config
+| Screen | leftPanel | children layout | timelineHud |
+|---|---|---|---|
+| Trim | MediaPantry (w-52) | `flex h-full`: video+TrimBar (`flex-1`) + controls (`w-48`) | StickyFilmStrip |
+| Arrange | — | centered chip picker | StickyFilmStrip |
+| Sound | — | source selector | StickyFilmStrip |
+| Render | — | ready/rendering/done phases | — (no timeline, no ChosenEffects) |
+
+### Video container responsive sizing (Trimmer)
+Use `flex-1 min-h-0` on the video container div, NOT `flex-shrink-0 + aspectRatio + maxHeight`. With `flex-1 min-h-0`, the container fills available vertical space; the `<video>` inside uses `w-full h-full object-contain` to maintain aspect ratio with letterboxing. When the user manually resizes via the drag handle, override with `style={{ flex: "none", height: videoHeight }}`.
+
+**`flex-shrink-0 + aspectRatio` anti-pattern:** pins height to content-derived value; the container fails to grow when the window is maximised, and surrounding space goes unused instead of going to the video.
+
+### `TopInfoBar`
+`h-7 flex items-center pl-4 bg-[#0a0a0a] border-b border-white/10 text-sm text-[#e5e5e5] flex-shrink-0`
+Content: `{projectName} · {N} clip(s) · {fmtMs(totalMs)}`. Clips omit "0 clips" gracefully. Duration omit when 0.
+
+### `ChosenEffects`
+Rendered inside the timeline row's right aside (w-48), filling the same 100px height as the filmstrip. `data-testid="chosen-effects"`. Chip style: `bg-[#99B3FF]/20 border border-[#99B3FF]/50 text-[#99B3FF] text-xs px-2 py-0.5 rounded`. Header: `text-[10px] text-[#a3a3a3] uppercase tracking-widest`. Empty state: `text-xs text-[#a3a3a3] italic "None set"`. Add `h-full` to the root div so it fills the row height.
 
 ---
 
@@ -362,84 +444,68 @@ Used for transient feedback (e.g. duplicate-cut guard). Not a modal — no block
 
 ---
 
-## Persistent Bottom Status HUD (`StickyFilmStrip`)
+## Persistent Timeline HUD (`StickyFilmStrip`)
 
-A read-only proportional timeline pinned at the bottom of editor screens (Trim, Transitions, Sound). Hidden on Render. Clip tile widths scale with trimmed duration; a ruler shows time ticks above the tiles. Supports Ctrl+scroll zoom and middle/left-drag pan.
+A read-only proportional timeline rendered inside EditorShell's timeline row (Trim, Arrange, Sound). Hidden on Render. Clip tile widths scale with trimmed duration; a ruler shows time ticks above the tiles. Supports Ctrl+scroll zoom and middle/left-drag pan.
 
 ### Layout contract
 
-- **Height:** `style={{ height: 100 }}` — fixed, never causes layout shift
-- **Placement:** `flex-shrink-0` child of `flex flex-col h-screen` root div. The scrollable body above must be `flex-1 overflow-auto` (or `overflow-y-auto`) so it fills remaining space and the strip never overlaps content.
-- **Background / border:** `bg-[#0a0a0a] border-t-2 border-[#C9A96E]/25` — sandy warm accent top border distinguishes the timeline section.
-- **Root classes:** `flex items-stretch`
+- **Height:** `style={{ height: 100 }}` — fixed 100px, fills the timeline row height.
+- **Placement:** Passed as `timelineHud` prop to EditorShell. EditorShell wraps it in a `flex-1 min-w-0 overflow-hidden` div inside the timeline row. The component itself must NOT own the `border-t` — EditorShell's timeline row container owns the `border-t-2 border-[#99B3FF]/30`.
+- **Background:** `bg-[#0a0a0a]` only (no border-t on root div).
+- **Root testid:** `data-testid="sticky-filmstrip"`.
 
 ### Proportional timeline track
 
 - Clip tile widths: `Math.max(40, Math.round(trimmedMs * pxPerMs))` — proportional to trimmed duration, min 40px.
 - Scroll container: `overflow-x-auto overflow-y-hidden`, scrollbar hidden (`[&::-webkit-scrollbar]:hidden`, `scrollbarWidth: none`).
 - Initial auto-fit: `ResizeObserver` sets `pxPerMs = containerWidth / totalMs` on first render only (`hasInitialized` ref prevents reset on clip changes).
+- Auto-scroll to end when a clip is added: compare `inFilm.length` to `prevFilmLengthRef.current` in a `useEffect`; call `requestAnimationFrame(() => el.scrollLeft = el.scrollWidth)`.
 - Zoom: Ctrl+scroll via non-passive `addEventListener("wheel", handler, {passive: false})`. Zoom range: `MIN_PX_PER_MS = 0.008` to `MAX_PX_PER_MS = 2.0`. Zoom-to-cursor: `scrollLeft = cursorX * ratio - (clientX - rectLeft)`.
 - Pan: middle mouse button OR left-drag on track background. Cursor state via direct `trackRef.current.style.cursor` mutation — no `useState` (prevents re-render jank).
 
 ### Ruler row
 
 - Height: `RULER_HEIGHT = 20px` — fixed, sits above the clip row.
-- Adaptive tick interval: smallest value from `[1s, 2s, 5s, 10s, 30s, 1m, 2m, 5m]` where `interval * pxPerMs >= 40px`.
-- Every tick shows a label — no unlabeled minor ticks.
-- Major tick (every 5th): 8px line; minor tick: 4px line. Both use `bg-white/40`.
-- Label: `text-[11px] font-mono text-[#a3a3a3]` — minimum readable secondary colour. Never use opacity variants (`/40`) on ruler labels — they become illegible.
+- Dual-array system: separate `minorTicks` (every interval ≥ 20px) and `labelTicks` (every interval ≥ 50px). Candidates: minor `[500ms…300s]`, label `[5s…300s]`.
+- Tick direction: top→down. `top: 0` on tick `<div>` (NOT `bottom: 0`). Major tick: 8px tall, `bg-white`; minor: 4px, `bg-white/60`.
+- Label: `text-[10px] font-mono text-white/70 whitespace-nowrap`, `top: 8` (below ticks). Never use opacity variants on label text — they become illegible.
 - Ruler x-positions use `filmTimeToPx(ms)` which walks actual clip pixel widths, NOT naive `ms/totalMs * totalTrackPx`. The naive approach drifts when short clips are min-width-clamped to 40px.
 
 ### Clip tiles
 
 - Height: `CLIP_HEIGHT = 56px`, gap between tiles: `GAP_PX = 2px`.
-- Clip row wrapper: `border border-[#C9A96E]/20 rounded-sm overflow-hidden` — sandy frame around the timeline section, visible but subtle.
-- Active tile (Trimmer only): `border-[#FF8A65]`; inactive: `border-[#C9A96E]/30` — warm sandy border visible against dark clip content.
-- **Thumbnail tiling (DaVinci-style):** Use CSS `backgroundImage: url(thumbnail_data)`, `backgroundSize: auto 100%`, `backgroundRepeat: repeat-x`. The same scan-time JPEG repeats horizontally across the tile width. Do NOT use `<video>` elements in the HUD — they autoplay and create traffic when the user navigates between screens.
-- Sequence number badge: `text-[9px] text-[#0a0a0a] font-bold` on `bg-[#99B3FF]` pill (top-left) — blue badge stands out clearly over varied clip content.
+- Clip row wrapper: `border-2 border-[#99B3FF]/30 rounded-sm overflow-hidden` — blue frame.
+- Each tile: `group relative flex-shrink-0 overflow-hidden border-2 transition-colors`. Active tile: `border-[#FF8A65]`; inactive: `border-[#99B3FF]/25`.
+- **Thumbnail tiling (DaVinci-style):** CSS `backgroundImage`, `backgroundSize: auto 100%`, `backgroundRepeat: repeat-x`. Do NOT use `<video>` elements in the HUD.
+- Sequence number badge: `text-[9px] text-[#0a0a0a] font-bold` on `bg-[#99B3FF]` pill (top-left `absolute top-0.5 left-0.5`).
 - Duration overlay: `text-[10px] text-white font-mono drop-shadow-sm` gradient footer (`bg-gradient-to-t from-black/80`).
-- Empty state: filmstrip SVG icon + `"No clips yet"` in `text-sm text-[#e5e5e5]/30`
+- Empty state: filmstrip SVG icon + `"No clips yet"` in `text-sm text-[#e5e5e5]/30`.
 
-### Duration summary cell
+### Bin icon (hover-reveal delete)
 
-- `flex-shrink-0`, `border-l border-white/10 pl-3`, `flex flex-col items-center gap-0.5`
-- Label: `text-[10px] text-[#e5e5e5]/40 uppercase tracking-wide` — "Total"
-- Value: `text-sm font-mono text-[#e5e5e5] font-semibold`
-- Count: `text-[10px] text-[#e5e5e5]/40` — "N clips"
-
-### Navigation chips (transition + music)
-
-Shown only when a non-"none" value is set — **no empty placeholder chips**.
+Only rendered when `onDeleteClip?: (clipId: string) => void` is provided. Trimmer passes this; Arrange/Sound/Render do not — bin never shows on those screens.
 
 ```tsx
-<button
-  onClick={() => navigate(`/transitions/${projectId}`)}
-  className="flex items-center gap-1.5 px-3 py-1.5 border border-white/20 text-[#e5e5e5] text-sm rounded-md hover:border-white/40 hover:bg-white/5 transition-all duration-200 whitespace-nowrap"
->
-  <ScissorsIcon />  {/* inline SVG */}
-  Crossfade
-</button>
+{onDeleteClip && (
+  <button
+    className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/60 text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
+    onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
+    title="Remove from film"
+    tabIndex={-1}
+  >
+    {/* trash SVG w-3 h-3, stroke currentColor strokeWidth 2.5 */}
+  </button>
+)}
 ```
 
-- **Icons:** inline SVG paths (same pattern as FilmStrip icons) — not Unicode codepoints in JSX text
-- **Labels:** friendly display names via a lookup map (e.g. `"dip_to_black"` → `"Dip to black"`)
-- **Tap action:** `navigate()` to the relevant screen — no popovers, no modals
-- **Separator:** `border-l border-white/10 pl-3` before the chip group
-
-### Render Film CTA
-
-- `flex-shrink-0 border-l border-white/10 pl-3`
-- Button: standard primary CTA — `bg-[#FF8A65] text-[#0a0a0a] font-semibold text-sm px-5 py-2 rounded-md hover:bg-[#ff9e7a] whitespace-nowrap`
-- `data-testid="btn-render-film-strip"` — always visible on Trim / Transitions / Sound screens
-- Navigates to `/render/:projectId`
+Requires `group` class on the tile's root div. `e.stopPropagation()` prevents the click from bubbling to any tile-level click handler.
 
 ### Data flow
 
-- Props: `clips: Clip[]` (from parent page), `projectId`, `activeId?`, `transitionValue?`, `soundMood?`
-- Trimmer: passes live `clips` state + reads sessionStorage at render time for transition/mood (static values set before arriving at Trimmer)
-- Transitions: passes `transition` React state var directly as `transitionValue` — updates instantly on chip select
-- Sound: passes `sound.mood` directly as `soundMood` — updates instantly on source/mood change; reads sessionStorage for transition (static on Sound screen)
-- **No sessionStorage reads inside StickyFilmStrip itself** — all values come via props
+- Props: `clips: Clip[]`, `projectId`, `activeId?`, `onDeleteClip?`
+- **No sessionStorage reads inside StickyFilmStrip** — all values come via props.
+- `transitionValue` and `soundMood` props REMOVED in Batch H — those live in `ChosenEffects` (EditorShell timeline row aside).
 
 ---
 

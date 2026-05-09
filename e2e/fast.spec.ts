@@ -38,44 +38,21 @@ describe("Upload page", () => {
     expect(await btn.isDisplayed()).toBe(true);
   });
 
-  it("opens NavDrawer and shows nav items on hamburger click", async () => {
-    const hamburger = await $('[data-testid="btn-nav-open"]');
-    await hamburger.waitForExist({ timeout: 5_000 });
-    await hamburger.click();
-
-    const newProject = await $('[data-testid="nav-item-new-project"]');
-    await newProject.waitForDisplayed({ timeout: 3_000 });
-    expect(await newProject.isDisplayed()).toBe(true);
-
-    const myProjects = await $('[data-testid="nav-item-my-projects"]');
-    expect(await myProjects.isDisplayed()).toBe(true);
-
-    // Close drawer
-    await hamburger.click();
-    await newProject.waitForDisplayed({ timeout: 3_000, reverse: true });
-  });
 });
 
 // ---------------------------------------------------------------------------
 // Editor page
 // ---------------------------------------------------------------------------
 describe("Editor page", () => {
-  it("navigates to My Projects via NavDrawer", async () => {
-    const hamburger = await $('[data-testid="btn-nav-open"]');
-    await hamburger.waitForExist({ timeout: 5_000 });
-    await hamburger.click();
-
-    const myProjects = await $('[data-testid="nav-item-my-projects"]');
-    await myProjects.waitForDisplayed({ timeout: 3_000 });
-    await myProjects.click();
-
+  it("opens project to /trimmer/ and sticky filmstrip is visible", async () => {
+    // Navigate to library — tab bar only exists on editor pages, so use pushState
+    await browser.execute(() => window.history.pushState({}, "", "/library"));
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/library"),
       { timeout: 5_000, interval: 200 }
     );
-  });
+    await browser.pause(300);
 
-  it("opens project to /trimmer/ and sticky filmstrip is visible", async () => {
     const firstProject = await $('[data-testid="btn-open-project"]');
     if (!(await firstProject.isExisting())) return;
 
@@ -88,6 +65,44 @@ describe("Editor page", () => {
     const strip = await $('[data-testid="sticky-filmstrip"]');
     await strip.waitForExist({ timeout: 5_000 });
     expect(await strip.isDisplayed()).toBe(true);
+  });
+
+  it("bottom tab bar is visible on Trimmer with tab-trim active (peach)", async () => {
+    if (!(await browser.getUrl()).includes("/trimmer/")) return;
+    const trimTab = await $('[data-testid="tab-trim"]');
+    await trimTab.waitForExist({ timeout: 5_000 });
+    expect(await trimTab.isDisplayed()).toBe(true);
+    const className = await trimTab.getAttribute("class");
+    expect(className).toContain("FF8A65");
+  });
+
+  it("navigates to My Projects via Home tab", async () => {
+    if (!(await browser.getUrl()).includes("/trimmer/")) return;
+    const homeTab = await $('[data-testid="tab-home"]');
+    await homeTab.waitForExist({ timeout: 5_000 });
+    await homeTab.click();
+
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/upload"),
+      { timeout: 5_000, interval: 200 }
+    );
+
+    // Navigate to library to re-open project for subsequent filmstrip tests
+    await browser.execute(() => window.history.pushState({}, "", "/library"));
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/library"),
+      { timeout: 3_000, interval: 200 }
+    );
+    await browser.pause(300);
+
+    // Re-open project for subsequent filmstrip tests
+    const firstProject = await $('[data-testid="btn-open-project"]');
+    if (!(await firstProject.isExisting())) return;
+    await firstProject.click();
+    await browser.waitUntil(
+      async () => (await browser.getUrl()).includes("/trimmer/"),
+      { timeout: 5_000, interval: 200 }
+    );
   });
 
   it("sticky filmstrip visible on Transitions screen", async () => {

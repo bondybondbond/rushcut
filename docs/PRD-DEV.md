@@ -150,7 +150,7 @@ All major commercial editors (Premiere, DaVinci, CapCut, iMovie) show a looping 
 
 ## Batch H — App Shell Redesign (UI Relocations)
 
-> **Status: NEXT — design confirmed by founder (2026-05-09). No implementation started.**
+> **Status: DONE (2026-05-09). Full layout restructure complete. 9/9 fast E2E PASS.**
 > **Scope: layout-only. No pipeline changes, no new data, no new routes.**
 
 ### Motivation
@@ -220,15 +220,15 @@ The current shell puts navigation at the top (StepNav breadcrumb) with a burger 
 - `e2e/fast.spec.ts` — update any assertions that use StepNav top-bar selectors
 - `docs/DESIGN.md` — document new shell layout, bottom tab bar pattern
 
-### Acceptance checks (define before build)
-- [ ] All screens: project name + clip count + duration visible in top bar
-- [ ] All screens: bottom tab bar visible with Home / Trim / Transitions / Sound / Render
-- [ ] Active step tab is peach-highlighted; completed steps are clickable; future steps are grey
-- [ ] Clicking Home from any screen navigates to Library with no prompt
-- [ ] Chosen effects (transition + music) visible in right column on screens where set
-- [ ] StickyFilmStrip HUD shows only ruler + clip tiles (no duration summary crammed on the right)
-- [ ] No top burger menu visible on any screen
-- [ ] 9/9 fast E2E still pass
+### Acceptance checks
+- [x] All screens: project name + clip count + duration visible in top bar
+- [x] All screens: bottom tab bar visible with Home / Trim / Arrange / Sound / Render (lucide icons)
+- [x] Active tab is peach; configured tabs are white; unconfigured tabs are `#a3a3a3`
+- [x] Clicking Home from any screen navigates to Library with no prompt
+- [x] Chosen effects (transition + music) visible in effects aside on screens where set
+- [x] StickyFilmStrip HUD shows only ruler + clip tiles (no duration sidebar)
+- [x] No top burger menu / NavDrawer visible on any screen
+- [x] 9/9 fast E2E PASS
 
 ### Notes / risks
 - `data-testid="btn-nav-open"` (burger menu) is referenced in `e2e/render.spec.ts` — update that spec.

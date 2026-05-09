@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Clip, ProjectWithClips } from "@/types/project";
-import { StepNav } from "@/components/StepNav";
+import { EditorShell } from "@/components/EditorShell";
 import { StickyFilmStrip } from "@/components/StickyFilmStrip";
+import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
+import { fmtMs } from "@/utils/fmtMs";
+import { projectCache } from "@/utils/projectCache";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
 type LibraryMood = "cinematic" | "upbeat" | "chill" | "electronic";
@@ -34,13 +37,6 @@ const VOLUME_LEVELS: Record<MusicVolume, number> = { subtle: 0.3, balanced: 0.6,
 
 const DEFAULT_SOUND: SoundState = { mood: "none", volume: "balanced" };
 const PREVIEW_DURATION_MS = 30_000;
-
-function fmtMs(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 function deriveSource(mood: MusicMood): MusicSource {
   if (mood === "none") return "none";
@@ -73,10 +69,10 @@ function readStorage(key: string): SoundState {
 
 export default function Sound() {
   const { projectId } = useParams<{ projectId: string }>();
-  const navigate = useNavigate();
 
-  const [projectName, setProjectName] = useState("");
-  const [clips, setClips] = useState<Clip[]>([]);
+  const _cached = projectCache.get(projectId ?? "");
+  const [projectName, setProjectName] = useState(_cached?.name ?? "");
+  const [clips, setClips] = useState<Clip[]>(_cached?.clips ?? []);
   const [musicDir, setMusicDir] = useState<string | null>(null);
   const [trackDurations, setTrackDurations] = useState<Partial<Record<LibraryMood, number>>>({});
   const [customDurationMs, setCustomDurationMs] = useState<number | null>(null);
@@ -90,13 +86,28 @@ export default function Sound() {
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const probedRef = useRef(false);
 
+  const configured = useConfiguredTabs(projectId ?? "");
+
   const source = deriveSource(sound.mood);
   const libraryMood = deriveLibraryMood(sound.mood);
+
+  const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
+  const clipCount = inFilm.length;
+  const totalMs = inFilm.reduce((sum, c) => {
+    const start = c.in_ms ?? 0;
+    const end = c.out_ms ?? c.duration_ms;
+    return sum + Math.max(0, end - start);
+  }, 0);
+
+  const transitionVal = (() => {
+    try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; }
+  })();
 
   useEffect(() => {
     if (!projectId) return;
     invoke<ProjectWithClips>("get_project", { projectId })
       .then((data) => {
+        projectCache.set(projectId, { name: data.project.name, clips: data.clips });
         setProjectName(data.project.name);
         setClips(data.clips);
       })
@@ -105,7 +116,6 @@ export default function Sound() {
       .then((dir) => {
         if (!dir) return;
         setMusicDir(dir);
-        // Gate against re-runs on hot reload / re-mount
         if (probedRef.current) return;
         probedRef.current = true;
         const moods: LibraryMood[] = ["cinematic", "upbeat", "chill", "electronic"];
@@ -212,7 +222,6 @@ export default function Sound() {
     const customPath = typeof result === "string" ? result : Array.isArray(result) ? result[0] : null;
     if (!customPath) return;
     persist({ ...sound, mood: "custom", customPath });
-    // Probe duration via audioRef — reuse existing element, no second Audio object
     if (audioRef.current) {
       const handler = () => {
         setCustomDurationMs((audioRef.current?.duration ?? 0) * 1000);
@@ -252,11 +261,6 @@ export default function Sound() {
       ? "Your film will render without a music track."
       : null;
 
-  const filmDurationMs = clips
-    .filter((c) => c.include === 1)
-    .reduce((sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)), 0);
-
-  // Comparison line — derived above return to avoid JSX IIFE
   const selectedTrackMs =
     source === "library" && libraryMood && trackDurations[libraryMood] !== undefined
       ? trackDurations[libraryMood]! * 1000
@@ -264,25 +268,32 @@ export default function Sound() {
       ? customDurationMs
       : null;
 
-  const showComparison = source !== "none" && filmDurationMs > 0 && selectedTrackMs !== null;
+  const showComparison = source !== "none" && totalMs > 0 && selectedTrackMs !== null;
 
   const loopNote: React.ReactNode =
     !showComparison ? null
-    : selectedTrackMs! >= filmDurationMs
+    : selectedTrackMs! >= totalMs
     ? <span className="text-[#22c55e]"> &mdash; long enough</span>
-    : <span> &mdash; will loop ~{Math.ceil(filmDurationMs / selectedTrackMs!)}x</span>;
+    : <span> &mdash; will loop ~{Math.ceil(totalMs / selectedTrackMs!)}x</span>;
 
   return (
-    <div className="flex flex-col h-screen bg-[#0a0a0a] text-[#e5e5e5]">
+    <EditorShell
+      projectId={projectId ?? ""}
+      projectName={projectName}
+      clipCount={clipCount}
+      totalMs={totalMs}
+      activeTab="sound"
+      configured={configured}
+      transitionValue={transitionVal}
+      soundMood={sound.mood}
+      timelineHud={
+        <StickyFilmStrip
+          clips={clips}
+          projectId={projectId!}
+        />
+      }
+    >
       <audio ref={audioRef} />
-
-      <StepNav
-        active="sound"
-        projectId={projectId}
-        nextLabel="Next: Render"
-        onNext={() => { stopPreview(); navigate(`/render/${projectId}`); }}
-        nextDisabled={false}
-      />
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
@@ -291,13 +302,7 @@ export default function Sound() {
           <div>
             <h1 className="text-3xl font-semibold text-[#FF8A65]">Sound</h1>
             <p className="text-base text-[#a3a3a3] mt-1">
-              {projectName
-                ? (() => {
-                    const included = clips.filter(c => c.include !== 0);
-                    const durMs = included.reduce((sum, c) => sum + (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0), 0);
-                    return `${projectName} · ${included.length} clip${included.length !== 1 ? "s" : ""}${durMs > 0 ? ` · ${fmtMs(durMs)}` : ""}`;
-                  })()
-                : "Loading..."}
+              Choose a music source for your film, or leave it silent.
             </p>
           </div>
 
@@ -351,7 +356,7 @@ export default function Sound() {
               </button>
             </div>
 
-            {/* Library mood sub-chips — expand when Rushcut Library is selected */}
+            {/* Library mood sub-chips */}
             {source === "library" && (
               <>
                 <div className="border-t border-white/10" />
@@ -432,7 +437,7 @@ export default function Sound() {
               </div>
             )}
 
-            {/* Stop preview link — visible only while a library mood preview is playing */}
+            {/* Stop preview link */}
             {previewingMood && (
               <button
                 onClick={stopPreview}
@@ -442,7 +447,7 @@ export default function Sound() {
               </button>
             )}
 
-            {/* Description of selected source / mood */}
+            {/* Description */}
             {moodDescription && (
               <p className="text-sm text-[#a3a3a3]">{moodDescription}</p>
             )}
@@ -450,11 +455,11 @@ export default function Sound() {
             {/* Film vs track duration comparison */}
             {showComparison && (
               <p className="text-sm text-[#a3a3a3]">
-                Film: {fmtMs(filmDurationMs)} &middot; Track: {fmtMs(selectedTrackMs!)}{loopNote}
+                Film: {fmtMs(totalMs)} &middot; Track: {fmtMs(selectedTrackMs!)}{loopNote}
               </p>
             )}
 
-            {/* Volume row — visible when any music source is selected */}
+            {/* Volume row */}
             {source !== "none" && (
               <div className="pt-2 border-t border-white/10 space-y-3">
                 <div>
@@ -491,13 +496,6 @@ export default function Sound() {
 
         </div>
       </div>
-
-      <StickyFilmStrip
-        clips={clips}
-        projectId={projectId!}
-        transitionValue={(() => { try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; } })()}
-        soundMood={sound.mood}
-      />
-    </div>
+    </EditorShell>
   );
 }

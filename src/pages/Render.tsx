@@ -4,7 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ProjectWithClips, JobConfig, PipelineProgressEvent } from "@/types/project";
-import { StepNav } from "@/components/StepNav";
+import { EditorShell } from "@/components/EditorShell";
+import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
+import { projectCache } from "@/utils/projectCache";
 
 const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
@@ -68,26 +70,24 @@ function buildConfig(projectId: string): JobConfig {
   return config;
 }
 
-// "ready" = 4K gate: show resolution chip + Render button before starting
-// "starting" = brief spinner while start_job resolves
-// "rendering" = pipeline running
-// "done" / "error" = terminal states
 type Phase = "ready" | "starting" | "rendering" | "done" | "error";
 
 export default function Render() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
 
-  const [clipCount, setClipCount] = useState(0);
+  const _cached = projectCache.get(projectId ?? "");
+  const _cachedIncluded = (_cached?.clips ?? []).filter(c => c.include !== 0);
+  const [inFilmCount, setInFilmCount] = useState(_cachedIncluded.length);
+  const [totalMs, setTotalMs] = useState(_cachedIncluded.reduce((s, c) => s + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)), 0));
   const [phase, setPhase] = useState<Phase>("starting");
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Starting up the magic...");
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [projectName, setProjectName] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string>(_cached?.name ?? "");
 
-  // 4K resolution selection — only meaningful before the job starts
   const [has4K, setHas4K] = useState(false);
   const [outputRes, setOutputRes] = useState<"1080p" | "4k">(() => {
     try {
@@ -98,7 +98,6 @@ export default function Render() {
     }
   });
 
-  // Resize handle (C6 pattern — exact match to Trimmer.tsx)
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   const [videoHeight, setVideoHeight] = useState<number | null>(null);
@@ -108,12 +107,23 @@ export default function Render() {
   const completedRef = useRef(false);
   const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const configured = useConfiguredTabs(projectId ?? "");
+
+  const transitionVal = (() => {
+    try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; }
+  })();
+  const soundMoodVal = (() => {
+    try {
+      const raw = sessionStorage.getItem(`rc_sound_${projectId}`);
+      return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null;
+    } catch { return null; }
+  })();
+
   function handleResSelect(res: "1080p" | "4k") {
     setOutputRes(res);
     try { sessionStorage.setItem(`rc_render_res_${projectId}`, res); } catch { /* ignore */ }
   }
 
-  // C6: drag to resize video preview height
   function onResizePointerDown(e: React.PointerEvent) {
     const el = videoContainerRef.current;
     if (!el) return;
@@ -152,7 +162,6 @@ export default function Render() {
     }
   }
 
-  // Mount: load project + check 4K clips, then either gate (ready) or auto-start
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
@@ -163,8 +172,16 @@ export default function Render() {
     ]).then(async ([data, is4K]) => {
       if (cancelled) return;
 
-      const count = data.clips.filter((c) => c.include !== 0).length;
-      setClipCount(count);
+      projectCache.set(projectId, { name: data.project.name, clips: data.clips });
+      const included = data.clips.filter((c) => c.include !== 0);
+      const count = included.length;
+      const ms = included.reduce((sum, c) => {
+        const start = c.in_ms ?? 0;
+        const end = c.out_ms ?? c.duration_ms;
+        return sum + Math.max(0, end - start);
+      }, 0);
+      setInFilmCount(count);
+      setTotalMs(ms);
       setProjectName(data.project.name);
       setHas4K(is4K);
 
@@ -175,12 +192,10 @@ export default function Render() {
       }
 
       if (is4K) {
-        // 4K clips present — show resolution chip + Render button before committing
         setPhase("ready");
         return;
       }
 
-      // No 4K clips — auto-start with zero friction (existing behaviour, unchanged)
       await submitJob(projectId);
     }).catch(() => {
       if (cancelled) return;
@@ -191,7 +206,6 @@ export default function Render() {
     return () => { cancelled = true; };
   }, [projectId]);
 
-  // Attach pipeline event listeners once jobId is known
   useEffect(() => {
     if (!jobId) return;
 
@@ -248,7 +262,6 @@ export default function Render() {
     };
   }, [jobId, projectId]);
 
-  // Elapsed timer — counts up while rendering
   useEffect(() => {
     if (phase !== "rendering") return;
     startTimeRef.current = Date.now();
@@ -260,7 +273,7 @@ export default function Render() {
   }, [phase]);
 
   async function handleRetry() {
-    if (!projectId || clipCount === 0) return;
+    if (!projectId || inFilmCount === 0) return;
     setPhase("starting");
     setJobId(null);
     setProgress(0);
@@ -280,9 +293,16 @@ export default function Render() {
       : null;
 
   return (
-    <div className="flex flex-col h-screen bg-[#0a0a0a] text-[#e5e5e5]">
-      <StepNav active="render" projectId={projectId} />
-
+    <EditorShell
+      projectId={projectId ?? ""}
+      projectName={projectName}
+      clipCount={inFilmCount}
+      totalMs={totalMs}
+      activeTab="render"
+      configured={configured}
+      transitionValue={transitionVal}
+      soundMood={soundMoodVal}
+    >
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
 
@@ -290,7 +310,7 @@ export default function Render() {
             {phase === "done" ? "Your film is ready" : "Render Your Film"}
           </h1>
 
-          {/* Ready — 4K gate: show resolution chip + Render button */}
+          {/* Ready — 4K gate */}
           {phase === "ready" && (
             <div className="space-y-6">
               <div className="border border-white/15 rounded-lg p-6 space-y-4">
@@ -329,7 +349,7 @@ export default function Render() {
             </div>
           )}
 
-          {/* Starting / loading */}
+          {/* Starting */}
           {phase === "starting" && (
             <div className="flex items-center gap-3">
               <span className="inline-block w-5 h-5 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin" />
@@ -372,7 +392,6 @@ export default function Render() {
                 />
               </div>
 
-              {/* C6: drag handle to resize video height */}
               <div
                 className="w-full h-2 flex items-center justify-center cursor-ns-resize border-t border-white/10"
                 onPointerDown={onResizePointerDown}
@@ -407,7 +426,7 @@ export default function Render() {
             <div className="rounded-lg bg-red-900/20 border border-red-500/30 p-4 space-y-3">
               <p className="text-red-300 text-sm">{errorMsg}</p>
               <div className="flex items-center gap-3">
-                {clipCount > 0 && (
+                {inFilmCount > 0 && (
                   <button
                     onClick={handleRetry}
                     className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
@@ -428,6 +447,6 @@ export default function Render() {
 
         </div>
       </div>
-    </div>
+    </EditorShell>
   );
 }

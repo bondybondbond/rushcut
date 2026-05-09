@@ -15,18 +15,18 @@
 
 ## Current Phase
 
-**Phase 2 — Batch G COMPLETE (2026-05-09). Next: Batch H — App Shell Redesign.**
+**Phase 2 — Batch H COMPLETE (2026-05-09). Next: Batch I — Branding & Visual Identity.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch G shipped.** Next: Batch H — App Shell Redesign (full layout redesign: top info bar, left pantry, center previewer/timeline, right action+effects, bottom tab bar). Spec in `docs/PRD-DEV.md`.
+**Batch H shipped.** Next: Batch I — Branding & Visual Identity (RushCut logo SVG, Tauri icon replacement, bottom-tab-bar RC wordmark placeholder). Spec in `docs/PRD-DEV.md`.
 
-Candidates if Batch H is deferred:
-- Batch I — Branding & Visual Identity (logo SVG, Tauri icon replacement)
+Candidates if Batch I is deferred:
 - Timeline HUD discoverability tooltips (Ctrl+scroll zoom, drag to pan hints)
 - Music bar below clip track in StickyFilmStrip
+- Drag clip from pantry to filmstrip (large DnD feature)
 
 **Batch G — Ruler-based proportional timeline for StickyFilmStrip COMPLETE (2026-05-09):**
 - Full rewrite of `StickyFilmStrip.tsx`: proportional clip tiles (`trimmedMs * pxPerMs`, min 40px)
@@ -126,7 +126,25 @@ Candidates if Batch H is deferred:
 
 ## Recently Completed
 
-**Batch C — Proxy reuse as normalise input (2026-05-03)**
+**Batch H — App Shell Redesign (2026-05-09)**
+
+- Deleted `StepNav.tsx` + `NavDrawer.tsx`; `AppShell` simplified to pass-through.
+- Created `src/utils/fmtMs.ts` (shared duration formatter).
+- Created `src/hooks/useConfiguredTabs.ts` — reads sessionStorage for transition/mood, returns `Set<"arrange"|"sound">`.
+- Created `src/components/BottomTabBar.tsx` — Home/Trim/Arrange/Sound/Render with lucide-react icons, peach active, configured=white, unconfigured=`#a3a3a3`, render-guard `window.confirm`, `data-testid="tab-{name}"`.
+- Created `src/components/TopInfoBar.tsx` — `h-7 bg-[#0a0a0a] border-b border-white/10`, project name + clip count + duration.
+- Created `src/components/ChosenEffects.tsx` — blue `#99B3FF` chips for transition+mood; "None set" italic fallback; `data-testid="chosen-effects"`.
+- Created `src/components/EditorShell.tsx` — 3-column content row (optional left panel, `<main>`, no persistent right aside) + full-width timeline row (`[w-52 gutter][filmstrip flex-1][w-48 ChosenEffects aside]`); `BottomTabBar` fixed at bottom.
+- Restructured `Trimmer.tsx`, `Transitions.tsx`, `Sound.tsx`, `Render.tsx` to use `<EditorShell>`.
+- `StickyFilmStrip`: removed right duration/chip sidebar; added `onDeleteClip` prop + hover-reveal bin icon (`group`/`group-hover` pattern); border-t-2 removed (EditorShell timeline row owns it).
+- Timeline row always `[w-52 blank gutter][filmstrip][w-48 effects]` — filmstrip width identical on all screens.
+- Video container fixed: `flex-1 min-h-0` (was `flex-shrink-0 + maxHeight`); video fills available height responsively on window resize.
+- Controls column width unified to `w-48` (matches effects aside width — TrimBar and filmstrip share identical width).
+- `LICENSES.md`: lucide-react MIT entry added.
+- DESIGN.md: EditorShell and StickyFilmStrip sections fully rewritten.
+- E2E: 9/9 fast PASS.
+
+**Batch G — Ruler-based proportional timeline for StickyFilmStrip (2026-05-09)**
 
 - `pipeline/proxy.py` `generate_proxy()`: upgraded to 1080p normalise-compatible spec (`scale=-2:1080 format=yuv420p -r 25 -fps_mode cfr -c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k -ar 48000`). Was 480p with `-c:a copy` (96kHz DJI audio passthrough bug). Timeout 600s kept.
 - `pipeline/run.py`: `proxy_path_wsl` threaded through clip dicts after `clip_paths` construction.

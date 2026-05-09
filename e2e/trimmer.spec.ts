@@ -86,12 +86,12 @@ describe("Trimmer screen", () => {
     expect(text.length).toBeGreaterThan(0);
   });
 
-  it("shows StepNav with Trim step active", async () => {
+  it("shows bottom tab bar with Trim tab active (peach)", async () => {
     if (!projectId) return;
-    const stepNav = await $('[class*="border-b"]'); // StepNav has border-b
-    await stepNav.waitForExist({ timeout: 5_000 });
-    const html = await browser.execute(() => document.body.textContent ?? "");
-    expect(html).toContain("Trim");
+    const trimTab = await $('[data-testid="tab-trim"]');
+    await trimTab.waitForExist({ timeout: 5_000 });
+    const className = await trimTab.getAttribute("class");
+    expect(className).toContain("FF8A65");
   });
 
   it("shows MediaPantry with clip thumbnails or placeholders", async () => {

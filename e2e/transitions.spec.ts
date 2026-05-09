@@ -119,19 +119,18 @@ describe("Transitions screen", () => {
     expect(url).toContain(projectId);
   });
 
-  it("heading contains 'Transitions'", async () => {
+  it("heading contains 'Arrange'", async () => {
     if (!projectId) return;
     const text = await browser.execute(() => document.body.textContent ?? "");
-    expect(text).toContain("Transitions");
+    expect(text).toContain("Arrange");
   });
 
-  it("shows StepNav with Transitions step active", async () => {
+  it("shows bottom tab bar with Arrange tab active (peach)", async () => {
     if (!projectId) return;
-    const text = await browser.execute(() => document.body.textContent ?? "");
-    expect(text).toContain("Trim");
-    expect(text).toContain("Transitions");
-    expect(text).toContain("Sound");
-    expect(text).toContain("Render");
+    const arrangeTab = await $('[data-testid="tab-arrange"]');
+    await arrangeTab.waitForExist({ timeout: 5_000 });
+    const className = await arrangeTab.getAttribute("class");
+    expect(className).toContain("FF8A65");
   });
 
   it("screenshot A: Transitions initial state (None chip active)", async () => {
@@ -173,6 +172,14 @@ describe("Transitions screen", () => {
     const noneChip = await $('[data-testid="chip-transition-none"]');
     const noneClass = await noneChip.getAttribute("class");
     expect(noneClass).not.toContain("99B3FF");
+  });
+
+  it("right column shows chosen-effects chip after selecting Crossfade", async () => {
+    if (!projectId) return;
+    const effects = await $('[data-testid="chosen-effects"]');
+    await effects.waitForExist({ timeout: 3_000 });
+    const text = await effects.getText();
+    expect(text.toLowerCase()).toContain("crossfade");
   });
 
   it("sessionStorage persists the selected transition", async () => {

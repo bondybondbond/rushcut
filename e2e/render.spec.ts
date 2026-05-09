@@ -39,11 +39,9 @@ describe("Full E2E render — /render/:projectId", () => {
   });
 
   it("navigates to project in Library and opens to /trimmer/", async () => {
-    const hamburger = await $('[data-testid="btn-nav-open"]');
-    await hamburger.click();
-    const myProjects = await $('[data-testid="nav-item-my-projects"]');
-    await myProjects.waitForDisplayed({ timeout: 3_000 });
-    await myProjects.click();
+    const homeTab = await $('[data-testid="tab-home"]');
+    await homeTab.waitForExist({ timeout: 5_000 });
+    await homeTab.click();
 
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/library"),
@@ -76,10 +74,10 @@ describe("Full E2E render — /render/:projectId", () => {
     await filmClip.waitForExist({ timeout: 3_000 });
   });
 
-  it("navigates to /transitions/ via StepNav CTA", async () => {
-    const nextBtn = await $('button*=Next: Transitions');
-    await nextBtn.waitForExist({ timeout: 5_000 });
-    await nextBtn.click();
+  it("navigates to /transitions/ via Arrange tab", async () => {
+    const arrangeTab = await $('[data-testid="tab-arrange"]');
+    await arrangeTab.waitForExist({ timeout: 5_000 });
+    await arrangeTab.click();
 
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/transitions/"),
@@ -92,9 +90,9 @@ describe("Full E2E render — /render/:projectId", () => {
     await noneChip.waitForExist({ timeout: 3_000 });
     await noneChip.click();
 
-    const nextBtn = await $('button*=Next: Sound');
-    await nextBtn.waitForExist({ timeout: 3_000 });
-    await nextBtn.click();
+    const soundTab = await $('[data-testid="tab-sound"]');
+    await soundTab.waitForExist({ timeout: 3_000 });
+    await soundTab.click();
 
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/sound/"),
@@ -103,18 +101,35 @@ describe("Full E2E render — /render/:projectId", () => {
   });
 
   it("selects a music mood and navigates to /render/", async () => {
+    // First expand library to get mood chips
+    const libraryChip = await $('[data-testid="chip-source-library"]');
+    await libraryChip.waitForExist({ timeout: 3_000 });
+    await libraryChip.click();
+
     const cinematicChip = await $('[data-testid="chip-mood-cinematic"]');
     await cinematicChip.waitForExist({ timeout: 3_000 });
     await cinematicChip.click();
 
-    const nextBtn = await $('button*=Next: Render');
-    await nextBtn.waitForExist({ timeout: 3_000 });
-    await nextBtn.click();
+    const renderTab = await $('[data-testid="tab-render"]');
+    await renderTab.waitForExist({ timeout: 3_000 });
+    await renderTab.click();
 
-    await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/render/"),
-      { timeout: 5_000, interval: 200 }
-    );
+    // Render guard: if both arrange+sound are configured, no confirm dialog
+    // If dialog appears, accept it
+    try {
+      await browser.waitUntil(
+        async () => (await browser.getUrl()).includes("/render/"),
+        { timeout: 3_000, interval: 200 }
+      );
+    } catch {
+      // dialog may have appeared — accept and retry
+      await browser.acceptAlert().catch(() => {});
+      await renderTab.click();
+      await browser.waitUntil(
+        async () => (await browser.getUrl()).includes("/render/"),
+        { timeout: 5_000, interval: 200 }
+      );
+    }
   });
 
   it("clicks Render Film if present (4K resolution gate), then stage label appears", async () => {

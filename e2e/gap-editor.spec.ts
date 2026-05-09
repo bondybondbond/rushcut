@@ -52,13 +52,10 @@ describe("Trimmer via real navigation", () => {
     const result = await createEvalProject();
     if (!result) { hasClips = false; return; }
 
-    // Navigate to library via hamburger — no pushState, real UI flow
-    const hamburger = await $('[data-testid="btn-nav-open"]');
-    await hamburger.waitForExist({ timeout: 5_000 });
-    await hamburger.click();
-    const myProjects = await $('[data-testid="nav-item-my-projects"]');
-    await myProjects.waitForDisplayed({ timeout: 3_000 });
-    await myProjects.click();
+    // Navigate to library via Home tab — no pushState, real UI flow
+    const homeTab = await $('[data-testid="tab-home"]');
+    await homeTab.waitForExist({ timeout: 5_000 });
+    await homeTab.click();
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/library"),
       { timeout: 5_000, interval: 200 }
@@ -100,25 +97,20 @@ describe("Trimmer via real navigation", () => {
     expect(await trimBar.isDisplayed()).toBe(true);
   });
 
-  it("StepNav shows Trim step via real navigation", async () => {
+  it("bottom tab bar shows Trim tab as active from Trimmer screen", async () => {
     if (!hasClips) return;
-    const text = await browser.execute(() => document.body.textContent ?? "");
-    expect(text).toContain("Trim");
+    const trimTab = await $('[data-testid="tab-trim"]');
+    await trimTab.waitForExist({ timeout: 5_000 });
+    const className = await trimTab.getAttribute("class");
+    expect(className).toContain("FF8A65");
   });
 
-  it("NavDrawer opens and closes from Trimmer screen", async () => {
+  it("bottom tab bar visible from Trimmer screen with all tabs", async () => {
     if (!hasClips) return;
-    const hamburger = await $('[data-testid="btn-nav-open"]');
-    await hamburger.waitForExist({ timeout: 5_000 });
-    await hamburger.click();
-
-    const navItem = await $('[data-testid="nav-item-new-project"]');
-    await navItem.waitForDisplayed({ timeout: 3_000 });
-    expect(await navItem.isDisplayed()).toBe(true);
-
-    // Close
-    await hamburger.click();
-    await navItem.waitForDisplayed({ timeout: 3_000, reverse: true });
-    expect(await navItem.isDisplayed()).toBe(false);
+    const homeTab = await $('[data-testid="tab-home"]');
+    const renderTab = await $('[data-testid="tab-render"]');
+    await homeTab.waitForExist({ timeout: 5_000 });
+    expect(await homeTab.isDisplayed()).toBe(true);
+    expect(await renderTab.isDisplayed()).toBe(true);
   });
 });
