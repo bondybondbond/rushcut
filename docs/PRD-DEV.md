@@ -148,6 +148,161 @@ All major commercial editors (Premiere, DaVinci, CapCut, iMovie) show a looping 
 
 ---
 
+## Batch H — App Shell Redesign (UI Relocations)
+
+> **Status: NEXT — design confirmed by founder (2026-05-09). No implementation started.**
+> **Scope: layout-only. No pipeline changes, no new data, no new routes.**
+
+### Motivation
+
+The current shell puts navigation at the top (StepNav breadcrumb) with a burger menu at the far left. The "New ideal" founder design moves all nav to the bottom, freeing the top for a clean project-info band and giving the main content area maximum height.
+
+### Target layout (all editor screens: Trim / Transitions / Sound / Render)
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  project name · N clips · duration            [thin top bar] │
+├────────────┬─────────────────────────────────┬───────────────┤
+│            │                                 │               │
+│   Media    │          Previewer              │  Action bar   │
+│   pantry   │                                 │  (per-screen) │
+│            ├─────────────────────────────────┤               │
+│            │  Clip timeline / controls       ├───────────────┤
+│            ├─────────────────────────────────┤  Chosen       │
+│            │  Overall timeline (ruler HUD)   │  effects      │
+├────────────┴────────────────────────────────┬┴───────────────┤
+│  [Home]   Trim · Transitions · Sound · Render   [RC Logo]    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Changes required
+
+**1. Remove the top bar entirely**
+- Delete the `<nav>` row that currently holds the burger menu + StepNav + "Next: X →" CTA.
+- The StepNav component becomes the bottom tab bar (see below).
+
+**2. Add a thin project info bar at the top**
+- Full-width, height ~28px, `bg-[#0a0a0a] border-b border-white/10`.
+- Content: `project name · N clips · duration` — `text-sm text-[#e5e5e5]` left-aligned, `pl-4`.
+- Read from `project.name`, `inFilm.length`, `fmtMs(totalMs)` (already computed in StickyFilmStrip — pass up or re-derive).
+- No buttons, no icons. Pure status read-out.
+
+**3. Replace StepNav with a bottom tab bar**
+- Fixed full-width bottom bar, height ~48px, `bg-[#0a0a0a] border-t border-white/10`.
+- Left: **Home button** — house icon, navigates to `/library` (project auto-saves on every interaction already — no explicit save CTA needed).
+- Center: four step tabs (Trim / Transitions / Sound / Render) as icon + label buttons. Active step uses peach `#FF8A65` underline + peach text. Completed steps: white text, clickable. Future steps: `#a3a3a3`, disabled.
+- Right: **RushCut logo/wordmark** (see Batch I).
+- "Next: X →" CTA is removed — users navigate via the step tabs directly. The funnel warning (user attempts to Render without setting Transitions/Sound) is handled by a confirmation dialog on the Render tab if those steps are empty.
+
+**4. Move "Chosen effects" chips out of StickyFilmStrip**
+- Currently transition + music chips are crammed into the right side of the StickyFilmStrip HUD.
+- New location: right column, below the Action bar. A small labelled section: "Effects" header (`text-xs text-[#a3a3a3] uppercase`) followed by the chip buttons stacked vertically.
+- StickyFilmStrip right section (duration summary + chips) is removed. Duration summary relocates to the top info bar.
+- StickyFilmStrip becomes clip-tiles + ruler only — no right sidebar.
+
+**5. Right column structure per screen**
+- `Action bar` (top): per-screen controls that currently live in the right sidebar (e.g. Trimmer: Prev/Next/Add to Film; Transitions: chip picker; Sound: source selector).
+- `Chosen effects` (bottom): transition chip + music chip — shown on all screens once set.
+- Right column width: ~200px, `flex-shrink-0`.
+
+**6. Home auto-save behaviour**
+- Clicking Home navigates to `/library`. No save prompt.
+- All state already persists (DB for clip IN/OUT, sessionStorage for transition/mood) — nothing to flush.
+- If user is mid-trim (unsaved handle drag), the trim auto-saves on `mouseup` already (existing behaviour). No edge case.
+
+### Files touched (estimate)
+- `src/components/StepNav.tsx` — full rewrite as bottom tab bar
+- `src/components/StickyFilmStrip.tsx` — remove right-side duration + chips section
+- `src/pages/Trimmer.tsx` — restructure layout, add project info bar + right column
+- `src/pages/Transitions.tsx` — same layout restructure
+- `src/pages/Sound.tsx` — same layout restructure
+- `src/pages/Render.tsx` — apply bottom tab bar (simpler — no left pantry or HUD)
+- `e2e/fast.spec.ts` — update any assertions that use StepNav top-bar selectors
+- `docs/DESIGN.md` — document new shell layout, bottom tab bar pattern
+
+### Acceptance checks (define before build)
+- [ ] All screens: project name + clip count + duration visible in top bar
+- [ ] All screens: bottom tab bar visible with Home / Trim / Transitions / Sound / Render
+- [ ] Active step tab is peach-highlighted; completed steps are clickable; future steps are grey
+- [ ] Clicking Home from any screen navigates to Library with no prompt
+- [ ] Chosen effects (transition + music) visible in right column on screens where set
+- [ ] StickyFilmStrip HUD shows only ruler + clip tiles (no duration summary crammed on the right)
+- [ ] No top burger menu visible on any screen
+- [ ] 9/9 fast E2E still pass
+
+### Notes / risks
+- `data-testid="btn-nav-open"` (burger menu) is referenced in `e2e/render.spec.ts` — update that spec.
+- StepNav currently uses `disabled` prop to block future-step navigation. Bottom tab bar must preserve that guard.
+- Render screen has no Media Pantry and no StickyFilmStrip — its layout is simpler (full-width content). Bottom tab bar still shows; right column shows chosen effects (read-only).
+
+---
+
+## Batch I — Branding & Visual Identity
+
+> **Status: NEXT (after Batch H) — no implementation started.**
+> **Scope: logo, app icon, and colour accent refinements. No layout changes (those are Batch H).**
+
+### Motivation
+
+The bottom-right corner of the new shell (from Batch H) reserves space for a RushCut wordmark/logo. The Tauri window and taskbar icon are currently the default Tauri placeholder. Batch I ships the brand identity across all surfaces.
+
+### Changes required
+
+**1. RushCut wordmark / logotype**
+- Design a wordmark for RushCut. Options to evaluate (founder decides before implementation):
+  - **A — Wordmark only:** "RushCut" in a bold condensed font, peach `#FF8A65`.
+  - **B — Icon + wordmark:** A simple icon (e.g. film-cut scissors motif) left of "RushCut" text.
+  - **C — Monogram:** "RC" lettermark in a rounded rectangle, peach on dark.
+- Deliverable: SVG file at `src/assets/logo.svg` (inline-importable in React).
+- Placement: bottom-right of the bottom tab bar (from Batch H). Width ~80px, height auto.
+
+**2. App window icon (Tauri)**
+- Replace the Tauri placeholder icon set in `src-tauri/icons/` with the RushCut logo.
+- Required sizes: `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.ico` (Windows taskbar), `icon.icns` (macOS, if applicable).
+- Tool: generate from the final SVG using `tauri icon` CLI (`pnpm tauri icon src/assets/logo.svg`).
+
+**3. Taskbar / window title**
+- `tauri.conf.json` `windows[0].title` is currently `"RushCut"` — keep as-is.
+- Confirm the window title bar shows "RushCut" correctly after icon update.
+
+**4. Colour accent review (optional, founder-guided)**
+- The current palette is functional but the founder may want to adjust any of: peach `#FF8A65`, blue `#99B3FF`, sand `#C9A96E`, or the dark `#0a0a0a` background.
+- Any changes must update `docs/DESIGN.md` canonical table first, then find-replace all hardcoded hex values in `src/`.
+- **Do not change colours without explicit founder sign-off on the new hex values.** The design system is the source of truth.
+
+**5. Loading splash (optional)**
+- The native Win32 splash (Batch A4) currently shows a plain dark rectangle.
+- Could show the RushCut logo centred. Low priority — visible for only ~200ms.
+
+### Acceptance checks
+- [ ] RushCut wordmark/logo visible in bottom-right of bottom tab bar (all screens)
+- [ ] Windows taskbar icon shows RushCut branding (not Tauri placeholder)
+- [ ] Alt-Tab shows RushCut branded icon
+- [ ] No console errors introduced by SVG import
+- [ ] DESIGN.md updated with final logo usage rules (placement, min size, clear space)
+
+### Notes / risks
+- SVG must be kept simple (flat fills, no filters) for correct rendering as a Windows `.ico` file.
+- `pnpm tauri icon` requires the final SVG at build time — Batch I must ship before the next `pnpm build` release cut.
+- Colour changes (point 4) are high-risk — every Tailwind arbitrary value in `src/` uses hardcoded hex. A find-replace across all files is required. Only do this with founder approval and a full E2E run after.
+
+---
+
+## Backlog — Timeline HUD: Zoom/Pan Discoverability Tooltips
+
+> **Future — UX polish pass. Not blocking any current batch.**
+
+The proportional timeline supports Ctrl+scroll zoom and middle/left-drag pan. These interactions are invisible without a hint — users will not discover them by accident.
+
+Options to evaluate:
+- Static hint text below the HUD: `"Ctrl+scroll to zoom · drag to pan"` in `text-[11px] text-[#e5e5e5]/30` — always visible, zero friction.
+- Tooltip on first load (once per session, dismissed after 3s) — more prominent but adds state.
+- Keyboard shortcut overlay (press `?` to reveal all shortcuts) — standard power-user pattern.
+
+Defer until timeline interactions are finalised (zoom sensitivity, reset shortcut, etc.).
+
+---
+
 ## Backlog — Smart Music Track Ending (crossfade-out optimisation)
 
 > **Future — audio polish batch or AI tier.**

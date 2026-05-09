@@ -98,6 +98,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`subprocess.run(cmd, check=True)` with list args** handles paths with spaces correctly; no `shell=True` needed.
 - **WSL2 `/tmp/<job_id>/` accumulates 1-3 GB per render** — `render.py` creates `TMP_BASE / job_id` for normalised intermediates; they persist until WSL2 shuts down if not explicitly deleted. Fix: `shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)` in `run.py` immediately after `shutil.copy2` succeeds. Wrapup cleans crash orphans via `wsl -- sh -c 'rm -rf /tmp/*/'`. Proxies in `%APPDATA%\rushcut\proxies\` are a persistent cache — do NOT clean those.
 
+## WebView2 — `<video>` elements in persistent HUD components autoplay on navigation
+
+**Problem:** `<video>` elements inside `StickyFilmStrip` (or any component that persists across route changes) begin playing when the user navigates between screens, because React re-mounts the component and `autoPlay` / `loadeddata` event handlers fire again. With 7 simultaneous video elements, this creates concurrent decode/play cycles, network traffic, and audible audio bleed.
+**Solution:** Never use `<video>` elements in the HUD filmstrip. Use CSS `background-image: url(thumbnail_data); background-size: auto 100%; background-repeat: repeat-x` on a plain `<div>`. The base64 thumbnail from `scan.py` tiles horizontally (DaVinci-style) with zero playback risk and no network requests.
+**Context:** `src/components/StickyFilmStrip.tsx`. Any component rendered on multiple routes that needs to show video frame content.
+
+---
+
 ## Pipeline events — Tauri / React contract
 
 ## [Stage label clobber]

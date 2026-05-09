@@ -364,23 +364,40 @@ Used for transient feedback (e.g. duplicate-cut guard). Not a modal — no block
 
 ## Persistent Bottom Status HUD (`StickyFilmStrip`)
 
-A read-only film composition summary bar pinned at the bottom of editor screens (Trim, Transitions, Sound). Hidden on Render.
+A read-only proportional timeline pinned at the bottom of editor screens (Trim, Transitions, Sound). Hidden on Render. Clip tile widths scale with trimmed duration; a ruler shows time ticks above the tiles. Supports Ctrl+scroll zoom and middle/left-drag pan.
 
 ### Layout contract
 
 - **Height:** `style={{ height: 100 }}` — fixed, never causes layout shift
 - **Placement:** `flex-shrink-0` child of `flex flex-col h-screen` root div. The scrollable body above must be `flex-1 overflow-auto` (or `overflow-y-auto`) so it fills remaining space and the strip never overlaps content.
-- **Background / border:** `bg-[#0a0a0a] border-t border-white/10` — matches StepNav bottom border token.
-- **Root classes:** `flex items-center px-3 gap-3`
+- **Background / border:** `bg-[#0a0a0a] border-t-2 border-[#C9A96E]/25` — sandy warm accent top border distinguishes the timeline section.
+- **Root classes:** `flex items-stretch`
 
-### Thumbnail row
+### Proportional timeline track
 
-- Thumbnail cards: `width: 90px, height: 56px`, `rounded overflow-hidden border-2`
-- Active clip (Trimmer only): `border-[#FF8A65]`; inactive: `border-white/15`
-- **Non-interactive** — no hover bins, no drag handlers, `draggable={false}`
-- Sequence number badge: `text-[9px] text-white font-bold` on `bg-black/60` pill (top-left)
-- Duration overlay: `text-[8px] text-white/80 font-mono` gradient footer
-- Overflow truncation: CSS `overflow: hidden` on the row container (`flex-1 min-w-0`). Show up to `MAX_VISIBLE = 7` thumbnails, then a `+N` pill badge (`text-[10px] text-[#e5e5e5]/60 bg-white/10 rounded-md w-10 h-12`).
+- Clip tile widths: `Math.max(40, Math.round(trimmedMs * pxPerMs))` — proportional to trimmed duration, min 40px.
+- Scroll container: `overflow-x-auto overflow-y-hidden`, scrollbar hidden (`[&::-webkit-scrollbar]:hidden`, `scrollbarWidth: none`).
+- Initial auto-fit: `ResizeObserver` sets `pxPerMs = containerWidth / totalMs` on first render only (`hasInitialized` ref prevents reset on clip changes).
+- Zoom: Ctrl+scroll via non-passive `addEventListener("wheel", handler, {passive: false})`. Zoom range: `MIN_PX_PER_MS = 0.008` to `MAX_PX_PER_MS = 2.0`. Zoom-to-cursor: `scrollLeft = cursorX * ratio - (clientX - rectLeft)`.
+- Pan: middle mouse button OR left-drag on track background. Cursor state via direct `trackRef.current.style.cursor` mutation — no `useState` (prevents re-render jank).
+
+### Ruler row
+
+- Height: `RULER_HEIGHT = 20px` — fixed, sits above the clip row.
+- Adaptive tick interval: smallest value from `[1s, 2s, 5s, 10s, 30s, 1m, 2m, 5m]` where `interval * pxPerMs >= 40px`.
+- Every tick shows a label — no unlabeled minor ticks.
+- Major tick (every 5th): 8px line; minor tick: 4px line. Both use `bg-white/40`.
+- Label: `text-[11px] font-mono text-[#a3a3a3]` — minimum readable secondary colour. Never use opacity variants (`/40`) on ruler labels — they become illegible.
+- Ruler x-positions use `filmTimeToPx(ms)` which walks actual clip pixel widths, NOT naive `ms/totalMs * totalTrackPx`. The naive approach drifts when short clips are min-width-clamped to 40px.
+
+### Clip tiles
+
+- Height: `CLIP_HEIGHT = 56px`, gap between tiles: `GAP_PX = 2px`.
+- Clip row wrapper: `border border-[#C9A96E]/20 rounded-sm overflow-hidden` — sandy frame around the timeline section, visible but subtle.
+- Active tile (Trimmer only): `border-[#FF8A65]`; inactive: `border-[#C9A96E]/30` — warm sandy border visible against dark clip content.
+- **Thumbnail tiling (DaVinci-style):** Use CSS `backgroundImage: url(thumbnail_data)`, `backgroundSize: auto 100%`, `backgroundRepeat: repeat-x`. The same scan-time JPEG repeats horizontally across the tile width. Do NOT use `<video>` elements in the HUD — they autoplay and create traffic when the user navigates between screens.
+- Sequence number badge: `text-[9px] text-[#0a0a0a] font-bold` on `bg-[#99B3FF]` pill (top-left) — blue badge stands out clearly over varied clip content.
+- Duration overlay: `text-[10px] text-white font-mono drop-shadow-sm` gradient footer (`bg-gradient-to-t from-black/80`).
 - Empty state: filmstrip SVG icon + `"No clips yet"` in `text-sm text-[#e5e5e5]/30`
 
 ### Duration summary cell

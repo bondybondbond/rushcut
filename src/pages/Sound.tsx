@@ -252,6 +252,10 @@ export default function Sound() {
       ? "Your film will render without a music track."
       : null;
 
+  const filmDurationMs = clips
+    .filter((c) => c.include === 1)
+    .reduce((sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)), 0);
+
   // Comparison line — derived above return to avoid JSX IIFE
   const selectedTrackMs =
     source === "library" && libraryMood && trackDurations[libraryMood] !== undefined

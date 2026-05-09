@@ -2,11 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "rushcut-dev",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["C:/apps/rushcut/node_modules/vite/bin/vite.js", "--port", "1430", "--strictPort", "false"],
-      "port": 1430,
-      "autoPort": false
+      "name": "vite",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev:vite"],
+      "port": 1420
     }
   ]
 }

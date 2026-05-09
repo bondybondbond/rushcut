@@ -15,17 +15,31 @@
 
 ## Current Phase
 
-**Phase 2 — Batch F COMPLETE (2026-05-08). Next: Batch G — TBD (ruler-based proportional timeline for StickyFilmStrip, or next founder feedback).**
+**Phase 2 — Batch G COMPLETE (2026-05-09). Next: Batch H — App Shell Redesign.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch F shipped.** No immediate next task — awaiting founder direction. Candidates:
-- Ruler-based proportional timeline for StickyFilmStrip (deferred from Batch F — own sub-batch)
-- Music bar below clip track in StickyFilmStrip (deferred — cross-fade-out may be more elegant)
-- Format selector (4K, file-size presets) on Render screen
-- Music fade-out setting (near-term precursor to smart track ending — see PRD backlog)
+**Batch G shipped.** Next: Batch H — App Shell Redesign (full layout redesign: top info bar, left pantry, center previewer/timeline, right action+effects, bottom tab bar). Spec in `docs/PRD-DEV.md`.
+
+Candidates if Batch H is deferred:
+- Batch I — Branding & Visual Identity (logo SVG, Tauri icon replacement)
+- Timeline HUD discoverability tooltips (Ctrl+scroll zoom, drag to pan hints)
+- Music bar below clip track in StickyFilmStrip
+
+**Batch G — Ruler-based proportional timeline for StickyFilmStrip COMPLETE (2026-05-09):**
+- Full rewrite of `StickyFilmStrip.tsx`: proportional clip tiles (`trimmedMs * pxPerMs`, min 40px)
+- Ruler row (RULER_HEIGHT=20px): dual-array tick system (minor ≥20px spacing, label ≥50px spacing), labels at top, tick marks at bottom pointing down toward clips
+- Ctrl+scroll zoom with zoom-to-cursor math; middle-mouse / left-drag-on-track pan; ResizeObserver auto-fit on first render
+- CSS thumbnail tiling (`background-image: url(thumbnail_data); background-size: auto 100%; background-repeat: repeat-x`) — no `<video>` elements (autoplay prevention)
+- HUD border: `border-t-2 border-[#99B3FF]/30`; clip tiles: `border-2 border-[#99B3FF]/30`; active: `border-[#FF8A65]`; badge: `bg-[#99B3FF] text-[#0a0a0a]`; effect chips: blue `#99B3FF`
+- Ruler tick labels: `text-[11px] font-mono text-[#a3a3a3]` — readable at minimum spec
+- `Sound.tsx`: `filmDurationMs` derived-variable bug fixed (ReferenceError → white screen)
+- DESIGN.md: StickyFilmStrip proportional timeline section fully documented
+- PRD-DEV.md: Batch H (App Shell Redesign) + Batch I (Branding) specs added
+- 9/9 fast E2E PASS
+- **Deferred**: discoverability tooltips for zoom/pan (backlog in PRD), music bar below clip track
 
 **Batch F — Sticky filmstrip HUD across trim/transitions/sound COMPLETE (2026-05-08):**
 - `StickyFilmStrip` component: 100px read-only bottom bar, `flex-shrink-0`, `border-t border-white/10 bg-[#0a0a0a]`
