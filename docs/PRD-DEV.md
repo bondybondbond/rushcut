@@ -239,7 +239,7 @@ The current shell puts navigation at the top (StepNav breadcrumb) with a burger 
 
 ## Batch I — Branding & Visual Identity
 
-> **Status: NEXT (after Batch H) — no implementation started.**
+> **Status: DEFERRED — pending founder decision on logo option (A/B/C). Prerequisite: Batch J complete.**
 > **Scope: logo, app icon, and colour accent refinements. No layout changes (those are Batch H).**
 
 ### Motivation
@@ -285,6 +285,69 @@ The bottom-right corner of the new shell (from Batch H) reserves space for a Rus
 - SVG must be kept simple (flat fills, no filters) for correct rendering as a Windows `.ico` file.
 - `pnpm tauri icon` requires the final SVG at build time — Batch I must ship before the next `pnpm build` release cut.
 - Colour changes (point 4) are high-risk — every Tailwind arbitrary value in `src/` uses hardcoded hex. A find-replace across all files is required. Only do this with founder approval and a full E2E run after.
+
+---
+
+## Backlog — TrimBar: Highlight Already-Included Regions
+
+> **Future — Trimmer UX polish. Not blocking any current batch.**
+
+**Problem:** Once a clip has been trimmed and added to the film, the user can continue trimming the same source clip to add further cuts. But there is no visual indication of what has already been included — the TrimBar shows a blank track with no memory of prior adds. The user cannot tell whether a region is already in the film, which makes multi-cut workflows from the same source confusing.
+
+**Reference behaviour:** DaVinci Resolve, Final Cut Pro, and Premiere all mark "in-use" or "subclipped" regions on the source clip timeline — typically a distinct fill colour or hatching on the included ranges.
+
+**Proposed fix:**
+- After each "Add to Film" action, compute the set of `(in_ms, out_ms)` ranges already in the film for the current source clip.
+- Render those ranges as a dim coloured overlay (e.g. `bg-[#FF8A65]/25` or `bg-[#99B3FF]/20`) on the TrimBar track, underneath the active selection region.
+- The currently-selected region continues to render as the bright peach overlay. Included regions render behind it at reduced opacity.
+- No interaction needed on these overlays — they are purely informational.
+
+**Data available:** `clips.filter(c => c.include === 1 && c.local_path === selectedClip.local_path)` gives all film cuts from the same source. Each has `in_ms` / `out_ms`. Compute pixel positions the same way as the active trim handles.
+
+**Scope:** TrimBar.tsx only. No DB or pipeline changes.
+
+---
+
+## Backlog — Film Seek: Cross-Clip Stutter Fix
+
+> **Open bug — 3 fix attempts, partially improved. See `.claude/notes/film-seek-stutter.md` for full diagnosis.**
+
+Clicking the film timeline to seek to a position in a **different** clip from the one currently playing causes a brief flash of frame 0 before landing on the correct position. Same-clip seeks and clip-advance transitions work correctly.
+
+**Root cause (confirmed):** WebView2 GPU compositor lag. `seeked` fires in the JS renderer process before the decoded frame is committed to the compositor. `requestVideoFrameCallback` (rVFC) fires when the compositor presents a frame — but after a `src` change + `load()` + `seek`, the first frame rVFC fires for appears to be frame 0, not the seeked position.
+
+**Fixes shipped so far:**
+- Option B: imperative `ref.style.opacity` writes (bypasses React async batching) — partial improvement
+- Generation counter on `slotGenRef` (invalidates stale rVFC callbacks from overlapping seeks) — defensive fix
+- `didDragRef` reset fix in StickyFilmStrip (separate bug — click-to-seek was blocked after panning — **fixed**)
+
+**Recommended next fix (Option F in notes):** play→pause repaint before reveal. After `seeked` fires, call `v.muted=true; v.play().then(() => { v.pause(); v.muted=false; setSlotVisible(slot); v.play(); })`. Temporarily mutes to suppress the audio blip. This is the same proven repaint pattern the clip-mode video already uses successfully.
+
+---
+
+## Backlog — Timeline HUD: Auto-Fit Scale When Clip Added
+
+> **UX bug — film timeline zoom resets to new clip instead of showing full film.**
+
+**Problem:** When a new clip is added to the film, the auto-fit `ResizeObserver` scale is already locked (`hasInitialized.current = true`), so the zoom does not change. But `totalMs` has grown and the proportional clip widths at the current `pxPerMs` push the new clip off-screen. The browser auto-scrolls to the new clip end, leaving the user zoomed in on only the last clip with the rest of the film hidden off-screen to the left.
+
+**Desired behaviour:** When a new clip is added, re-fit the timeline scale so that the entire film (`0` to `totalMs + TRAIL_PAD_MS`) fits within the visible track width. This matches the initial auto-fit logic: `pxPerMs = viewportWidth / totalMs`, clamped to `[MIN_PX_PER_MS, MAX_PX_PER_MS]`. The user sees all clips laid out at once, plus the new clip naturally extending the right edge (~+5% of total duration via `TRAIL_PAD_MS`).
+
+**Proposed fix (`StickyFilmStrip.tsx`):**
+- In the `useEffect([inFilm.length])` that currently auto-scrolls to end, also re-compute and set `pxPerMs`:
+  ```tsx
+  if (cur > prevFilmLengthRef.current && trackRef.current) {
+    const w = trackRef.current.getBoundingClientRect().width;
+    if (w > 0 && totalMs > 0) {
+      setPxPerMs(Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, w / totalMs)));
+    }
+    // Remove the auto-scroll-to-end: at fit scale the whole film is visible, no scroll needed
+  }
+  ```
+- Remove (or suppress) the `requestAnimationFrame(() => el.scrollLeft = el.scrollWidth)` scroll call — at fit scale the user can see everything without scrolling.
+- The user can then Ctrl+scroll to zoom in on any region.
+
+**Scope:** `StickyFilmStrip.tsx` only. No DB or pipeline changes.
 
 ---
 

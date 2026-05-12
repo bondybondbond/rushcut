@@ -32,6 +32,19 @@ export default function Trimmer() {
   const lastPaintedProxy = useRef<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
+  const [viewMode, setViewMode] = useState<"clip" | "film">("clip");
+  const [filmPlayIdx, setFilmPlayIdx] = useState(0);
+  const filmModeRef = useRef(false);
+  const filmPlayIdxRef = useRef(0);
+  const inFilmRef = useRef<Clip[]>([]);
+
+  // Dual-buffer film playback: two persistent video elements, ping-pong between them
+  const filmVideoARef = useRef<HTMLVideoElement>(null);
+  const filmVideoBRef = useRef<HTMLVideoElement>(null);
+  const activeFilmSlotRef = useRef<"a" | "b">("a");
+  // Incremented each time loadIntoSlot runs for a slot — invalidates stale rVFC callbacks
+  const slotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 });
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [videoHeight, setVideoHeight] = useState<number | null>(null);
@@ -124,7 +137,15 @@ export default function Trimmer() {
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.volume = volume;
+    if (filmVideoARef.current) filmVideoARef.current.volume = volume;
+    if (filmVideoBRef.current) filmVideoBRef.current.volume = volume;
   }, [volume]);
+
+  // Both film slots start hidden; setSlotVisible manages visibility imperatively (avoids React async paint race)
+  useEffect(() => {
+    if (filmVideoARef.current) { filmVideoARef.current.style.opacity = "0"; filmVideoARef.current.style.pointerEvents = "none"; }
+    if (filmVideoBRef.current) { filmVideoBRef.current.style.opacity = "0"; filmVideoBRef.current.style.pointerEvents = "none"; }
+  }, []);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -284,10 +305,12 @@ export default function Trimmer() {
   }
 
   function togglePlay() {
-    const v = videoRef.current;
+    const v = viewMode === "film"
+      ? getFilmVideo(activeFilmSlotRef.current)
+      : videoRef.current;
     if (!v) return;
     if (v.paused) {
-      if (v.readyState === 0) v.load();
+      if (viewMode === "clip" && v.readyState === 0) v.load();
       v.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
       v.pause();
@@ -313,10 +336,201 @@ export default function Trimmer() {
     resizeDragRef.current = null;
   }
 
+  // --- Dual-buffer film engine ---
+
+  function getFilmVideo(slot: "a" | "b") {
+    return slot === "a" ? filmVideoARef.current : filmVideoBRef.current;
+  }
+
+  function setSlotVisible(slot: "a" | "b" | "none") {
+    const vA = filmVideoARef.current;
+    const vB = filmVideoBRef.current;
+    if (vA) { vA.style.opacity = slot === "a" ? "1" : "0"; vA.style.pointerEvents = slot === "a" ? "" : "none"; }
+    if (vB) { vB.style.opacity = slot === "b" ? "1" : "0"; vB.style.pointerEvents = slot === "b" ? "" : "none"; }
+  }
+
+  /** Load clip[idx] into `slot`, seek to startMs (defaults to in_ms), then play and preload next. */
+  function loadIntoSlot(idx: number, slot: "a" | "b", startMs?: number) {
+    const filmClip = inFilmRef.current[idx];
+    if (!filmClip) return;
+    filmPlayIdxRef.current = idx;
+    setFilmPlayIdx(idx);
+
+    const v = getFilmVideo(slot);
+    if (!v) return;
+
+    const seekMs = startMs !== undefined ? startMs : (filmClip.in_ms ?? 0);
+    const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+
+    // Bump generation so any in-flight rVFC from a previous loadIntoSlot on this slot is invalidated
+    slotGenRef.current[slot]++;
+    const thisGen = slotGenRef.current[slot];
+
+    function activate() {
+      if (!filmModeRef.current || !v || slotGenRef.current[slot] !== thisGen) return;
+      activeFilmSlotRef.current = slot;
+      // Start playing from the seeked position (audio starts, video still hidden)
+      v.play().catch(() => {});
+      // Show only after the frame is actually composited — requestVideoFrameCallback
+      // fires when the GPU has committed the decoded frame, eliminating the frame-0 flash.
+      const rVFC = (v as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => void }).requestVideoFrameCallback;
+      if (rVFC) {
+        rVFC.call(v, () => {
+          if (filmModeRef.current && slotGenRef.current[slot] === thisGen) setSlotVisible(slot);
+        });
+      } else {
+        // Fallback: double-rAF gives GPU compositor one cycle to update
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (filmModeRef.current && slotGenRef.current[slot] === thisGen) setSlotVisible(slot);
+        }));
+      }
+      // Preload the clip after this one into the other slot
+      const nextIdx = idx + 1;
+      if (nextIdx < inFilmRef.current.length) {
+        const nextSlot: "a" | "b" = slot === "a" ? "b" : "a";
+        preloadIntoSlot(nextIdx, nextSlot);
+      }
+    }
+
+    // Hide immediately so frame 0 never shows while the decoder seeks to startMs
+    v.style.opacity = "0";
+    v.style.pointerEvents = "none";
+    v.src = src;
+    // Listener BEFORE load() — cached files fire loadedmetadata synchronously
+    v.addEventListener("loadedmetadata", () => {
+      if (!filmModeRef.current) return;
+      // Add seeked listener BEFORE setting currentTime so it catches synchronous fires
+      v.addEventListener("seeked", activate, { once: true });
+      v.currentTime = seekMs / 1000;
+    }, { once: true });
+    v.load();
+  }
+
+  /** Pre-load clip[idx] into `slot` and seek to in_ms — do not play. */
+  function preloadIntoSlot(idx: number, slot: "a" | "b") {
+    const filmClip = inFilmRef.current[idx];
+    if (!filmClip) return;
+    const v = getFilmVideo(slot);
+    if (!v) return;
+    const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+    v.src = src;
+    v.addEventListener("loadedmetadata", () => {
+      v.currentTime = (filmClip.in_ms ?? 0) / 1000;
+    }, { once: true });
+    v.load();
+  }
+
+  /** Called from timeupdate on the active slot when the clip boundary is reached. */
+  function advanceFilmClip() {
+    const nextIdx = filmPlayIdxRef.current + 1;
+    if (nextIdx >= inFilmRef.current.length) {
+      getFilmVideo(activeFilmSlotRef.current)?.pause();
+      filmModeRef.current = false;
+      setIsPlaying(false);
+      return;
+    }
+
+    const nextSlot: "a" | "b" = activeFilmSlotRef.current === "a" ? "b" : "a";
+    const nextV = getFilmVideo(nextSlot);
+
+    // Pause current slot
+    getFilmVideo(activeFilmSlotRef.current)?.pause();
+
+    filmPlayIdxRef.current = nextIdx;
+    setFilmPlayIdx(nextIdx);
+    activeFilmSlotRef.current = nextSlot;
+    setSlotVisible(nextSlot);
+
+    if (nextV) {
+      nextV.play().catch(() => {
+        // Inactive slot wasn't preloaded/seeked yet — load it fresh
+        loadIntoSlot(nextIdx, nextSlot);
+      });
+      // Preload the clip after next
+      const afterNextIdx = nextIdx + 1;
+      if (afterNextIdx < inFilmRef.current.length) {
+        const afterNextSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
+        preloadIntoSlot(afterNextIdx, afterNextSlot);
+      }
+    }
+  }
+
+  function handleFilmTimeUpdate(slot: "a" | "b", currentTimeSec: number) {
+    if (!filmModeRef.current || slot !== activeFilmSlotRef.current) return;
+    const filmClip = inFilmRef.current[filmPlayIdxRef.current];
+    if (!filmClip) return;
+    const outSec = (filmClip.out_ms ?? filmClip.duration_ms) / 1000;
+    if (currentTimeSec >= outSec) {
+      advanceFilmClip();
+    }
+  }
+
+  /** Seek the film to a specific film-time ms (called from timeline click). */
+  function seekFilmTo(filmMs: number) {
+    const clips_ = inFilmRef.current;
+    let elapsed = 0;
+    for (let i = 0; i < clips_.length; i++) {
+      const clipMs = Math.max(
+        0,
+        (clips_[i].out_ms ?? clips_[i].duration_ms) - (clips_[i].in_ms ?? 0)
+      );
+      if (filmMs < elapsed + clipMs || i === clips_.length - 1) {
+        const offsetInClip = Math.max(0, filmMs - elapsed);
+        const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
+        filmModeRef.current = true;
+
+        if (filmPlayIdxRef.current === i && activeFilmSlotRef.current) {
+          // Same clip — just seek within it
+          const v = getFilmVideo(activeFilmSlotRef.current);
+          if (v) {
+            v.currentTime = seekToMs / 1000;
+            v.play().catch(() => {});
+          }
+        } else {
+          // Different clip — load it into the active slot
+          getFilmVideo(activeFilmSlotRef.current)?.pause();
+          loadIntoSlot(i, activeFilmSlotRef.current, seekToMs);
+        }
+        return;
+      }
+      elapsed += clipMs;
+    }
+  }
+
+  // Enter/exit film mode
+  useEffect(() => {
+    filmModeRef.current = viewMode === "film";
+    if (viewMode === "film") {
+      if (videoRef.current) videoRef.current.pause();
+      setIsPlaying(false);
+      activeFilmSlotRef.current = "a";
+      setFilmPlayIdx(0);
+      filmPlayIdxRef.current = 0;
+      if (inFilmRef.current.length > 0) loadIntoSlot(0, "a");
+      else setSlotVisible("a");
+    } else {
+      // Pause film videos; clip video restores naturally (its src was never changed)
+      filmVideoARef.current?.pause();
+      filmVideoBRef.current?.pause();
+      setSlotVisible("none");
+      setIsPlaying(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
+
   const sourceClips = clips.filter(c => c.include === 0);
-  const inFilm = clips.filter((c) => c.include === 1);
+  const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
+  inFilmRef.current = inFilm;
   const inFilmCount = inFilm.length;
   const totalMs = inFilm.reduce((sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)), 0);
+
+  // Film playhead: how far we are in film-time (ms), for the StickyFilmStrip cursor
+  const filmPositionMs = viewMode === "film" && inFilm[filmPlayIdx]
+    ? inFilm.slice(0, filmPlayIdx).reduce(
+        (sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)),
+        0
+      ) + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
+    : undefined;
   const configured = useConfiguredTabs(projectId ?? "");
   const transitionVal = (() => { try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; } })();
   const soundMoodVal = (() => { try { const raw = sessionStorage.getItem(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })();
@@ -360,20 +574,20 @@ export default function Trimmer() {
   }
 
   const clipControls = (
-    <div className="flex flex-col items-center gap-4">
-      <p className="text-[10px] text-[#e5e5e5]">{sourceIdx + 1} / {sourceClips.length}</p>
-      <div className="flex gap-1.5 w-full">
+    <div className="flex flex-col w-full h-full gap-3 py-2">
+      <p className="text-sm text-[#e5e5e5] text-center">{sourceIdx + 1} / {sourceClips.length}</p>
+      <div className="flex gap-1.5 w-full flex-shrink-0">
         <button
           onClick={() => handleNav(-1)}
           disabled={!canGoPrev}
-          className="flex-1 py-2 border border-white/30 rounded-md text-xs text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
+          className="flex-1 py-3 border border-white/30 rounded-md text-sm text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
         >
           &#8592; Prev
         </button>
         <button
           onClick={() => handleNav(1)}
           disabled={!canGoNext}
-          className="flex-1 py-2 border border-white/30 rounded-md text-xs text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
+          className="flex-1 py-3 border border-white/30 rounded-md text-sm text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
         >
           Next &#8594;
         </button>
@@ -384,11 +598,11 @@ export default function Trimmer() {
           const sourceRow = clips.find(c => c.include === 0 && c.local_path === clip.local_path);
           handleAddCutForClip(sourceRow ?? clip, inMs, outMs);
         }}
-        className="w-full py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md text-sm hover:bg-[#ff9e7a] transition-colors"
+        className="w-full py-4 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md text-sm hover:bg-[#ff9e7a] transition-colors flex-shrink-0"
       >
         + Add to Film
       </button>
-      <p className="text-[10px] text-[#e5e5e5] text-center leading-tight">
+      <p className="text-sm text-[#e5e5e5] text-center leading-tight flex-shrink-0">
         {inFilmCount === 0 ? "No clips added yet" : `${inFilmCount} clip${inFilmCount !== 1 ? "s" : ""} in film`}
       </p>
       {filmActiveId && (
@@ -397,7 +611,7 @@ export default function Trimmer() {
             const cut = clips.find(c => c.id === filmActiveId);
             if (cut) { handleDeleteCut(cut); setFilmActiveId(null); }
           }}
-          className="w-full py-2 border border-red-500/40 text-red-400 text-xs rounded-md hover:border-red-500/70 hover:bg-red-500/10 transition-colors"
+          className="w-full py-2.5 border border-red-500/40 text-red-400 text-sm rounded-md hover:border-red-500/70 hover:bg-red-500/10 transition-colors flex-shrink-0"
         >
           Remove from film
         </button>
@@ -431,6 +645,8 @@ export default function Trimmer() {
             const cut = clips.find(c => c.id === clipId);
             if (cut) { handleDeleteCut(cut); if (filmActiveId === clipId) setFilmActiveId(null); }
           }}
+          playheadMs={filmPositionMs}
+          onSeek={viewMode === "film" ? seekFilmTo : undefined}
         />
       }
     >
@@ -438,11 +654,37 @@ export default function Trimmer() {
       <div className="flex flex-1 min-w-0 h-full overflow-hidden">
         {/* Video + TrimBar */}
         <div className="flex flex-col flex-1 min-w-0 gap-3 px-4 py-3 overflow-hidden">
+          {/* Clip / Film toggle — only visible when film has clips */}
+          {inFilmCount > 0 && (
+            <div className="flex self-center flex-shrink-0">
+              <button
+                onClick={() => setViewMode("clip")}
+                className={`px-4 py-1 text-xs rounded-l-md border transition-colors ${
+                  viewMode === "clip"
+                    ? "bg-white/15 border-white/40 text-white"
+                    : "border-white/20 text-[#a3a3a3] hover:text-white"
+                }`}
+              >
+                Clip
+              </button>
+              <button
+                onClick={() => { setFilmPlayIdx(0); setViewMode("film"); }}
+                className={`px-4 py-1 text-xs rounded-r-md border-t border-r border-b transition-colors ${
+                  viewMode === "film"
+                    ? "bg-white/15 border-white/40 text-white"
+                    : "border-white/20 text-[#a3a3a3] hover:text-white"
+                }`}
+              >
+                Film
+              </button>
+            </div>
+          )}
           <div
             ref={videoContainerRef}
             className="w-full rounded-xl overflow-hidden bg-black relative flex-1 min-h-0"
             style={videoHeight != null ? { flex: "none", height: videoHeight } : {}}
           >
+            {/* ── Clip mode video ── */}
             <video
               ref={videoRef}
               key={clip.id}
@@ -450,19 +692,26 @@ export default function Trimmer() {
               poster={clip.thumbnail_data ?? undefined}
               preload="auto"
               playsInline
-              style={{ display: sourceFailed ? "none" : undefined }}
-              className="w-full h-full object-contain cursor-pointer"
+              className="absolute inset-0 w-full h-full object-contain cursor-pointer"
+              style={{
+                opacity: viewMode === "clip" && !sourceFailed ? 1 : 0,
+                pointerEvents: viewMode === "clip" ? undefined : "none",
+              }}
               onClick={togglePlay}
               onPause={() => setIsPlaying(false)}
               onPlay={() => setIsPlaying(true)}
               onTimeUpdate={(e) => {
-                const ms = Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000);
+                if (viewMode !== "clip") return;
+                const sec = (e.currentTarget as HTMLVideoElement).currentTime;
+                const ms = Math.round(sec * 1000);
                 setCurrentMs(ms);
                 if (isPlaying && ms >= outMs) {
                   (e.currentTarget as HTMLVideoElement).currentTime = inMs / 1000;
                 }
               }}
-              onSeeked={(e) => setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000))}
+              onSeeked={(e) => {
+                if (viewMode === "clip") setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000));
+              }}
               onCanPlay={() => setVideoCanPlay(true)}
               onError={() => {
                 setSourceFailed(true);
@@ -473,13 +722,55 @@ export default function Trimmer() {
                 }
               }}
             />
-            {sourceFailed && clip.thumbnail_data && (
+
+            {/* ── Film video A (dual-buffer) ── */}
+            <video
+              ref={filmVideoARef}
+              preload="auto"
+              playsInline
+              className="absolute inset-0 w-full h-full object-contain cursor-pointer"
+              onClick={togglePlay}
+              onPause={() => { if (activeFilmSlotRef.current === "a") setIsPlaying(false); }}
+              onPlay={() => { if (activeFilmSlotRef.current === "a") setIsPlaying(true); }}
+              onTimeUpdate={(e) => {
+                if (activeFilmSlotRef.current !== "a") return;
+                const sec = (e.currentTarget as HTMLVideoElement).currentTime;
+                setCurrentMs(Math.round(sec * 1000));
+                handleFilmTimeUpdate("a", sec);
+              }}
+            />
+
+            {/* ── Film video B (dual-buffer) ── */}
+            <video
+              ref={filmVideoBRef}
+              preload="auto"
+              playsInline
+              className="absolute inset-0 w-full h-full object-contain cursor-pointer"
+              onClick={togglePlay}
+              onPause={() => { if (activeFilmSlotRef.current === "b") setIsPlaying(false); }}
+              onPlay={() => { if (activeFilmSlotRef.current === "b") setIsPlaying(true); }}
+              onTimeUpdate={(e) => {
+                if (activeFilmSlotRef.current !== "b") return;
+                const sec = (e.currentTarget as HTMLVideoElement).currentTime;
+                setCurrentMs(Math.round(sec * 1000));
+                handleFilmTimeUpdate("b", sec);
+              }}
+            />
+
+            {/* Clip mode failure states */}
+            {viewMode === "clip" && sourceFailed && clip.thumbnail_data && (
               <img src={clip.thumbnail_data} alt="" className="absolute inset-0 w-full h-full object-contain" />
             )}
-            {sourceFailed && !clip.proxy_path && (
+            {viewMode === "clip" && sourceFailed && !clip.proxy_path && (
               <div className="absolute bottom-2 right-2 flex items-center gap-1.5 bg-black/70 px-2.5 py-1.5 rounded-md pointer-events-none">
                 <span className="w-3 h-3 border border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
                 <span className="text-[10px] text-[#e5e5e5]/80 leading-none">Generating video...</span>
+              </div>
+            )}
+            {/* Film mode overlay: clip position counter */}
+            {viewMode === "film" && inFilmCount > 0 && (
+              <div className="absolute top-2 left-2 bg-black/60 text-[#e5e5e5] text-xs px-2 py-0.5 rounded pointer-events-none z-10">
+                {filmPlayIdx + 1} / {inFilmCount}
               </div>
             )}
           </div>
@@ -496,8 +787,8 @@ export default function Trimmer() {
           <div className="flex items-center gap-3 w-full">
             <button
               onClick={togglePlay}
-              disabled={!videoCanPlay}
-              title={!videoCanPlay ? "Generating video preview, please wait..." : undefined}
+              disabled={viewMode === "clip" && !videoCanPlay}
+              title={viewMode === "clip" && !videoCanPlay ? "Generating video preview, please wait..." : undefined}
               className="w-8 h-8 rounded-full border border-white/20 flex items-center justify-center hover:border-white/40 transition-colors flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {isPlaying ? (
@@ -522,24 +813,41 @@ export default function Trimmer() {
             </span>
           </div>
 
-          <div className="w-full">
-            <TrimBar
-              durationMs={clip.duration_ms}
-              inMs={inMs}
-              outMs={outMs}
-              currentMs={currentMs}
-              waveformData={selectedClip?.waveform_data}
-              onInChange={handleInChange}
-              onOutChange={handleOutChange}
-              onCommit={saveCurrentClip}
-              onSeek={handleSeek}
-            />
-          </div>
+          {viewMode === "clip" && (
+            <div className="w-full">
+              <TrimBar
+                durationMs={clip.duration_ms}
+                inMs={inMs}
+                outMs={outMs}
+                currentMs={currentMs}
+                waveformData={selectedClip?.waveform_data}
+                onInChange={handleInChange}
+                onOutChange={handleOutChange}
+                onCommit={saveCurrentClip}
+                onSeek={handleSeek}
+              />
+            </div>
+          )}
         </div>
 
-        {/* Prev / Next / Add to Film — right column (w-48 matches effects panel width) */}
-        <div className="w-48 flex-shrink-0 flex flex-col items-center justify-center gap-4 px-3 py-4 border-l border-white/10">
-          {clipControls}
+        {/* Prev / Next / Add to Film — right column (w-48 matches effects panel below) */}
+        <div className="w-48 flex-shrink-0 flex px-3 py-4 border-l border-white/10">
+          {viewMode === "film" ? (
+            <div className="flex flex-col w-full h-full gap-3 py-2">
+              <p className="text-sm text-[#a3a3a3] text-center">Film preview</p>
+              <button
+                onClick={() => seekFilmTo(0)}
+                className="w-full py-4 border border-white/30 rounded-md text-sm text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-colors flex-shrink-0"
+              >
+                &#8635; Restart
+              </button>
+              <p className="text-sm text-[#e5e5e5] text-center flex-shrink-0">
+                {inFilmCount} clip{inFilmCount !== 1 ? "s" : ""} in film
+              </p>
+            </div>
+          ) : (
+            clipControls
+          )}
         </div>
       </div>
 

@@ -8,6 +8,10 @@ interface StickyFilmStripProps {
   activeId?: string | null;
   /** If provided, shows a hover bin icon on each clip tile. Only Trimmer passes this. */
   onDeleteClip?: (clipId: string) => void;
+  /** Film playback position in film-time ms — renders a playhead cursor when set. */
+  playheadMs?: number;
+  /** Called when user clicks a position in the timeline; arg is film-time ms. */
+  onSeek?: (filmMs: number) => void;
 }
 
 // Zoom range: ~8px/s minimum, 2000px/s maximum
@@ -18,12 +22,15 @@ const MIN_CLIP_WIDTH = 40;  // px — short clips still identifiable
 const RULER_HEIGHT = 20;    // px
 const CLIP_HEIGHT = 56;     // px
 const GAP_PX = 2;           // px between clips
+const TRAIL_PAD_MS = 5000;  // 5 s of blank scroll space after the last clip
 
 export function StickyFilmStrip({
   clips,
   projectId: _projectId,
   activeId,
   onDeleteClip,
+  playheadMs,
+  onSeek,
 }: StickyFilmStripProps) {
   const [pxPerMs, setPxPerMs] = useState<number>(DEFAULT_PX_PER_MS);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -32,6 +39,7 @@ export function StickyFilmStrip({
   const isDraggingRef = useRef(false);
   const dragStartXRef = useRef(0);
   const scrollStartRef = useRef(0);
+  const didDragRef = useRef(false); // distinguishes pan from click
 
   const inFilm = clips
     .filter((c) => c.include === 1)
@@ -49,7 +57,8 @@ export function StickyFilmStrip({
     return Math.max(MIN_CLIP_WIDTH, Math.round(trimmedMs * pxPerMs));
   });
 
-  const totalTrackPx = clipWidths.reduce((s, w) => s + w + GAP_PX, 0);
+  const totalTrackPx = clipWidths.reduce((s, w) => s + w + GAP_PX, 0)
+    + Math.round(TRAIL_PAD_MS * pxPerMs);
 
   // Cumulative pixel offsets per clip (for ruler alignment)
   const clipOffsets: number[] = [];
@@ -78,8 +87,33 @@ export function StickyFilmStrip({
     return totalTrackPx;
   }
 
-  // Minor ticks: densest interval where spacing >= 20px (no labels)
-  const MINOR_TICK_CANDIDATES = [500, 1000, 2000, 5000, 10000, 30000, 60000, 120000, 300000];
+  // Inverse: pixel offset in the track → film-time ms
+  function pxToFilmMs(px: number): number {
+    let cur = 0;
+    for (let i = 0; i < inFilm.length; i++) {
+      const w = clipWidths[i];
+      const clipMs = Math.max(
+        0,
+        (inFilm[i].out_ms ?? inFilm[i].duration_ms) - (inFilm[i].in_ms ?? 0)
+      );
+      if (px <= cur + w) {
+        const t = w > 0 ? (px - cur) / w : 0;
+        let filmMs = 0;
+        for (let j = 0; j < i; j++) {
+          filmMs += Math.max(
+            0,
+            (inFilm[j].out_ms ?? inFilm[j].duration_ms) - (inFilm[j].in_ms ?? 0)
+          );
+        }
+        return Math.round(filmMs + t * clipMs);
+      }
+      cur += w + GAP_PX;
+    }
+    return totalMs;
+  }
+
+  // Minor ticks: 1s is the finest granularity; threshold 20px keeps ticks dense but readable
+  const MINOR_TICK_CANDIDATES = [1000, 2000, 5000, 10000, 30000, 60000, 120000, 300000];
   const minorTickMs = MINOR_TICK_CANDIDATES.find((ms) => ms * pxPerMs >= 20) ?? 300000;
 
   // Labels: only every 5s (or larger adaptive step) where spacing >= 50px
@@ -149,6 +183,7 @@ export function StickyFilmStrip({
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!isDraggingRef.current || !trackRef.current) return;
+      if (Math.abs(e.clientX - dragStartXRef.current) > 4) didDragRef.current = true;
       trackRef.current.scrollLeft =
         scrollStartRef.current - (e.clientX - dragStartXRef.current);
     }
@@ -167,6 +202,8 @@ export function StickyFilmStrip({
   }, []);
 
   function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    // Always reset didDragRef so a previous pan never blocks the next click
+    didDragRef.current = false;
     const isMiddle = e.button === 1;
     const isLeftOnBackground = e.button === 0 && e.target === e.currentTarget;
     if (!isMiddle && !isLeftOnBackground) return;
@@ -175,6 +212,15 @@ export function StickyFilmStrip({
     dragStartXRef.current = e.clientX;
     scrollStartRef.current = trackRef.current?.scrollLeft ?? 0;
     if (trackRef.current) trackRef.current.style.cursor = "grabbing";
+  }
+
+  function handleClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (!onSeek || didDragRef.current) return;
+    const el = trackRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const px = e.clientX - rect.left + el.scrollLeft;
+    onSeek(pxToFilmMs(px));
   }
 
   return (
@@ -189,6 +235,7 @@ export function StickyFilmStrip({
         className="h-full overflow-x-auto overflow-y-hidden select-none [&::-webkit-scrollbar]:hidden"
         style={{ scrollbarWidth: "none" }}
         onMouseDown={handleMouseDown}
+        onClick={handleClick}
       >
         <div
           className="h-full flex flex-col py-2 gap-0.5"
@@ -223,6 +270,24 @@ export function StickyFilmStrip({
               );
             })}
           </div>
+
+          {/* Playhead — absolute over both ruler and clip rows */}
+          {playheadMs !== undefined && (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: filmTimeToPx(playheadMs),
+                width: 2,
+                background: "white",
+                zIndex: 20,
+                pointerEvents: "none",
+                transform: "translateX(-50%)",
+              }}
+              aria-hidden
+            />
+          )}
 
           {/* Clip row — framed with blue border */}
           <div

@@ -15,18 +15,27 @@
 
 ## Current Phase
 
-**Phase 2 — Batch H COMPLETE (2026-05-09). Next: Batch I — Branding & Visual Identity.**
+**Phase 2 — Film Preview iteration COMPLETE (2026-05-12). Batch I (Branding) DEFERRED.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch H shipped.** Next: Batch I — Branding & Visual Identity (RushCut logo SVG, Tauri icon replacement, bottom-tab-bar RC wordmark placeholder). Spec in `docs/PRD-DEV.md`.
+**Film Preview iteration shipped (2026-05-12) + Batch I (seek stutter partial, 2026-05-12):**
 
-Candidates if Batch I is deferred:
-- Timeline HUD discoverability tooltips (Ctrl+scroll zoom, drag to pan hints)
-- Music bar below clip track in StickyFilmStrip
-- Drag clip from pantry to filmstrip (large DnD feature)
+- **Film timeline playhead**: `playheadMs?: number` prop on `StickyFilmStrip`; white 2px absolute bar at `filmTimeToPx(playheadMs)`. `filmPositionMs` computed in Trimmer: elapsed ms of completed clips + offset within current clip. Scrubs live as film plays.
+- **TrimBar removed in film mode**: film playback shows only the main film timeline with playhead — no per-clip waveform strip.
+- **Click-to-seek on film timeline**: `onSeek?: (filmMs: number) => void` prop + `pxToFilmMs()` inverse mapping in StickyFilmStrip. Drag guard (`didDragRef`, 4px threshold) prevents pan from triggering seek. Trimmer passes `onSeek={viewMode === "film" ? seekFilmTo : undefined}`.
+- **Dual-buffer seamless playback**: two persistent `<video>` elements (`filmVideoARef` / `filmVideoBRef`), ping-pong slots A/B. `loadIntoSlot` / `preloadIntoSlot` / `advanceFilmClip` / `seekFilmTo`. Visibility via imperative `ref.style.opacity` writes (`setSlotVisible`), not React state.
+- **Seek stutter (cross-clip) — PARTIALLY FIXED**: `didDragRef` reset bug fixed (click-to-seek now works on first visit and after panning). Frame-0 flash remains. Root cause: WebView2 GPU compositor presents frame 0 before the seeked frame even after rVFC. Full diagnosis + Option F (play→pause repaint with mute) documented in `.claude/notes/film-seek-stutter.md`. PRD backlog updated.
+- **E2E blocked**: msedgedriver v146 vs Edge v148 mismatch — update msedgedriver before next E2E run (see LEARNINGS.md).
+- **PRD additions (this session)**: "TrimBar: Highlight Already-Included Regions"; "Film Seek: Cross-Clip Stutter Fix" (updated); "Timeline HUD: Auto-Fit Scale When Clip Added".
+
+**Next candidates:**
+- **msedgedriver update** (blocker for E2E) — download v148 from MS Edge WebDriver site
+- Film seek stutter — Option F: play→pause repaint with mute (see notes file)
+- Timeline HUD auto-fit when clip added (PRD backlog — `StickyFilmStrip.tsx` only)
+- TrimBar already-included region overlay (PRD backlog)
 
 **Batch G — Ruler-based proportional timeline for StickyFilmStrip COMPLETE (2026-05-09):**
 - Full rewrite of `StickyFilmStrip.tsx`: proportional clip tiles (`trimmedMs * pxPerMs`, min 40px)

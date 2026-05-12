@@ -106,6 +106,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`subprocess.run(cmd, check=True)` with list args** handles paths with spaces correctly; no `shell=True` needed.
 - **WSL2 `/tmp/<job_id>/` accumulates 1-3 GB per render** — `render.py` creates `TMP_BASE / job_id` for normalised intermediates; they persist until WSL2 shuts down if not explicitly deleted. Fix: `shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)` in `run.py` immediately after `shutil.copy2` succeeds. Wrapup cleans crash orphans via `wsl -- sh -c 'rm -rf /tmp/*/'`. Proxies in `%APPDATA%\rushcut\proxies\` are a persistent cache — do NOT clean those.
 
+## WebView2 — GPU compositor lag after `seeked` event; `requestVideoFrameCallback` fires for frame 0
+
+**Problem:** After a video `src` change + `load()` + seek, the `seeked` JS event fires before the GPU compositor has committed the decoded frame. Calling `setSlotVisible` immediately in `seeked` shows frame 0 rather than the seeked frame. `requestVideoFrameCallback` (rVFC) is supposed to fire when the compositor presents a frame — but in WebView2 after a src change + seek, rVFC fires for the first frame the compositor presents, which appears to be frame 0 rather than the seek-target frame, at least for the first rVFC cycle after the src change.
+**Solution (unresolved — open bug):** Best candidate fix (Option F): after `seeked`, call `v.muted=true; v.play().then(() => { v.pause(); v.muted=false; setSlotVisible(slot); v.play(); })`. This is the "play→pause repaint" trick already proven for the clip-mode video. The temporary mute suppresses the audio blip. See `.claude/notes/film-seek-stutter.md` for full diagnosis and all attempted approaches.
+**Context:** `src/pages/Trimmer.tsx` `loadIntoSlot` → `activate()`. Only affects cross-clip seeks in film mode; same-clip seeks are unaffected.
+
+---
+
+## WebView2 — msedgedriver version must exactly match Edge version
+
+**Problem:** After Edge/WebView2 auto-updates, the msedgedriver binary in the project becomes mismatched ("This version of Microsoft Edge WebDriver only supports Microsoft Edge version 146, Current browser version is 148") and all WDIO E2E specs fail immediately with a session creation error — no specs run, all show as FAILED.
+**Solution:** Download matching msedgedriver from https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/ and replace the binary in the project (wherever `wdio.conf.ts` points — check `services: [["edgedriver", { edgedriverCustomPath: "..." }]]`). Do this before blaming code changes for a test-suite regression.
+**Context:** Any session running `pnpm test:e2e*`. Check Edge version first: `(Get-Item "C:\Program Files (x86)\Microsoft\EdgeWebView\Application\*\msedge.exe").VersionInfo.ProductVersion`.
+
+---
+
 ## WebView2 — `<video>` elements in persistent HUD components autoplay on navigation
 
 **Problem:** `<video>` elements inside `StickyFilmStrip` (or any component that persists across route changes) begin playing when the user navigates between screens, because React re-mounts the component and `autoPlay` / `loadeddata` event handlers fire again. With 7 simultaneous video elements, this creates concurrent decode/play cycles, network traffic, and audible audio bleed.
