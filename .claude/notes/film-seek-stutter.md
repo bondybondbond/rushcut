@@ -75,7 +75,24 @@ After `seeked` fires:
 ### Option G — Dedicate a hidden "seek canvas" for frame rendering
 Use `OffscreenCanvas` + `requestAnimationFrame` to composite the incoming slot off-screen while hidden. Show only when the OffscreenCanvas matches the target frame. Requires `transferControlToOffscreen()` — unsupported in some WebView2 builds.
 
-## Recommended next step
+## Option H — cross-slot load with rVFC mediaTime gate — PASS (2026-05-13)
+
+**The fix.** Two reinforcing mechanisms in `Trimmer.tsx`:
+
+1. **`gateFrameRevealThen(v, slot, thisGen, targetSec, onReady)`** helper — calls `v.play()`, then uses `requestVideoFrameCallback` to inspect each composited frame's `metadata.mediaTime`. Only invokes `onReady()` once a frame is at/near `targetSec` (`TOLERANCE_SEC = 0.05`, `MAX_WAITS = 30` safety cap). Frame-0 leaks fail the gate and are skipped silently.
+2. **`crossSeekToClip(idx, seekMs)`** — for user-initiated cross-clip seeks via `seekFilmTo`, loads the new clip into the **opposite** slot (not the active one) and uses the gate to delay the visibility swap until the new slot has rendered the seek-target frame. The outgoing slot remains visible the whole time, so the user sees a clean cut: outgoing-frame → seek-target frame of new clip. No hidden gap, no frame 0.
+
+**Why Option F failed.** `v.play().then(() => v.pause())` resolves when audio playback starts, not when the seek-target video frame is composited. The compositor often presents frame 0 first; `v.pause()` then froze at frame 0; reveal pinned to frame 0; user saw the flash. The plan-mode verification used screenshots taken after `v.pause()` and missed this entirely. Option F has been removed.
+
+**Verification (2026-05-13).** Instrumented both film `<video>` elements with rVFC `mediaTime` logging via chrome-devtools MCP. Dispatched cross-clip clicks during continuous playback and rapid-fire scrubbing (5 seeks in ~800ms).
+- Single seek: opposite slot stayed at opacity=0 while presenting frames at mediaTime=35.2 → 35.3 (hidden), revealed at mediaTime=35.4. No frame at opacity=1 with mediaTime < target.
+- Rapid-fire (clip1→clip3→clip1→clip2→clip3 in <1s): zero opacity=1 frames with mediaTime < 1.0. Gate held under stress. No console errors. No safety-cap warnings.
+
+**Why this works.** The opposite-slot routing mirrors the proven `advanceFilmClip` pattern for end-of-clip transitions — same architecture, applied to user-clicked seeks. The rVFC `metadata.mediaTime` gate gives us a per-frame ground truth on what the compositor is actually presenting, which `seeked` and `play().then()` do not.
+
+---
+
+## Previous attempt (Option F — superseded, did not fix the playing-state case)
 **Option F** — play→pause repaint before reveal, with temporary mute to suppress audio blip:
 ```tsx
 function activate() {

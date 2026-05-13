@@ -349,6 +349,53 @@ export default function Trimmer() {
     if (vB) { vB.style.opacity = slot === "b" ? "1" : "0"; vB.style.pointerEvents = slot === "b" ? "" : "none"; }
   }
 
+  /**
+   * Plays `v` and reveals via `onReady` only once rVFC presents a frame whose
+   * mediaTime is at/near `targetSec` — prevents frame-0 leak after src+seek on
+   * WebView2 (compositor may present the loaded frame before the seeked frame
+   * is decoded). slotGenRef gate invalidates stale callbacks when superseded.
+   */
+  function gateFrameRevealThen(
+    v: HTMLVideoElement,
+    slot: "a" | "b",
+    thisGen: number,
+    targetSec: number,
+    onReady: () => void,
+  ) {
+    const TOLERANCE_SEC = 0.05;
+    const MAX_WAITS = 30;
+    let waits = 0;
+    v.play().catch(() => {});
+
+    const rVFC = (v as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: (now: number, metadata: { mediaTime: number }) => void) => void;
+    }).requestVideoFrameCallback;
+
+    function check(_now: number, metadata: { mediaTime: number }) {
+      if (!filmModeRef.current || slotGenRef.current[slot] !== thisGen) return;
+      const frameTime = metadata?.mediaTime ?? v.currentTime;
+      if (frameTime >= targetSec - TOLERANCE_SEC) {
+        onReady();
+        return;
+      }
+      if (waits >= MAX_WAITS) {
+        console.warn("film-seek: rVFC mediaTime gate hit safety cap");
+        onReady();
+        return;
+      }
+      waits++;
+      rVFC?.call(v, check);
+    }
+
+    if (rVFC) {
+      rVFC.call(v, check);
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (filmModeRef.current && slotGenRef.current[slot] === thisGen) onReady();
+      }));
+    }
+  }
+
   /** Load clip[idx] into `slot`, seek to startMs (defaults to in_ms), then play and preload next. */
   function loadIntoSlot(idx: number, slot: "a" | "b", startMs?: number) {
     const filmClip = inFilmRef.current[idx];
@@ -369,27 +416,14 @@ export default function Trimmer() {
     function activate() {
       if (!filmModeRef.current || !v || slotGenRef.current[slot] !== thisGen) return;
       activeFilmSlotRef.current = slot;
-      // Start playing from the seeked position (audio starts, video still hidden)
-      v.play().catch(() => {});
-      // Show only after the frame is actually composited — requestVideoFrameCallback
-      // fires when the GPU has committed the decoded frame, eliminating the frame-0 flash.
-      const rVFC = (v as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => void }).requestVideoFrameCallback;
-      if (rVFC) {
-        rVFC.call(v, () => {
-          if (filmModeRef.current && slotGenRef.current[slot] === thisGen) setSlotVisible(slot);
-        });
-      } else {
-        // Fallback: double-rAF gives GPU compositor one cycle to update
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          if (filmModeRef.current && slotGenRef.current[slot] === thisGen) setSlotVisible(slot);
-        }));
-      }
-      // Preload the clip after this one into the other slot
-      const nextIdx = idx + 1;
-      if (nextIdx < inFilmRef.current.length) {
-        const nextSlot: "a" | "b" = slot === "a" ? "b" : "a";
-        preloadIntoSlot(nextIdx, nextSlot);
-      }
+      gateFrameRevealThen(v, slot, thisGen, seekMs / 1000, () => {
+        setSlotVisible(slot);
+        const nextIdx = idx + 1;
+        if (nextIdx < inFilmRef.current.length) {
+          const nextSlot: "a" | "b" = slot === "a" ? "b" : "a";
+          preloadIntoSlot(nextIdx, nextSlot);
+        }
+      });
     }
 
     // Hide immediately so frame 0 never shows while the decoder seeks to startMs
@@ -404,6 +438,48 @@ export default function Trimmer() {
       v.currentTime = seekMs / 1000;
     }, { once: true });
     v.load();
+  }
+
+  /**
+   * Cross-clip seek during playback: load clip[idx] into the OPPOSITE slot
+   * (keeps outgoing clip's frame visible), then swap visibility only after rVFC
+   * confirms the new slot has rendered the seek-target frame. Eliminates the
+   * frame-0 flash that occurs when loading into the active slot.
+   */
+  function crossSeekToClip(idx: number, seekMs: number) {
+    const filmClip = inFilmRef.current[idx];
+    if (!filmClip) return;
+    const currentSlot = activeFilmSlotRef.current;
+    const targetSlot: "a" | "b" = currentSlot === "a" ? "b" : "a";
+    const newV = getFilmVideo(targetSlot);
+    const oldV = getFilmVideo(currentSlot);
+    if (!newV) return;
+
+    const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+    slotGenRef.current[targetSlot]++;
+    const thisGen = slotGenRef.current[targetSlot];
+
+    // Do NOT touch currentSlot's opacity — leave outgoing frame visible.
+    newV.src = src;
+    newV.addEventListener("loadedmetadata", () => {
+      if (slotGenRef.current[targetSlot] !== thisGen || !filmModeRef.current) return;
+      newV.addEventListener("seeked", () => {
+        if (slotGenRef.current[targetSlot] !== thisGen || !filmModeRef.current) return;
+        gateFrameRevealThen(newV, targetSlot, thisGen, seekMs / 1000, () => {
+          filmPlayIdxRef.current = idx;
+          setFilmPlayIdx(idx);
+          activeFilmSlotRef.current = targetSlot;
+          setSlotVisible(targetSlot);
+          oldV?.pause();
+          const nextIdx = idx + 1;
+          if (nextIdx < inFilmRef.current.length) {
+            preloadIntoSlot(nextIdx, currentSlot);
+          }
+        });
+      }, { once: true });
+      newV.currentTime = seekMs / 1000;
+    }, { once: true });
+    newV.load();
   }
 
   /** Pre-load clip[idx] into `slot` and seek to in_ms — do not play. */
@@ -487,9 +563,10 @@ export default function Trimmer() {
             v.play().catch(() => {});
           }
         } else {
-          // Different clip — load it into the active slot
-          getFilmVideo(activeFilmSlotRef.current)?.pause();
-          loadIntoSlot(i, activeFilmSlotRef.current, seekToMs);
+          // Different clip — Option H: cross-slot load with rVFC mediaTime gate.
+          // Loads into the OPPOSITE slot while outgoing frame stays visible;
+          // swap only when the new slot's compositor frame is at/near seekTo.
+          crossSeekToClip(i, seekToMs);
         }
         return;
       }

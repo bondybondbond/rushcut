@@ -15,27 +15,25 @@
 
 ## Current Phase
 
-**Phase 2 — Film Preview iteration COMPLETE (2026-05-12). Batch I (Branding) DEFERRED.**
+**Phase 2 — Film Preview iteration COMPLETE + Film Seek Stutter FIXED (2026-05-13). Batch I (Branding) DEFERRED.**
 
 ---
 
 ## Immediate Next Task
 
-**Film Preview iteration shipped (2026-05-12) + Batch I (seek stutter partial, 2026-05-12):**
+**Film seek stutter — Option H FIXED (2026-05-13):**
 
-- **Film timeline playhead**: `playheadMs?: number` prop on `StickyFilmStrip`; white 2px absolute bar at `filmTimeToPx(playheadMs)`. `filmPositionMs` computed in Trimmer: elapsed ms of completed clips + offset within current clip. Scrubs live as film plays.
-- **TrimBar removed in film mode**: film playback shows only the main film timeline with playhead — no per-clip waveform strip.
-- **Click-to-seek on film timeline**: `onSeek?: (filmMs: number) => void` prop + `pxToFilmMs()` inverse mapping in StickyFilmStrip. Drag guard (`didDragRef`, 4px threshold) prevents pan from triggering seek. Trimmer passes `onSeek={viewMode === "film" ? seekFilmTo : undefined}`.
-- **Dual-buffer seamless playback**: two persistent `<video>` elements (`filmVideoARef` / `filmVideoBRef`), ping-pong slots A/B. `loadIntoSlot` / `preloadIntoSlot` / `advanceFilmClip` / `seekFilmTo`. Visibility via imperative `ref.style.opacity` writes (`setSlotVisible`), not React state.
-- **Seek stutter (cross-clip) — PARTIALLY FIXED**: `didDragRef` reset bug fixed (click-to-seek now works on first visit and after panning). Frame-0 flash remains. Root cause: WebView2 GPU compositor presents frame 0 before the seeked frame even after rVFC. Full diagnosis + Option F (play→pause repaint with mute) documented in `.claude/notes/film-seek-stutter.md`. PRD backlog updated.
-- **E2E blocked**: msedgedriver v146 vs Edge v148 mismatch — update msedgedriver before next E2E run (see LEARNINGS.md).
-- **PRD additions (this session)**: "TrimBar: Highlight Already-Included Regions"; "Film Seek: Cross-Clip Stutter Fix" (updated); "Timeline HUD: Auto-Fit Scale When Clip Added".
+- **Cross-clip seek stutter fixed**: clicking a different clip in the film timeline during playback now cuts cleanly from the outgoing frame to the seek-target frame. No frame-0 flash.
+- **`gateFrameRevealThen(v, slot, thisGen, targetSec, onReady)`**: rVFC helper with `metadata.mediaTime` gate — skips frame-0 leaks, reveals only when compositor confirms seek-target frame. Safety cap `MAX_WAITS=30`. Double-rAF fallback when rVFC absent.
+- **`crossSeekToClip(idx, seekMs)`**: loads new clip into opposite slot; outgoing slot stays visible during load; atomic swap via `setSlotVisible(targetSlot)` + `oldV?.pause()` on onReady. Mirrors `advanceFilmClip` pattern.
+- **`activate()` in `loadIntoSlot` simplified**: Option F (play→pause with mute) removed; replaced by `gateFrameRevealThen`.
+- **E2E blocked**: msedgedriver v146 vs Edge v148 mismatch — download v148 from MS Edge WebDriver site (storage CDN unreachable from automation, requires manual browser download).
 
 **Next candidates:**
-- **msedgedriver update** (blocker for E2E) — download v148 from MS Edge WebDriver site
-- Film seek stutter — Option F: play→pause repaint with mute (see notes file)
+- **msedgedriver update** (blocker for E2E) — manual download v148 from https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/
 - Timeline HUD auto-fit when clip added (PRD backlog — `StickyFilmStrip.tsx` only)
 - TrimBar already-included region overlay (PRD backlog)
+- Batch I (Branding)
 
 **Batch G — Ruler-based proportional timeline for StickyFilmStrip COMPLETE (2026-05-09):**
 - Full rewrite of `StickyFilmStrip.tsx`: proportional clip tiles (`trimmedMs * pxPerMs`, min 40px)
