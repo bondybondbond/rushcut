@@ -37,10 +37,10 @@
 - **`activate()` in `loadIntoSlot` simplified**: Option F (play→pause with mute) removed; replaced by `gateFrameRevealThen`.
 - **E2E blocked**: msedgedriver v146 vs Edge v148 mismatch — download v148 from MS Edge WebDriver site (storage CDN unreachable from automation, requires manual browser download).
 
-**Next candidates:**
-- **msedgedriver update** (blocker for E2E) — manual download v148 from https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/
-- TrimBar already-included region overlay (PRD backlog)
-- Batch I (Branding)
+**Next up — pre-launch must-haves (PRD-DEV.md Batches J + K):**
+- **Batch J** — Per-clip mute/volume (Trimmer + pipeline) + music crossfade-out (Sound screen + music.py)
+- **Batch K** — Text cards start/end + 5 transitions + shuffle button + transition in/out; renames `/transitions/` → `/edit/`
+- **msedgedriver v148 confirmed** — E2E blocker cleared (already installed)
 
 **Timeline HUD auto-fit — COMPLETE (2026-05-14):**
 - `isAutoFitRef` (imperative) + `isAutoFit` state (reactive) dual-tracking pattern
