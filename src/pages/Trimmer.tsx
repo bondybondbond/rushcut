@@ -613,6 +613,16 @@ export default function Trimmer() {
   const soundMoodVal = (() => { try { const raw = sessionStorage.getItem(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })();
 
   const cutPaths = new Set(clips.filter(c => c.include === 1).map(c => c.local_path));
+  const alreadyCutRegions = selectedClip
+    ? clips
+        .filter(c =>
+          c.include === 1 &&
+          c.local_path === selectedClip.local_path &&
+          c.id !== selectedClip.id
+        )
+        .map(c => ({ inMs: c.in_ms ?? 0, outMs: c.out_ms ?? c.duration_ms ?? 0 }))
+        .filter(r => r.outMs > r.inMs)
+    : [];
   const pantryClips = sourceClips.map(c => ({
     ...c,
     include: cutPaths.has(c.local_path) ? 1 : 0,
@@ -898,6 +908,7 @@ export default function Trimmer() {
                 outMs={outMs}
                 currentMs={currentMs}
                 waveformData={selectedClip?.waveform_data}
+                alreadyCutRegions={alreadyCutRegions}
                 onInChange={handleInChange}
                 onOutChange={handleOutChange}
                 onCommit={saveCurrentClip}

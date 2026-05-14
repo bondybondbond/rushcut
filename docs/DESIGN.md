@@ -465,6 +465,33 @@ Used for transient feedback (e.g. duplicate-cut guard). Not a modal — no block
 
 ---
 
+## TrimBar — Already-Included Region Overlay
+
+When a source clip has been cut into the film one or more times already, those regions are marked on the TrimBar with a subtle green tint. Helps users avoid accidentally duplicating a segment.
+
+### Visual spec
+
+| Property | Value |
+|---|---|
+| Fill | `rgba(153, 179, 255, 0.26)` — `#99B3FF` (badge blue) at 26% opacity |
+| Edges | Bracket gradient: edges 52%, fill 26%. `background: linear-gradient(to right, rgba(153,179,255,0.52) 0px, rgba(153,179,255,0.26) 10px, rgba(153,179,255,0.26) calc(100% - 10px), rgba(153,179,255,0.52) 100%)` |
+| Z-index | 2 — same tier as the waveform overlay; below selected region (z-3) |
+| Interactivity | `pointer-events-none` — purely decorative |
+
+### Micro-cut guard
+
+When the region is narrower than 2% of track width (`widthPct > 2`), use a flat fill (`rgba(153,179,255,0.30)`) instead of the bracket gradient — at very small widths the 10px bracket edges would consume the entire region.
+
+### Self-exclusion rule
+
+The filter in `Trimmer.tsx` excludes the *currently selected cut* (`c.id !== selectedClip.id`) so the cut being actively edited is never marked as "already included".
+
+### Malformed row guard
+
+`.filter(r => r.outMs > r.inMs)` — drops rows where `out_ms` or `duration_ms` is null/0, preventing zero-width ghost divs at position 0.
+
+---
+
 ## Persistent Timeline HUD (`StickyFilmStrip`)
 
 A read-only proportional timeline rendered inside EditorShell's timeline row (Trim, Arrange, Sound). Hidden on Render. Clip tile widths scale with trimmed duration; a ruler shows time ticks above the tiles. Supports Ctrl+scroll zoom and middle/left-drag pan.

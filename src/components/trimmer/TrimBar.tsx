@@ -14,6 +14,8 @@ interface TrimBarProps {
   onCommit: () => void;
   /** Called on track click (not handle drag) — seek video to that timestamp. */
   onSeek?: (ms: number) => void;
+  /** Other cuts from this source clip already committed to the film. Rendered as subtle green tint. */
+  alreadyCutRegions?: Array<{ inMs: number; outMs: number }>;
 }
 
 function fmtMs(ms: number): string {
@@ -38,6 +40,7 @@ export function TrimBar({
   onOutChange,
   onCommit,
   onSeek,
+  alreadyCutRegions,
 }: TrimBarProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef<"in" | "out" | null>(null);
@@ -134,11 +137,10 @@ export function TrimBar({
         Track z-index layer order (strict — do not reorder):
           z-0  base track surface (dark neutral bg)
           z-1  inactive region overlays (darker)
-          z-3  selected region highlight (above any future waveform at z-2)
+          z-2  waveform PNG overlay (screen blend) + already-cut region tints (green, same tier)
+          z-3  selected region highlight (above waveform and cut tints)
           z-10 playhead line
           z-20 drag handles (IN/OUT)
-          z-2  waveform PNG overlay (dim, stretched to fill track)
-          (z-3 selected region is above waveform)
       */}
       <div
         ref={trackRef}
@@ -167,6 +169,29 @@ export function TrimBar({
             alt=""
           />
         )}
+
+        {/* Already-cut region overlays — z-2 (same tier as waveform; screen blend composites on top) */}
+        {alreadyCutRegions?.map((r, i) => {
+          const rInPct  = durationMs > 0 ? (r.inMs  / durationMs) * 100 : 0;
+          const rOutPct = durationMs > 0 ? (r.outMs / durationMs) * 100 : 0;
+          const widthPct = rOutPct - rInPct;
+          // Bracket gradient: edges brighter than fill so cut boundaries read clearly
+          const bg = widthPct > 2
+            ? "linear-gradient(to right, rgba(153,179,255,0.52) 0px, rgba(153,179,255,0.26) 10px, rgba(153,179,255,0.26) calc(100% - 10px), rgba(153,179,255,0.52) 100%)"
+            : "rgba(153,179,255,0.30)";
+          return (
+            <div
+              key={i}
+              className="absolute top-0 h-full pointer-events-none"
+              style={{
+                left: `${rInPct}%`,
+                width: `${widthPct}%`,
+                background: bg,
+                zIndex: 2,
+              }}
+            />
+          );
+        })}
 
         {/* Selected region highlight — z-3 (must be above waveform when added) */}
         <div

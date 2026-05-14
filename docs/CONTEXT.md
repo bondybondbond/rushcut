@@ -15,11 +15,19 @@
 
 ## Current Phase
 
-**Phase 2 — Film Preview iteration COMPLETE + Film Seek Stutter FIXED (2026-05-13). Batch I (Branding) DEFERRED.**
+**Phase 2 — Film Preview iteration COMPLETE + Film Seek Stutter FIXED (2026-05-13). TrimBar already-included overlay COMPLETE (2026-05-14). Batch I (Branding) DEFERRED.**
 
 ---
 
 ## Immediate Next Task
+
+**TrimBar already-included region overlay — COMPLETE (2026-05-14):**
+
+- `alreadyCutRegions` prop added to `TrimBar` — `Array<{ inMs; outMs }>` from Trimmer.tsx
+- Bracket gradient fill: `rgba(153,179,255,0.26)` fill, `rgba(153,179,255,0.52)` edges — `#99B3FF` blue
+- Z-index 2 (same tier as waveform); `pointer-events-none`; self-exclusion filter (`c.id !== selectedClip.id`); malformed row guard; micro-cut flat fallback (`widthPct ≤ 2`)
+- DESIGN.md updated with "TrimBar — Already-Included Region Overlay" pattern
+- 9/9 fast E2E PASS
 
 **Film seek stutter — Option H FIXED (2026-05-13):**
 

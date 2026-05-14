@@ -288,19 +288,9 @@ The bottom-right corner of the new shell (from Batch H) reserves space for a Rus
 
 ---
 
-## Backlog — TrimBar: Highlight Already-Included Regions
+## ~~Backlog — TrimBar: Highlight Already-Included Regions~~ DONE (2026-05-14)
 
-> **Future — Trimmer UX polish. Not blocking any current batch.**
-
-**Problem:** Once a clip has been trimmed and added to the film, the user can continue trimming the same source clip to add further cuts. But there is no visual indication of what has already been included — the TrimBar shows a blank track with no memory of prior adds. The user cannot tell whether a region is already in the film, which makes multi-cut workflows from the same source confusing.
-
-**Reference behaviour:** DaVinci Resolve, Final Cut Pro, and Premiere all mark "in-use" or "subclipped" regions on the source clip timeline — typically a distinct fill colour or hatching on the included ranges.
-
-**Proposed fix:**
-- After each "Add to Film" action, compute the set of `(in_ms, out_ms)` ranges already in the film for the current source clip.
-- Render those ranges as a dim coloured overlay (e.g. `bg-[#FF8A65]/25` or `bg-[#99B3FF]/20`) on the TrimBar track, underneath the active selection region.
-- The currently-selected region continues to render as the bright peach overlay. Included regions render behind it at reduced opacity.
-- No interaction needed on these overlays — they are purely informational.
+> **Shipped.** `alreadyCutRegions` prop on `TrimBar`; `#99B3FF` bracket gradient (26% fill, 52% edges) at z-2; self-exclusion + malformed row + micro-cut guards. DESIGN.md extended. 9/9 fast E2E PASS.
 
 **Data available:** `clips.filter(c => c.include === 1 && c.local_path === selectedClip.local_path)` gives all film cuts from the same source. Each has `in_ms` / `out_ms`. Compute pixel positions the same way as the active trim handles.
 
