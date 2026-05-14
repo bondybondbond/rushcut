@@ -37,16 +37,17 @@ User decides. Pipeline executes. Every UI decision should reinforce this: give c
 
 ## Typography
 
-All sizes are 2 steps above base Tailwind defaults (i.e. never use `text-xs` for readable content).
+**Minimum readable text: `text-xs` (12px).** Never go below this for any interactive or readable element — buttons, hints, labels, chips. `text-sm` (14px) remains the floor for body content. The only permitted sub-12px text is purely decorative timeline overlay data (ruler ticks, clip sequence badges, duration labels inside StickyFilmStrip clip tiles) — those are visual data embedded in a dense graphic context, not readable running text.
 
-| Role            | Class                                   | Size        |
-| --------------- | --------------------------------------- | ----------- |
-| Page heading    | `text-3xl font-semibold text-[#FF8A65]` | 30px, peach |
-| Section heading | `text-xl font-medium text-[#e5e5e5]`    | 20px        |
-| Body / labels   | `text-base text-[#e5e5e5]`              | 16px        |
-| Secondary text  | `text-base text-[#a3a3a3]`              | 16px        |
-| Small label     | `text-sm text-[#a3a3a3]`                | 14px        |
-| Muted / hint    | `text-sm text-[#555555]`                | 14px        |
+| Role               | Class                                   | Size        |
+| ------------------ | --------------------------------------- | ----------- |
+| Page heading       | `text-3xl font-semibold text-[#FF8A65]` | 30px, peach |
+| Section heading    | `text-xl font-medium text-[#e5e5e5]`    | 20px        |
+| Body / labels      | `text-base text-[#e5e5e5]`              | 16px        |
+| Secondary text     | `text-base text-[#a3a3a3]`              | 16px        |
+| Small label        | `text-sm text-[#a3a3a3]`                | 14px        |
+| Muted / hint       | `text-sm text-[#555555]`                | 14px        |
+| Micro-control / UI chrome | `text-xs text-[#a3a3a3]`        | 12px — minimum floor for interactive/readable elements |
 
 ---
 
@@ -63,6 +64,26 @@ className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] 
 ```tsx
 className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
 ```
+
+### Micro-control pill (contextual UI chrome)
+
+Used for transient controls that appear conditionally inside a dense graphic component (e.g. the filmstrip "fit view" button). Single bordered pill containing an icon + label. Solid `bg-[#0a0a0a]` ensures it punches cleanly over any ruler or thumbnail content behind it. Uses `group` + `group-hover:` so the entire pill (icon + text) brightens as one unit.
+
+```tsx
+<button
+  onClick={handler}
+  className="absolute flex items-center gap-1.5 z-30 select-none group"
+  style={{ top: 4, right: 6 }}
+  title="Tooltip text"
+>
+  <span className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-white/30 bg-[#0a0a0a] text-[#a3a3a3] group-hover:text-[#e5e5e5] group-hover:border-white/55 transition-colors">
+    {/* icon */}
+    <span className="text-xs">label</span>
+  </span>
+</button>
+```
+
+Rules: `text-xs` (12px minimum), `text-[#a3a3a3]` resting, `text-[#e5e5e5]` on hover. Only render when relevant (`{!condition && <button>}`). `position: absolute` on a `relative` parent that does NOT scroll — keeps the button pinned regardless of inner scroll.
 
 ---
 
@@ -94,7 +115,7 @@ Always **green** (`#22c55e`), never white/grey.
 Chip active accent: `#99B3FF` (blue) — used for music mood, volume preset, transition chips.
 Card color-swatch selected ring: `#FF8A65` (peach) — kept for card background pickers only.
 
-**Chip text size: minimum `text-sm`.** Never `text-xs` — chip labels are readable interactive content, not decorative. Note: `SettingsPanel.tsx` currently uses `text-xs` on its chips (pre-15e deviation); new screens must use `text-sm`.
+**Chip text size: minimum `text-sm`.** Chips are readable interactive content — `text-sm` (14px) minimum, not `text-xs`. Note: `SettingsPanel.tsx` currently uses `text-xs` on its chips (pre-15e deviation); new screens must use `text-sm`. Micro-controls that are not chips (e.g. the filmstrip "fit view" button) may use `text-xs` (12px, the global minimum).
 
 ```tsx
 {/* Active */}

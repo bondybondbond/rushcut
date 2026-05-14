@@ -31,9 +31,16 @@
 
 **Next candidates:**
 - **msedgedriver update** (blocker for E2E) — manual download v148 from https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/
-- Timeline HUD auto-fit when clip added (PRD backlog — `StickyFilmStrip.tsx` only)
 - TrimBar already-included region overlay (PRD backlog)
 - Batch I (Branding)
+
+**Timeline HUD auto-fit — COMPLETE (2026-05-14):**
+- `isAutoFitRef` (imperative) + `isAutoFit` state (reactive) dual-tracking pattern
+- Clip add → fit-to-width + scroll-to-0 when in auto-fit mode; scroll-to-end when user has manually zoomed
+- Ctrl+scroll breaks auto-fit mode; "fit view" pill button restores it
+- "fit view" pill: single bordered pill (`bg-[#0a0a0a]`, `border-white/30`, `group-hover`) with SVG ⟷ + "fit view" label — positioned `top: 4, right: 6` on non-scrolling root div; only visible when `!isAutoFit`
+- Text polish: TrimBar hint text → `text-xs text-[#e5e5e5]`; "selected" label → solid white; ruler tick labels → solid white
+- DESIGN.md updated: micro-control pill button pattern documented; minimum text size rule codified at `text-xs`
 
 **Batch G — Ruler-based proportional timeline for StickyFilmStrip COMPLETE (2026-05-09):**
 - Full rewrite of `StickyFilmStrip.tsx`: proportional clip tiles (`trimmedMs * pxPerMs`, min 40px)

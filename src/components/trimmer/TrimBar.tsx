@@ -108,7 +108,7 @@ export function TrimBar({
       {/* Left = 0:00 (always), Centre = selected duration, Right = total duration */}
       <div className="flex justify-between text-xs font-mono mb-1 px-1">
         <span className="text-[#e5e5e5]">0:00</span>
-        <span className="text-[#e5e5e5]/50">{fmtMs(outMs - inMs)} selected</span>
+        <span className="text-[#e5e5e5]">{fmtMs(outMs - inMs)} selected</span>
         <span className="text-[#e5e5e5]">{fmtMs(durationMs)}</span>
       </div>
 
@@ -225,7 +225,7 @@ export function TrimBar({
         </div>
       </div>
 
-      <p className="text-[10px] text-[#e5e5e5]/30 mt-1.5 text-center">
+      <p className="text-xs text-[#e5e5e5] mt-1.5 text-center">
         Click to seek &middot; drag handles to trim &middot; saves on release
       </p>
     </div>

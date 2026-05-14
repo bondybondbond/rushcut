@@ -40,6 +40,8 @@ export function StickyFilmStrip({
   const dragStartXRef = useRef(0);
   const scrollStartRef = useRef(0);
   const didDragRef = useRef(false); // distinguishes pan from click
+  const isAutoFitRef = useRef(true);              // imperative: breaks on manual zoom
+  const [isAutoFit, setIsAutoFit] = useState(true); // reactive: drives button visibility
 
   const inFilm = clips
     .filter((c) => c.include === 1)
@@ -147,15 +149,23 @@ export function StickyFilmStrip({
     return () => ro.disconnect();
   }, [totalMs]);
 
-  // Auto-scroll to end when a clip is added to the film
+  // Auto-fit or scroll-to-end when a clip is added to the film
   useEffect(() => {
     const cur = inFilm.length;
     if (cur > prevFilmLengthRef.current && hasInitialized.current && trackRef.current) {
       const el = trackRef.current;
-      requestAnimationFrame(() => { if (el) el.scrollLeft = el.scrollWidth; });
+      if (isAutoFitRef.current && totalMs > 0) {
+        const containerWidth = el.getBoundingClientRect().width;
+        if (containerWidth > 0) {
+          setPxPerMs(Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, containerWidth / totalMs)));
+          el.scrollLeft = 0;
+        }
+      } else {
+        requestAnimationFrame(() => { if (el) el.scrollLeft = el.scrollWidth; });
+      }
     }
     prevFilmLengthRef.current = cur;
-  }, [inFilm.length]);
+  }, [inFilm.length, totalMs]);
 
   // Non-passive Ctrl+scroll zoom (passive wheel blocks preventDefault)
   useEffect(() => {
@@ -164,6 +174,8 @@ export function StickyFilmStrip({
     function onWheel(e: WheelEvent) {
       if (!e.ctrlKey) return;
       e.preventDefault();
+      isAutoFitRef.current = false;
+      setIsAutoFit(false);
       const ratio = e.deltaY < 0 ? 1.12 : 1 / 1.12;
       const rect = el!.getBoundingClientRect();
       const cursorX = e.clientX - rect.left + el!.scrollLeft;
@@ -214,6 +226,18 @@ export function StickyFilmStrip({
     if (trackRef.current) trackRef.current.style.cursor = "grabbing";
   }
 
+  function handleFitView() {
+    const el = trackRef.current;
+    if (!el || totalMs <= 0) return;
+    const containerWidth = el.getBoundingClientRect().width;
+    if (containerWidth > 0) {
+      setPxPerMs(Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, containerWidth / totalMs)));
+      isAutoFitRef.current = true;
+      setIsAutoFit(true);
+      el.scrollLeft = 0;
+    }
+  }
+
   function handleClick(e: React.MouseEvent<HTMLDivElement>) {
     if (!onSeek || didDragRef.current) return;
     const el = trackRef.current;
@@ -226,7 +250,7 @@ export function StickyFilmStrip({
   return (
     <div
       data-testid="sticky-filmstrip"
-      className="flex-shrink-0 bg-[#0a0a0a]"
+      className="relative flex-shrink-0 bg-[#0a0a0a]"
       style={{ height: 100 }}
     >
       {/* Scrollable proportional track — full width */}
@@ -247,7 +271,7 @@ export function StickyFilmStrip({
               <span
                 key={`lbl-${tick.ms}`}
                 style={{ position: "absolute", top: 8, left: tick.x, transform: "translateX(-50%)" }}
-                className="text-[10px] font-mono text-white/70 whitespace-nowrap leading-none"
+                className="text-[10px] font-mono text-white whitespace-nowrap leading-none"
               >
                 {fmtMs(tick.ms)}
               </span>
@@ -376,6 +400,22 @@ export function StickyFilmStrip({
           </div>
         </div>
       </div>
+      {!isAutoFit && (
+        <button
+          onClick={handleFitView}
+          className="absolute flex items-center gap-1.5 z-30 select-none group"
+          style={{ top: 4, right: 6 }}
+          title="Reset zoom to fit all clips"
+        >
+          <span className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-white/30 bg-[#0a0a0a] text-[#a3a3a3] group-hover:text-[#e5e5e5] group-hover:border-white/55 transition-colors">
+            <svg viewBox="0 0 20 8" width="16" height="7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M7 4H1M1 4l2.5-2M1 4l2.5 2" />
+              <path d="M13 4h6M19 4l-2.5-2M19 4l-2.5 2" />
+            </svg>
+            <span className="text-xs">fit view</span>
+          </span>
+        </button>
+      )}
     </div>
   );
 }

@@ -325,29 +325,9 @@ Clicking the film timeline to seek to a position in a **different** clip from th
 
 ---
 
-## Backlog — Timeline HUD: Auto-Fit Scale When Clip Added
+## ~~Backlog — Timeline HUD: Auto-Fit Scale When Clip Added~~ ✅ SHIPPED 2026-05-14
 
-> **UX bug — film timeline zoom resets to new clip instead of showing full film.**
-
-**Problem:** When a new clip is added to the film, the auto-fit `ResizeObserver` scale is already locked (`hasInitialized.current = true`), so the zoom does not change. But `totalMs` has grown and the proportional clip widths at the current `pxPerMs` push the new clip off-screen. The browser auto-scrolls to the new clip end, leaving the user zoomed in on only the last clip with the rest of the film hidden off-screen to the left.
-
-**Desired behaviour:** When a new clip is added, re-fit the timeline scale so that the entire film (`0` to `totalMs + TRAIL_PAD_MS`) fits within the visible track width. This matches the initial auto-fit logic: `pxPerMs = viewportWidth / totalMs`, clamped to `[MIN_PX_PER_MS, MAX_PX_PER_MS]`. The user sees all clips laid out at once, plus the new clip naturally extending the right edge (~+5% of total duration via `TRAIL_PAD_MS`).
-
-**Proposed fix (`StickyFilmStrip.tsx`):**
-- In the `useEffect([inFilm.length])` that currently auto-scrolls to end, also re-compute and set `pxPerMs`:
-  ```tsx
-  if (cur > prevFilmLengthRef.current && trackRef.current) {
-    const w = trackRef.current.getBoundingClientRect().width;
-    if (w > 0 && totalMs > 0) {
-      setPxPerMs(Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, w / totalMs)));
-    }
-    // Remove the auto-scroll-to-end: at fit scale the whole film is visible, no scroll needed
-  }
-  ```
-- Remove (or suppress) the `requestAnimationFrame(() => el.scrollLeft = el.scrollWidth)` scroll call — at fit scale the user can see everything without scrolling.
-- The user can then Ctrl+scroll to zoom in on any region.
-
-**Scope:** `StickyFilmStrip.tsx` only. No DB or pipeline changes.
+`StickyFilmStrip.tsx` — auto-fit on clip add (fit-to-width + scroll-to-0); manual zoom breaks auto-fit mode; "fit view" pill button restores it. Stale `totalMs` closure bug also fixed (added to dep array).
 
 ---
 
