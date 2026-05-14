@@ -38,8 +38,8 @@
 - **E2E blocked**: msedgedriver v146 vs Edge v148 mismatch — download v148 from MS Edge WebDriver site (storage CDN unreachable from automation, requires manual browser download).
 
 **Next up — pre-launch must-haves (PRD-DEV.md Batches J + K):**
-- **Batch J** — Per-clip mute/volume (Trimmer + pipeline) + music crossfade-out (Sound screen + music.py)
-- **Batch K** — Text cards start/end + 5 transitions + shuffle button + transition in/out; renames `/transitions/` → `/edit/`
+- **Batch J** — Arrange screen (`/arrange/:projectId`): film timeline with per-clip volume + zoom (focal point click + ratio chips). Quick Preview render (~15s, 480p, proxy-only) on Sound screen so users can hear music before exporting. Music crossfade-out chips on Sound screen.
+- **Batch K** — Text cards (start/end), 5 transitions + shuffle + first/last cut. `/transitions/` → `/edit/` rename with tabs.
 - **msedgedriver v148 confirmed** — E2E blocker cleared (already installed)
 
 **Timeline HUD auto-fit — COMPLETE (2026-05-14):**
