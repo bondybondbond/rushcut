@@ -237,20 +237,29 @@ The current shell puts navigation at the top (StepNav breadcrumb) with a burger 
 
 ---
 
-## Batch J — Arrange Screen (Per-Clip Volume + Zoom)
+## Batch J — Arrange Screen: Clips Tab (Per-Clip Volume + Zoom)
 
 > **Status: PLANNED — pre-launch must-have.**
-> **Scope: New `/arrange/:projectId` route. Film timeline click-to-select. Per-clip volume (new DB column + pipeline) and zoom (existing DB + pipeline, new UI). Preview in Batch K.**
+> **Scope: Creates `/arrange/:projectId` (replaces `/transitions/`). Three-tab shell: Clips | Transitions | Cards. This batch ships the Clips tab only — Transitions tab content migrated from current screen, Cards tab placeholder. Per-clip volume DB + pipeline. Zoom UI only (DB + pipeline already exist).**
 
 ### Motivation
 
-Users need to adjust individual clip volume and zoom before they can produce a polished film. The Arrange tab is currently a placeholder — this batch activates it as the per-clip editing hub.
+Users need to adjust individual clip volume and zoom before they can produce a polished film. This batch consolidates the Arrange tab into a single multi-tab screen that Batches L and M will complete.
 
-### Screen layout
+### Screen architecture
 
-3-column EditorShell. No Media Pantry (left column blank). Film timeline at bottom. Right panel = per-clip controls when a clip is selected.
+`/arrange/:projectId` replaces `/transitions/:projectId`. The Arrange tab in the bottom bar already navigates to the transitions route — this batch renames the route and adds the tab shell. All existing `navigate("/transitions/")` calls updated. `wdio.conf.ts` + `transitions.spec.ts` URL updated. **Do not regress transitions.spec.ts** (route changes, content unchanged).
 
-**Film timeline:** Existing `StickyFilmStrip`. Clicking a clip tile selects it (peach border). Selected clip drives the right panel.
+**Tab bar within the screen:** `[Clips]  [Transitions]  [Cards]`
+- **Clips tab** (this batch): film timeline + per-clip controls
+- **Transitions tab** (this batch): migrated from current `/transitions/` content, unchanged
+- **Cards tab** (Batch L): placeholder "Coming soon" for now
+
+### Clips tab layout
+
+3-column EditorShell. No Media Pantry. Film timeline (StickyFilmStrip) at bottom. Right panel = per-clip controls when a clip is selected.
+
+**Film timeline:** Click a clip tile → selects it (peach border). Drives the right panel.
 
 **Right panel:**
 
@@ -261,22 +270,23 @@ Users need to adjust individual clip volume and zoom before they can produce a p
 
 ### DB + pipeline
 
-**DB:** Add `clip_volume REAL DEFAULT 1.0` column (additive migration, same pattern as existing).
+**DB:** Add `clip_volume REAL DEFAULT 1.0` column (additive migration).
 
 **Rust:** `update_clip_volume_cmd(clip_id: i64, volume: f32)` + `update_clip_volume()` db helper. `clip_volume` in `start_job` manifest alongside `focal_x`, `focal_y`, `zoom_mode`.
 
 **Pipeline (`render.py`):** Apply `[{i}:a]volume={clip_volume}` per clip before crossfade chain. Muted (volume=0): substitute `aevalsrc=0:c=stereo:d={dur}:r=48000` so filter graph stays valid.
 
-**Note:** `focal_x`/`focal_y`/`zoom_mode` already in DB + pipeline since Batch 14c — no pipeline change needed for zoom. Arrange screen is purely the UI surface.
+**Note:** `focal_x`/`focal_y`/`zoom_mode` already in DB + pipeline since Batch 14c — no pipeline change for zoom.
 
 ### Acceptance checks
 
-- [ ] Arrange screen loads at `/arrange/:projectId`; Arrange tab active in bottom bar
-- [ ] Clicking a clip shows volume + zoom controls in right panel
-- [ ] Volume slider + mute saves; muted clip silent in rendered output
-- [ ] Volume at 50% audibly quieter than 100% in rendered output
-- [ ] Zoom chip saves to DB; clip appears zoomed in rendered output
-- [ ] Focal point click sets visible dot; zoom centres on that region in rendered output
+- [ ] Arrange screen loads at `/arrange/:projectId`; Arrange tab active; Clips / Transitions / Cards tabs visible
+- [ ] Transitions tab shows existing content (3 chips + description); transitions.spec.ts passes
+- [ ] Cards tab shows "coming soon" placeholder
+- [ ] Clicking a clip in the timeline shows volume + zoom controls in right panel
+- [ ] Volume slider + mute saves; muted clip silent in rendered output; 50% audibly quieter
+- [ ] Zoom chip saves; clip appears zoomed in rendered output
+- [ ] Focal point click sets visible dot; zoom centres on that region
 - [ ] No regression: Trimmer + Render flow unaffected
 
 ---
@@ -316,46 +326,43 @@ Users must hear music against their assembled clips before committing to a 2–3
 
 ---
 
-## Batch L — Edit Screen + Text Cards
+## Batch L — Arrange Screen: Cards Tab (Text Cards)
 
 > **Status: PLANNED — pre-launch must-have.**
-> **Scope: Rename `/transitions/` → `/edit/`. Add Text Cards tab (start/end cards). Transitions tab unchanged.**
+> **Prerequisite: Batch J (Arrange screen + tab shell must exist).**
+> **Scope: Activate the Cards tab on the Arrange screen. Start/end text cards UI + pipeline wiring.**
 
 ### Motivation
 
-A film that starts with raw footage and ends abruptly feels unfinished. Start and end cards give it structure. The route rename is the foundation for the multi-tab Edit screen.
+A film that starts with raw footage and ends abruptly feels unfinished. Start and end cards give it structure and identity.
 
 ### Changes
 
-**Route rename:** `/transitions/:projectId` → `/edit/:projectId`. All `navigate("/transitions/")` calls updated. `wdio.conf.ts` updated. `transitions.spec.ts` URL assertions updated. **Do not regress transitions.spec.ts.**
+**Cards tab** (replaces the Batch J placeholder):
 
-**Edit screen tabs:** `Transitions` (existing, unchanged) | `Text Cards` (new) | `Animations` (disabled, coming-soon).
+- **Start card:** toggle (default on) + main text input (max 60 chars, default = project name) + subtitle input (optional, max 80 chars). CSS preview: `160×90px` dark rect, peach title + white subtitle.
+- **End card:** toggle (default off) + single text input. CSS preview: same rect, centred white text.
 
-**Text Cards tab:**
-
-- Start card: toggle + main text input (max 60 chars, default = project name) + subtitle input (optional, max 80 chars). CSS preview: `160×90px` dark rect, peach title + white subtitle. Default on.
-- End card: toggle (default off) + single text input. CSS preview: same rect, centred white text.
-
-**sessionStorage:** `rc_cards_${projectId}` → `{ startCard: { enabled, text, subtitle }, endCard: { enabled, text } }`. Consumed by `buildConfig()`.
+**sessionStorage:** `rc_cards_${projectId}` → `{ startCard: { enabled, text, subtitle }, endCard: { enabled, text } }`. Consumed by `buildConfig()` at render time.
 
 **Pipeline (`cards.py` + `render.py`):** `cards.py` already generates H.264 card clips via Pillow. `render.py` prepends start card and appends end card to the clip sequence. Duration: 2s each. Canvas = output resolution.
 
 ### Acceptance checks
 
-- [ ] `/edit/:projectId` route works; Edit tab active; Transitions + Text Cards tabs present
-- [ ] Transitions tab content unchanged; transitions.spec.ts passes with updated URL
+- [ ] Cards tab active on Arrange screen; no longer shows "coming soon"
 - [ ] Start card appears at beginning of rendered film; title defaults to project name
 - [ ] Start card subtitle optional; renders when set
 - [ ] End card toggled on appears at end; toggled off = no end card
-- [ ] CSS preview matches final design tokens
+- [ ] CSS preview matches final design tokens (peach title, white body, dark bg)
+- [ ] No regression: Clips and Transitions tabs unaffected
 
 ---
 
-## Batch M — Transitions Expansion
+## Batch M — Arrange Screen: Transitions Tab Expansion
 
 > **Status: PLANNED — pre-launch must-have.**
-> **Prerequisite: Batch L (Edit screen route + tabs must exist).**
-> **Scope: 5 transition types, shuffle mode, first/last cut selectors.**
+> **Prerequisite: Batch J (Arrange screen + Transitions tab must exist).**
+> **Scope: 5 transition types, shuffle mode, first/last cut selectors. All within the existing Transitions tab.**
 
 ### Changes
 

@@ -37,9 +37,11 @@
 - **`activate()` in `loadIntoSlot` simplified**: Option F (play→pause with mute) removed; replaced by `gateFrameRevealThen`.
 - **E2E blocked**: msedgedriver v146 vs Edge v148 mismatch — download v148 from MS Edge WebDriver site (storage CDN unreachable from automation, requires manual browser download).
 
-**Next up — pre-launch must-haves (PRD-DEV.md Batches J + K):**
-- **Batch J** — Arrange screen (`/arrange/:projectId`): film timeline with per-clip volume + zoom (focal point click + ratio chips). Quick Preview render (~15s, 480p, proxy-only) on Sound screen so users can hear music before exporting. Music crossfade-out chips on Sound screen.
-- **Batch K** — Text cards (start/end), 5 transitions + shuffle + first/last cut. `/transitions/` → `/edit/` rename with tabs.
+**Next up — pre-launch must-haves (PRD-DEV.md Batches J–M):**
+- **Batch J** — Arrange screen (`/arrange/`, replaces `/transitions/`): 3-tab shell (Clips | Transitions | Cards). Clips tab: per-clip volume + zoom. Transitions tab: migrated from current screen. Cards tab: placeholder.
+- **Batch K** — Quick Preview render on Sound screen (~15s 480p) + music crossfade-out chips.
+- **Batch L** — Cards tab on Arrange screen (start/end text cards + pipeline). Prereq: J.
+- **Batch M** — Transitions tab expanded: 5 types + shuffle + first/last cut. Prereq: J.
 - **msedgedriver v148 confirmed** — E2E blocker cleared (already installed)
 
 **Timeline HUD auto-fit — COMPLETE (2026-05-14):**
