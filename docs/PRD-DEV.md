@@ -1,4 +1,4 @@
-# RushCut — Phase 2 Build Plan
+﻿# RushCut — Phase 2 Build Plan
 
 > **Phase goal:** The founder can upload a full 60+ clip DJI session, have RushCut intelligently filter and compile it into a 3–6 min film with music, card text, zoom, and smart moment selection — a film they're proud enough to publish.
 > 
@@ -237,157 +237,156 @@ The current shell puts navigation at the top (StepNav breadcrumb) with a burger 
 
 ---
 
-## Batch J — Arrange Screen + Per-Clip Controls
+## Batch J — Arrange Screen (Per-Clip Volume + Zoom)
 
 > **Status: PLANNED — pre-launch must-have.**
-> **Scope: Activates the "Arrange" tab as a per-clip editing hub. Per-clip volume + zoom. Film preview (quick render). No new DB routes beyond one additive column.**
+> **Scope: New `/arrange/:projectId` route. Film timeline click-to-select. Per-clip volume (new DB column + pipeline) and zoom (existing DB + pipeline, new UI). Preview in Batch K.**
 
 ### Motivation
 
-The "Arrange" tab in the bottom bar is currently unused. This batch makes it the primary editing surface for per-clip adjustments before export. Clicking a clip in the film timeline opens a side panel with volume and zoom controls. A "Preview Film" button runs a fast low-quality render (~15s) so users can hear the music against their clips, catch loud/quiet clips, and verify the edit — without waiting for a full 2–3 minute export.
+Users need to adjust individual clip volume and zoom before they can produce a polished film. The Arrange tab is currently a placeholder — this batch activates it as the per-clip editing hub.
 
-The key feedback loop this enables:
-1. User previews → hears that one clip is inaudible under music → raises that clip's volume → re-previews → exports confidently.
-2. User previews → decides a clip needs a tighter zoom → sets focal point + ratio → re-previews.
+### Screen layout
 
-### J1 — Arrange screen (`/arrange/:projectId`)
+3-column EditorShell. No Media Pantry (left column blank). Film timeline at bottom. Right panel = per-clip controls when a clip is selected.
 
-**New route.** Bottom tab "Arrange" navigates here. Layout mirrors Trimmer — same 3-column EditorShell with film timeline, but **no Media Pantry**. Left column is blank (or a compact clip list for jumping).
+**Film timeline:** Existing `StickyFilmStrip`. Clicking a clip tile selects it (peach border). Selected clip drives the right panel.
 
-**Film timeline (centre-bottom):** The existing `StickyFilmStrip` ruler timeline. Clicking a clip tile selects it (highlight `border-[#FF8A65]`). The selected clip drives the right panel.
+**Right panel:**
 
-**Right panel — per-clip controls (when clip selected):**
+- **Volume:** Mute toggle (lucide `VolumeX`, peach when muted) + slider 0–200%, default 100%. Saves debounced 300ms via `update_clip_volume_cmd`.
+- **Zoom:** Chips `Off` / `1.3×` / `1.5×` / `2×` → `zoom_mode` `none`/`gentle`/`medium`/`tight`. Saves on click via existing `update_clip_review_cmd`.
+- **Focal point:** `thumbnail_data` ~160×90px clickable image. Click sets `focal_x`/`focal_y`. Visual dot at position. "Reset to centre" link. Hidden when zoom is Off.
+- **Empty state:** `"Select a clip in the timeline to adjust it"` — `text-sm text-[#a3a3a3] italic`.
 
-```
-┌─ Clip: DJI_0042 · 0:08 ──────────────────┐
-│  Volume                                    │
-│  [🔇]  ────●──────────────  80%           │
-│                                            │
-│  Zoom                                      │
-│  [Off] [1.3×] [1.5×] [2×]                 │
-│  Focal point: [click video to set]         │
-│  [●  centre  ···  reset]                   │
-└────────────────────────────────────────────┘
-```
+### DB + pipeline
 
-- **Volume:** Mute toggle (lucide `VolumeX`) + horizontal slider 0–200%, default 100%. Saves on change (debounced 300ms).
-- **Zoom:** Four chips — `Off` / `1.3×` / `1.5×` / `2×`. Maps to existing `zoom_mode`: `"none"`, `"gentle"`, `"medium"`, `"tight"`. Saves on chip click.
-- **Focal point:** Small video thumbnail (from `thumbnail_data`, ~160×90px). User clicks a position on it → sets `focal_x`/`focal_y` as percentages. Visual dot indicator at clicked position. "Reset to centre" link. If zoom is Off, focal point section is hidden.
-- "No clip selected" empty state: `text-[#a3a3a3] text-sm italic` centred.
+**DB:** Add `clip_volume REAL DEFAULT 1.0` column (additive migration, same pattern as existing).
 
-**Video preview pane (centre-top):** Shows the currently-selected clip's thumbnail (static). Future: play the proxy for the selected clip. For this batch, thumbnail-only is acceptable — the full preview is via the Quick Preview render (J2).
+**Rust:** `update_clip_volume_cmd(clip_id: i64, volume: f32)` + `update_clip_volume()` db helper. `clip_volume` in `start_job` manifest alongside `focal_x`, `focal_y`, `zoom_mode`.
 
-### J2 — Quick Preview render
+**Pipeline (`render.py`):** Apply `[{i}:a]volume={clip_volume}` per clip before crossfade chain. Muted (volume=0): substitute `aevalsrc=0:c=stereo:d={dur}:r=48000` so filter graph stays valid.
 
-**Purpose:** Let users hear music against their assembled clips and see the approximate edit, without waiting for a full production render (2–3 min).
-
-**How it works:** A secondary pipeline invocation with `--preview` flag. Same manifest as a full render, but:
-- Skip normalise entirely — use proxy clips directly (already H.264 1080p, fast decode)
-- `-preset ultrafast -crf 35 -vf scale=-2:480` (480p, no quality trade-offs needed for a preview)
-- Skip loudnorm
-- Estimated time: ~10–20s for a 10-clip 1-min film
-
-**UI (Sound screen):** Add a "Preview Film" button below the mood/volume chips — secondary style (`border border-white/30 text-[#e5e5e5]`), lucide `Play` icon, label `"Preview film"`. On click: shows a progress overlay ("Building preview…" + progress bar), then reveals an inline video player when done. Player auto-plays the preview. User can close the overlay and adjust music settings, then re-preview.
-
-**Why Sound screen:** This is where the music decision is made. Hearing the result there — with per-clip volume and music balance together — is the correct feedback loop. Text card / transition previewing is a secondary use case (covered by CSS demos on the Edit screen, not requiring a full render).
-
-**Pipeline (`run.py`):** When `preview=True` in `JobConfig`, skip normalise, pass proxy paths directly, reduce output resolution to 480p. Write preview output to `%TEMP%\rushcut\preview_<job_id>.mp4` (not the project output directory). Preview outputs are not stored in `jobs` DB table (ephemeral).
-
-**`run_preview_cmd` (Rust):** New Tauri command. Builds a preview-mode manifest, spawns the pipeline, emits `preview-progress` + `preview-done` (with temp path). `confirm_preview_done` converts path with `convertFileSrc`. Not stored in DB. Ephemeral — temp file deleted on next preview for the same project.
-
-### J3 — Per-clip DB + pipeline wiring
-
-**DB:** Add `clip_volume REAL DEFAULT 1.0` column to `clips` table (additive migration).
-
-**Rust:** `update_clip_volume_cmd(clip_id: i64, volume: f32)` command + `update_clip_volume()` db helper. `clip_volume` included in `start_job` manifest per clip alongside existing `focal_x`, `focal_y`, `zoom_mode`.
-
-**Pipeline (`render.py`):** Apply `[{i}:a]volume={clip_volume}` in per-clip audio filter. For muted clips (volume=0): substitute `aevalsrc=0:c=stereo:d={dur}:r=48000` as a silent audio source so the filter graph stays valid. `zoom_mode` already wired; no pipeline change needed there.
-
-**Note on zoom UX:** `focal_x`/`focal_y` + `zoom_mode` already exist in the DB and pipeline (Batch 14c). The Arrange screen's focal point thumbnail click is a new *UI* for setting values that already flow through correctly. No pipeline change needed for zoom.
-
-### J4 — Music crossfade out (Sound screen)
-
-**UI (Sound screen):** Add a "Fade out" row below the volume chips — three chips: `None` / `2s` / `5s` (default `2s`). Persist in `rc_sound_${projectId}` JSON as `musicFadeOut`. Visible only when a music track is selected.
-
-**Pipeline (`music.py`):** Append `afade=t=out:st={max(0, film_dur - fade_s)}:d={fade_s}` to music filter chain. `fade_s` from `JobConfig.music_fade_out` (0 / 2 / 5). `run.py` passes through.
+**Note:** `focal_x`/`focal_y`/`zoom_mode` already in DB + pipeline since Batch 14c — no pipeline change needed for zoom. Arrange screen is purely the UI surface.
 
 ### Acceptance checks
 
-- [ ] Arrange screen — `/arrange/:projectId` loads; "Arrange" tab active; film timeline visible
-- [ ] Arrange — clicking a clip in the timeline shows volume + zoom controls in right panel
-- [ ] Arrange — volume slider saves to DB; muted clip is silent in rendered output
-- [ ] Arrange — zoom chip selection saves to DB; clips appear zoomed in rendered output
-- [ ] Arrange — focal point click on thumbnail sets focal_x/focal_y; zoom centres on that region
-- [ ] Sound screen — "Preview Film" button present; clicking it shows progress then plays 480p preview
-- [ ] Preview — music track audible in preview; per-clip volumes reflected
-- [ ] Sound screen — fade-out chips visible for music tracks; fade audible in rendered output
-- [ ] No regression: existing Trimmer + Render flow unaffected
+- [ ] Arrange screen loads at `/arrange/:projectId`; Arrange tab active in bottom bar
+- [ ] Clicking a clip shows volume + zoom controls in right panel
+- [ ] Volume slider + mute saves; muted clip silent in rendered output
+- [ ] Volume at 50% audibly quieter than 100% in rendered output
+- [ ] Zoom chip saves to DB; clip appears zoomed in rendered output
+- [ ] Focal point click sets visible dot; zoom centres on that region in rendered output
+- [ ] No regression: Trimmer + Render flow unaffected
 
 ---
 
-## Batch K — Creative Storytelling (Edit Screen)
+## Batch K — Quick Preview + Music Polish
 
 > **Status: PLANNED — pre-launch must-have.**
-> **Scope: Text cards (start/end), 5 transitions + shuffle, per-film transition in/out. Renames `/transitions/` → `/edit/` with tabs.**
+> **Scope: "Preview Film" button on Sound screen (~15s 480p pre-export preview). Music crossfade-out chips. Both on Sound screen.**
 
 ### Motivation
 
-A film needs a beginning and an end. Without a start card the film just starts with raw footage; without an end card it stops cold. The current 3-transition options are too limited. A shuffle mode ("surprise me") removes decision fatigue for users who don't care about picking transitions.
+Users must hear music against their assembled clips before committing to a 2–3 minute export. Discovering wrong music or inaudible clips after a full render wastes time. Feedback loop: preview → adjust volume (Arrange) or switch track → re-preview → export.
 
-### K1 — Text cards (start / end)
+### K1 — Quick Preview render
 
-**Pipeline (`cards.py`):** Already builds H.264 card clips from text via Pillow. Needs:
-- Start card: title line (large, `#FF8A65`) + subtitle line (optional, `#e5e5e5`)
-- End card: single line (centred, `#e5e5e5`)
-- Duration: 2s default. Same canvas as clip output resolution.
+**Pipeline:** New `--preview` flag in `JobConfig`. When set: skip normalise (use proxy H.264 directly), output `-preset ultrafast -crf 35 -vf scale=-2:480` (480p), skip loudnorm. Write to `%TEMP%\rushcut\preview_{project_id}.mp4` (overwrites previous). Not stored in `jobs` DB table.
 
-**Manifest:** `start_card: { enabled, text, subtitle }` + `end_card: { enabled, text }`. `render.py` prepends/appends the card clips. The pipeline already handles gap cards — start/end cards are the same primitive inserted at position 0 and N.
+**Rust:** `run_preview_cmd(project_id)` Tauri command. Builds preview manifest from project clips + sessionStorage settings. Emits `preview-progress` + `preview-done:{temp_win_path}`. Ephemeral — not in DB.
 
-**sessionStorage:** `rc_cards_${projectId}` → `{ startCard: { enabled, text, subtitle }, endCard: { enabled, text } }`. Consumed by `buildConfig()` at render time.
+**UI (Sound screen):** "Preview film" button (secondary style, `border border-white/30`, lucide `Play`). Below music source chips. On click: progress overlay ("Building preview… N%") with cancel. On done: inline video player (`autoPlay`, `controls`, `convertFileSrc`). Re-clicking cancels previous job.
 
-**UI (Edit screen → "Text Cards" tab):**
-- Start card section: toggle + main text input (max 60 chars) + subtitle input (optional, max 80 chars). Default text = project name.
-- End card section: toggle + single text input (default blank, disabled by default).
-- CSS card preview per section: `160×90px` dark rectangle with text centred, matching final design tokens. No pipeline needed.
+**Estimated time:** ~10–20s for a 10-clip 1-min film (proxy-only, no HEVC decode).
 
-**Route rename:** `/transitions/:projectId` → `/edit/:projectId`. Bottom tab "Arrange" → already exists; tab label stays. StepNav "Transitions" tab → "Edit". All internal `navigate("/transitions/")` references updated. E2E updated. **Do not regress `transitions.spec.ts`** (update URLs in spec).
+### K2 — Music crossfade out
 
-**Edit screen tabs:** `Transitions` | `Text Cards` | `Animations` (disabled/coming-soon).
+**UI (Sound screen):** "Fade out" row below volume chips. Chips: `None` / `2s` / `5s` (default `2s`). Persist in `rc_sound_${projectId}` as `musicFadeOut`. Visible when music is selected.
 
-### K2 — Transitions expansion (5 types + shuffle)
+**Pipeline (`music.py`):** Append `afade=t=out:st={max(0, film_dur - fade_s)}:d={fade_s}` to music filter chain before amix. `run.py` passes `music_fade_out_s` from config.
 
-**New transitions (FFmpeg xfade, native):**
+### Acceptance checks
 
-| Chip | FFmpeg name | Notes |
+- [ ] Sound screen — "Preview film" button visible; clicking shows progress then plays 480p video
+- [ ] Preview completes in under 30s for a 10-clip film
+- [ ] Music audible in preview; per-clip volumes from Arrange screen reflected
+- [ ] Re-clicking Preview cancels previous job cleanly
+- [ ] Fade-out chips visible for music; fade audible in preview and render
+
+---
+
+## Batch L — Edit Screen + Text Cards
+
+> **Status: PLANNED — pre-launch must-have.**
+> **Scope: Rename `/transitions/` → `/edit/`. Add Text Cards tab (start/end cards). Transitions tab unchanged.**
+
+### Motivation
+
+A film that starts with raw footage and ends abruptly feels unfinished. Start and end cards give it structure. The route rename is the foundation for the multi-tab Edit screen.
+
+### Changes
+
+**Route rename:** `/transitions/:projectId` → `/edit/:projectId`. All `navigate("/transitions/")` calls updated. `wdio.conf.ts` updated. `transitions.spec.ts` URL assertions updated. **Do not regress transitions.spec.ts.**
+
+**Edit screen tabs:** `Transitions` (existing, unchanged) | `Text Cards` (new) | `Animations` (disabled, coming-soon).
+
+**Text Cards tab:**
+
+- Start card: toggle + main text input (max 60 chars, default = project name) + subtitle input (optional, max 80 chars). CSS preview: `160×90px` dark rect, peach title + white subtitle. Default on.
+- End card: toggle (default off) + single text input. CSS preview: same rect, centred white text.
+
+**sessionStorage:** `rc_cards_${projectId}` → `{ startCard: { enabled, text, subtitle }, endCard: { enabled, text } }`. Consumed by `buildConfig()`.
+
+**Pipeline (`cards.py` + `render.py`):** `cards.py` already generates H.264 card clips via Pillow. `render.py` prepends start card and appends end card to the clip sequence. Duration: 2s each. Canvas = output resolution.
+
+### Acceptance checks
+
+- [ ] `/edit/:projectId` route works; Edit tab active; Transitions + Text Cards tabs present
+- [ ] Transitions tab content unchanged; transitions.spec.ts passes with updated URL
+- [ ] Start card appears at beginning of rendered film; title defaults to project name
+- [ ] Start card subtitle optional; renders when set
+- [ ] End card toggled on appears at end; toggled off = no end card
+- [ ] CSS preview matches final design tokens
+
+---
+
+## Batch M — Transitions Expansion
+
+> **Status: PLANNED — pre-launch must-have.**
+> **Prerequisite: Batch L (Edit screen route + tabs must exist).**
+> **Scope: 5 transition types, shuffle mode, first/last cut selectors.**
+
+### Changes
+
+**5 transition types:**
+
+| Chip | FFmpeg xfade | Status |
 |---|---|---|
-| None | — | Hard cut |
+| None | — | Existing |
 | Crossfade | `fade` | Existing |
 | Dip to Black | `fadeblack` | Existing |
 | Wipe | `wipeleft` | New |
-| Zoom | `zoom` | New — FFmpeg xfade zoom effect |
+| Zoom | `zoom` | New |
 
-All use the existing `xfade_dur` (1.5s clamped). Same filter-chain pattern. CSS animation chip previews (looping, 2s) on hover — no pipeline needed for the demo.
+CSS chip previews: 2s looping animation per chip on hover (no pipeline needed).
 
-**Shuffle mode:** "Surprise me" button (lucide `Shuffle`). Sets transition mode to `"shuffle"` in sessionStorage. `render.py` / `transitions.py`: random pick per cut from `[fade, fadeblack, wipeleft, zoom]`. Log `[K2] cut N: {type}` per cut. Shuffle result is **not shown** until the film is rendered — this is intentional (surprise factor).
+**Shuffle mode:** "Surprise me" button (lucide `Shuffle`, secondary style). Sets `transition: "shuffle"` in sessionStorage. `transitions.py`: random pick per cut from `[fade, fadeblack, wipeleft, zoom]`. Log `[M] cut N: {type}`. Result not shown until render.
 
-**Transition in / out (first and last cuts):**
-- "First cut" chip row: transition applied between start card (or film start) → clip 1.
-- "Last cut" chip row: transition applied between last clip → end card (or film end).
-- Default = inherits global transition. Visible only when ≥ 2 clips.
-- `render.py` applies per-position transition list: `[first_type, <global × N-2 middle cuts>, last_type]`.
+**First / last cut pickers:** "Opening cut" and "Closing cut" chip rows below global picker. Default = inherits global. Visible when ≥ 2 clips. `render.py` builds per-position type list: `[first_type, <global × N-2>, last_type]`.
+
+**`transitions.py`:** Add `wipeleft` + `zoom` to xfade dispatch. Per-position type list support. Shuffle random draw. All use existing `xfade_dur` + clamp.
 
 ### Acceptance checks
 
-- [ ] Edit screen — `/edit/:projectId` route; "Edit" active in bottom tab; Transitions + Text Cards tabs
-- [ ] Text Cards — start card with title + subtitle at film beginning; CSS preview matches
-- [ ] Text Cards — end card at film end; toggling off removes it from render
-- [ ] Transitions — 5 chips + shuffle button visible
-- [ ] Transitions — shuffle selects varied types across cuts (log confirms)
-- [ ] Transitions — first/last cut pickers visible and applied in rendered output
-- [ ] No regression: transitions.spec.ts passes with updated URLs
+- [ ] Transitions tab shows 5 chips + Shuffle button + Opening/Closing cut rows
+- [ ] Wipe and Zoom functional in rendered output
+- [ ] Shuffle produces varied transitions (pipeline log confirms)
+- [ ] Opening/Closing cut selectors applied in rendered output
+- [ ] CSS chip previews animate on hover
+- [ ] No regression: None/Crossfade/Dip to Black unchanged
 
 ---
-
 ## Batch I — Branding & Visual Identity
 
 > **Status: DEFERRED — pending founder decision on logo option (A/B/C). Not blocking launch.**
