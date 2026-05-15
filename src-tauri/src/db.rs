@@ -61,6 +61,7 @@ pub struct Clip {
     pub proxy_path: Option<String>,
     pub waveform_data: Option<String>,
     pub codec_name: Option<String>, // e.g. "hevc", "h264" — set at scan time, read by proxy gen
+    pub clip_volume: f64,           // per-clip audio multiplier, default 1.0 (Batch J)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -147,7 +148,7 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         conn.execute("ALTER TABLE jobs ADD COLUMN analysis_summary TEXT", [])?;
     }
 
-    // Additive migrations: per-clip review fields (Batch 14c) + waveform (Batch 15c) + codec (Batch 16).
+    // Additive migrations: per-clip review fields (Batch 14c) + waveform (Batch 15c) + codec (Batch 16) + clip_volume (Batch J).
     let clip_cols = [
         ("in_ms",        "INTEGER"),
         ("out_ms",       "INTEGER"),
@@ -158,6 +159,7 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         ("proxy_path",   "TEXT"),
         ("waveform_data","TEXT"),
         ("codec_name",   "TEXT"),
+        ("clip_volume",  "REAL DEFAULT 1.0"),
     ];
     for (col_name, col_type) in &clip_cols {
         let exists: bool = conn.query_row(
@@ -295,6 +297,18 @@ pub fn update_clip_review(
         "UPDATE clips SET in_ms = ?1, out_ms = ?2, focal_x = ?3, focal_y = ?4,
          zoom_mode = ?5, include = ?6 WHERE id = ?7",
         params![in_ms, out_ms, fx, fy, zoom_mode, include, clip_id],
+    )?;
+    Ok(())
+}
+
+/// Update the per-clip audio volume multiplier (set by user in the Arrange screen, Clips tab).
+/// Clamps to 0.0-2.0 range.
+pub fn update_clip_volume(clip_id: &str, clip_volume: f64) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let vol = clip_volume.clamp(0.0, 2.0);
+    conn.execute(
+        "UPDATE clips SET clip_volume = ?1 WHERE id = ?2",
+        params![vol, clip_id],
     )?;
     Ok(())
 }
@@ -491,10 +505,11 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
         //  5:width  6:height  7:has_audio  8:thumbnail_data  9:sort_order
         // 10:created_at  11:in_ms  12:out_ms  13:focal_x  14:focal_y
         // 15:zoom_mode  16:include  17:proxy_path  18:waveform_data  19:codec_name
+        // 20:clip_volume
         "SELECT id, project_id, filename, local_path, duration_ms, width, height,
                 has_audio, thumbnail_data, sort_order, created_at,
                 in_ms, out_ms, focal_x, focal_y, zoom_mode, include, proxy_path, waveform_data,
-                codec_name
+                codec_name, clip_volume
          FROM clips WHERE project_id = ?1 ORDER BY sort_order ASC",
     )?;
     let clips: Vec<Clip> = stmt
@@ -521,6 +536,7 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
                 proxy_path: row.get(17)?,     // 17
                 waveform_data: row.get(18)?,  // 18
                 codec_name: row.get(19)?,     // 19
+                clip_volume: row.get::<_, Option<f64>>(20)?.unwrap_or(1.0), // 20 — default 1.0
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

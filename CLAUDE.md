@@ -10,7 +10,7 @@
 
 ### UX flow
 
-`/upload` → `/trimmer/:projectId` → `/transitions/:projectId` → `/sound/:projectId` → `/render/:projectId`
+`/upload` → `/trimmer/:projectId` → `/arrange/:projectId` → `/sound/:projectId` → `/render/:projectId`
 
 ### Dev command
 
@@ -20,6 +20,7 @@
 
 ## Critical Rules (every session)
 
+- **Two instances share one DB.** User runs `src-tauri/target/debug/rushcut.exe` directly (always-on Vite dev server). WDIO tests launch a separate process of the same binary. Both write to `%APPDATA%\rushcut\rushcut.db`. Never confuse their generated artifacts — WDIO renders show `instance=wdio` in the timing log.
 - **WSL must go via PowerShell.** Claude Code Bash = Git Bash; Git Bash mangles `/mnt/c/` paths. Wrap all WSL calls as `powershell.exe -Command "wsl -d Ubuntu-24.04 -u root -- ..."`. Glob patterns in PowerShell args get expanded by Git Bash — use `cmd.exe /c` for those.
 - **`git push` hangs silently in this shell.** Always push as: `GIT_ASKPASS=echo GIT_TERMINAL_PROMPT=0 git push https://<token>@github.com/bondybondbond/rushcut.git main`
 - **Asset URLs:** Always `convertFileSrc(winPath)` from `@tauri-apps/api/core`. Never construct `asset://` URLs manually — video element shows nothing.

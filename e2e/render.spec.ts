@@ -13,6 +13,7 @@ import { execFileSync } from "child_process";
 
 describe("Full E2E render — /render/:projectId", () => {
   let videoSrc: string;
+  let projectId: string | null = null;
 
   before(async () => {
     await browser.pause(1500);
@@ -36,17 +37,22 @@ describe("Full E2E render — /render/:projectId", () => {
       return invoke("create_project", { name: "Eval Test Film", clips });
     });
     expect(result).toBeTruthy();
+    projectId = result as string;
   });
 
   it("navigates to project in Library and opens to /trimmer/", async () => {
-    const homeTab = await $('[data-testid="tab-home"]');
-    await homeTab.waitForExist({ timeout: 5_000 });
-    await homeTab.click();
-
+    // invoke() bypasses Upload.tsx React state so no auto-nav fires.
+    // Permitted shortcut per .claude/rules/e2e.md: pushState to /library
+    // after scan_folder + create_project invoke, then drive real UI from there.
+    await browser.execute(() => {
+      (window as any).history.pushState({}, "", "/library");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/library"),
       { timeout: 5_000, interval: 200 }
     );
+    await browser.pause(300);
 
     const openBtn = await $('[data-testid="btn-open-project"]');
     await openBtn.waitForExist({ timeout: 5_000 });
@@ -74,18 +80,24 @@ describe("Full E2E render — /render/:projectId", () => {
     await filmClip.waitForExist({ timeout: 3_000 });
   });
 
-  it("navigates to /transitions/ via Arrange tab", async () => {
+  it("navigates to /arrange/ via Arrange tab", async () => {
     const arrangeTab = await $('[data-testid="tab-arrange"]');
     await arrangeTab.waitForExist({ timeout: 5_000 });
     await arrangeTab.click();
 
     await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/transitions/"),
+      async () => (await browser.getUrl()).includes("/arrange/"),
       { timeout: 5_000, interval: 200 }
     );
   });
 
   it("selects a transition chip and navigates to /sound/", async () => {
+    // Arrange screen defaults to Clips tab after Batch J — switch to Transitions tab first.
+    const transitionsTab = await $('[data-testid="arrange-tab-transitions"]');
+    await transitionsTab.waitForExist({ timeout: 5_000 });
+    await transitionsTab.click();
+    await browser.pause(300);
+
     const noneChip = await $('[data-testid="chip-transition-none"]');
     await noneChip.waitForExist({ timeout: 3_000 });
     await noneChip.click();
@@ -137,11 +149,14 @@ describe("Full E2E render — /render/:projectId", () => {
     await heading.waitForExist({ timeout: 5_000 });
     expect(await heading.getText()).toBe("Render Your Film");
 
-    // 4K projects show a resolution gate before rendering — click the button to commit.
-    // Non-4K projects auto-start; the button will not be present.
+    // 4K projects show a resolution gate — wait up to 10s for the button, then click.
+    // Non-4K projects auto-start (no button); skip the wait and fall through.
     const renderBtn = await $('[data-testid="btn-render-film"]');
-    if (await renderBtn.isExisting()) {
+    try {
+      await renderBtn.waitForExist({ timeout: 10_000 });
       await renderBtn.click();
+    } catch {
+      // No button = non-4K project auto-started; stage-label will appear without a click.
     }
 
     // Wait for pipeline stage label (appears once rendering begins)

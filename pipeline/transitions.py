@@ -32,6 +32,31 @@ _TRANSITION_MAP = {
 XFADE_DUR = 1.5  # seconds
 
 
+def _build_pre_volume(
+    clip_volumes: list[float] | None,
+    durations: list[float],
+    n: int,
+) -> str:
+    """Build the per-clip pre-volume filter stage: [{i}:a] -> [pv{i}].
+
+    Applied BEFORE apad so the volume multiplier never disturbs the
+    apad/acrossfade alignment fixed in Batch 14-P.
+
+    - clip_volume > 0: `[{i}:a]volume={v}[pv{i}]`
+    - clip_volume <= 0 (muted): substitute `aevalsrc` silence of the exact
+      clip duration so the filter graph stays valid (mirrors the no-audio
+      silence-injection pattern in render.py).
+    """
+    parts: list[str] = []
+    for i in range(n):
+        vol = clip_volumes[i] if clip_volumes else 1.0
+        if vol <= 0.0:
+            parts.append(f"aevalsrc=0:c=stereo:d={durations[i]:.4f}:r=48000[pv{i}]")
+        else:
+            parts.append(f"[{i}:a]volume={vol:.4f}[pv{i}]")
+    return "; ".join(parts)
+
+
 def build_filter_complex(
     clip_paths: list[Path],
     durations: list[float],
@@ -40,6 +65,7 @@ def build_filter_complex(
     mode: str = "draft",
     xfade_dur: float = XFADE_DUR,
     output_resolution: str = "1080p",
+    clip_volumes: list[float] | None = None,
 ) -> tuple[str, str, str]:
     """
     Build filter_complex string for N clips with xfade transitions.
@@ -84,13 +110,15 @@ def build_filter_complex(
         video_filter = f"{pre_scale}; {scaled_inputs}concat=n={n}:v=1:a=0{v_out}"
         if not any_audio:
             return video_filter, v_out, ""
+        # Per-clip volume applied BEFORE apad — keeps apad/concat alignment intact.
+        pre_vol = _build_pre_volume(clip_volumes, durations, n)
         # apad=whole_dur: pad each clip's audio to its exact video duration.
         # CFR normalise produces video ~40-120ms longer than audio per clip;
         # without padding the audio concat drifts ahead of the video at every cut.
-        pre_pad = "; ".join(f"[{i}:a]apad=whole_dur={durations[i]:.4f}[pa{i}]" for i in range(n))
+        pre_pad = "; ".join(f"[pv{i}]apad=whole_dur={durations[i]:.4f}[pa{i}]" for i in range(n))
         padded_a = "".join(f"[pa{i}]" for i in range(n))
         a_out = "[aout]"
-        audio_filter = f"{pre_pad}; {padded_a}concat=n={n}:v=0:a=1{a_out}"
+        audio_filter = f"{pre_vol}; {pre_pad}; {padded_a}concat=n={n}:v=0:a=1{a_out}"
         return f"{video_filter}; {audio_filter}", v_out, a_out
 
     xfade_name = _TRANSITION_MAP.get(transition, "fade")
@@ -141,17 +169,21 @@ def build_filter_complex(
         log.info("[transitions] No audio in any clip — video-only output")
         return "; ".join(video_parts), v_out, ""
 
-    # N>=2: pad every clip to its exact video duration, then pairwise acrossfade chain.
+    # N>=2: per-clip volume, then pad every clip to its exact video duration,
+    # then pairwise acrossfade chain.
+    # Volume is applied BEFORE apad so it never disturbs the apad/acrossfade
+    # alignment fixed in Batch 14-P.
     # apad=whole_dur makes each clip audio exactly durations[i]s so the crossfade
     # start point (durations[i] - xfade_dur) matches the xfade visual offset exactly.
-    pre_pad = "; ".join(f"[{i}:a]apad=whole_dur={durations[i]:.4f}[pa{i}]" for i in range(n))
+    pre_vol = _build_pre_volume(clip_volumes, durations, n)
+    pre_pad = "; ".join(f"[pv{i}]apad=whole_dur={durations[i]:.4f}[pa{i}]" for i in range(n))
     chain: list[str] = []
     prev = "[pa0]"
     for i in range(1, n):
         out_lbl = "[aout]" if i == n - 1 else f"[ac{i}]"
         chain.append(f"{prev}[pa{i}]acrossfade=d={xfade_dur:.4f}{out_lbl}")
         prev = out_lbl
-    audio_parts = [f"{pre_pad}; " + "; ".join(chain)]
+    audio_parts = [f"{pre_vol}; {pre_pad}; " + "; ".join(chain)]
 
     a_out = "[aout]"
     all_parts = video_parts + audio_parts

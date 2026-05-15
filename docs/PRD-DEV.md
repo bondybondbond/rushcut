@@ -239,7 +239,7 @@ The current shell puts navigation at the top (StepNav breadcrumb) with a burger 
 
 ## Batch J — Arrange Screen: Clips Tab (Per-Clip Volume + Zoom)
 
-> **Status: PLANNED — pre-launch must-have.**
+> **Status: ✅ COMPLETE (2026-05-16).**
 > **Scope: Creates `/arrange/:projectId` (replaces `/transitions/`). Three-tab shell: Clips | Transitions | Cards. This batch ships the Clips tab only — Transitions tab content migrated from current screen, Cards tab placeholder. Per-clip volume DB + pipeline. Zoom UI only (DB + pipeline already exist).**
 
 ### Motivation
@@ -596,6 +596,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.3     | 2026-05-16 | Batch J COMPLETE — Arrange screen (`/arrange/:projectId`); 3-tab shell (Clips|Transitions|Cards); per-clip volume (`clip_volume` DB col, `update_clip_volume_cmd`, volume filter in transitions.py + render.py, Mute/50%/100%/150%/200%+Custom chips); Clips tab zoom+focal reuse; StickyFilmStrip `onSelectClip`. zoom.py static crop fix (ffprobe integer coords, replaces broken zoompan expression). Render timing JSONL log (per-render phases, instance detection wdio/direct). render.spec.ts `waitForExist` race fix. 15/15 render E2E PASS. LEARNINGS.md + e2e.md updated. CLAUDE.md two-instance + UX flow fixes. |
 | 2.2     | 2026-05-14 | PRD update — Batch J (per-clip audio + music fade-out) and Batch K (text cards + 5 transitions + shuffle + transition in/out) added as pre-launch must-haves. Post-Launch Backlog and AI Enablement sections added. Phase 3 consolidated. msedgedriver v148 confirmed (E2E blocker cleared). |
 | 2.1     | 2026-05-14 | TrimBar already-included region overlay — `alreadyCutRegions` prop, `#99B3FF` bracket gradient at z-2, self-exclusion + malformed row + micro-cut guards. Timeline HUD auto-fit — clip add triggers fit-to-width + scroll-to-0; "fit view" pill button; TrimBar text polish. DESIGN.md updated. 9/9 fast E2E PASS. |
 | 2.0     | 2026-05-08 | Batch E — Track duration vs. film duration on Sound screen: film duration in header subtitle; mood chips show track duration badge ("Cinematic · 2:34"); comparison line ("Film: 1:23 · Track: 3:45 — long enough" / "will loop ~Nx"); custom track duration probed via `audioRef` `loadedmetadata`; `probedRef` guard on mount probe. PRD: "Post-pick metadata" marked DONE; new backlog item — Smart Music Track Ending. DESIGN.md: duration badge + comparison line patterns. e2e.md + LEARNINGS.md: `preview_*` MCP added to port-9222 conflict warning. 14/14 sound + 7/7 fast PASS. |

@@ -7,7 +7,7 @@ use db::{
     add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_job, get_project_output_paths,
     get_project_with_clips, has_4k_clips, insert_clip, insert_job, insert_project, list_projects,
     rename_project, reorder_clips, update_clip_proxy, update_clip_review, update_clip_thumbnail,
-    update_clip_waveform, update_job_analysis, update_job_done, update_job_error,
+    update_clip_volume, update_clip_waveform, update_job_analysis, update_job_done, update_job_error,
     update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
@@ -440,6 +440,13 @@ fn update_clip_review_cmd(
         .map_err(|e| format!("DB error (update clip review): {}", e))
 }
 
+/// Update the per-clip audio volume multiplier (set by user in the Arrange screen, Clips tab).
+#[tauri::command]
+fn update_clip_volume_cmd(clip_id: String, clip_volume: f64) -> Result<(), String> {
+    update_clip_volume(&clip_id, clip_volume)
+        .map_err(|e| format!("DB error (update clip volume): {}", e))
+}
+
 /// Create a new cut row for a source clip (multi-cut model, Batch A).
 /// Clones metadata from the source clip and sets the caller-supplied in_ms/out_ms.
 /// Returns the new Clip row so the frontend can update its state immediately.
@@ -481,6 +488,7 @@ fn add_clip_cut_cmd(
         proxy_path: source.proxy_path.clone(),
         waveform_data: source.waveform_data.clone(),
         codec_name: source.codec_name.clone(),
+        clip_volume: 1.0,
     };
 
     add_clip_cut(&cut).map_err(|e| format!("DB error (add clip cut): {}", e))?;
@@ -551,6 +559,7 @@ fn create_project(name: String, clips: Vec<ClipMeta>) -> Result<String, String> 
             proxy_path: None,
             waveform_data: None,
             codec_name: meta.codec_name.clone(),
+            clip_volume: 1.0,
         };
         insert_clip(&clip).map_err(|e| format!("DB error (insert clip {}): {}", meta.filename, e))?;
     }
@@ -607,9 +616,16 @@ async fn start_job(
         return Err("No clips selected for render".to_string());
     }
 
+    // Detect which instance launched this render: WDIO injects a remote-debugging-port arg.
+    let instance = if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
+        .map(|v| v.contains("remote-debugging-port"))
+        .unwrap_or(false)
+    { "wdio" } else { "direct" };
+
     // Write manifest JSON to Windows TEMP
     let manifest = json!({
         "job_id": job_id,
+        "instance": instance,
         "clips": included_clips.iter().map(|c| {
             // Clamp out_ms to clip duration to prevent FFmpeg crash on out-of-bounds trim
             let clamped_out = c.out_ms.map(|o| o.min(c.duration_ms));
@@ -627,6 +643,7 @@ async fn start_job(
                 "focal_y": c.focal_y,
                 "zoom_mode": c.zoom_mode,
                 "proxy_path": c.proxy_path,
+                "clip_volume": c.clip_volume,
             })
         }).collect::<Vec<_>>(),
         "settings": serde_json::from_str::<serde_json::Value>(&settings_json)
@@ -1118,6 +1135,7 @@ pub fn run() {
             create_project,
             rename_project_cmd,
             update_clip_review_cmd,
+            update_clip_volume_cmd,
             add_clip_cut_cmd,
             delete_clip_cmd,
             reorder_clips_cmd,

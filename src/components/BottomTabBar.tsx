@@ -32,7 +32,7 @@ export function BottomTabBar({ projectId, activeTab, configured }: BottomTabBarP
     }
     const routes: Record<ActiveTab, string> = {
       trim: `/trimmer/${projectId}`,
-      arrange: `/transitions/${projectId}`,
+      arrange: `/arrange/${projectId}`,
       sound: `/sound/${projectId}`,
       render: `/render/${projectId}`,
     };

@@ -8,6 +8,8 @@ interface StickyFilmStripProps {
   activeId?: string | null;
   /** If provided, shows a hover bin icon on each clip tile. Only Trimmer passes this. */
   onDeleteClip?: (clipId: string) => void;
+  /** If provided, clicking a clip tile selects it. Only Arrange (Clips tab) passes this. */
+  onSelectClip?: (clipId: string) => void;
   /** Film playback position in film-time ms — renders a playhead cursor when set. */
   playheadMs?: number;
   /** Called when user clicks a position in the timeline; arg is film-time ms. */
@@ -29,6 +31,7 @@ export function StickyFilmStrip({
   projectId: _projectId,
   activeId,
   onDeleteClip,
+  onSelectClip,
   playheadMs,
   onSeek,
 }: StickyFilmStripProps) {
@@ -342,11 +345,17 @@ export function StickyFilmStrip({
                 return (
                   <div
                     key={clip.id}
+                    data-testid="filmstrip-clip"
                     className={`group relative flex-shrink-0 overflow-hidden border-2 transition-colors ${
                       isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/25"
-                    }`}
+                    } ${onSelectClip ? "cursor-pointer" : ""}`}
                     style={{ width: w, height: CLIP_HEIGHT }}
                     draggable={false}
+                    onClick={
+                      onSelectClip
+                        ? (e) => { e.stopPropagation(); onSelectClip(clip.id); }
+                        : undefined
+                    }
                   >
                     {/* Thumbnail: CSS background tiling */}
                     {clip.thumbnail_data ? (

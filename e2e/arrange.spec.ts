@@ -1,8 +1,8 @@
 /**
- * Transitions spec -- /transitions/:projectId screen assertions.
- * Covers: page load, StepNav active step, chip rendering, chip selection,
- * sessionStorage persistence, and back-navigation.
- * Run: pnpm test:e2e:transitions
+ * Arrange spec -- /arrange/:projectId screen assertions.
+ * Covers: page load, bottom tab bar active step, transition chip rendering,
+ * chip selection, sessionStorage persistence, and back-navigation.
+ * Run: pnpm test:e2e:arrange
  *
  * Requires C:\clips\ to contain at least 1 video file.
  */
@@ -50,7 +50,7 @@ describe("Transitions screen", () => {
             url.includes("/library") ||
             url.includes("/editor/") ||
             url.includes("/trimmer/") ||
-            url.includes("/transitions/")
+            url.includes("/arrange/")
           );
         } catch {
           return false;
@@ -89,21 +89,23 @@ describe("Transitions screen", () => {
     }
     await browser.pause(500);
 
-    // Navigate to Transitions via real UI click — tests the actual CTA path
-    const allBtns = await $$("button");
-    for (const btn of allBtns) {
-      const txt = await btn.getText();
-      if (txt.includes("Next: Transitions")) {
-        await btn.click();
-        break;
-      }
-    }
+    // Navigate to Arrange via the bottom tab bar — tests the actual nav path
+    const arrangeTabBtn = await $('[data-testid="tab-arrange"]');
+    await arrangeTabBtn.waitForExist({ timeout: 5_000 });
+    await arrangeTabBtn.click();
 
     await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/transitions/"),
-      { timeout: 10_000, interval: 200, timeoutMsg: "Never reached /transitions/" }
+      async () => (await browser.getUrl()).includes("/arrange/"),
+      { timeout: 10_000, interval: 200, timeoutMsg: "Never reached /arrange/" }
     );
-    await browser.pause(1000); // let Transitions render
+    await browser.pause(1000); // let Arrange render
+
+    // Arrange screen opens on the Clips tab — switch to the Transitions tab
+    // so the transition-chip assertions below have their content rendered.
+    const transitionsTab = await $('[data-testid="arrange-tab-transitions"]');
+    await transitionsTab.waitForExist({ timeout: 5_000 });
+    await transitionsTab.click();
+    await browser.pause(300);
   });
 
   it("loads without JS error (page has content)", async () => {
@@ -112,10 +114,10 @@ describe("Transitions screen", () => {
     expect(text.length).toBeGreaterThan(0);
   });
 
-  it("URL is /transitions/:projectId", async () => {
+  it("URL is /arrange/:projectId", async () => {
     if (!projectId) return;
     const url = await browser.getUrl();
-    expect(url).toContain("/transitions/");
+    expect(url).toContain("/arrange/");
     expect(url).toContain(projectId);
   });
 
@@ -200,10 +202,16 @@ describe("Transitions screen", () => {
     if (!projectId) return;
     // Simulate back-navigate and return: pushState back to transitions
     await browser.execute((id: string) => {
-      (window as any).history.pushState({}, "", `/transitions/${id}`);
+      (window as any).history.pushState({}, "", `/arrange/${id}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, projectId);
     await browser.pause(800);
+
+    // Re-navigation resets to the Clips tab — re-open the Transitions tab.
+    const transitionsTab = await $('[data-testid="arrange-tab-transitions"]');
+    await transitionsTab.waitForExist({ timeout: 5_000 });
+    await transitionsTab.click();
+    await browser.pause(300);
 
     const crossfadeChip = await $('[data-testid="chip-transition-crossfade"]');
     await crossfadeChip.waitForExist({ timeout: 5_000 });

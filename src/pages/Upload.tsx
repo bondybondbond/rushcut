@@ -23,6 +23,7 @@ function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
     include: 0, // explicit-add model: clips start excluded; user adds in Trimmer
     proxy_path: null,
     waveform_data: null,
+    clip_volume: 1.0,
   };
 }
 

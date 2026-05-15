@@ -295,6 +295,12 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Solution:** For value assertions use `expect(value).toBe(...)` without a message. For null/existence guards use `if (!x) throw new Error("x missing")` before the assertion.
 **Context:** `e2e/gap-editor.spec.ts` and `e2e/render.spec.ts` — any spec using a message arg on `expect()`.
 
+## [isExisting() returns immediately — fails on async-loaded elements]
+
+**Problem:** `$('[data-testid="btn-render-film"]').isExisting()` returns `false` when the element renders conditionally after an async `useEffect` (e.g. `get_project` + `has_4k_clips_cmd` resolve 1–2s after mount), so a click is skipped and downstream assertions never see the expected state. The Render screen starts in `"starting"` phase (spinner only); `btn-render-film` only appears in `"ready"` phase.
+**Solution:** Replace `isExisting()` with `waitForExist({ timeout: N })` wrapped in try/catch. On timeout, treat the absence as expected (non-4K path auto-starts without a button) and continue. `isExisting()` is only safe for elements that must be present synchronously.
+**Context:** `e2e/render.spec.ts` — applies to any spec asserting conditional UI that renders after an async data fetch. Root cause: Render screen `useState<Phase>("starting")` + `Promise.all([get_project, has_4k_clips_cmd])` in `useEffect`.
+
 ## [Progress element disappears before poll catches 100%]
 
 **Problem:** `waitUntil` polling for `progress-pct >= 100` times out even when the pipeline succeeds. The done state renders and removes the progress element between two 2s poll intervals — the poller never sees 100%.

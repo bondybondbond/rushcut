@@ -50,7 +50,7 @@ describe("Sound screen", () => {
             url.includes("/library") ||
             url.includes("/editor/") ||
             url.includes("/trimmer/") ||
-            url.includes("/transitions/") ||
+            url.includes("/arrange/") ||
             url.includes("/sound/")
           );
         } catch {

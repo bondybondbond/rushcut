@@ -149,7 +149,13 @@ Use native **Edit** tool.
 powershell.exe -Command "if (Test-Path C:/apps/rushcut/e2e/screenshots) { Remove-Item C:/apps/rushcut/e2e/screenshots/* -Force -ErrorAction SilentlyContinue; Write-Host 'screenshots cleared' }"
 ```
 
-**Windows temp manifests** (job + proxy JSON files written per render — small but accumulate):
+**Rendered outputs** — both the WDIO instance (eval-test-film-*.mp4) and the user's dev renders accumulate in `C:\clips\processed\`. Purge all MP4s each session to avoid bloating:
+
+```bash
+powershell.exe -NoProfile -Command "Remove-Item 'C:\clips\processed\*.mp4' -Force -ErrorAction SilentlyContinue; Write-Host 'processed renders cleared'"
+```
+
+**Windows temp manifests** (job + proxy JSON files written per render — small but accumulate; .jsonl timing log is preserved):
 
 ```bash
 powershell.exe -NoProfile -Command "Remove-Item \"\$env:TEMP\rushcut\*.json\" -Force -ErrorAction SilentlyContinue; Write-Host 'temp manifests cleared'"

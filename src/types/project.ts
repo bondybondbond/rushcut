@@ -34,6 +34,7 @@ export interface Clip extends ClipMeta {
   include: number;              // 1 = include, 0 = skip
   proxy_path: string | null;
   waveform_data: string | null;
+  clip_volume: number;          // per-clip audio multiplier, 0.0-2.0, default 1.0 (Batch J)
 }
 
 export interface ProjectWithClips {

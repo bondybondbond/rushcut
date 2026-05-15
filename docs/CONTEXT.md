@@ -15,11 +15,23 @@
 
 ## Current Phase
 
-**Phase 2 — Film Preview iteration COMPLETE + Film Seek Stutter FIXED (2026-05-13). TrimBar already-included overlay COMPLETE (2026-05-14). Batch I (Branding) DEFERRED.**
+**Phase 2 — Batch J (Arrange screen) COMPLETE (2026-05-16). Render timing log + zoom static crop fix + E2E render suite fix also shipped. Next: Batch K (Quick Preview).**
 
 ---
 
 ## Immediate Next Task
+
+**Batch K — Quick Preview render on Sound screen (~15s 480p) + music crossfade-out chips.**
+
+---
+
+## Recently shipped this session (2026-05-16)
+
+- **Batch J — Arrange screen COMPLETE:** `/transitions/` → `/arrange/`; 3-tab shell (Clips | Transitions | Cards); per-clip volume (chips + custom input, `clip_volume` DB col + Rust cmd + pipeline volume filter); zoom + focal picker on Clips tab; StickyFilmStrip `onSelectClip`; pipeline `volume=` filter in transitions.py + render.py; E2E `arrange.spec.ts`. 15/15 render E2E PASS.
+- **zoom.py static crop fix:** Replaced broken `zoompan` expression syntax with `ffprobe`-derived integer pixel coords → `crop=W:H:X:Y,scale=W2:H2`. Eliminates FFmpeg exit 8.
+- **Render timing JSONL log:** `pipeline/run.py` now appends per-render record to `%TEMP%\rushcut\render-timing-log.jsonl` after every successful render: timestamp, instance (wdio/direct), clips, film duration, per-phase timings (normalise/trim/zoom/render/music/loudnorm), proxy usage, resolution, effects. `.jsonl` extension preserved across wrapup cleanups.
+- **Two-instance documentation:** CLAUDE.md updated with two-instance rule. `start_job` manifest now includes `"instance": "wdio"|"direct"` detected via `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` env var.
+- **render.spec.ts fix:** `isExisting()` → `waitForExist({ timeout: 10_000 })` for `btn-render-film` — fixes race vs async `"ready"` phase. 15/15 PASS.
 
 **TrimBar already-included region overlay — COMPLETE (2026-05-14):**
 

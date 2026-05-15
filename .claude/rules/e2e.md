@@ -29,6 +29,21 @@ Get-NetTCPConnection -LocalPort 9222 | Select-Object OwningProcess | Stop-Proces
 
 WebView2 subprocess survives `rushcut.exe` kill and holds the port.
 
+## Never use `isExisting()` for conditionally-rendered elements
+
+`isExisting()` returns immediately (no polling). For any element that renders after an async `useEffect` (e.g. buttons that appear after `get_project` resolves, form fields that appear after a fetch), use `waitForExist({ timeout: N })` instead. Wrap in try/catch when the element's absence is a valid code path (e.g. non-4K renders skip the `btn-render-film` gate entirely).
+
+```typescript
+// Wrong — fires before async data loads:
+if (await $('[data-testid="btn-render-film"]').isExisting()) { ... }
+
+// Correct — waits up to 10s, gracefully handles absence:
+try {
+  await $('[data-testid="btn-render-film"]').waitForExist({ timeout: 10_000 });
+  await $('[data-testid="btn-render-film"]').click();
+} catch { /* non-4K auto-starts without button */ }
+```
+
 ## Never use `browser.url()`
 
 Hangs indefinitely — Vite HMR WebSocket blocks `readyState === "complete"`. Poll via `browser.waitUntil(() => browser.getUrl())`.

@@ -325,7 +325,8 @@ def run_pipeline(
     else:
         log.info("[render] Step 2: trim skipped")
 
-    print(f"TIMING:trim={time.time()-t0:.1f}s", flush=True)
+    trim_s = time.time() - t0
+    print(f"TIMING:trim={trim_s:.1f}s", flush=True)
     for i, p in enumerate(current_paths):
         log_av_sync(p, f"post-trim_{i}")
 
@@ -334,6 +335,7 @@ def run_pipeline(
     # Per-clip zoom_mode from Review screen takes precedence over global config.zoom.
     report_stage("zoom")
     report(55)
+    t_zoom = time.time()
     has_per_clip_zoom = any(c.get("zoom_mode") for c in pipeline_clips)
     global_zoom = config.get("zoom", False) and mode == "final"
 
@@ -358,6 +360,13 @@ def run_pipeline(
         current_paths = zoomed
     else:
         log.info("[render] Step 3: zoom skipped (mode=%s)", mode)
+    zoom_s = time.time() - t_zoom
+    print(f"TIMING:zoom={zoom_s:.1f}s", flush=True)
+
+    # Per-clip audio volume multipliers (Batch J) — aligned 1:1 with current_paths.
+    # pipeline_clips is still 1:1 with current_paths here (trim/zoom preserve length+order).
+    # Cards prepended/appended below get volume 1.0 (they carry no audio anyway).
+    clip_volumes = [float(cm.get("clip_volume", 1.0) or 1.0) for cm in pipeline_clips]
 
     # 4. Cards (pre-render as video segments, prepend/append).
     report_stage("cards")
@@ -382,6 +391,7 @@ def run_pipeline(
             size=card_size,
         )
         current_paths = [card] + current_paths
+        clip_volumes = [1.0] + clip_volumes
 
     outro_text = config.get("outro_text") or (config.get("end_card") or {}).get("text", "")
     outro_color = (
@@ -398,6 +408,7 @@ def run_pipeline(
             size=card_size,
         )
         current_paths = current_paths + [card]
+        clip_volumes = clip_volumes + [1.0]
 
     # 5. Build filter_complex + render.
     report_stage("Rendering")
@@ -432,15 +443,22 @@ def run_pipeline(
             "-preset", preset,
         ]
         if audio_flags[0]:
+            # Per-clip volume multiplier (Batch J). volume=0 is valid — produces silence.
+            vol0 = clip_volumes[0] if clip_volumes else 1.0
+            if abs(vol0 - 1.0) > 1e-6:
+                cmd += ["-af", f"volume={vol0:.4f}"]
+                log.info("[J] single-clip volume=%.4f", vol0)
             cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
         cmd.append(str(output))
         ffmpeg_run(cmd)
     else:
+        log.info("[J] clip_volumes=%s", clip_volumes)
         fc, v_out, a_out = build_filter_complex(
             current_paths, durations, audio_flags,
             transition=config.get("transition", "crossfade"),
             mode=mode,
             output_resolution=output_resolution,
+            clip_volumes=clip_volumes,
         )
         log.info("[render] filter_complex:\n  %s", fc)
 
@@ -480,7 +498,8 @@ def run_pipeline(
                            custom_track_path=custom_music_path_wsl)
     else:
         log.info("[render] Step 6: music skipped")
-    print(f"TIMING:music={time.time()-t0:.1f}s", flush=True)
+    music_s = time.time() - t0
+    print(f"TIMING:music={music_s:.1f}s", flush=True)
 
     # 7. Loudnorm (final only -- two-pass is too slow for draft).
     report_stage("Loudnorm")
@@ -492,7 +511,8 @@ def run_pipeline(
         output = loudnorm(output, final_out, context=context)
     else:
         log.info("[render] Step 7: loudnorm skipped (draft mode)")
-    print(f"TIMING:loudnorm={time.time()-t0:.1f}s", flush=True)
+    loudnorm_s = time.time() - t0
+    print(f"TIMING:loudnorm={loudnorm_s:.1f}s", flush=True)
 
     report(95)
     log.info("[render] Pipeline complete: %s", output)
@@ -525,6 +545,10 @@ def run_pipeline(
         zoom_on       = 1 if config.get("zoom") else 0
         transition    = config.get("transition", "none")
 
+        volume_custom = int(any(
+            abs(float(cm.get("clip_volume", 1.0) or 1.0) - 1.0) > 1e-6
+            for cm in pipeline_clips
+        ))
         report_analysis(
             f"clips_used={clips_used}"
             f",clips_total={clips_total}"
@@ -536,12 +560,20 @@ def run_pipeline(
             f",has_4k={has_4k}"
             f",audio_clip_count={audio_clip_count}"
             f",normalise_s={normalise_s:.0f}"
+            f",trim_s={trim_s:.0f}"
+            f",zoom_s={zoom_s:.0f}"
             f",render_s={render_s:.0f}"
+            f",music_s={music_s:.0f}"
+            f",loudnorm_s={loudnorm_s:.0f}"
             f",total_s={total_s:.0f}"
             f",music={music_on}"
             f",cards={cards_on}"
             f",zoom={zoom_on}"
             f",transition={transition}"
+            f",proxy_used={len(proxy_clip_indices)}"
+            f",proxy_skipped={len(norm_clip_indices)}"
+            f",output_resolution={output_resolution}"
+            f",volume_custom={volume_custom}"
         )
     except Exception as e:
         log.warning("[render] ANALYSIS emit failed: %s", e)

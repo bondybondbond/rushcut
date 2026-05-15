@@ -6,7 +6,7 @@ import Upload from "@/pages/Upload";
 import Library from "@/pages/Library";
 import Review from "@/pages/Review";
 import Trimmer from "@/pages/Trimmer";
-import Transitions from "@/pages/Transitions";
+import Arrange from "@/pages/Arrange";
 import Sound from "@/pages/Sound";
 import Render from "@/pages/Render";
 import { AppShell } from "@/components/AppShell";
@@ -35,7 +35,7 @@ export default function App() {
         <Route path="/upload" element={<Upload />} />
         <Route path="/library" element={<Library />} />
         <Route path="/trimmer/:projectId" element={<Trimmer />} />
-        <Route path="/transitions/:projectId" element={<Transitions />} />
+        <Route path="/arrange/:projectId" element={<Arrange />} />
         <Route path="/sound/:projectId" element={<Sound />} />
         <Route path="/review/:projectId" element={<Review />} />
         <Route path="/render/:projectId" element={<Render />} />

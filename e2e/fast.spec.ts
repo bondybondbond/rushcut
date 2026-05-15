@@ -105,17 +105,17 @@ describe("Editor page", () => {
     );
   });
 
-  it("sticky filmstrip visible on Transitions screen", async () => {
+  it("sticky filmstrip visible on Arrange screen", async () => {
     const url = await browser.getUrl();
     if (!url.includes("/trimmer/")) return;
     const projectId = url.split("/trimmer/")[1];
 
     await browser.execute(
-      (pid: string) => window.history.pushState({}, "", `/transitions/${pid}`),
+      (pid: string) => window.history.pushState({}, "", `/arrange/${pid}`),
       projectId
     );
     await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/transitions/"),
+      async () => (await browser.getUrl()).includes("/arrange/"),
       { timeout: 3_000, interval: 200 }
     );
 
@@ -126,8 +126,8 @@ describe("Editor page", () => {
 
   it("sticky filmstrip visible on Sound screen", async () => {
     const url = await browser.getUrl();
-    if (!url.includes("/transitions/")) return;
-    const projectId = url.split("/transitions/")[1];
+    if (!url.includes("/arrange/")) return;
+    const projectId = url.split("/arrange/")[1];
 
     await browser.execute(
       (pid: string) => window.history.pushState({}, "", `/sound/${pid}`),

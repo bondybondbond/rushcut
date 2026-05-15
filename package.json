@@ -11,7 +11,7 @@
     "test:e2e:editor": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/gap-editor.spec.ts\"",
     "test:e2e:render": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/render.spec.ts\"",
     "test:e2e:trimmer": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/trimmer.spec.ts\"",
-    "test:e2e:transitions": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/transitions.spec.ts\"",
+    "test:e2e:arrange": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/arrange.spec.ts\"",
     "test:e2e:sound": "pnpm exec wdio run wdio.conf.ts --spec \"e2e/sound.spec.ts\"",
     "test:e2e:full": "pnpm exec wdio run wdio.conf.ts"
   },
