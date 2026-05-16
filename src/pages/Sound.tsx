@@ -13,11 +13,14 @@ type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "cus
 type LibraryMood = "cinematic" | "upbeat" | "chill" | "electronic";
 type MusicSource = "none" | "library" | "custom";
 type MusicVolume = "subtle" | "balanced" | "prominent";
+type MusicFadeOut = "none" | "2s" | "5s";
+type MusicTab = "music" | "mixer";
 
 interface SoundState {
   mood: MusicMood;
   volume: MusicVolume;
   customPath?: string;
+  musicFadeOut: MusicFadeOut;
 }
 
 const LIBRARY_MOODS: { value: LibraryMood; label: string; description: string }[] = [
@@ -35,7 +38,13 @@ const VOLUMES: { value: MusicVolume; label: string }[] = [
 
 const VOLUME_LEVELS: Record<MusicVolume, number> = { subtle: 0.3, balanced: 0.6, prominent: 1.0 };
 
-const DEFAULT_SOUND: SoundState = { mood: "none", volume: "balanced" };
+const FADE_OUT_OPTIONS: { value: MusicFadeOut; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "2s",   label: "2s" },
+  { value: "5s",   label: "5s" },
+];
+
+const DEFAULT_SOUND: SoundState = { mood: "none", volume: "balanced", musicFadeOut: "2s" };
 const PREVIEW_DURATION_MS = 30_000;
 
 function deriveSource(mood: MusicMood): MusicSource {
@@ -57,10 +66,12 @@ function readStorage(key: string): SoundState {
     const VALID_MOODS: MusicMood[] = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"];
     const VALID_VOLUMES: MusicVolume[] = ["subtle", "balanced", "prominent"];
     const mood = VALID_MOODS.includes(parsed.mood as MusicMood) ? (parsed.mood as MusicMood) : DEFAULT_SOUND.mood;
+    const VALID_FADE_OUTS: MusicFadeOut[] = ["none", "2s", "5s"];
     return {
       mood,
       volume: VALID_VOLUMES.includes(parsed.volume as MusicVolume) ? (parsed.volume as MusicVolume) : DEFAULT_SOUND.volume,
       customPath: typeof parsed.customPath === "string" ? parsed.customPath : undefined,
+      musicFadeOut: VALID_FADE_OUTS.includes(parsed.musicFadeOut as MusicFadeOut) ? (parsed.musicFadeOut as MusicFadeOut) : DEFAULT_SOUND.musicFadeOut,
     };
   } catch {
     return DEFAULT_SOUND;
@@ -81,6 +92,7 @@ export default function Sound() {
 
   const storageKey = `rc_sound_${projectId}`;
   const [sound, setSound] = useState<SoundState>(() => readStorage(storageKey));
+  const [musicTab, setMusicTab] = useState<MusicTab>("music");
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,6 +227,10 @@ export default function Sound() {
     }
   }
 
+  function handleFadeOut(musicFadeOut: MusicFadeOut) {
+    persist({ ...sound, musicFadeOut });
+  }
+
   async function handleCustomTrack() {
     stopPreview();
     const result = await open({ filters: [{ name: "Audio", extensions: ["mp3", "m4a", "wav", "aac", "flac"] }] });
@@ -295,175 +311,199 @@ export default function Sound() {
     >
       <audio ref={audioRef} />
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* In-screen tab bar */}
+        <div className="flex items-center justify-center gap-2 px-6 pt-3 pb-3 border-b border-white/10 flex-shrink-0">
+          {(["music", "mixer"] as MusicTab[]).map((t) => (
+            <button
+              key={t}
+              type="button"
+              data-testid={`music-tab-${t}`}
+              onClick={() => setMusicTab(t)}
+              className={`text-sm rounded-md px-4 py-1.5 border transition-all duration-200 font-medium ${
+                musicTab === t
+                  ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+                  : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+              }`}
+            >
+              {t === "music" ? "Music" : "Master mixer"}
+            </button>
+          ))}
+        </div>
 
-          {/* Header */}
-          <div>
-            <h1 className="text-3xl font-semibold text-[#FF8A65]">Sound</h1>
-            <p className="text-base text-[#a3a3a3] mt-1">
-              Choose a music source for your film, or leave it silent.
-            </p>
-          </div>
+        {/* ── Music tab ──────────────────────────────────────────────── */}
+        <div className={musicTab === "music" ? "flex-1 overflow-y-auto" : "hidden"}>
+          <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
+            <h1 className="text-3xl font-semibold text-[#FF8A65]">Music</h1>
 
-          {/* Music picker card */}
-          <div className="border border-white/15 rounded-lg p-6 space-y-4">
-            <div>
-              <p className="text-xl font-medium text-[#e5e5e5]">Music</p>
-              <p className="text-sm text-[#a3a3a3] mt-0.5">
-                Choose a music source for your film, or leave it silent.
-              </p>
-            </div>
-
-            {/* Source selector — 3 top-level options */}
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="button"
-                data-testid="chip-mood-none"
-                onClick={() => handleSourceClick("none")}
-                className={sourceChipClass("none")}
-              >
-                No Music
-              </button>
-              <button
-                type="button"
-                data-testid="chip-source-library"
-                onClick={() => handleSourceClick("library")}
-                className={sourceChipClass("library")}
-              >
-                Rushcut Library
-              </button>
-              <button
-                type="button"
-                data-testid="chip-mood-custom"
-                onClick={() => handleSourceClick("custom")}
-                className={sourceChipClass("custom")}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="w-3.5 h-3.5 mr-1.5 shrink-0 inline-block"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                Upload Own Track
-              </button>
-            </div>
-
-            {/* Library mood sub-chips */}
-            {source === "library" && (
-              <>
-                <div className="border-t border-white/10" />
-                <div className="flex flex-wrap gap-3">
-                  {LIBRARY_MOODS.map(({ value, label }) => (
-                    <button
-                      key={value}
-                      type="button"
-                      data-testid={`chip-mood-${value}`}
-                      onClick={() => handleLibraryMoodClick(value)}
-                      className={moodChipClass(value)}
-                    >
-                      {label}{trackDurations[value] !== undefined ? ` · ${fmtMs(trackDurations[value]! * 1000)}` : ""}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {/* Custom track — empty state */}
-            {source === "custom" && !sound.customPath && (
-              <button
-                type="button"
-                onClick={handleCustomTrack}
-                className="flex items-center gap-2 w-full px-4 py-3 rounded-md border border-dashed border-white/25 text-sm text-[#a3a3a3] hover:border-white/50 hover:text-[#e5e5e5] transition-all duration-200"
-              >
-                <svg
-                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-                  strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4 shrink-0"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                Choose audio file...
-              </button>
-            )}
-
-            {/* Custom track — file chosen */}
-            {source === "custom" && sound.customPath && (
-              <div className="flex items-center gap-3">
-                <p className="text-base font-semibold text-[#e5e5e5] truncate flex-1">
-                  {sound.customPath.split("\\").pop() ?? sound.customPath.split("/").pop()}
-                </p>
+            {/* Music picker card */}
+            <div className="border border-white/15 rounded-lg p-6 space-y-4">
+              {/* Source selector — 3 top-level options */}
+              <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
-                  onClick={previewingCustom ? stopPreview : startCustomPreview}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-all duration-200 shrink-0 ${
-                    previewingCustom
-                      ? "border-white/60 text-white bg-white/10"
-                      : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
-                  }`}
+                  data-testid="chip-mood-none"
+                  onClick={() => handleSourceClick("none")}
+                  className={sourceChipClass("none")}
                 >
-                  {previewingCustom ? (
-                    <>
-                      <svg viewBox="0 0 15 15" fill="currentColor" className="w-3.5 h-3.5 shrink-0">
-                        <rect x="3" y="3" width="9" height="9" rx="0.5" />
-                      </svg>
-                      Stop
-                    </>
-                  ) : (
-                    <>
-                      {/* Play — teenyicons MIT: https://github.com/teenyicons/teenyicons */}
-                      <svg viewBox="0 0 15 15" fill="currentColor" className="w-3.5 h-3.5 shrink-0">
-                        <path d="M4.79062 2.09314C4.63821 1.98427 4.43774 1.96972 4.27121 2.05542C4.10467 2.14112 4 2.31271 4 2.5V12.5C4 12.6873 4.10467 12.8589 4.27121 12.9446C4.43774 13.0303 4.63821 13.0157 4.79062 12.9069L11.7906 7.90687C11.922 7.81301 12 7.66148 12 7.5C12 7.33853 11.922 7.18699 11.7906 7.09314L4.79062 2.09314Z" />
-                      </svg>
-                      Preview
-                    </>
-                  )}
+                  No Music
                 </button>
+                <button
+                  type="button"
+                  data-testid="chip-source-library"
+                  onClick={() => handleSourceClick("library")}
+                  className={sourceChipClass("library")}
+                >
+                  Rushcut Library
+                </button>
+                <button
+                  type="button"
+                  data-testid="chip-mood-custom"
+                  onClick={() => handleSourceClick("custom")}
+                  className={sourceChipClass("custom")}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="w-3.5 h-3.5 mr-1.5 shrink-0 inline-block"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  Upload Own Track
+                </button>
+              </div>
+
+              {/* Library mood sub-chips */}
+              {source === "library" && (
+                <>
+                  <div className="border-t border-white/10" />
+                  <div className="flex flex-wrap gap-3">
+                    {LIBRARY_MOODS.map(({ value, label }) => (
+                      <button
+                        key={value}
+                        type="button"
+                        data-testid={`chip-mood-${value}`}
+                        onClick={() => handleLibraryMoodClick(value)}
+                        className={moodChipClass(value)}
+                      >
+                        {label}{trackDurations[value] !== undefined ? ` · ${fmtMs(trackDurations[value]! * 1000)}` : ""}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Custom track — empty state */}
+              {source === "custom" && !sound.customPath && (
                 <button
                   type="button"
                   onClick={handleCustomTrack}
-                  className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors shrink-0"
+                  className="flex items-center gap-2 w-full px-4 py-3 rounded-md border border-dashed border-white/25 text-sm text-[#a3a3a3] hover:border-white/50 hover:text-[#e5e5e5] transition-all duration-200"
                 >
-                  Change
+                  <svg
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+                    strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4 shrink-0"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  Choose audio file...
                 </button>
-              </div>
-            )}
+              )}
 
-            {/* Stop preview link */}
-            {previewingMood && (
-              <button
-                onClick={stopPreview}
-                className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] cursor-pointer transition-colors"
-              >
-                Stop preview
-              </button>
-            )}
+              {/* Custom track — file chosen */}
+              {source === "custom" && sound.customPath && (
+                <div className="flex items-center gap-3">
+                  <p className="text-base font-semibold text-[#e5e5e5] truncate flex-1">
+                    {sound.customPath.split("\\").pop() ?? sound.customPath.split("/").pop()}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={previewingCustom ? stopPreview : startCustomPreview}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-all duration-200 shrink-0 ${
+                      previewingCustom
+                        ? "border-white/60 text-white bg-white/10"
+                        : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+                    }`}
+                  >
+                    {previewingCustom ? (
+                      <>
+                        <svg viewBox="0 0 15 15" fill="currentColor" className="w-3.5 h-3.5 shrink-0">
+                          <rect x="3" y="3" width="9" height="9" rx="0.5" />
+                        </svg>
+                        Stop
+                      </>
+                    ) : (
+                      <>
+                        {/* Play — teenyicons MIT: https://github.com/teenyicons/teenyicons */}
+                        <svg viewBox="0 0 15 15" fill="currentColor" className="w-3.5 h-3.5 shrink-0">
+                          <path d="M4.79062 2.09314C4.63821 1.98427 4.43774 1.96972 4.27121 2.05542C4.10467 2.14112 4 2.31271 4 2.5V12.5C4 12.6873 4.10467 12.8589 4.27121 12.9446C4.43774 13.0303 4.63821 13.0157 4.79062 12.9069L11.7906 7.90687C11.922 7.81301 12 7.66148 12 7.5C12 7.33853 11.922 7.18699 11.7906 7.09314L4.79062 2.09314Z" />
+                        </svg>
+                        Preview
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCustomTrack}
+                    className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors shrink-0"
+                  >
+                    Change
+                  </button>
+                </div>
+              )}
 
-            {/* Description */}
-            {moodDescription && (
-              <p className="text-sm text-[#a3a3a3]">{moodDescription}</p>
-            )}
+              {/* Stop preview link */}
+              {previewingMood && (
+                <button
+                  onClick={stopPreview}
+                  className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] cursor-pointer transition-colors"
+                >
+                  Stop preview
+                </button>
+              )}
 
-            {/* Film vs track duration comparison */}
-            {showComparison && (
-              <p className="text-sm text-[#a3a3a3]">
-                Film: {fmtMs(totalMs)} &middot; Track: {fmtMs(selectedTrackMs!)}{loopNote}
+              {/* Description */}
+              {moodDescription && (
+                <p className="text-sm text-[#a3a3a3]">{moodDescription}</p>
+              )}
+
+              {/* Film vs track duration comparison */}
+              {showComparison && (
+                <p className="text-sm text-[#a3a3a3]">
+                  Film: {fmtMs(totalMs)} &middot; Track: {fmtMs(selectedTrackMs!)}{loopNote}
+                </p>
+              )}
+            </div>
+
+            <p className="text-sm text-[#a3a3a3]">
+              Your choice is saved automatically. Head to Master mixer to set volume and fade-out.
+            </p>
+          </div>
+        </div>
+
+        {/* ── Master mixer tab ───────────────────────────────────────── */}
+        <div className={musicTab === "mixer" ? "flex-1 overflow-y-auto" : "hidden"}>
+          <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
+            <div>
+              <h1 className="text-3xl font-semibold text-[#FF8A65]">Master mixer</h1>
+              <p className="text-base text-[#a3a3a3] mt-1">
+                Balance music against your clip audio, then preview before render.
               </p>
-            )}
+            </div>
 
-            {/* Volume row */}
-            {source !== "none" && (
-              <div className="pt-2 border-t border-white/10 space-y-3">
+            <div className="border border-white/15 rounded-lg p-6 space-y-6">
+              {/* Music volume */}
+              <div className="space-y-3">
                 <div>
-                  <p className="text-base font-medium text-[#e5e5e5]">Volume</p>
+                  <p className="text-base font-medium text-[#e5e5e5]">Music volume</p>
                   <p className="text-sm text-[#a3a3a3] mt-0.5">
                     How prominent should the music be in the mix?
                   </p>
@@ -486,14 +526,52 @@ export default function Sound() {
                   ))}
                 </div>
               </div>
-            )}
+
+              {/* Music fade-out */}
+              <div className="pt-2 border-t border-white/10 space-y-3">
+                <div>
+                  <p className="text-base font-medium text-[#e5e5e5]">Music fade-out</p>
+                  <p className="text-sm text-[#a3a3a3] mt-0.5">
+                    How should the music tail off at the end of the film?
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  {FADE_OUT_OPTIONS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      data-testid={`chip-fadeout-${value}`}
+                      onClick={() => handleFadeOut(value)}
+                      className={`text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
+                        sound.musicFadeOut === value
+                          ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+                          : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Quick Preview placeholder — K3 will replace with inline player */}
+              <div className="pt-2 border-t border-white/10 space-y-3">
+                <div>
+                  <p className="text-base font-medium text-[#e5e5e5]">Quick Preview</p>
+                  <p className="text-sm text-[#a3a3a3] mt-0.5">
+                    Render a fast 480p preview to hear your mix before the full render.
+                  </p>
+                </div>
+                <div className="aspect-video bg-white/5 border border-white/10 rounded-md flex items-center justify-center">
+                  <p className="text-sm text-[#a3a3a3] italic">Quick Preview coming in K3.</p>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-sm text-[#a3a3a3]">
+              Settings are saved automatically and applied to every render.
+            </p>
           </div>
-
-          {/* Footer */}
-          <p className="text-sm text-[#a3a3a3]">
-            Your choice is saved automatically. Continue to Render to build your film.
-          </p>
-
         </div>
       </div>
     </EditorShell>

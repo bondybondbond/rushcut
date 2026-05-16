@@ -138,6 +138,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## WebView2 — Web Audio API is CORS-blocked for `asset.localhost` files
+
+**Problem:** `AudioContext.createMediaElementSource(videoEl)` and `videoEl.captureStream()` both throw a SecurityError when the video element's `src` is an `asset.localhost` URL. The asset protocol returns no `Access-Control-Allow-Origin` header; `localhost:1420` (Vite) and `asset.localhost` are treated as different origins by WebView2/Chromium, and both Web Audio APIs enforce CORS for cross-origin media. Setting `video.crossOrigin = "anonymous"` makes it worse (enforces CORS where before the request was just unauthenticated). `video.volume` is capped at 1.0 by the HTML5 spec — there is no pure-JS way to get > 100% gain for `asset.localhost` media.
+**Solution:** For gain < 1.0, use `video.volume = Math.min(1.0, gain)` directly. For >100% gain preview, the only correct fix is a custom Tauri URI scheme handler in Rust that serves files with `Access-Control-Allow-Origin: *` — enabling `createMediaElementSource` to work. Until that Rust work is done, cap preview at 100% and apply real gain via FFmpeg `volume` filter on render. Do NOT ship 150%/200% chips without the Rust protocol fix — users will expect audible difference.
+**Context:** Arrange Sound tab per-clip volume preview. Any future feature requiring Web Audio processing of local video files via `asset.localhost`.
+
+---
+
 ## WebView2 — `<video>` elements in persistent HUD components autoplay on navigation
 
 **Problem:** `<video>` elements inside `StickyFilmStrip` (or any component that persists across route changes) begin playing when the user navigates between screens, because React re-mounts the component and `autoPlay` / `loadeddata` event handlers fire again. With 7 simultaneous video elements, this creates concurrent decode/play cycles, network traffic, and audible audio bleed.

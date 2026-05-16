@@ -42,7 +42,7 @@ export function BottomTabBar({ projectId, activeTab, configured }: BottomTabBarP
   const tabs: { id: ActiveTab; label: string; Icon: React.ElementType }[] = [
     { id: "trim",   label: "Trim",    Icon: Scissors    },
     { id: "arrange",label: "Arrange", Icon: Layers      },
-    { id: "sound",  label: "Sound",   Icon: Music       },
+    { id: "sound",  label: "Music",   Icon: Music       },
     { id: "render", label: "Render",  Icon: Clapperboard },
   ];
 

@@ -6,6 +6,7 @@ Applies when working on `src-tauri/**`.
 
 - All Tauri commands in a **single** `generate_handler![]`. A second `invoke_handler()` silently drops the first.
 - JS `invoke("name")` must match Rust `fn name` exactly — mismatch is a runtime error, not a compile error.
+- JS invoke arg keys must match the `snake_case → camelCase` conversion of each Rust parameter name. Example: `fn update_clip_volume_cmd(clip_id: String, clip_volume: f64)` → `invoke("update_clip_volume_cmd", { clipId, clipVolume })`. Passing `{ volume }` instead of `{ clipVolume }` silently drops the call with "missing required key clipVolume" in the console — no compile-time error, easy to miss.
 
 ## setup() must not block on slow system calls
 

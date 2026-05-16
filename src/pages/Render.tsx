@@ -11,6 +11,7 @@ import { projectCache } from "@/utils/projectCache";
 const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
 const VALID_TRANSITIONS = ["none", "crossfade", "dip_to_black"] as const;
+const VALID_FADE_OUTS = ["none", "2s", "5s"] as const;
 
 const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
@@ -49,7 +50,7 @@ function buildConfig(projectId: string): JobConfig {
   try {
     const raw = sessionStorage.getItem(`rc_sound_${projectId}`);
     if (raw) {
-      const s = JSON.parse(raw) as { mood?: string; volume?: string; customPath?: string };
+      const s = JSON.parse(raw) as { mood?: string; volume?: string; customPath?: string; musicFadeOut?: string };
       if (s.mood && (VALID_MOODS as readonly string[]).includes(s.mood)) {
         config.music_mood = s.mood as JobConfig["music_mood"];
       }
@@ -58,6 +59,9 @@ function buildConfig(projectId: string): JobConfig {
       }
       if (s.mood === "custom" && s.customPath) {
         config.custom_music_path = s.customPath;
+      }
+      if (s.musicFadeOut && (VALID_FADE_OUTS as readonly string[]).includes(s.musicFadeOut)) {
+        config.music_fade_out = s.musicFadeOut as "none" | "2s" | "5s";
       }
     }
   } catch { /* ignore */ }

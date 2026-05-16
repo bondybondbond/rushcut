@@ -67,6 +67,7 @@ export interface JobConfig {
   music_volume: "subtle" | "balanced" | "prominent";
   output_resolution?: "1080p" | "4k";
   custom_music_path?: string;
+  music_fade_out?: "none" | "2s" | "5s";
 }
 
 export interface ProjectSummary {

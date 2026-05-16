@@ -15,17 +15,19 @@
 
 ## Current Phase
 
-**Phase 2 — Arrange screen clip playback polish COMPLETE (2026-05-16). Next: Batch K2 (Sound screen per-clip volume + Quick Preview).**
+**Phase 2 — Batch K2 COMPLETE (2026-05-16). Next: Batch K3 (Quick Preview render).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch K2 — Sound screen** (per-clip volume tab + music crossfade-out chips + Quick Preview render ~15s 480p).
+**Batch K3 — Quick Preview render:** Rust `run_preview_cmd`, Python `--preview` pipeline mode (480p, ~15s), inline player on Master mixer tab.
 
 ---
 
 ## Recently shipped this session (2026-05-16)
+
+- **Batch K2 COMPLETE:** Arrange Sound tab (4th tab, per-clip volume chips Mute/50%/100%/Custom, `video.volume` for audible feedback, `update_clip_volume_cmd` param fix `volume`→`clipVolume`). Filmstrip volume badges: VolumeX red (mute), Volume1 purple (reduced) — both styled as coloured square badges matching Z badge pattern. Bottom nav "Sound"→"Music". Music screen two-tab shell (Music + Master mixer). Master mixer: volume chips + fade-out chips (None/2s/5s) + Quick Preview placeholder. Pipeline: `music_fade_out_s` wired run.py→music.py. Cross-tab video pause on tab switch. 9/9 fast E2E PASS.
 
 - **Arrange clip playback fixes (post-K1):** Video player in Arrange zoom tab now seeks to `in_ms` on `loadedmetadata`, stops at `out_ms` in `handleTimeUpdate`, clamps scrubber to `[in_ms, out_ms]`, displays trimmed elapsed/total. Playhead wired from per-clip `currentMs` via `filmPlayheadMs` formula. Replay after clip ends fixed (seeks back to `in_ms` in `togglePlay`). 9/9 fast E2E PASS.
 

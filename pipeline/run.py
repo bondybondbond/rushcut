@@ -106,6 +106,10 @@ def main() -> None:
             "output_resolution": settings.get("output_resolution", "1080p"),
             "custom_music_path": win_to_wsl(settings["custom_music_path"])
                 if settings.get("custom_music_path") else None,
+            # music_fade_out_s: seconds for music fade-out (0 = no fade, from UI chips none/2s/5s).
+            "music_fade_out_s": {"none": 0.0, "2s": 2.0, "5s": 5.0}.get(
+                settings.get("music_fade_out", "2s"), 2.0
+            ),
         },
     }
 

@@ -493,9 +493,12 @@ def run_pipeline(
         music_volume = float(config.get("music_volume", 0.4))
         movie_vol = _MOVIE_VOL.get(round(music_volume, 1), 0.7)
         log.info("[vol] music_vol=%.2f movie_vol=%.2f", music_volume, movie_vol)
+        fade_out_s = float(config.get("music_fade_out_s", 3.0))
+        log.info("[vol] music_fade_out_s=%.1f", fade_out_s)
         output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out,
                            music_volume=music_volume, movie_vol=movie_vol,
-                           custom_track_path=custom_music_path_wsl)
+                           custom_track_path=custom_music_path_wsl,
+                           fade_out_s=fade_out_s)
     else:
         log.info("[render] Step 6: music skipped")
     music_s = time.time() - t0

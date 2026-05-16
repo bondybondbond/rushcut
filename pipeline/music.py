@@ -75,23 +75,26 @@ def _build_filter(
     video_dur: float,
     music_volume: float,
     movie_vol: float = 1.0,
+    fade_out_s: float = FADE_OUT_S,
 ) -> str:
     """Build filter_complex for n_copies inputs (FFmpeg indices 1..n_copies).
 
     Each copy is pre-trimmed to the active audio region before crossfading,
     so boundaries land on musically active content rather than silence.
     """
-    fade_start = max(0.0, video_dur - FADE_OUT_S)
+    eff_fade = fade_out_s if fade_out_s > 0 else 0.0
+    fade_start = max(0.0, video_dur - eff_fade) if eff_fade > 0 else video_dur
 
     # Pre-trim string applied to every input copy
     pre = f"atrim={active_start:.4f}:{active_end:.4f},asetpts=PTS-STARTPTS"
 
-    # Final trim + volume + fade + mix tail (applied after all acrossfade ops).
+    # Final trim + volume + optional fade + mix tail (applied after all acrossfade ops).
     # Movie audio is ducked by movie_vol so prominent music actually dominates.
+    fade_filter = f"afade=t=out:st={fade_start:.4f}:d={eff_fade:.4f}," if eff_fade > 0 else ""
     tail = (
         f"atrim=0:{video_dur:.4f},asetpts=PTS-STARTPTS,"
         f"volume={music_volume:.4f},"
-        f"afade=t=out:st={fade_start:.4f}:d={FADE_OUT_S}[mus];"
+        f"{fade_filter}[mus];"
         f"[0:a]volume={movie_vol:.4f}[movaudio];"
         f"[movaudio][mus]amix=inputs=2:duration=first:dropout_transition=3[aout]"
     )
@@ -123,6 +126,7 @@ def mix_music(
     music_volume: float = 0.4,
     movie_vol: float = 1.0,
     custom_track_path: "Path | None" = None,
+    fade_out_s: float = FADE_OUT_S,
 ) -> Path:
     """
     Mix a background music track into video_path.
@@ -164,7 +168,7 @@ def mix_music(
         track_name, active_start, active_end, video_duration_s, n_copies, crossfade_s, music_volume,
     )
 
-    fc = _build_filter(n_copies, active_start, active_end, crossfade_s, video_duration_s, music_volume, movie_vol)
+    fc = _build_filter(n_copies, active_start, active_end, crossfade_s, video_duration_s, music_volume, movie_vol, fade_out_s)
     log.info("[music] filter_complex: %s", fc)
 
     cmd = [FFMPEG, "-y", "-i", str(video_path)]

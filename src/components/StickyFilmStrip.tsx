@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { VolumeX, Volume1 } from "lucide-react";
 import type { Clip } from "@/types/project";
 import { fmtMs } from "@/utils/fmtMs";
 
@@ -443,8 +444,15 @@ export function StickyFilmStrip({
                           <span className="text-[8px] font-bold text-[#0a0a0a] leading-none select-none">Z</span>
                         </div>
                       )}
-                      {clip.clip_volume !== 1.0 && (
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#B794F4]" title="Volume override" />
+                      {clip.clip_volume === 0 && (
+                        <div className="w-3.5 h-3.5 rounded-sm bg-red-500 flex items-center justify-center" title="Muted">
+                          <VolumeX size={9} strokeWidth={2.5} className="text-[#0a0a0a]" />
+                        </div>
+                      )}
+                      {clip.clip_volume !== undefined && clip.clip_volume > 0 && clip.clip_volume < 1.0 && (
+                        <div className="w-3.5 h-3.5 rounded-sm bg-[#B794F4] flex items-center justify-center" title="Volume reduced">
+                          <Volume1 size={9} strokeWidth={2.5} className="text-[#0a0a0a]" />
+                        </div>
                       )}
                     </div>
                     {/* Delete threshold overlay — shows red tint when dragged past -40px */}
