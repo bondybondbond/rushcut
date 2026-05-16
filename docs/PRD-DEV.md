@@ -291,38 +291,116 @@ Users need to adjust individual clip volume and zoom before they can produce a p
 
 ---
 
-## Batch K — Quick Preview + Music Polish
+## Batch K1 — Arrange Screen: Full Redesign
 
 > **Status: PLANNED — pre-launch must-have.**
-> **Scope: "Preview Film" button on Sound screen (~15s 480p pre-export preview). Music crossfade-out chips. Both on Sound screen.**
+> **Prereq: Batch J (Arrange screen shell exists).**
+> **Scope: Complete redesign of the Arrange screen layout + zoom UX. Volume per clip moves to Sound screen (Batch K2). Ken Burns zoom modes added. Bin button replaced by gesture/keyboard delete.**
 
 ### Motivation
 
-Users must hear music against their assembled clips before committing to a 2–3 minute export. Discovering wrong music or inaudible clips after a full render wastes time. Feedback loop: preview → adjust volume (Arrange) or switch track → re-preview → export.
+The Batch J Clips tab is functional but the layout doesn't match the intended design (centred large preview with Prev/Next clip navigation). Zoom also needs Ken Burns modes (slow, but sellable) alongside the fast static crop already shipped. Per-clip volume logically belongs on the Sound screen alongside music — separating them from zoom gives each screen a cleaner single purpose.
 
-### K1 — Quick Preview render
+### Layout redesign
 
-**Pipeline:** New `--preview` flag in `JobConfig`. When set: skip normalise (use proxy H.264 directly), output `-preset ultrafast -crf 35 -vf scale=-2:480` (480p), skip loudnorm. Write to `%TEMP%\rushcut\preview_{project_id}.mp4` (overwrites previous). Not stored in `jobs` DB table.
+Replace the current EditorShell left-panel + right-panel layout with a **centred preview** layout:
 
-**Rust:** `run_preview_cmd(project_id)` Tauri command. Builds preview manifest from project clips + sessionStorage settings. Emits `preview-progress` + `preview-done:{temp_win_path}`. Ephemeral — not in DB.
+- **Left clip rail** — vertical strip of all project clips (thumbnails), scrollable; active clip highlighted peach. Click to jump to clip.
+- **Centre** — large clip preview (video player, dominant, fills available height). Clip name + duration below.
+- **Prev / Next** — arrow buttons on left/right sides of the preview, stepping through clips in order.
+- **Tab bar** — "Zoom" tab only (single tab, or "Zoom | Transitions | Cards" shell kept but Clips renamed Zoom).
+- **Controls** — zoom chips + focal point picker below/beside the preview (same controls as Batch J, restyled to new layout).
 
-**UI (Sound screen):** "Preview film" button (secondary style, `border border-white/30`, lucide `Play`). Below music source chips. On click: progress overlay ("Building preview… N%") with cancel. On done: inline video player (`autoPlay`, `controls`, `convertFileSrc`). Re-clicking cancels previous job.
+### Tab rename
 
-**Estimated time:** ~10–20s for a 10-clip 1-min film (proxy-only, no HEVC decode).
+"Clips" tab → **"Zoom"**. The tab controls zoom + focal point only — volume is gone (moved to K2).
 
-### K2 — Music crossfade out
+### Three zoom modes
 
-**UI (Sound screen):** "Fade out" row below volume chips. Chips: `None` / `2s` / `5s` (default `2s`). Persist in `rc_sound_${projectId}` as `musicFadeOut`. Visible when music is selected.
+Replace the current On/Off + preset chips with three explicit mode chips:
 
-**Pipeline (`music.py`):** Append `afade=t=out:st={max(0, film_dur - fade_s)}:d={fade_s}` to music filter chain before amix. `run.py` passes `music_fade_out_s` from config.
+| Chip | Mode | Pipeline | Speed label |
+|---|---|---|---|
+| **Crop** | Static crop to focal point | `crop+scale` (current zoom.py) | — |
+| **Zoom In** | Ken Burns 1× → target zoom, panning toward focal | `zoompan` expression | "Slower render" |
+| **Zoom Out** | Ken Burns target zoom → 1×, panning away from focal | `zoompan` expression | "Slower render" |
+
+- Default: **none** (no zoom). Crop is fast; KB modes add render time (warn in chip label or tooltip).
+- `zoom_mode` DB values: `null` (off) / `"crop"` / `"zoom_in"` / `"zoom_out"`.
+- `zoom.py` already handles static crop. Ken Burns paths: new `zoompan` branches keyed by mode.
+- Focal point picker shown for all three modes (determines crop centre / KB pan target).
+
+### Timeline clip badges
+
+On `StickyFilmStrip` clip tiles, show small indicator dots:
+- **Green dot** — `zoom_mode IS NOT NULL` for this clip
+- **Purple dot** — `clip_volume != 1.0` for this clip (need `clip_volume` in StickyFilmStrip props)
+
+Dots overlay the bottom-right corner of the tile at z-10.
+
+### Delete clip via gesture / keyboard
+
+Remove the hover bin button from clip tiles in the film timeline. Replace with:
+- **Drag left** — drag a tile leftward past a threshold (~40px) → delete with a red flash
+- **DEL key** — when a clip tile is focused/active, DEL removes it
+
+`onDeleteClip` prop retained on StickyFilmStrip; just the trigger changes.
 
 ### Acceptance checks
 
-- [ ] Sound screen — "Preview film" button visible; clicking shows progress then plays 480p video
-- [ ] Preview completes in under 30s for a 10-clip film
-- [ ] Music audible in preview; per-clip volumes from Arrange screen reflected
-- [ ] Re-clicking Preview cancels previous job cleanly
-- [ ] Fade-out chips visible for music; fade audible in preview and render
+- [ ] Arrange screen loads with centred preview, left clip rail, Prev/Next nav
+- [ ] Clicking clip in rail selects it; Prev/Next step through clips in order
+- [ ] "Zoom" tab visible; no "Clips" tab
+- [ ] Crop / Zoom In / Zoom Out chips; selecting KB mode shows "Slower render" label
+- [ ] Focal picker shown for all zoom modes; hidden when no zoom
+- [ ] Timeline tiles show green dot when zoom set, purple dot when volume ≠ 100%
+- [ ] Drag-left past threshold on a tile removes it; DEL key on focused tile removes it
+- [ ] Volume controls absent from Arrange screen
+- [ ] Rendered output: Ken Burns pan/zoom visible on zoomed clips; static crop unchanged
+
+---
+
+## Batch K2 — Sound Screen: Per-Clip Volume + Music Polish
+
+> **Status: PLANNED — pre-launch must-have.**
+> **Prereq: Batch K1 (volume removed from Arrange).**
+> **Scope: Add per-clip volume tab to Sound screen. Music crossfade-out chips. Quick Preview render.**
+
+### Motivation
+
+Per-clip volume belongs with music — both affect the audio mix and users want to balance clip audio against the music track in one place. Moving it here lets the Sound screen own the full audio experience.
+
+### K2a — Sound screen tab structure
+
+Add a two-tab shell to Sound screen:
+
+- **Tab 1: Music** — existing source chips (No Music / Library / Upload Own Track), volume chips, fade-out chips (new). Default tab.
+- **Tab 2: Clips** — per-clip volume controls (lifted from Batch J Arrange screen, same chip UX: Mute / 50% / 100% / 150% / 200% + Custom). Clip selector = same left rail or compact list as K1 Arrange layout.
+
+`rc_sound_${projectId}` sessionStorage: extend to persist clip volume state or keep in DB (already there via `clip_volume` col — just remove from Arrange and surface here).
+
+### K2b — Music crossfade out
+
+**UI:** "Fade out" row on Music tab, below volume chips. Chips: `None` / `2s` / `5s` (default `2s`). Persist in `rc_sound_${projectId}` as `musicFadeOut`. Visible when music source is not "none".
+
+**Pipeline (`music.py`):** Append `afade=t=out:st={max(0, film_dur - fade_s)}:d={fade_s}` to music filter chain before amix. `run.py` passes `music_fade_out_s` from config.
+
+### K2c — Quick Preview render
+
+**Pipeline:** `--preview` mode in JobConfig. Skip normalise (use proxy H.264 directly), `-preset ultrafast -crf 35 -vf scale=-2:480`, skip loudnorm. Write to `%TEMP%\rushcut\preview_{project_id}.mp4`. Ephemeral — not in `jobs` DB.
+
+**Rust:** `run_preview_cmd(project_id)` Tauri command. Emits `preview-progress` + `preview-done:{path}`. Cancel = kill WSL process.
+
+**UI (Music tab):** "Preview film" button below source chips. Progress overlay → inline 480p player. Re-click cancels previous job.
+
+### Acceptance checks
+
+- [ ] Sound screen has Music + Clips tabs; Music is default
+- [ ] Clips tab shows per-clip volume chips; saves to DB; survives reload
+- [ ] Fade-out chips on Music tab; fade audible in preview and full render
+- [ ] "Preview film" button on Music tab; completes in <30s for 10-clip film
+- [ ] Per-clip volumes reflected in preview audio mix
+- [ ] Purple dot badges on StickyFilmStrip tiles still accurate (read from DB)
 
 ---
 
@@ -596,6 +674,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.4     | 2026-05-16 | Batch K split into K1 (Arrange full redesign: centred layout, Zoom tab, Ken Burns modes, clip badges, drag/DEL delete) and K2 (Sound screen: per-clip volume tab + music fade-out + Quick Preview). Old single Batch K spec replaced. |
 | 2.3     | 2026-05-16 | Batch J COMPLETE — Arrange screen (`/arrange/:projectId`); 3-tab shell (Clips|Transitions|Cards); per-clip volume (`clip_volume` DB col, `update_clip_volume_cmd`, volume filter in transitions.py + render.py, Mute/50%/100%/150%/200%+Custom chips); Clips tab zoom+focal reuse; StickyFilmStrip `onSelectClip`. zoom.py static crop fix (ffprobe integer coords, replaces broken zoompan expression). Render timing JSONL log (per-render phases, instance detection wdio/direct). render.spec.ts `waitForExist` race fix. 15/15 render E2E PASS. LEARNINGS.md + e2e.md updated. CLAUDE.md two-instance + UX flow fixes. |
 | 2.2     | 2026-05-14 | PRD update — Batch J (per-clip audio + music fade-out) and Batch K (text cards + 5 transitions + shuffle + transition in/out) added as pre-launch must-haves. Post-Launch Backlog and AI Enablement sections added. Phase 3 consolidated. msedgedriver v148 confirmed (E2E blocker cleared). |
 | 2.1     | 2026-05-14 | TrimBar already-included region overlay — `alreadyCutRegions` prop, `#99B3FF` bracket gradient at z-2, self-exclusion + malformed row + micro-cut guards. Timeline HUD auto-fit — clip add triggers fit-to-width + scroll-to-0; "fit view" pill button; TrimBar text polish. DESIGN.md updated. 9/9 fast E2E PASS. |

@@ -15,17 +15,20 @@
 
 ## Current Phase
 
-**Phase 2 — Batch J (Arrange screen) COMPLETE (2026-05-16). Render timing log + zoom static crop fix + E2E render suite fix also shipped. Next: Batch K (Quick Preview).**
+**Phase 2 — Batch K1 (Arrange screen full redesign) COMPLETE (2026-05-16). Next: Batch K2 (Sound screen per-clip volume + Quick Preview).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch K — Quick Preview render on Sound screen (~15s 480p) + music crossfade-out chips.**
+**Batch K2 — Sound screen** (per-clip volume tab + music crossfade-out chips + Quick Preview render ~15s 480p).
 
 ---
 
 ## Recently shipped this session (2026-05-16)
+
+- **Batch K1 — Arrange screen full redesign COMPLETE:** Centred `<video>` preview + left clip rail (vertical thumbnails, peach active border) + Prev/Next navigation; "zoom" tab (renamed from "Clips"); play+scrubber row; drag-to-focal on video preview (window-level mousemove, `patchClip` instant + `saveReview` on mouseup); Z badge (green `bg-[#22c55e]` square) on StickyFilmStrip when `zoom_mode != null`; purple dot when `clip_volume !== 1.0`; drag-left/DEL delete on film strip. Volume controls removed from Arrange. `loadedSrcRef` pattern prevents video reload stutter on tab switch (zoom tab kept mounted via `hidden` class). 9/9 fast PASS.
+- **Play button standardised:** Trimmer + Arrange both use `<Play size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />` inside `w-10 h-10 rounded-full bg-[#FF8A65] text-white`. No hand-coded SVG.
 
 - **Batch J — Arrange screen COMPLETE:** `/transitions/` → `/arrange/`; 3-tab shell (Clips | Transitions | Cards); per-clip volume (chips + custom input, `clip_volume` DB col + Rust cmd + pipeline volume filter); zoom + focal picker on Clips tab; StickyFilmStrip `onSelectClip`; pipeline `volume=` filter in transitions.py + render.py; E2E `arrange.spec.ts`. 15/15 render E2E PASS.
 - **zoom.py static crop fix:** Replaced broken `zoompan` expression syntax with `ffprobe`-derived integer pixel coords → `crop=W:H:X:Y,scale=W2:H2`. Eliminates FFmpeg exit 8.

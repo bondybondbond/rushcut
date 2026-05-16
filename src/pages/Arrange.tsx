@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { ChevronLeft, ChevronRight, Play, Pause } from "lucide-react";
 import type { Clip, ProjectWithClips } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
 import { StickyFilmStrip } from "@/components/StickyFilmStrip";
@@ -8,21 +10,12 @@ import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 
 type TransitionValue = "none" | "crossfade" | "dip_to_black";
-type ArrangeTab = "clips" | "transitions" | "cards";
+type ArrangeTab = "zoom" | "transitions" | "cards";
 
 const TRANSITIONS: { value: TransitionValue; label: string; description: string }[] = [
   { value: "none",        label: "None",        description: "Hard cut between clips — clean and fast." },
   { value: "crossfade",   label: "Crossfade",   description: "Smooth 1.5s dissolve between clips." },
   { value: "dip_to_black", label: "Dip to black", description: "Fades to black then back in — cinematic pacing." },
-];
-
-// Discrete volume presets — float multipliers written to clip_volume.
-const VOLUME_PRESETS: { label: string; value: number }[] = [
-  { label: "Mute", value: 0 },
-  { label: "50%",  value: 0.5 },
-  { label: "100%", value: 1.0 },
-  { label: "150%", value: 1.5 },
-  { label: "200%", value: 2.0 },
 ];
 
 // Zoom chips — labels per PRD, mapped to zoom_mode values used by the pipeline.
@@ -34,14 +27,12 @@ const ZOOM_PRESETS: { label: string; value: string | null }[] = [
 ];
 
 const ARRANGE_TABS: { id: ArrangeTab; label: string }[] = [
-  { id: "clips",       label: "Clips" },
-  { id: "transitions", label: "Transitions" },
-  { id: "cards",       label: "Cards" },
+  { id: "zoom",         label: "Zoom" },
+  { id: "transitions",  label: "Transitions" },
+  { id: "cards",        label: "Cards" },
 ];
 
-function isVolumePreset(v: number): boolean {
-  return VOLUME_PRESETS.some((p) => p.value === v);
-}
+const ZOOM_SCALE: Record<string, number> = { gentle: 1.3, medium: 1.5, tight: 2.0 };
 
 export default function Arrange() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -49,18 +40,25 @@ export default function Arrange() {
   const _cached = projectCache.get(projectId ?? "");
   const [projectName, setProjectName] = useState(_cached?.name ?? "");
   const [clips, setClips] = useState<Clip[]>(_cached?.clips ?? []);
-  const [tab, setTab] = useState<ArrangeTab>("clips");
+  const [tab, setTab] = useState<ArrangeTab>("zoom");
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+
+  // Clip playback state
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentMs, setCurrentMs] = useState(0);
+  const [durationMs, setDurationMs] = useState(0);
+
+  const focalImgRef = useRef<HTMLDivElement>(null);
+  const videoBoxRef = useRef<HTMLDivElement>(null);
+  const isDraggingFocalRef = useRef(false);
+  const selectedClipRef = useRef<Clip | null>(null);
+  const loadedSrcRef = useRef<string>("");
 
   const storageKey = `rc_transition_${projectId}`;
   const [transition, setTransition] = useState<TransitionValue>(
     () => (sessionStorage.getItem(storageKey) as TransitionValue | null) ?? "none"
   );
-
-  // Custom-volume inline input: when true the chip row shows a number input instead.
-  const [editingCustomVol, setEditingCustomVol] = useState(false);
-  const [customVolInput, setCustomVolInput] = useState("");
-  const focalImgRef = useRef<HTMLDivElement>(null);
 
   const configured = useConfiguredTabs(projectId ?? "");
 
@@ -73,6 +71,7 @@ export default function Arrange() {
   }, 0);
 
   const selectedClip = selectedClipId ? clips.find((c) => c.id === selectedClipId) ?? null : null;
+  selectedClipRef.current = selectedClip;
 
   const soundMoodVal = (() => {
     try {
@@ -92,6 +91,36 @@ export default function Arrange() {
       .catch(() => {});
   }, [projectId]);
 
+  // When selected clip changes OR tab returns to "zoom", reload video source.
+  // Skip reload if the same src is already loaded (e.g. returning from another tab).
+  useEffect(() => {
+    if (tab !== "zoom") return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (!selectedClip) {
+      loadedSrcRef.current = "";
+      video.src = "";
+      setIsPlaying(false);
+      setCurrentMs(0);
+      setDurationMs(0);
+      return;
+    }
+
+    const src = selectedClip.proxy_path
+      ? convertFileSrc(selectedClip.proxy_path)
+      : convertFileSrc(selectedClip.local_path);
+
+    if (src === loadedSrcRef.current) return; // same clip — keep playback position
+
+    loadedSrcRef.current = src;
+    setIsPlaying(false);
+    setCurrentMs(0);
+    setDurationMs(0);
+    video.src = src;
+    video.load();
+  }, [selectedClipId, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function handleSelectTransition(val: TransitionValue) {
     setTransition(val);
     sessionStorage.setItem(storageKey, val);
@@ -104,15 +133,6 @@ export default function Arrange() {
       if (projectId) projectCache.set(projectId, { name: projectName, clips: next });
       return next;
     });
-  }
-
-  async function saveVolume(clip: Clip, vol: number) {
-    patchClip(clip.id, { clip_volume: vol });
-    try {
-      await invoke("update_clip_volume_cmd", { clipId: clip.id, clipVolume: vol });
-    } catch (err) {
-      console.error("[arrange] update_clip_volume_cmd failed", err);
-    }
   }
 
   async function saveReview(clip: Clip, patch: Partial<Pick<Clip, "focal_x" | "focal_y" | "zoom_mode">>) {
@@ -133,24 +153,6 @@ export default function Arrange() {
     }
   }
 
-  function handleVolumeChip(clip: Clip, vol: number) {
-    setEditingCustomVol(false);
-    saveVolume(clip, vol);
-  }
-
-  function handleCustomChipClick(clip: Clip) {
-    setCustomVolInput(String(Math.round(clip.clip_volume * 100)));
-    setEditingCustomVol(true);
-  }
-
-  function commitCustomVolume(clip: Clip) {
-    const parsed = parseFloat(customVolInput);
-    // Invalid / empty → fall back to 100%. Otherwise clamp 0–200.
-    const pct = Number.isFinite(parsed) ? Math.min(200, Math.max(0, parsed)) : 100;
-    setEditingCustomVol(false);
-    saveVolume(clip, pct / 100);
-  }
-
   function handleFocalClick(clip: Clip, e: React.MouseEvent<HTMLDivElement>) {
     const el = focalImgRef.current;
     if (!el) return;
@@ -158,6 +160,100 @@ export default function Arrange() {
     const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
     saveReview(clip, { focal_x: x, focal_y: y });
+  }
+
+  function getFocalFromMouse(e: MouseEvent): { x: number; y: number } | null {
+    const el = videoBoxRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+    };
+  }
+
+  function handleVideoMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    const clip = selectedClipRef.current;
+    if (!clip || !clip.zoom_mode) return;
+    e.preventDefault();
+    isDraggingFocalRef.current = true;
+    const pos = getFocalFromMouse(e.nativeEvent);
+    if (pos) patchClip(clip.id, { focal_x: pos.x, focal_y: pos.y });
+  }
+
+  // Window-level drag tracking for focal point — runs once, reads from refs
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!isDraggingFocalRef.current) return;
+      const clip = selectedClipRef.current;
+      const pos = getFocalFromMouse(e);
+      if (!clip || !pos) return;
+      patchClip(clip.id, { focal_x: pos.x, focal_y: pos.y });
+    }
+    function onUp(e: MouseEvent) {
+      if (!isDraggingFocalRef.current) return;
+      isDraggingFocalRef.current = false;
+      const clip = selectedClipRef.current;
+      const pos = getFocalFromMouse(e);
+      if (clip && pos) saveReview(clip, { focal_x: pos.x, focal_y: pos.y });
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Prev/Next clip navigation helpers.
+  const selectedIndex = selectedClipId ? inFilm.findIndex((c) => c.id === selectedClipId) : -1;
+
+  const prevClip = useCallback(() => {
+    if (selectedIndex > 0) setSelectedClipId(inFilm[selectedIndex - 1].id);
+  }, [selectedIndex, inFilm]);
+
+  const nextClip = useCallback(() => {
+    if (selectedIndex < inFilm.length - 1) setSelectedClipId(inFilm[selectedIndex + 1].id);
+  }, [selectedIndex, inFilm]);
+
+  // Playback controls
+  function togglePlay() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      video.play().catch(() => {});
+      setIsPlaying(true);
+    } else {
+      video.pause();
+      setIsPlaying(false);
+    }
+  }
+
+  function handleTimeUpdate() {
+    const video = videoRef.current;
+    if (video) setCurrentMs(video.currentTime * 1000);
+  }
+
+  function handleLoadedMetadata() {
+    const video = videoRef.current;
+    if (video) setDurationMs(video.duration * 1000);
+  }
+
+  function handleVideoEnded() {
+    setIsPlaying(false);
+  }
+
+  function handleScrubberChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const ms = parseFloat(e.target.value);
+    setCurrentMs(ms);
+    if (videoRef.current) videoRef.current.currentTime = ms / 1000;
+  }
+
+  function formatTime(ms: number): string {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
   return (
@@ -174,14 +270,14 @@ export default function Arrange() {
         <StickyFilmStrip
           clips={clips}
           projectId={projectId!}
-          activeId={tab === "clips" ? selectedClipId : null}
-          onSelectClip={tab === "clips" ? setSelectedClipId : undefined}
+          activeId={tab === "zoom" ? selectedClipId : null}
+          onSelectClip={tab === "zoom" ? setSelectedClipId : undefined}
         />
       }
     >
       <div className="flex flex-col flex-1 min-w-0">
-        {/* In-screen tab bar */}
-        <div className="flex items-center gap-2 px-6 pt-4 pb-3 border-b border-white/10 flex-shrink-0">
+        {/* In-screen tab bar — centred */}
+        <div className="flex items-center justify-center gap-2 px-6 pt-3 pb-3 border-b border-white/10 flex-shrink-0">
           {ARRANGE_TABS.map(({ id, label }) => (
             <button
               key={id}
@@ -199,109 +295,185 @@ export default function Arrange() {
           ))}
         </div>
 
-        {/* ── Clips tab ───────────────────────────────────────────── */}
-        {tab === "clips" && (
-          <div className="flex flex-1 min-h-0">
-            {/* Main — selected clip preview / empty state */}
-            <div className="flex-1 min-w-0 overflow-y-auto px-6 py-8">
-              <h1 className="text-3xl font-semibold text-[#FF8A65]">Arrange</h1>
-              <p className="text-base text-[#a3a3a3] mt-1">
-                Adjust each clip's volume and zoom. Click a clip in the timeline below.
-              </p>
+        {/* ── Zoom tab — kept mounted (hidden not unmounted) so video never reloads on tab switch */}
+        <div className={tab === "zoom" ? "flex flex-1 min-h-0" : "hidden"}>
 
-              {selectedClip ? (
-                <div className="mt-8 max-w-md">
-                  <div className="rounded-lg overflow-hidden bg-black border border-white/10" style={{ aspectRatio: "16/9" }}>
-                    {selectedClip.thumbnail_data ? (
-                      <img
-                        src={selectedClip.thumbnail_data}
-                        alt={selectedClip.filename}
-                        className="w-full h-full object-contain"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[#a3a3a3] text-sm">
-                        No preview
+            {/* Left clip rail */}
+            <div className="w-40 flex-shrink-0 border-r border-white/10 overflow-y-auto bg-[#0a0a0a] p-2">
+              <p className="text-xs text-[#a3a3a3] px-1 pb-2">clips</p>
+              <div className="flex flex-col gap-1.5">
+                {inFilm.map((clip) => {
+                  const isActive = clip.id === selectedClipId;
+                  return (
+                    <button
+                      key={clip.id}
+                      type="button"
+                      data-testid={`arrange-rail-clip-${clip.id}`}
+                      onClick={() => setSelectedClipId(clip.id)}
+                      className={`relative rounded-md overflow-hidden border-2 transition-all duration-200 focus:outline-none ${
+                        isActive
+                          ? "border-[#FF8A65]"
+                          : "border-[#99B3FF]/25 hover:border-[#99B3FF]/50"
+                      }`}
+                      style={{ aspectRatio: "16/9", background: "#111" }}
+                    >
+                      {clip.thumbnail_data ? (
+                        <img
+                          src={clip.thumbnail_data}
+                          alt={clip.filename}
+                          className="w-full h-full object-cover pointer-events-none"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-white/5" />
+                      )}
+                    </button>
+                  );
+                })}
+                {inFilm.length === 0 && (
+                  <p className="text-xs text-[#a3a3a3] italic px-1">No clips in film</p>
+                )}
+              </div>
+            </div>
+
+            {/* Centre — preview + playback */}
+            <div className="flex-1 min-w-0 flex flex-col min-h-0 px-4 py-4 gap-3">
+              {/* Prev | video | Next row — fills available height */}
+              <div className="flex gap-4 flex-1 min-h-0">
+                {/* Prev */}
+                <button
+                  type="button"
+                  data-testid="arrange-prev"
+                  onClick={prevClip}
+                  disabled={selectedIndex <= 0}
+                  className="self-center flex-shrink-0 flex items-center gap-1 border border-white/30 text-[#e5e5e5] rounded-md hover:border-white/60 hover:bg-white/5 px-3 py-2 text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <ChevronLeft size={14} />
+                  Prev
+                </button>
+
+                {/* Video wrapper — stretches to row height, then 16:9 box centered inside */}
+                <div className="flex-1 min-w-0 self-stretch flex items-center justify-center overflow-hidden">
+                  {(() => {
+                    const zoomScale = ZOOM_SCALE[selectedClip?.zoom_mode ?? ""] ?? 1;
+                    const focalX = (selectedClip?.focal_x ?? 0.5) * 100;
+                    const focalY = (selectedClip?.focal_y ?? 0.5) * 100;
+                    return (
+                      <div
+                        ref={videoBoxRef}
+                        className="relative bg-black border border-white/10 rounded-lg overflow-hidden"
+                        style={{
+                          height: "100%",
+                          aspectRatio: "16/9",
+                          maxWidth: "100%",
+                          cursor: selectedClip?.zoom_mode ? "crosshair" : "default",
+                        }}
+                        onMouseDown={handleVideoMouseDown}
+                      >
+                        <video
+                          ref={videoRef}
+                          className="absolute inset-0 w-full h-full object-cover"
+                          style={{
+                            transform: zoomScale > 1 ? `scale(${zoomScale})` : undefined,
+                            transformOrigin: `${focalX}% ${focalY}%`,
+                            transition: "transform 0.3s ease",
+                          }}
+                          onTimeUpdate={handleTimeUpdate}
+                          onLoadedMetadata={handleLoadedMetadata}
+                          onEnded={handleVideoEnded}
+                          onError={() => {
+                            const video = videoRef.current;
+                            if (!video || !selectedClip) return;
+                            if (selectedClip.proxy_path) {
+                              video.src = convertFileSrc(selectedClip.local_path);
+                              video.load();
+                            }
+                          }}
+                        />
+                        {/* Focal point crosshair indicator — only when zoom active */}
+                        {selectedClip?.zoom_mode && (
+                          <div
+                            className="absolute w-5 h-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/20 pointer-events-none z-10"
+                            style={{
+                              left: `${focalX}%`,
+                              top: `${focalY}%`,
+                              transition: isDraggingFocalRef.current ? "none" : "left 0.1s ease, top 0.1s ease",
+                            }}
+                          />
+                        )}
+                        {!selectedClip && (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <p className="text-sm text-[#a3a3a3] italic">Select a clip from the left to adjust</p>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  <p className="text-base text-[#e5e5e5] mt-3 truncate" title={selectedClip.filename}>
-                    {selectedClip.filename}
-                  </p>
+                    );
+                  })()}
                 </div>
-              ) : (
-                <p className="text-sm text-[#a3a3a3] italic mt-8">
-                  Select a clip in the timeline to adjust it
+
+                {/* Next */}
+                <button
+                  type="button"
+                  data-testid="arrange-next"
+                  onClick={nextClip}
+                  disabled={selectedIndex < 0 || selectedIndex >= inFilm.length - 1}
+                  className="self-center flex-shrink-0 flex items-center gap-1 border border-white/30 text-[#e5e5e5] rounded-md hover:border-white/60 hover:bg-white/5 px-3 py-2 text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+
+              {/* Filename + resolution */}
+              {selectedClip && (
+                <p
+                  className="text-sm text-[#a3a3a3] truncate"
+                  data-testid="arrange-selected-filename"
+                >
+                  {selectedClip.filename}
+                  {selectedClip.width && selectedClip.height
+                    ? ` · ${selectedClip.width}x${selectedClip.height}`
+                    : ""}
                 </p>
+              )}
+
+              {/* Play + scrubber */}
+              {selectedClip && (
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    data-testid="arrange-play-btn"
+                    onClick={togglePlay}
+                    className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-full bg-[#FF8A65] text-white hover:bg-[#ff9e7a] transition-all duration-200"
+                  >
+                    {isPlaying
+                      ? <Pause size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />
+                      : <Play  size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={durationMs || 100}
+                    step={100}
+                    value={currentMs}
+                    onChange={handleScrubberChange}
+                    className="flex-1 accent-[#FF8A65] h-1 cursor-pointer"
+                    data-testid="arrange-scrubber"
+                  />
+                  <span className="text-xs text-[#a3a3a3] flex-shrink-0 tabular-nums w-20 text-right">
+                    {formatTime(currentMs)} / {formatTime(durationMs)}
+                  </span>
+                </div>
               )}
             </div>
 
-            {/* Right panel — per-clip controls */}
-            <aside className="w-48 flex-shrink-0 border-l border-white/10 overflow-y-auto p-4 bg-[#0a0a0a]">
+            {/* Right panel — zoom + focal */}
+            <aside className="w-56 flex-shrink-0 border-l border-white/10 overflow-y-auto p-4 bg-[#0a0a0a]">
               {!selectedClip ? (
-                <p className="text-sm text-[#a3a3a3] italic">
-                  Select a clip in the timeline to adjust it
-                </p>
+                <p className="text-sm text-[#a3a3a3] italic">Select a clip from the left to adjust</p>
               ) : (
-                <div className="space-y-6">
-                  {/* Volume */}
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Volume</p>
-                    {editingCustomVol ? (
-                      <input
-                        type="number"
-                        min={0}
-                        max={200}
-                        autoFocus
-                        value={customVolInput}
-                        onChange={(e) => setCustomVolInput(e.target.value)}
-                        onBlur={() => commitCustomVolume(selectedClip)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitCustomVolume(selectedClip);
-                          if (e.key === "Escape") setEditingCustomVol(false);
-                        }}
-                        className="w-full text-sm rounded-md px-3 py-1.5 border border-[#99B3FF] bg-[#0a0a0a] text-[#e5e5e5] focus:outline-none"
-                        placeholder="0–200"
-                      />
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {VOLUME_PRESETS.map(({ label, value }) => {
-                          const active = selectedClip.clip_volume === value;
-                          return (
-                            <button
-                              key={label}
-                              type="button"
-                              data-testid={`chip-volume-${label}`}
-                              onClick={() => handleVolumeChip(selectedClip, value)}
-                              className={`text-sm rounded-md px-3 py-1.5 border transition-all duration-200 font-medium ${
-                                active
-                                  ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
-                                  : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
-                              }`}
-                            >
-                              {label}
-                            </button>
-                          );
-                        })}
-                        <button
-                          type="button"
-                          data-testid="chip-volume-custom"
-                          onClick={() => handleCustomChipClick(selectedClip)}
-                          className={`text-sm rounded-md px-3 py-1.5 border transition-all duration-200 font-medium ${
-                            !isVolumePreset(selectedClip.clip_volume)
-                              ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
-                              : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
-                          }`}
-                        >
-                          {isVolumePreset(selectedClip.clip_volume)
-                            ? "Custom…"
-                            : `${Math.round(selectedClip.clip_volume * 100)}%`}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
+                <div className="space-y-5">
                   {/* Zoom */}
-                  <div className="space-y-2 pt-4 border-t border-white/10">
+                  <div className="space-y-2">
                     <p className="text-sm font-medium text-[#e5e5e5]">Zoom</p>
                     <div className="flex flex-wrap gap-2">
                       {ZOOM_PRESETS.map(({ label, value }) => {
@@ -367,7 +539,6 @@ export default function Arrange() {
               )}
             </aside>
           </div>
-        )}
 
         {/* ── Transitions tab ─────────────────────────────────────── */}
         {tab === "transitions" && (

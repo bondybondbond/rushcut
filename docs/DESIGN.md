@@ -25,6 +25,7 @@ User decides. Pipeline executes. Every UI decision should reinforce this: give c
 | `--rc-peach-hover`    | `#ff9e7a`                | CTA hover                                                          |
 | **`--rc-sand`**       | `#C9A96E`                | **Upload zone border, secondary accents (warm layer under peach)** |
 | `--rc-green`          | `#22c55e`                | Progress bars (upload + render)                                    |
+| `--rc-purple`         | `#B794F4`                | Per-clip volume override badge dot (StickyFilmStrip)               |
 | `--rc-red`            | red-400 Tailwind         | Errors, probe failures                                             |
 
 ### Text colour rules
@@ -84,6 +85,49 @@ Used for transient controls that appear conditionally inside a dense graphic com
 ```
 
 Rules: `text-xs` (12px minimum), `text-[#a3a3a3]` resting, `text-[#e5e5e5]` on hover. Only render when relevant (`{!condition && <button>}`). `position: absolute` on a `relative` parent that does NOT scroll — keeps the button pinned regardless of inner scroll.
+
+### Media play button (canonical — use everywhere)
+
+Filled peach circle, **white** filled icon. Used in Trimmer scrubber bar and Arrange clip preview. `w-10 h-10` (40×40px). Button has `text-white` so `fill="currentColor"` resolves to white. Icon is `size={22}`. Always use lucide `<Play>` / `<Pause>` — do not hand-code SVG paths.
+
+```tsx
+<button
+  onClick={togglePlay}
+  className="w-10 h-10 rounded-full bg-[#FF8A65] text-white flex items-center justify-center hover:bg-[#ff9e7a] transition-all duration-200 flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+>
+  {isPlaying
+    ? <Pause size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />
+    : <Play  size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />}
+</button>
+```
+
+`fill="currentColor"` fills the symbol white; `stroke="#0a0a0a" strokeWidth={1.5}` adds a dark border on the symbol itself for contrast. No outer circle border. Disabled state: `opacity-30`.
+
+---
+
+## StickyFilmStrip patterns
+
+### Vertical clip rail (Arrange screen left panel)
+
+Stack of 16:9 thumbnail buttons, `w-40`, `overflow-y-auto bg-[#0a0a0a] border-r border-white/10`. Each tile: `border-2 rounded-md overflow-hidden aspect-ratio:16/9`. Active tile: `border-[#FF8A65]`. Inactive: `border-[#99B3FF]/25 hover:border-[#99B3FF]/50`.
+
+### Inline clip play + scrubber
+
+Single row below the preview: `[filled-peach play btn] [range input accent-[#FF8A65]] [0:00 / 0:07 monospace label]`. Range step: 100ms. On `onLoadedMetadata` capture `durationMs`; on `onTimeUpdate` update `currentMs`; `onChange` sets `video.currentTime`.
+
+### Timeline state badges
+
+Stacked in `flex gap-0.5`, `absolute bottom-1 right-1 z-10 pointer-events-none`:
+- **Zoom "Z" badge** — `w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center` with inner `<span className="text-[8px] font-bold text-[#0a0a0a] leading-none">Z</span>`. Shown when `clip.zoom_mode != null`.
+- **Volume dot** — `w-1.5 h-1.5 rounded-full bg-[#B794F4]` (`--rc-purple`). Shown when `clip.clip_volume !== 1.0`.
+
+### Drag-to-set focal point (Arrange video preview)
+
+When `zoom_mode` is active, the centre video box gets `cursor: crosshair`. A peach ring indicator (`w-5 h-5 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/20`) is positioned absolutely at `left: focalX% top: focalY%`. Mousedown on the video box starts a drag; window-level `mousemove` calls `patchClip` (instant local update to move the CSS `transformOrigin` + indicator in real time); `mouseup` calls `saveReview` to persist. Uses refs (`isDraggingFocalRef`, `selectedClipRef`, `videoBoxRef`) so the `useEffect` can be mounted once without stale closure risk.
+
+### Drag-left delete + DEL key
+
+Tile gets `tabIndex={0}`. On `mousedown`, window-level `mousemove` tracks `deltaX = Math.min(0, currentX - startX)`. Tile translates `translateX(deltaX)`. Past `deltaX < -40`: red overlay (`bg-red-400/30`). On `mouseup` with `deltaX < -40`: fire `onDeleteClip`. DEL / Backspace key on focused tile: fire `onDeleteClip` immediately. `rc-delete-flash` keyframe in `globals.css` for the removal animation.
 
 ---
 

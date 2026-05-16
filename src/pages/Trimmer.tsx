@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Play, Pause } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -876,18 +877,11 @@ export default function Trimmer() {
               onClick={togglePlay}
               disabled={viewMode === "clip" && !videoCanPlay}
               title={viewMode === "clip" && !videoCanPlay ? "Generating video preview, please wait..." : undefined}
-              className="w-8 h-8 rounded-full border border-white/20 flex items-center justify-center hover:border-white/40 transition-colors flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="w-10 h-10 rounded-full bg-[#FF8A65] text-white flex items-center justify-center hover:bg-[#ff9e7a] transition-all duration-200 flex-shrink-0 disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              {isPlaying ? (
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="4" width="4" height="16" />
-                  <rect x="14" y="4" width="4" height="16" />
-                </svg>
-              ) : (
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
+              {isPlaying
+                ? <Pause size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />
+                : <Play  size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />}
             </button>
             <input
               type="range" min={0} max={1} step={0.05} value={volume}

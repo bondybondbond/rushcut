@@ -46,6 +46,9 @@ export function StickyFilmStrip({
   const isAutoFitRef = useRef(true);              // imperative: breaks on manual zoom
   const [isAutoFit, setIsAutoFit] = useState(true); // reactive: drives button visibility
 
+  // Drag-left-to-delete state
+  const [tileSwipe, setTileSwipe] = useState<{ clipId: string; deltaX: number } | null>(null);
+
   const inFilm = clips
     .filter((c) => c.include === 1)
     .sort((a, b) => a.sort_order - b.sort_order);
@@ -342,15 +345,59 @@ export function StickyFilmStrip({
                   0,
                   (clip.out_ms ?? clip.duration_ms) - (clip.in_ms ?? 0)
                 );
+                const swipe = tileSwipe?.clipId === clip.id ? tileSwipe.deltaX : 0;
+                const isPastThreshold = swipe < -40;
+
+                function handleTileMouseDown(e: React.MouseEvent) {
+                  if (!onDeleteClip) return;
+                  // Don't start a swipe if the pan-drag is active
+                  e.stopPropagation();
+                  const startX = e.clientX;
+                  const id = clip.id;
+
+                  function onMove(me: MouseEvent) {
+                    const dx = Math.min(0, me.clientX - startX);
+                    setTileSwipe({ clipId: id, deltaX: dx });
+                  }
+                  function onUp() {
+                    setTileSwipe((prev) => {
+                      if (prev && prev.clipId === id && prev.deltaX < -40) {
+                        onDeleteClip(id);
+                      }
+                      return null;
+                    });
+                    window.removeEventListener("mousemove", onMove);
+                    window.removeEventListener("mouseup", onUp);
+                  }
+                  window.addEventListener("mousemove", onMove);
+                  window.addEventListener("mouseup", onUp);
+                }
+
+                function handleTileKeyDown(e: React.KeyboardEvent) {
+                  if (!onDeleteClip) return;
+                  if (e.key === "Delete" || e.key === "Backspace") {
+                    e.preventDefault();
+                    onDeleteClip(clip.id);
+                  }
+                }
+
                 return (
                   <div
                     key={clip.id}
                     data-testid="filmstrip-clip"
-                    className={`group relative flex-shrink-0 overflow-hidden border-2 transition-colors ${
+                    tabIndex={onDeleteClip ? 0 : -1}
+                    className={`group relative flex-shrink-0 overflow-hidden border-2 transition-colors outline-none ${
                       isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/25"
                     } ${onSelectClip ? "cursor-pointer" : ""}`}
-                    style={{ width: w, height: CLIP_HEIGHT }}
+                    style={{
+                      width: w,
+                      height: CLIP_HEIGHT,
+                      transform: swipe !== 0 ? `translateX(${swipe}px)` : undefined,
+                      transition: swipe !== 0 ? "none" : "transform 0.15s ease, border-color 0.2s",
+                    }}
                     draggable={false}
+                    onMouseDown={onDeleteClip ? handleTileMouseDown : undefined}
+                    onKeyDown={onDeleteClip ? handleTileKeyDown : undefined}
                     onClick={
                       onSelectClip
                         ? (e) => { e.stopPropagation(); onSelectClip(clip.id); }
@@ -389,18 +436,20 @@ export function StickyFilmStrip({
                     <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 px-1 pb-0.5 pointer-events-none">
                       <span className="text-[10px] text-white font-mono drop-shadow-sm">{fmtMs(trimmedMs)}</span>
                     </div>
-                    {/* Bin icon — hover-reveal, only when delete callback is provided */}
-                    {onDeleteClip && (
-                      <button
-                        className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/60 text-red-400 opacity-0 hover:opacity-100 focus:opacity-100 transition-opacity z-10 group-hover:opacity-100"
-                        onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
-                        title="Remove from film"
-                        tabIndex={-1}
-                      >
-                        <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5}>
-                          <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
-                        </svg>
-                      </button>
+                    {/* State badge icons — bottom-right */}
+                    <div className="absolute bottom-1 right-1 flex gap-0.5 z-10 pointer-events-none">
+                      {clip.zoom_mode != null && (
+                        <div className="w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center" title="Zoom set">
+                          <span className="text-[8px] font-bold text-[#0a0a0a] leading-none select-none">Z</span>
+                        </div>
+                      )}
+                      {clip.clip_volume !== 1.0 && (
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#B794F4]" title="Volume override" />
+                      )}
+                    </div>
+                    {/* Delete threshold overlay — shows red tint when dragged past -40px */}
+                    {isPastThreshold && (
+                      <div className="absolute inset-0 bg-red-400/30 pointer-events-none z-20" />
                     )}
                   </div>
                 );

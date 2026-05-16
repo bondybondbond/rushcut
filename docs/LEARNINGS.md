@@ -45,6 +45,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — conditional render unmounts media elements
+
+**Problem:** `{condition && <video>}` unmounts the `<video>` element when `condition` becomes false, dropping the browser's decoded buffer and seek state. When `condition` becomes true again and a `useEffect` with that condition as a dependency re-fires, `video.load()` is called on a fresh element — causing a full reload stutter even if the source file hasn't changed.
+**Solution:** Replace `{condition && <div>...</div>}` with `<div className={condition ? "flex" : "hidden"}>...</div>` (or `display:none`). The element stays in the DOM with its src and `currentTime` intact. Add a loaded-src ref (`loadedSrcRef`) to the `useEffect` and skip `video.load()` when returning to the same clip.
+**Context:** Any screen where a `<video>` (or `<audio>`) is inside a conditionally rendered block that gets toggled by tab switches, drawer toggles, or modal state.
+
+---
+
 ## Workflow — Worktree sessions
 
 - **Edits in a worktree are NOT visible to the running app** — `pnpm dev` launched from `C:\apps\rushcut` reads the main branch, not the worktree at `C:\apps\rushcut\.claude\worktrees\<name>`. Any fix applied only in the worktree appears to have no effect when the user tests. Always apply fixes to the main-branch files (`C:\apps\rushcut\src\...`) when the goal is immediate user-visible verification, or merge the worktree branch first.
