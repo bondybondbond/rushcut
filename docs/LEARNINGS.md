@@ -45,6 +45,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — per-clip video player must seek to in_ms on loadedmetadata
+
+**Problem:** Loading a raw clip or proxy into a `<video>` element with `video.load()` starts playback from `currentTime=0` (the beginning of the raw file). If the trimmed section starts at `in_ms > 0`, `currentMs` never reaches `in_ms`, so derived film-time formulas (`currentMs - in_ms`) stay negative (clamped to 0) and any playhead or timeline feature appears frozen.
+**Solution:** In `handleLoadedMetadata`, after setting `durationMs`, immediately seek: `video.currentTime = inMs / 1000`. Also set `currentMs` to `inMs` so the scrubber initialises at the trim start. In `handleTimeUpdate`, check `ms >= outMs` and stop+clamp there. Set scrubber `min={inMs}` / `max={outMs}`, and display `currentMs - inMs` / `outMs - inMs` for elapsed/total. In `togglePlay`, if `currentTime * 1000 >= outMs`, seek back to `inMs` before calling `play()` to allow replay.
+**Context:** Any screen with per-clip video playback that respects `clip.in_ms` / `clip.out_ms` (Arrange zoom tab).
+
+---
+
 ## React — conditional render unmounts media elements
 
 **Problem:** `{condition && <video>}` unmounts the `<video>` element when `condition` becomes false, dropping the browser's decoded buffer and seek state. When `condition` becomes true again and a `useEffect` with that condition as a dependency re-fires, `video.load()` is called on a fresh element — causing a full reload stutter even if the source file hasn't changed.

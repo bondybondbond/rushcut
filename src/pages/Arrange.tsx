@@ -208,6 +208,14 @@ export default function Arrange() {
   // Prev/Next clip navigation helpers.
   const selectedIndex = selectedClipId ? inFilm.findIndex((c) => c.id === selectedClipId) : -1;
 
+  // Film-time position of the current clip playback — drives the StickyFilmStrip playhead.
+  const filmPlayheadMs = selectedIndex >= 0 && selectedClip
+    ? inFilm.slice(0, selectedIndex).reduce(
+        (sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)),
+        0
+      ) + Math.max(0, currentMs - (selectedClip.in_ms ?? 0))
+    : undefined;
+
   const prevClip = useCallback(() => {
     if (selectedIndex > 0) setSelectedClipId(inFilm[selectedIndex - 1].id);
   }, [selectedIndex, inFilm]);
@@ -221,6 +229,12 @@ export default function Arrange() {
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
+      const inMs = selectedClipRef.current?.in_ms ?? 0;
+      const outMs = selectedClipRef.current?.out_ms ?? (video.duration * 1000);
+      if (video.currentTime * 1000 >= outMs) {
+        video.currentTime = inMs / 1000;
+        setCurrentMs(inMs);
+      }
       video.play().catch(() => {});
       setIsPlaying(true);
     } else {
@@ -231,12 +245,26 @@ export default function Arrange() {
 
   function handleTimeUpdate() {
     const video = videoRef.current;
-    if (video) setCurrentMs(video.currentTime * 1000);
+    if (!video) return;
+    const ms = video.currentTime * 1000;
+    const outMs = selectedClipRef.current?.out_ms ?? (video.duration * 1000);
+    if (ms >= outMs) {
+      video.pause();
+      video.currentTime = outMs / 1000;
+      setIsPlaying(false);
+      setCurrentMs(outMs);
+      return;
+    }
+    setCurrentMs(ms);
   }
 
   function handleLoadedMetadata() {
     const video = videoRef.current;
-    if (video) setDurationMs(video.duration * 1000);
+    if (!video) return;
+    setDurationMs(video.duration * 1000);
+    const inMs = selectedClipRef.current?.in_ms ?? 0;
+    video.currentTime = inMs / 1000;
+    setCurrentMs(inMs);
   }
 
   function handleVideoEnded() {
@@ -272,6 +300,7 @@ export default function Arrange() {
           projectId={projectId!}
           activeId={tab === "zoom" ? selectedClipId : null}
           onSelectClip={tab === "zoom" ? setSelectedClipId : undefined}
+          playheadMs={tab === "zoom" ? filmPlayheadMs : undefined}
         />
       }
     >
@@ -449,19 +478,28 @@ export default function Arrange() {
                       ? <Pause size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />
                       : <Play  size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />}
                   </button>
-                  <input
-                    type="range"
-                    min={0}
-                    max={durationMs || 100}
-                    step={100}
-                    value={currentMs}
-                    onChange={handleScrubberChange}
-                    className="flex-1 accent-[#FF8A65] h-1 cursor-pointer"
-                    data-testid="arrange-scrubber"
-                  />
-                  <span className="text-xs text-[#a3a3a3] flex-shrink-0 tabular-nums w-20 text-right">
-                    {formatTime(currentMs)} / {formatTime(durationMs)}
-                  </span>
+                  {(() => {
+                    const clipInMs = selectedClip.in_ms ?? 0;
+                    const clipOutMs = selectedClip.out_ms ?? durationMs;
+                    const trimmedMs = Math.max(0, clipOutMs - clipInMs);
+                    return (
+                      <>
+                        <input
+                          type="range"
+                          min={clipInMs}
+                          max={clipOutMs || clipInMs + 1}
+                          step={100}
+                          value={currentMs}
+                          onChange={handleScrubberChange}
+                          className="flex-1 accent-[#FF8A65] h-1 cursor-pointer"
+                          data-testid="arrange-scrubber"
+                        />
+                        <span className="text-xs text-[#a3a3a3] flex-shrink-0 tabular-nums w-20 text-right">
+                          {formatTime(Math.max(0, currentMs - clipInMs))} / {formatTime(trimmedMs)}
+                        </span>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>

@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch K1 (Arrange screen full redesign) COMPLETE (2026-05-16). Next: Batch K2 (Sound screen per-clip volume + Quick Preview).**
+**Phase 2 — Arrange screen clip playback polish COMPLETE (2026-05-16). Next: Batch K2 (Sound screen per-clip volume + Quick Preview).**
 
 ---
 
@@ -26,6 +26,8 @@
 ---
 
 ## Recently shipped this session (2026-05-16)
+
+- **Arrange clip playback fixes (post-K1):** Video player in Arrange zoom tab now seeks to `in_ms` on `loadedmetadata`, stops at `out_ms` in `handleTimeUpdate`, clamps scrubber to `[in_ms, out_ms]`, displays trimmed elapsed/total. Playhead wired from per-clip `currentMs` via `filmPlayheadMs` formula. Replay after clip ends fixed (seeks back to `in_ms` in `togglePlay`). 9/9 fast E2E PASS.
 
 - **Batch K1 — Arrange screen full redesign COMPLETE:** Centred `<video>` preview + left clip rail (vertical thumbnails, peach active border) + Prev/Next navigation; "zoom" tab (renamed from "Clips"); play+scrubber row; drag-to-focal on video preview (window-level mousemove, `patchClip` instant + `saveReview` on mouseup); Z badge (green `bg-[#22c55e]` square) on StickyFilmStrip when `zoom_mode != null`; purple dot when `clip_volume !== 1.0`; drag-left/DEL delete on film strip. Volume controls removed from Arrange. `loadedSrcRef` pattern prevents video reload stutter on tab switch (zoom tab kept mounted via `hidden` class). 9/9 fast PASS.
 - **Play button standardised:** Trimmer + Arrange both use `<Play size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />` inside `w-10 h-10 rounded-full bg-[#FF8A65] text-white`. No hand-coded SVG.
