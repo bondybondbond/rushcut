@@ -435,7 +435,7 @@ Port the dual-buffer ping-pong pattern already proven in `Trimmer.tsx` (`filmVid
 
 ## Batch L — Arrange Screen: Cards Tab (Text Cards)
 
-> **Status: PLANNED — pre-launch must-have.**
+> **Status: ✅ COMPLETE (2026-05-17).**
 > **Prerequisite: Batch J (Arrange screen + tab shell must exist).**
 > **Scope: Activate the Cards tab on the Arrange screen. Start/end text cards UI + pipeline wiring.**
 
@@ -462,6 +462,10 @@ A film that starts with raw footage and ends abruptly feels unfinished. Start an
 - [ ] End card toggled on appears at end; toggled off = no end card
 - [ ] CSS preview matches final design tokens (peach title, white body, dark bg)
 - [ ] No regression: Clips and Transitions tabs unaffected
+
+### Deferred
+
+- **Card in-film preview:** User should be able to preview start/end cards in context of the actual film (not just the static CSS rect) before committing to render. Likely implemented as a playable film preview that includes the 3s card segments at the correct position. Deferred post-launch.
 
 ---
 

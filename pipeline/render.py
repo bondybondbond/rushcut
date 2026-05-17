@@ -389,6 +389,7 @@ def run_pipeline(
             duration_s=3.0,
             out_path=tmp / "intro_card.mp4",
             size=card_size,
+            subtitle=config.get("intro_subtitle", ""),
         )
         current_paths = [card] + current_paths
         clip_volumes = [1.0] + clip_volumes

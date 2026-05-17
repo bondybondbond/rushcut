@@ -85,9 +85,23 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — Visual eval bail-out when user is absent
+
+**Problem:** `request_access` for computer-use shows a dialog that the user must approve within 5 minutes. If the user isn't at their desk, two consecutive 5-minute timeouts (10 min total) are burned before giving up.
+**Solution:** If the first `request_access` times out, do NOT retry immediately. Treat the build compiling cleanly (exit 0) as the validation ceiling for that session; note in the summary that visual eval is deferred and the user should confirm manually. Only retry computer-use if the user explicitly responds that they are present.
+**Context:** Any session where the user steps away mid-wrapup. The CDP `list_pages` returning empty is an earlier signal that the user may be absent — check it before calling `request_access`.
+
+---
+
 ## Workflow — Worktree sessions
 
 - **Edits in a worktree are NOT visible to the running app** — `pnpm dev` launched from `C:\apps\rushcut` reads the main branch, not the worktree at `C:\apps\rushcut\.claude\worktrees\<name>`. Any fix applied only in the worktree appears to have no effect when the user tests. Always apply fixes to the main-branch files (`C:\apps\rushcut\src\...`) when the goal is immediate user-visible verification, or merge the worktree branch first.
+
+---
+
+## FFmpeg — filter_complex output label syntax
+
+- **Output labels must appear directly after the filter with no preceding comma** — `afade=t=out:st=X:d=Y[mus]` is correct; `afade=t=out:st=X:d=Y,[mus]` (comma before the label) causes FFmpeg to parse `[mus]` as an input to a non-existent next filter and fail. Trailing commas in Python f-string filter fragments are the usual culprit — always move the comma to the START of optional filter fragments: `fade = f",afade=..." if enabled else ""`, then append `f"volume=0.4{fade}[mus]"` so the label abuts the last real filter regardless of which branch is taken.
 
 ---
 
@@ -142,6 +156,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **WSL path mangling in Git Bash** — Git Bash rewrites paths starting with `/mnt/c/` to Windows paths when passed to `wsl`. Always invoke `wsl` commands from PowerShell; in Git Bash use `//mnt/c/` prefix as a workaround. **Claude Code's Bash tool runs in Git Bash** — every WSL call must be wrapped as `powershell.exe -Command "wsl -d Ubuntu-24.04 -u root -- ..."`. Glob wildcard patterns in PowerShell args also get expanded by Git Bash; use `cmd.exe /c tasklist ...` for process lookups.
 - **PowerShell `Out-File` writes UTF-8 BOM** — Python's `json.loads()` raises `JSONDecodeError: Unexpected UTF-8 BOM` on any file written by PowerShell's `Out-File`. Write JSON files destined for Python via WSL (`cat > file` or `python3 -c "... write_text(...)"`) or use `[System.IO.File]::WriteAllText(path, content, (New-Object System.Text.UTF8Encoding $false))`. For test/debug manifests the cleanest pattern is: write via Python in WSL using `pathlib.Path(...).write_text(json.dumps(data))` — no escaping issues, no BOM, no Unicode escape errors with Windows paths (use raw strings: `r'C:\clips\...'`).
 - **`bash -c 'pattern|pipe'` via PowerShell `-Command` mangles pipes** — `powershell.exe -Command "wsl -- bash -c 'grep -E \"foo|bar\" file'"` causes PowerShell to parse `|bar` as a PowerShell pipeline before the string reaches bash. Result: grep sees only `foo` and then tries to run `bar` as a command. Fix: use `python3 -c "import subprocess; r = subprocess.run(['grep', '-E', 'foo|bar', ...])"` inside WSL, or pass the grep pattern as a separate quoted arg without pipes if possible.
+- **`run.py` config dict must include every field that `render.py` reads** — `run.py` builds the config dict from manifest settings and passes it to `render.py`. Any field not explicitly added here silently defaults to `""` / `False` / `0` when `render.py` calls `config.get("field", default)`. Pattern: when adding a new `JobConfig` field, check all three of: `buildJobConfig.ts` (reads sessionStorage), `run.py` (reads manifest, builds config dict), and `render.py` (reads config). Missing `run.py` is the most common silent failure — the UI sends the value in the manifest but the pipeline never sees it.
 - **Pipeline package relative imports** — If `pipeline/*.py` modules use `from .module import ...`, the entry script (`run.py`) must add the *parent* directory of `pipeline/` to `sys.path`, then import as `from pipeline.render import run_pipeline`. Inserting `pipeline/` itself breaks all relative imports: Python treats `render` as a top-level module without a parent package.
 - **`subprocess.run(cmd, check=True)` with list args** handles paths with spaces correctly; no `shell=True` needed.
 - **WSL2 `/tmp/<job_id>/` accumulates 1-3 GB per render** — `render.py` creates `TMP_BASE / job_id` for normalised intermediates; they persist until WSL2 shuts down if not explicitly deleted. Fix: `shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)` in `run.py` immediately after `shutil.copy2` succeeds. Wrapup cleans crash orphans via `wsl -- sh -c 'rm -rf /tmp/*/'`. Proxies in `%APPDATA%\rushcut\proxies\` are a persistent cache — do NOT clean those.

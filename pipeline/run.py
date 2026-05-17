@@ -94,6 +94,7 @@ def main() -> None:
             "silence_removal": settings.get("silence_removal", False),
             "intro_color": settings.get("intro_color", "#000000"),
             "intro_text": intro_text,
+            "intro_subtitle": settings.get("intro_subtitle", ""),
             "outro_color": settings.get("outro_color", "#000000"),
             "outro_text": outro_text,
             # music_volume is a preset string ("subtle"/"balanced"/"prominent").

@@ -12,6 +12,29 @@ import { fmtMs } from "@/utils/fmtMs";
 
 type TransitionValue = "none" | "crossfade" | "dip_to_black";
 type ArrangeTab = "zoom" | "transitions" | "cards" | "sound";
+type CardColor = "peach" | "black" | "white";
+interface CardsState {
+  start: { enabled: boolean; title: string; subtitle: string; color: CardColor };
+  end: { enabled: boolean; title: string; color: CardColor };
+}
+const CARD_COLORS: { id: CardColor; hex: string }[] = [
+  { id: "peach", hex: "#FF8A65" },
+  { id: "black", hex: "#0a0a0a" },
+  { id: "white", hex: "#ffffff" },
+];
+const CARDS_STORAGE_KEY = (projectId: string) => `rc_cards_${projectId}`;
+function cardTextColor(hex: string): string {
+  // Mirror Pillow _luminance logic: lum > 0.179 → black text
+  if (hex.startsWith("#") && hex.length === 7) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const lin = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    const lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    return lum > 0.179 ? "#000000" : "#ffffff";
+  }
+  return "#ffffff";
+}
 
 const TRANSITIONS: { value: TransitionValue; label: string; description: string }[] = [
   { value: "none",        label: "None",        description: "Hard cut between clips — clean and fast." },
@@ -76,6 +99,15 @@ export default function Arrange() {
     () => (sessionStorage.getItem(storageKey) as TransitionValue | null) ?? "none"
   );
 
+  const [cardsState, setCardsState] = useState<CardsState>(() => {
+    try {
+      const raw = projectId ? sessionStorage.getItem(CARDS_STORAGE_KEY(projectId)) : null;
+      if (raw) return JSON.parse(raw) as CardsState;
+    } catch { /* ignore */ }
+    return { start: { enabled: false, title: "", subtitle: "", color: "peach" }, end: { enabled: false, title: "The End", color: "black" } };
+  });
+  const cardsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const configured = useConfiguredTabs(projectId ?? "");
 
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
@@ -103,8 +135,23 @@ export default function Arrange() {
         projectCache.set(projectId, { name: data.project.name, clips: data.clips });
         setProjectName(data.project.name);
         setClips(data.clips);
+        // Seed start title from project name only if no cards state was stored yet
+        const stored = sessionStorage.getItem(CARDS_STORAGE_KEY(projectId));
+        if (!stored) {
+          setCardsState((prev) => ({
+            ...prev,
+            start: { ...prev.start, title: data.project.name },
+          }));
+        }
       })
       .catch(() => {});
+  }, [projectId]);
+
+  // Persist cardsState to sessionStorage (debounced for text changes, but we call this
+  // from both instant (toggle/swatch) and debounced (text input) paths).
+  const saveCardsState = useCallback((next: CardsState) => {
+    if (!projectId) return;
+    try { sessionStorage.setItem(CARDS_STORAGE_KEY(projectId), JSON.stringify(next)); } catch { /* ignore */ }
   }, [projectId]);
 
   // Pause the outgoing tab's video immediately on tab switch.
@@ -763,8 +810,230 @@ export default function Arrange() {
 
         {/* ── Cards tab ───────────────────────────────────────────── */}
         {tab === "cards" && (
-          <div className="flex-1 flex items-center justify-center">
-            <p className="text-sm text-[#a3a3a3] italic">Coming soon</p>
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
+            {/* ── Start card panel ── */}
+            <div className="border border-white/15 rounded-lg p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-base font-medium text-[#e5e5e5]">Start card</p>
+                  <p className="text-sm text-[#a3a3a3]">Appears before your first clip.</p>
+                </div>
+                {/* Toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next: CardsState = { ...cardsState, start: { ...cardsState.start, enabled: !cardsState.start.enabled } };
+                    setCardsState(next);
+                    saveCardsState(next);
+                  }}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none ${
+                    cardsState.start.enabled ? "bg-[#99B3FF]" : "bg-white/25"
+                  }`}
+                  aria-pressed={cardsState.start.enabled}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${cardsState.start.enabled ? "translate-x-6" : "translate-x-1"}`} />
+                </button>
+              </div>
+
+              <div className="flex gap-6">
+                {/* Left: inputs */}
+                <div className="flex-1 space-y-4">
+                  {/* Title */}
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-[#e5e5e5]">Title</p>
+                    <input
+                      type="text"
+                      maxLength={60}
+                      value={cardsState.start.title}
+                      onChange={(e) => {
+                        const next: CardsState = { ...cardsState, start: { ...cardsState.start, title: e.target.value } };
+                        setCardsState(next);
+                        if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
+                        cardsDebounceRef.current = setTimeout(() => saveCardsState(next), 300);
+                      }}
+                      placeholder="Your film title"
+                      className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
+                    />
+                    <p className="text-xs text-[#a3a3a3] text-right">{cardsState.start.title.length}/60</p>
+                  </div>
+
+                  {/* Subtitle */}
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-[#e5e5e5]">Subtitle</p>
+                    <input
+                      type="text"
+                      maxLength={80}
+                      value={cardsState.start.subtitle}
+                      onChange={(e) => {
+                        const next: CardsState = { ...cardsState, start: { ...cardsState.start, subtitle: e.target.value } };
+                        setCardsState(next);
+                        if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
+                        cardsDebounceRef.current = setTimeout(() => saveCardsState(next), 300);
+                      }}
+                      placeholder="Optional — e.g. A film by Manasak"
+                      className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
+                    />
+                    <p className="text-xs text-[#a3a3a3] text-right">{cardsState.start.subtitle.length}/80</p>
+                  </div>
+
+                  {/* Background swatch picker */}
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-[#e5e5e5]">Background</p>
+                    <div className="flex gap-3">
+                      {CARD_COLORS.map(({ id, hex }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => {
+                            const next: CardsState = { ...cardsState, start: { ...cardsState.start, color: id } };
+                            setCardsState(next);
+                            saveCardsState(next);
+                          }}
+                          style={{ background: hex }}
+                          className={`w-8 h-8 rounded-full transition-all focus:outline-none ${
+                            id === "black" ? "border border-white/30" : ""
+                          } ${
+                            cardsState.start.color === id
+                              ? "ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]"
+                              : ""
+                          }`}
+                          aria-label={id}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: CSS preview */}
+                {(() => {
+                  const bgHex = CARD_COLORS.find((c) => c.id === cardsState.start.color)?.hex ?? "#0a0a0a";
+                  const textCol = cardTextColor(bgHex);
+                  const subtextCol = textCol === "#000000" ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.6)";
+                  return (
+                    <div
+                      className="w-40 flex-shrink-0 aspect-video rounded-md flex flex-col items-center justify-center gap-1 overflow-hidden"
+                      style={{ background: bgHex }}
+                    >
+                      {cardsState.start.title ? (
+                        <>
+                          <span className="text-xs font-medium text-center px-2 leading-tight" style={{ color: textCol }}>
+                            {cardsState.start.title}
+                          </span>
+                          {cardsState.start.subtitle && (
+                            <span className="text-[10px] text-center px-2 leading-tight" style={{ color: subtextCol }}>
+                              {cardsState.start.subtitle}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-[10px]" style={{ color: textCol === "#000000" ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.4)" }}>preview</span>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+
+            {/* ── End card panel ── */}
+            <div className="border border-white/15 rounded-lg p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-base font-medium text-[#e5e5e5]">End card</p>
+                  <p className="text-sm text-[#a3a3a3]">Appears after your last clip.</p>
+                </div>
+                {/* Toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next: CardsState = { ...cardsState, end: { ...cardsState.end, enabled: !cardsState.end.enabled } };
+                    setCardsState(next);
+                    saveCardsState(next);
+                  }}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none ${
+                    cardsState.end.enabled ? "bg-[#99B3FF]" : "bg-white/25"
+                  }`}
+                  aria-pressed={cardsState.end.enabled}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${cardsState.end.enabled ? "translate-x-6" : "translate-x-1"}`} />
+                </button>
+              </div>
+
+              <div className="flex gap-6">
+                {/* Left: input */}
+                <div className="flex-1 space-y-4">
+                  {/* Text */}
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-[#e5e5e5]">Text</p>
+                    <input
+                      type="text"
+                      maxLength={40}
+                      value={cardsState.end.title}
+                      onChange={(e) => {
+                        const next: CardsState = { ...cardsState, end: { ...cardsState.end, title: e.target.value } };
+                        setCardsState(next);
+                        if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
+                        cardsDebounceRef.current = setTimeout(() => saveCardsState(next), 300);
+                      }}
+                      placeholder="e.g. The End"
+                      className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
+                    />
+                    <p className="text-xs text-[#a3a3a3] text-right">{cardsState.end.title.length}/40</p>
+                  </div>
+
+                  {/* Background swatch picker */}
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-[#e5e5e5]">Background</p>
+                    <div className="flex gap-3">
+                      {CARD_COLORS.map(({ id, hex }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => {
+                            const next: CardsState = { ...cardsState, end: { ...cardsState.end, color: id } };
+                            setCardsState(next);
+                            saveCardsState(next);
+                          }}
+                          style={{ background: hex }}
+                          className={`w-8 h-8 rounded-full transition-all focus:outline-none ${
+                            id === "black" ? "border border-white/30" : ""
+                          } ${
+                            cardsState.end.color === id
+                              ? "ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]"
+                              : ""
+                          }`}
+                          aria-label={id}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: CSS preview */}
+                {(() => {
+                  const bgHex = CARD_COLORS.find((c) => c.id === cardsState.end.color)?.hex ?? "#0a0a0a";
+                  const textCol = cardTextColor(bgHex);
+                  return (
+                    <div
+                      className="w-40 flex-shrink-0 aspect-video rounded-md flex items-center justify-center overflow-hidden"
+                      style={{ background: bgHex }}
+                    >
+                      {cardsState.end.title ? (
+                        <span className="text-xs font-medium text-center px-2 leading-tight" style={{ color: textCol }}>
+                          {cardsState.end.title}
+                        </span>
+                      ) : (
+                        <span className="text-[10px]" style={{ color: textCol === "#000000" ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.4)" }}>preview</span>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+
+            <p className="text-sm text-[#a3a3a3]">
+              Cards are saved automatically. Toggle on before rendering to include them in your film.
+            </p>
           </div>
         )}
 

@@ -59,6 +59,7 @@ export interface JobConfig {
   music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
   transition: "none" | "crossfade" | "dip_to_black";
   intro_text: string;
+  intro_subtitle?: string;
   intro_color: string; // #rrggbb background colour for intro card
   outro_text: string;
   outro_color: string; // #rrggbb background colour for outro card

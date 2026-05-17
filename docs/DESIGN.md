@@ -386,6 +386,83 @@ Music dir is fetched on mount via `invoke<string>("get_music_dir_cmd")` — grac
 
 ---
 
+## Form text input (Arrange Cards tab pattern)
+
+First introduced in Batch L for the Cards tab title/subtitle inputs. Use this pattern for any free-text input on editor screens.
+
+```tsx
+<input
+  type="text"
+  maxLength={60}
+  value={value}
+  onChange={...}
+  placeholder="Your film title"
+  className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
+/>
+<p className="text-xs text-[#a3a3a3] text-right">{value.length}/60</p>
+```
+
+Rules:
+- Surface: `bg-white/5` (subtle dark fill)
+- Border: `border-white/15` idle, `border-white/40` on focus — no colour ring
+- Text: `text-sm text-[#e5e5e5]`
+- Char counter: `text-xs text-[#a3a3a3] text-right` below the input — shows `current/max`
+- Debounce saves: **300ms debounce** on `onChange` for text inputs; instant save for toggles and swatches
+- `maxLength` attribute enforces the limit at the DOM level; counter is visual feedback only
+
+---
+
+## Card background swatch picker
+
+Three circular swatches in a row — peach `#FF8A65`, black `#0a0a0a`, white `#ffffff`. Selected swatch gets a peach `#FF8A65` ring (`ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]`). The ring colour is peach **only** for card background pickers — all other chip/chip-group active states use `#99B3FF` blue.
+
+```tsx
+const CARD_COLORS = [
+  { id: "peach", hex: "#FF8A65" },
+  { id: "black", hex: "#0a0a0a" },
+  { id: "white", hex: "#ffffff" },
+];
+
+{CARD_COLORS.map(({ id, hex }) => (
+  <button
+    key={id}
+    type="button"
+    onClick={() => handleColorSelect(id)}
+    style={{ background: hex }}
+    className={`w-8 h-8 rounded-full transition-all focus:outline-none ${
+      id === "black" ? "border border-white/30" : ""
+    } ${
+      color === id ? "ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]" : ""
+    }`}
+    aria-label={id}
+  />
+))}
+```
+
+Black swatch gets an extra `border border-white/30` for visibility against the dark background — the other two colours are self-evident.
+
+### CSS preview card
+
+Right-aligned `w-40 aspect-video rounded-md` rectangle showing the selected background colour and the current text. Text colour mirrors Pillow's `_luminance()` logic: luminance > 0.179 → black text, else white. Subtitle renders at `~60%` opacity via inline style.
+
+```tsx
+function cardTextColor(hex: string): string {
+  if (hex.startsWith("#") && hex.length === 7) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const lin = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    const lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    return lum > 0.179 ? "#000000" : "#ffffff";
+  }
+  return "#ffffff";
+}
+```
+
+Keep `cardTextColor` co-located per file — it's small enough that a shared util would be premature.
+
+---
+
 ## StepNav Breadcrumb — RETIRED (Batch H)
 
 `StepNav.tsx` and `NavDrawer.tsx` deleted in Batch H. Replaced by `BottomTabBar` + `TopInfoBar` + `EditorShell`. Do not rebuild.

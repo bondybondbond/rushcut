@@ -90,11 +90,10 @@ def _build_filter(
 
     # Final trim + volume + optional fade + mix tail (applied after all acrossfade ops).
     # Movie audio is ducked by movie_vol so prominent music actually dominates.
-    fade_filter = f"afade=t=out:st={fade_start:.4f}:d={eff_fade:.4f}," if eff_fade > 0 else ""
+    fade_filter = f",afade=t=out:st={fade_start:.4f}:d={eff_fade:.4f}" if eff_fade > 0 else ""
     tail = (
         f"atrim=0:{video_dur:.4f},asetpts=PTS-STARTPTS,"
-        f"volume={music_volume:.4f},"
-        f"{fade_filter}[mus];"
+        f"volume={music_volume:.4f}{fade_filter}[mus];"
         f"[0:a]volume={movie_vol:.4f}[movaudio];"
         f"[movaudio][mus]amix=inputs=2:duration=first:dropout_transition=3[aout]"
     )

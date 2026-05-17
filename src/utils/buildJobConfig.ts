@@ -9,6 +9,7 @@ export const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
   transition: "none",
   intro_text: "",
+  intro_subtitle: "",
   intro_color: "#000000",
   outro_text: "",
   outro_color: "#000000",
@@ -47,6 +48,25 @@ export function buildJobConfig(projectId: string): JobConfig {
     const res = sessionStorage.getItem(`rc_render_res_${projectId}`);
     if (res === "1080p" || res === "4k") {
       config.output_resolution = res;
+    }
+  } catch { /* ignore */ }
+  try {
+    const raw = sessionStorage.getItem(`rc_cards_${projectId}`);
+    if (raw) {
+      const COLOR_MAP: Record<string, string> = { peach: "#FF8A65", black: "#0a0a0a", white: "#ffffff" };
+      const c = JSON.parse(raw) as {
+        start?: { enabled?: boolean; title?: string; subtitle?: string; color?: string };
+        end?: { enabled?: boolean; title?: string; color?: string };
+      };
+      if (c.start?.enabled) {
+        config.intro_text = c.start.title || "";
+        config.intro_subtitle = c.start.subtitle || "";
+        config.intro_color = COLOR_MAP[c.start.color ?? ""] ?? "#0a0a0a";
+      }
+      if (c.end?.enabled) {
+        config.outro_text = c.end.title || "";
+        config.outro_color = COLOR_MAP[c.end.color ?? ""] ?? "#0a0a0a";
+      }
     }
   } catch { /* ignore */ }
   return config;
