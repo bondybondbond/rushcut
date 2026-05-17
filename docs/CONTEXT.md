@@ -15,17 +15,19 @@
 
 ## Current Phase
 
-**Phase 2 — K3 Revised (Live Rough Mix) COMPLETE (2026-05-17). Next: Batch L or backlog.**
+**Phase 2 — K4 (Dual-buffer black flash fix on Master tab) COMPLETE (2026-05-17). Next: Batch L or backlog.**
 
 ---
 
 ## Immediate Next Task
 
-**TBD — founder to confirm.** Candidates: Batch L (Cards tab on Arrange), deferred dual-buffer clip advance (eliminates black flash between clips on Master tab), or transition preview.
+**TBD — founder to confirm.** Candidates: Batch L (Cards tab on Arrange), transition preview, or live StickyFilmStrip playhead on Master tab.
 
 ---
 
 ## Recently shipped this session (2026-05-17)
+
+- **K4 — Dual-buffer black flash fix on Master tab COMPLETE:** Ported the proven Trimmer.tsx A/B slot dual-buffer engine into `src/pages/Sound.tsx`. Replaced single `filmVideoRef` with `filmVideoARef`/`filmVideoBRef` + `activeFilmSlotRef` + `slotGenRef`. Added `getFilmVideo`, `setSlotVisible` (sig: `"a"|"b"|"none"`), `gateFrameRevealThen` (rVFC + `metadata.mediaTime` gate, `TOLERANCE_SEC=0.05`, `MAX_WAITS=30`), `loadIntoSlot`, `preloadIntoSlot`, `crossSeekToClip`. Rewrote `advanceFilmClipRough`, `handleFilmTimeUpdate`, `startFilmPlayback`, `pause/resume/stopFilmPlayback`, `seekToFilmMs`. JSX: two stacked `absolute inset-0 w-full h-full object-contain` `<video>` elements. Fixed post-playback regression: `stopFilmPlayback` must NOT call `setSlotVisible("none")` — leave last frame visible. DESIGN.md extended with dual-buffer model note. 9/9 fast E2E PASS.
 
 - **K3 Revised — Live Rough Mix Playback COMPLETE:** Master mixer tab is now a full-screen film preview (large video area + right sidebar). Hidden `<video>` element cycles through `inFilm` clips sequentially; `<audio>` element plays music simultaneously. No Rust invoke calls, no WSL/Python pipeline. Features: pause/resume (`isFilmPaused` state), seekable progress bar (imperative DOM updates via refs, avoids 4-66Hz re-renders), `out_ms` respected via `onTimeUpdate` guard (not `onEnded`), music syncs to seek position + volume reset on seek, fade-out marker with "fade Xs" label on progress bar, "Press play to preview" overlay suppressed after first play via `hasPlayedRef`. Fade-out settings moved to Music tab. `handleMusicTabChange` stops preview on Master-tab enter; stops film on other-tab switch. 9/9 fast E2E PASS.
 

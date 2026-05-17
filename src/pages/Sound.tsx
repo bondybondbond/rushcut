@@ -100,18 +100,19 @@ export default function Sound() {
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const probedRef = useRef(false);
 
-  // Rough-mix playback refs
-  const filmVideoRef = useRef<HTMLVideoElement>(null);   // cycles through included clips
+  // Rough-mix playback refs — dual-buffer A/B slots (mirrors Trimmer.tsx dual-buffer engine)
+  const filmVideoARef = useRef<HTMLVideoElement>(null);  // slot A
+  const filmVideoBRef = useRef<HTMLVideoElement>(null);  // slot B
+  const activeFilmSlotRef = useRef<"a" | "b">("a");      // which slot is currently visible
+  const slotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 }); // invalidates stale rVFC callbacks
   const musicAudioRef = useRef<HTMLAudioElement>(null);  // music track during rough mix
   const filmPlayingRef = useRef(false);                  // imperative flag (avoids stale closures)
   const filmPlayIdxRef = useRef(0);                      // current clip index (fast access)
   const clipStartMsRef = useRef(0);                      // cumulative film-time at current clip start
   const inFilmRef = useRef<typeof inFilm>([]);           // stable ref for event callbacks
-  const loadedClipIdxRef = useRef(-1);                  // which clip index is currently loaded in filmVideoRef
   const progressBarFillRef = useRef<HTMLDivElement>(null); // imperative progress bar fill (avoids re-render)
   const elapsedLabelRef = useRef<HTMLSpanElement>(null);   // imperative elapsed-time label
-  const isAdvancingRef = useRef(false);                    // guard against double-advance (onEnded + timeupdate race)
-  const hasPlayedRef = useRef(false);                       // true once playback has started; hides "Press play" overlay after film ends
+  const hasPlayedRef = useRef(false);                      // true once playback has started; hides "Press play" overlay after film ends
 
   // Rough-mix playback state
   const [isFilmPlaying, setIsFilmPlaying] = useState(false);
@@ -167,12 +168,19 @@ export default function Sound() {
       .catch(() => {});
   }, [projectId]);
 
+  // Both film slots start hidden; setSlotVisible manages visibility imperatively (avoids React async paint race)
+  useEffect(() => {
+    if (filmVideoARef.current) { filmVideoARef.current.style.opacity = "0"; filmVideoARef.current.style.pointerEvents = "none"; }
+    if (filmVideoBRef.current) { filmVideoBRef.current.style.opacity = "0"; filmVideoBRef.current.style.pointerEvents = "none"; }
+  }, []);
+
   useEffect(() => {
     return () => {
       audioRef.current?.pause();
       if (previewTimerRef.current !== null) clearTimeout(previewTimerRef.current);
       // Stop rough-mix playback on route leave
-      filmVideoRef.current?.pause();
+      filmVideoARef.current?.pause();
+      filmVideoBRef.current?.pause();
       musicAudioRef.current?.pause();
       filmPlayingRef.current = false;
     };
@@ -185,6 +193,151 @@ export default function Sound() {
     if (!ma) return;
     ma.volume = MUSIC_VOLUME[sound.volume];
   }, [sound.volume, isFilmPlaying]);
+
+  // ---------------------------------------------------------------------------
+  // Dual-buffer film engine (ported from Trimmer.tsx lines 340–498)
+  // ---------------------------------------------------------------------------
+
+  function getFilmVideo(slot: "a" | "b") {
+    return slot === "a" ? filmVideoARef.current : filmVideoBRef.current;
+  }
+
+  function setSlotVisible(slot: "a" | "b" | "none") {
+    const vA = filmVideoARef.current;
+    const vB = filmVideoBRef.current;
+    if (vA) { vA.style.opacity = slot === "a" ? "1" : "0"; vA.style.pointerEvents = slot === "a" ? "" : "none"; }
+    if (vB) { vB.style.opacity = slot === "b" ? "1" : "0"; vB.style.pointerEvents = slot === "b" ? "" : "none"; }
+  }
+
+  function gateFrameRevealThen(
+    v: HTMLVideoElement,
+    slot: "a" | "b",
+    thisGen: number,
+    targetSec: number,
+    onReady: () => void,
+  ) {
+    const TOLERANCE_SEC = 0.05;
+    const MAX_WAITS = 30;
+    let waits = 0;
+    v.play().catch(() => {});
+
+    const rVFC = (v as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: (now: number, metadata: { mediaTime: number }) => void) => void;
+    }).requestVideoFrameCallback;
+
+    function check(_now: number, metadata: { mediaTime: number }) {
+      if (!filmPlayingRef.current || slotGenRef.current[slot] !== thisGen) return;
+      const frameTime = metadata?.mediaTime ?? v.currentTime;
+      if (frameTime >= targetSec - TOLERANCE_SEC) {
+        onReady();
+        return;
+      }
+      if (waits >= MAX_WAITS) {
+        console.warn("film-seek: rVFC mediaTime gate hit safety cap");
+        onReady();
+        return;
+      }
+      waits++;
+      rVFC?.call(v, check);
+    }
+
+    if (rVFC) {
+      rVFC.call(v, check);
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (filmPlayingRef.current && slotGenRef.current[slot] === thisGen) onReady();
+      }));
+    }
+  }
+
+  function loadIntoSlot(idx: number, slot: "a" | "b", startMs?: number) {
+    const filmClip = inFilmRef.current[idx];
+    if (!filmClip) return;
+    filmPlayIdxRef.current = idx;
+    setFilmPlayIdx(idx);
+
+    const v = getFilmVideo(slot);
+    if (!v) return;
+
+    const seekMs = startMs !== undefined ? startMs : (filmClip.in_ms ?? 0);
+    const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+
+    slotGenRef.current[slot]++;
+    const thisGen = slotGenRef.current[slot];
+
+    function activate() {
+      if (!filmPlayingRef.current || !v || slotGenRef.current[slot] !== thisGen) return;
+      activeFilmSlotRef.current = slot;
+      v.volume = Math.min(1, filmClip.clip_volume ?? 1.0);
+      gateFrameRevealThen(v, slot, thisGen, seekMs / 1000, () => {
+        setSlotVisible(slot);
+        const nextIdx = idx + 1;
+        if (nextIdx < inFilmRef.current.length) {
+          const nextSlot: "a" | "b" = slot === "a" ? "b" : "a";
+          preloadIntoSlot(nextIdx, nextSlot);
+        }
+      });
+    }
+
+    v.style.opacity = "0";
+    v.style.pointerEvents = "none";
+    v.src = src;
+    v.addEventListener("loadedmetadata", () => {
+      if (!filmPlayingRef.current) return;
+      v.addEventListener("seeked", activate, { once: true });
+      v.currentTime = seekMs / 1000;
+    }, { once: true });
+    v.load();
+  }
+
+  function preloadIntoSlot(idx: number, slot: "a" | "b") {
+    const filmClip = inFilmRef.current[idx];
+    if (!filmClip) return;
+    const v = getFilmVideo(slot);
+    if (!v) return;
+    const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+    v.src = src;
+    v.addEventListener("loadedmetadata", () => {
+      v.currentTime = (filmClip.in_ms ?? 0) / 1000;
+    }, { once: true });
+    v.load();
+  }
+
+  function crossSeekToClip(idx: number, seekMs: number) {
+    const filmClip = inFilmRef.current[idx];
+    if (!filmClip) return;
+    const currentSlot = activeFilmSlotRef.current;
+    const targetSlot: "a" | "b" = currentSlot === "a" ? "b" : "a";
+    const newV = getFilmVideo(targetSlot);
+    const oldV = getFilmVideo(currentSlot);
+    if (!newV) return;
+
+    const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+    slotGenRef.current[targetSlot]++;
+    const thisGen = slotGenRef.current[targetSlot];
+
+    newV.src = src;
+    newV.addEventListener("loadedmetadata", () => {
+      if (slotGenRef.current[targetSlot] !== thisGen || !filmPlayingRef.current) return;
+      newV.addEventListener("seeked", () => {
+        if (slotGenRef.current[targetSlot] !== thisGen || !filmPlayingRef.current) return;
+        gateFrameRevealThen(newV, targetSlot, thisGen, seekMs / 1000, () => {
+          filmPlayIdxRef.current = idx;
+          setFilmPlayIdx(idx);
+          activeFilmSlotRef.current = targetSlot;
+          newV.volume = Math.min(1, filmClip.clip_volume ?? 1.0);
+          setSlotVisible(targetSlot);
+          oldV?.pause();
+          const nextIdx = idx + 1;
+          if (nextIdx < inFilmRef.current.length) {
+            preloadIntoSlot(nextIdx, currentSlot);
+          }
+        });
+      }, { once: true });
+      newV.currentTime = seekMs / 1000;
+    }, { once: true });
+    newV.load();
+  }
 
   function stopPreview() {
     audioRef.current?.pause();
@@ -200,28 +353,7 @@ export default function Sound() {
   // Rough-mix live playback
   // ---------------------------------------------------------------------------
 
-  function loadAndPlayClip(idx: number) {
-    const clip = inFilmRef.current[idx];
-    const v = filmVideoRef.current;
-    if (!clip || !v) return;
-    // Source rule: proxy if present (already H.264), else local path
-    const src = convertFileSrc(clip.proxy_path ?? clip.local_path);
-    v.src = src;
-    v.volume = Math.min(1, clip.clip_volume ?? 1.0);
-    loadedClipIdxRef.current = idx;
-    console.log(`[rough-mix] loadAndPlayClip idx=${idx} src=${src.slice(-40)} vol=${v.volume}`);
-    v.addEventListener("loadedmetadata", () => {
-      v.currentTime = (clip.in_ms ?? 0) / 1000;
-      v.play().catch(() => {});
-    }, { once: true });
-    v.load();
-  }
-
   function advanceFilmClipRough() {
-    // Guard: onEnded + timeupdate can both fire near boundary — only advance once
-    if (isAdvancingRef.current) return;
-    isAdvancingRef.current = true;
-
     const prevClip = inFilmRef.current[filmPlayIdxRef.current];
     if (prevClip) {
       clipStartMsRef.current += Math.max(
@@ -233,7 +365,6 @@ export default function Sound() {
     const nextIdx = filmPlayIdxRef.current + 1;
     if (nextIdx >= inFilmRef.current.length) {
       stopFilmPlayback();
-      isAdvancingRef.current = false;
       return;
     }
 
@@ -247,29 +378,48 @@ export default function Sound() {
       elapsedLabelRef.current.textContent = `${fmtMs(clipStartMsRef.current)} / ${fmtMs(totalMs)}`;
     }
 
+    // Dual-buffer advance: swap to the preloaded inactive slot, then play it.
+    // Slot-gen invalidation replaces the old isAdvancingRef guard.
+    const nextSlot: "a" | "b" = activeFilmSlotRef.current === "a" ? "b" : "a";
+    const nextV = getFilmVideo(nextSlot);
+
+    getFilmVideo(activeFilmSlotRef.current)?.pause();
+
     filmPlayIdxRef.current = nextIdx;
     setFilmPlayIdx(nextIdx);
-    loadAndPlayClip(nextIdx);
-    // Reset guard after new clip has had time to load + start emitting events
-    setTimeout(() => { isAdvancingRef.current = false; }, 250);
+    activeFilmSlotRef.current = nextSlot;
+    setSlotVisible(nextSlot);
+
+    if (nextV) {
+      const nextClip = inFilmRef.current[nextIdx];
+      if (nextClip) nextV.volume = Math.min(1, nextClip.clip_volume ?? 1.0);
+      nextV.play().catch(() => {
+        // Inactive slot wasn't preloaded yet — load it fresh
+        loadIntoSlot(nextIdx, nextSlot);
+      });
+      const afterNextIdx = nextIdx + 1;
+      if (afterNextIdx < inFilmRef.current.length) {
+        const afterNextSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
+        preloadIntoSlot(afterNextIdx, afterNextSlot);
+      }
+    }
   }
 
-  function handleFilmTimeUpdate() {
-    const v = filmVideoRef.current;
-    if (!v || !filmPlayingRef.current) return;
+  function handleFilmTimeUpdate(slot: "a" | "b", currentTimeSec: number) {
+    // Ignore events from the inactive slot — only the active slot drives progress
+    if (!filmPlayingRef.current || slot !== activeFilmSlotRef.current) return;
     const clip = inFilmRef.current[filmPlayIdxRef.current];
     if (!clip) return;
 
     // Respect user trim out_ms — onEnded fires at the END of the source file,
-    // not at the user's trim point. Without this, the film plays past where it
-    // ends in the Trimmer Film tab.
+    // not at the user's trim point.
     const outSec = (clip.out_ms ?? clip.duration_ms) / 1000;
-    if (v.currentTime >= outSec) {
+    if (currentTimeSec >= outSec) {
       advanceFilmClipRough();
       return;
     }
 
-    const offsetInClip = Math.max(0, v.currentTime - (clip.in_ms ?? 0) / 1000) * 1000;
+    const offsetInClip = Math.max(0, currentTimeSec - (clip.in_ms ?? 0) / 1000) * 1000;
     const elapsedMs = clipStartMsRef.current + offsetInClip;
 
     // Imperative DOM updates — avoid React re-render at 4-66Hz timeupdate rate
@@ -287,10 +437,6 @@ export default function Sound() {
     if (fadeMs > 0 && totalMs > 0) {
       const remainingMs = totalMs - elapsedMs;
       if (remainingMs <= fadeMs) {
-        console.log(
-          `[rough-mix] FADE clip=${filmPlayIdxRef.current} t=${v.currentTime.toFixed(2)} ` +
-          `elapsedMs=${Math.round(elapsedMs)} remainingMs=${Math.round(remainingMs)} fadeMs=${fadeMs}`,
-        );
         ma.volume = MUSIC_VOLUME[sound.volume] * Math.max(0, remainingMs / fadeMs);
       }
     }
@@ -302,6 +448,8 @@ export default function Sound() {
     filmPlayingRef.current = true;
     filmPlayIdxRef.current = 0;
     clipStartMsRef.current = 0;
+    activeFilmSlotRef.current = "a";
+    slotGenRef.current = { a: 0, b: 0 };
     setFilmPlayIdx(0);
     setIsFilmPlaying(true);
 
@@ -315,20 +463,19 @@ export default function Sound() {
           : null;
       if (src) {
         ma.src = src;
-        // No loop in V1 — looping independently of the film makes fade-out semantics muddy
         ma.loop = false;
         ma.volume = MUSIC_VOLUME[sound.volume];
         ma.currentTime = 0;
-        console.log(`[rough-mix] music src=${src.slice(-40)} volume=${ma.volume}`);
         ma.play().catch(() => {});
       }
     }
-    loadAndPlayClip(0);
+    // Dual-buffer: load clip 0 into slot A; preload of clip 1 into slot B happens inside loadIntoSlot's onReady
+    loadIntoSlot(0, "a");
   }
 
   function pauseFilmPlayback() {
     filmPlayingRef.current = false;
-    filmVideoRef.current?.pause();
+    getFilmVideo(activeFilmSlotRef.current)?.pause();
     musicAudioRef.current?.pause();
     setIsFilmPlaying(false);
     setIsFilmPaused(true);
@@ -336,7 +483,7 @@ export default function Sound() {
 
   function resumeFilmPlayback() {
     filmPlayingRef.current = true;
-    filmVideoRef.current?.play().catch(() => {});
+    getFilmVideo(activeFilmSlotRef.current)?.play().catch(() => {});
     musicAudioRef.current?.play().catch(() => {});
     setIsFilmPlaying(true);
     setIsFilmPaused(false);
@@ -344,21 +491,22 @@ export default function Sound() {
 
   function stopFilmPlayback() {
     filmPlayingRef.current = false;
-    filmVideoRef.current?.pause();
+    filmVideoARef.current?.pause();
+    filmVideoBRef.current?.pause();
     musicAudioRef.current?.pause();
     setIsFilmPlaying(false);
     setIsFilmPaused(false);
     filmPlayIdxRef.current = 0;
     clipStartMsRef.current = 0;
-    loadedClipIdxRef.current = -1;
+    // Do NOT call setSlotVisible("none") here — leave the last frame visible in the active slot.
+    // startFilmPlayback resets activeFilmSlotRef and slotGenRef when restarting.
     setFilmPlayIdx(0);
     if (progressBarFillRef.current) progressBarFillRef.current.style.width = "0%";
     if (elapsedLabelRef.current) elapsedLabelRef.current.textContent = `${fmtMs(0)} / ${fmtMs(totalMs)}`;
   }
 
   // Seek to any position in the film. Works from idle, playing, or paused.
-  // Music is kept in sync — its currentTime is set to match the film position
-  // so seek/jump is an accurate preview of how music would play at that moment.
+  // Music is kept in sync — its currentTime is set to match the film position.
   function seekToFilmMs(targetMs: number) {
     const clips = inFilmRef.current;
     if (clips.length === 0 || totalMs <= 0) return;
@@ -375,12 +523,10 @@ export default function Sound() {
     }
 
     const clip = clips[idx];
-    const seekSec = (clip.in_ms ?? 0) / 1000 + (clamped - acc) / 1000;
+    const seekMs = (clip.in_ms ?? 0) + (clamped - acc);
 
     // Update tracking refs + visual indicators immediately
-    filmPlayIdxRef.current = idx;
     clipStartMsRef.current = acc;
-    setFilmPlayIdx(idx);
     if (progressBarFillRef.current && totalMs > 0) {
       progressBarFillRef.current.style.width = `${(clamped / totalMs) * 100}%`;
     }
@@ -392,7 +538,6 @@ export default function Sound() {
     const ma = musicAudioRef.current;
 
     if (wasIdle && ma && sound.mood !== "none") {
-      // Starting fresh from idle — load music
       const src =
         sound.mood === "custom" && sound.customPath
           ? convertFileSrc(sound.customPath)
@@ -406,10 +551,8 @@ export default function Sound() {
       }
     }
 
-    // Sync music position to film position — fixes "music doesn't reflect fade
-    // when user seeks ahead" and "music silent after fade-out then seek back".
+    // Sync music position — reset volume first so fade re-applies from handleFilmTimeUpdate
     if (ma) {
-      // Reset volume to base — handleFilmTimeUpdate will re-apply fade if in fade zone
       ma.volume = MUSIC_VOLUME[sound.volume];
       const trySync = () => {
         try { ma.currentTime = Math.min(clamped / 1000, ma.duration || clamped / 1000); }
@@ -422,30 +565,31 @@ export default function Sound() {
     if (wasIdle) {
       hasPlayedRef.current = true;
       filmPlayingRef.current = true;
+      activeFilmSlotRef.current = "a";
+      slotGenRef.current = { a: 0, b: 0 };
       setIsFilmPlaying(true);
       setIsFilmPaused(false);
       if (ma && sound.mood !== "none") ma.play().catch(() => {});
+      // Load into slot A with seek target
+      loadIntoSlot(idx, "a", seekMs);
+      return;
     }
 
-    const v = filmVideoRef.current;
-    if (!v) return;
-    v.volume = Math.min(1, clip.clip_volume ?? 1.0);
-
-    if (loadedClipIdxRef.current === idx) {
-      // Same clip — just seek the video
-      v.currentTime = seekSec;
-      if (filmPlayingRef.current) v.play().catch(() => {});
-    } else {
-      // Different clip — load it then seek
-      loadedClipIdxRef.current = idx;
-      const src = convertFileSrc(clip.proxy_path ?? clip.local_path);
-      v.addEventListener("loadedmetadata", () => {
-        v.currentTime = seekSec;
+    // Mid-playback or paused: use cross-slot seek if different clip, direct seek if same
+    if (filmPlayIdxRef.current === idx) {
+      // Same clip — seek in the active slot directly
+      const v = getFilmVideo(activeFilmSlotRef.current);
+      if (v) {
+        v.currentTime = seekMs / 1000;
         if (filmPlayingRef.current) v.play().catch(() => {});
-      }, { once: true });
-      v.src = src;
-      v.load();
+      }
+      filmPlayIdxRef.current = idx;
+      setFilmPlayIdx(idx);
+    } else {
+      // Different clip — use crossSeekToClip (outgoing frame stays visible until new frame ready)
+      crossSeekToClip(idx, seekMs);
     }
+    clipStartMsRef.current = acc;
   }
 
   function startCustomPreview() {
@@ -817,19 +961,43 @@ export default function Sound() {
 
           {/* Center: video player + controls bar */}
           <div className="flex flex-col flex-1 min-h-0 min-w-0">
-            {/* Video area — click anywhere to pause/resume (matches Trimmer Film tab) */}
-            <div className="flex-1 bg-black flex items-center justify-center min-h-0 relative">
+            {/* Video area — dual-buffer A/B slots (mirrors Trimmer.tsx lines 770–846) */}
+            <div className="flex-1 bg-black min-h-0 relative overflow-hidden">
+              {/* Slot A */}
               <video
-                ref={filmVideoRef}
-                onEnded={advanceFilmClipRough}
-                onTimeUpdate={handleFilmTimeUpdate}
+                ref={filmVideoARef}
+                preload="auto"
+                playsInline
+                className={`absolute inset-0 w-full h-full object-contain ${inFilm.length > 0 ? "cursor-pointer" : ""}`}
                 onClick={
                   isFilmPlaying ? pauseFilmPlayback
                   : isFilmPaused ? resumeFilmPlayback
                   : inFilm.length > 0 ? startFilmPlayback
                   : undefined
                 }
-                className={`max-h-full max-w-full object-contain ${inFilm.length > 0 ? "cursor-pointer" : ""}`}
+                onEnded={advanceFilmClipRough}
+                onTimeUpdate={(e) => {
+                  if (activeFilmSlotRef.current !== "a") return;
+                  handleFilmTimeUpdate("a", (e.currentTarget as HTMLVideoElement).currentTime);
+                }}
+              />
+              {/* Slot B */}
+              <video
+                ref={filmVideoBRef}
+                preload="auto"
+                playsInline
+                className={`absolute inset-0 w-full h-full object-contain ${inFilm.length > 0 ? "cursor-pointer" : ""}`}
+                onClick={
+                  isFilmPlaying ? pauseFilmPlayback
+                  : isFilmPaused ? resumeFilmPlayback
+                  : inFilm.length > 0 ? startFilmPlayback
+                  : undefined
+                }
+                onEnded={advanceFilmClipRough}
+                onTimeUpdate={(e) => {
+                  if (activeFilmSlotRef.current !== "b") return;
+                  handleFilmTimeUpdate("b", (e.currentTarget as HTMLVideoElement).currentTime);
+                }}
               />
               {/* Placeholder — shown only when truly idle and never started playing.
                   hasPlayedRef prevents re-showing after natural film end. */}

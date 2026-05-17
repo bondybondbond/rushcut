@@ -675,10 +675,15 @@ Shown ONLY before the first play (`hasPlayedRef.current === false`) when not pla
 
 `absolute inset-0 flex items-center justify-center pointer-events-none` — `text-sm text-[#a3a3a3]`
 
+### Dual-buffer model (black-flash fix)
+
+Two `<video>` elements (slot A + slot B) are stacked `absolute inset-0 w-full h-full object-contain` inside the video area div. Only the active slot has `opacity: 1; pointer-events: default`; the inactive slot has `opacity: 0; pointer-events: none` (set imperatively via `setSlotVisible`, never via React state). On clip advance the inactive slot is pre-loaded and seeked to `in_ms` while the current clip is still playing; the swap is instantaneous with no decode wait. For cross-clip seeks during playback, `crossSeekToClip` loads into the opposite slot and uses `requestVideoFrameCallback` with a `metadata.mediaTime` gate (`TOLERANCE_SEC = 0.05`, `MAX_WAITS = 30` safety cap) to defer visibility until the GPU compositor has presented the seek-target frame — preventing frame-0 flash on WebView2. `slotGenRef` invalidates stale rVFC callbacks from rapid overlapping seeks.
+
 ### Performance rules
 
 - Progress bar fill and elapsed label updated via `ref.current.style.width` / `ref.current.textContent` — NEVER via `setState` in `onTimeUpdate` (4–66 Hz re-render flood)
 - Music sync and fade-out volume handled imperatively in `handleFilmTimeUpdate`
+- `slotGenRef.current[slot]++` only inside `loadIntoSlot` / `crossSeekToClip` — never in a `useEffect` to avoid music-state re-renders polluting film refs
 
 ---
 

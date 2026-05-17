@@ -146,6 +146,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`subprocess.run(cmd, check=True)` with list args** handles paths with spaces correctly; no `shell=True` needed.
 - **WSL2 `/tmp/<job_id>/` accumulates 1-3 GB per render** — `render.py` creates `TMP_BASE / job_id` for normalised intermediates; they persist until WSL2 shuts down if not explicitly deleted. Fix: `shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)` in `run.py` immediately after `shutil.copy2` succeeds. Wrapup cleans crash orphans via `wsl -- sh -c 'rm -rf /tmp/*/'`. Proxies in `%APPDATA%\rushcut\proxies\` are a persistent cache — do NOT clean those.
 
+## Dual-buffer A/B slot engine — `stopFilmPlayback` must NOT hide slots
+
+**Problem:** Calling `setSlotVisible("none")` inside `stopFilmPlayback` (or any natural-end handler) hides both video slots, turning the video area black after the film ends. The user expects to see the last frame frozen.
+**Solution:** Do NOT call `setSlotVisible` in the stop/end path. Leave the active slot at opacity 1. Only reset `activeFilmSlotRef` and `slotGenRef` inside `startFilmPlayback` — the subsequent `loadIntoSlot` hides the slot before loading anyway. This preserves the last frame as a static poster until play is pressed again.
+**Context:** `src/pages/Sound.tsx` and any future port of the dual-buffer engine (`gateFrameRevealThen` + A/B slots). The stop function should only pause both elements and reset playback-position refs; visibility management belongs in start/advance/cross-seek paths only.
+
+---
+
 ## WebView2 — GPU compositor presents frame 0 first; rVFC `metadata.mediaTime` is the only reliable gate
 
 **Problem:** After a video `src` change + `load()` + seek, WebView2's GPU compositor presents frame 0 as the first composited frame before the seek-target keyframe is decoded. Neither `seeked` nor `v.play().then(...)` (Option F) nor a bare rVFC callback (Option C) reliably guards against this — they all fire before the seek-target frame is compositor-committed. Option F specifically: `.play().then()` resolves when audio starts, not when video frame is presented; `.pause()` then freezes at frame 0; reveal shows frame 0.

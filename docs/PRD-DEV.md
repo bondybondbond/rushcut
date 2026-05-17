@@ -116,11 +116,7 @@ Current Editor transition picker extracted into a standalone screen. Options: No
 **Future — Rename to `/edit/:projectId` when 15f (text cards) ships:**
 The Transitions-only screen is intentionally thin now. When text cards are built, rename the route and StepNav label to "Edit" and add tabs: Transitions / Text Cards / Animations. Stack sections vertically with disabled/coming-soon states until each tab is built — avoids permanently empty tabs. StepNav becomes: Upload → Trim → **Edit** → Sound → Render. Do NOT call it "Effects" (implies VFX). Research: iMovie, CapCut, GoPro Quik all collapse transitions + text + effects into one Edit/Style step.
 
-**Future — Transition Preview (post-15e backlog):**
-All major commercial editors (Premiere, DaVinci, CapCut, iMovie) show a looping visual preview when a transition is selected — table-stakes UX for an editor product.
-- Short looping CSS animation pair (clip A -> clip B) rendered inline per chip, no pipeline needed
-- Each chip shows a ~2s looping demo on hover/select
-- Prerequisite: 15e route + chips + sessionStorage must be complete first
+**Transition Preview:** Moved to Batch M1 (CSS-only looping demo per chip on hover/select — no pipeline).
 
 ### 15f — Sound screen (`/sound/:projectId`) (**DONE 2026-04-28**)
 
@@ -392,7 +388,6 @@ Add a two-tab shell to Sound screen:
 **Implementation:** `Sound.tsx` only — no Rust changes, no pipeline. Hidden `<video>` element (`filmVideoRef`) cycles through `inFilm` clips sequentially; `<audio>` element (`musicAudioRef`) plays music simultaneously. Full play/pause/seek, `out_ms` respected via `onTimeUpdate` guard, music synced to seek position with volume reset, fade-out marker on progress bar.
 
 **Deferred to future batch:**
-- Black flash between clips (dual-buffer ping-pong — mirrors `Trimmer.tsx` `advanceFilmClip` pattern)
 - Live playhead tracking on StickyFilmStrip during Master playback
 
 **Rust:** `run_preview_cmd(project_id)` Tauri command. Emits `preview-progress` + `preview-done:{path}`. Cancel = kill WSL process.
@@ -407,6 +402,34 @@ Add a two-tab shell to Sound screen:
 - [ ] "Preview film" button on Music tab; completes in <30s for 10-clip film
 - [ ] Per-clip volumes reflected in preview audio mix
 - [ ] Purple dot badges on StickyFilmStrip tiles still accurate (read from DB)
+
+---
+
+## Batch K4 — Dual-Buffer Clip Advance on Master Tab (Black Flash Fix)
+
+> **Status: DONE — 2026-05-17. 9/9 fast E2E PASS.**
+> **Scope: `src/pages/Sound.tsx` only. No pipeline changes.**
+
+### Problem
+
+The Master tab rough-mix player loads each clip directly into `filmVideoRef` on advance. Between clips there is a brief black frame as the browser unloads the previous source and begins decoding the next one. On fast cuts this is visually jarring.
+
+### Fix
+
+Port the dual-buffer ping-pong pattern already proven in `Trimmer.tsx` (`filmVideoARef` / `filmVideoBRef`):
+
+- Two `<video>` refs: `filmVideoARef` + `filmVideoBRef` (both `w-0 h-0 opacity-0 absolute` — only the active one is sized and visible)
+- `activeSlotRef` (`"a" | "b"`) tracks which slot is currently playing
+- **During current clip playback**, preload the next clip into the inactive slot (`preloadNextClip()`) once the current clip has been playing for > 500ms (enough time for the next clip to buffer)
+- **On advance**, swap `activeSlotRef`, show the now-ready slot, hide the old one, call `.play()` — the new clip's first frame is already decoded, so no black gap
+- `loadedClipIdxRef` tracks which clip is loaded in each slot
+
+### Acceptance check
+
+- [ ] No black frame visible between clips during Master tab rough-mix playback
+- [ ] Preload starts silently during current clip (no audio bleed from inactive slot — `inactive.muted = true` or `inactive.volume = 0`)
+- [ ] Seek still works correctly (seeked clip loaded into the active slot directly, inactive slot reset)
+- [ ] 9/9 fast E2E PASS
 
 ---
 
@@ -444,11 +467,39 @@ A film that starts with raw footage and ends abruptly feels unfinished. Start an
 
 ## Batch M — Arrange Screen: Transitions Tab Expansion
 
-> **Status: PLANNED — pre-launch must-have.**
-> **Prerequisite: Batch J (Arrange screen + Transitions tab must exist).**
-> **Scope: 5 transition types, shuffle mode, first/last cut selectors. All within the existing Transitions tab.**
+> Two sub-batches. M1 ships transition previews (no pipeline). M2 ships new types + shuffle + first/last cut (pipeline). Can ship independently.
 
-### Changes
+### Batch M1 — Transition Preview (CSS only)
+
+> **Status: PLANNED.**
+> **Scope: `src/pages/Arrange.tsx` (or wherever the Transitions tab lives). No pipeline.**
+
+Every major editor (Premiere, DaVinci, CapCut, iMovie) shows a looping visual demo when a transition is selected — table-stakes UX.
+
+**Per-chip CSS animation:** 2s looping pair (clip A fades/wipes/dips to clip B). Rendered inline below or beside each chip. No pipeline — pure CSS `@keyframes`.
+
+| Chip | Animation |
+|---|---|
+| None | Static "hard cut" — two colour blocks side by side |
+| Crossfade | `opacity` crossfade A→B |
+| Dip to Black | A fades to black, B fades in |
+| Wipe (M2) | Horizontal wipe left |
+| Zoom (M2) | Scale-up fade |
+
+Wipe + Zoom previews added when those chips ship in M2.
+
+**Acceptance checks:**
+- [ ] Each chip shows a looping 2s CSS animation on hover or when selected
+- [ ] Animation uses representative clip-A/clip-B colour blocks (no real video needed)
+- [ ] No pipeline invoked; no performance impact during preview
+
+---
+
+### Batch M2 — Expanded Transition Types + Shuffle + First/Last Cut
+
+> **Status: PLANNED.**
+> **Prerequisite: Batch J + M1.**
+> **Scope: `pipeline/transitions.py` + `Arrange.tsx` Transitions tab.**
 
 **5 transition types:**
 
@@ -460,21 +511,17 @@ A film that starts with raw footage and ends abruptly feels unfinished. Start an
 | Wipe | `wipeleft` | New |
 | Zoom | `zoom` | New |
 
-CSS chip previews: 2s looping animation per chip on hover (no pipeline needed).
-
-**Shuffle mode:** "Surprise me" button (lucide `Shuffle`, secondary style). Sets `transition: "shuffle"` in sessionStorage. `transitions.py`: random pick per cut from `[fade, fadeblack, wipeleft, zoom]`. Log `[M] cut N: {type}`. Result not shown until render.
+**Shuffle mode:** "Surprise me" button (lucide `Shuffle`, secondary style). Sets `transition: "shuffle"` in sessionStorage. `transitions.py`: random pick per cut from `[fade, fadeblack, wipeleft, zoom]`. Log `[M] cut N: {type}`.
 
 **First / last cut pickers:** "Opening cut" and "Closing cut" chip rows below global picker. Default = inherits global. Visible when ≥ 2 clips. `render.py` builds per-position type list: `[first_type, <global × N-2>, last_type]`.
 
-**`transitions.py`:** Add `wipeleft` + `zoom` to xfade dispatch. Per-position type list support. Shuffle random draw. All use existing `xfade_dur` + clamp.
+**`transitions.py`:** Add `wipeleft` + `zoom` to xfade dispatch. Per-position type list. Shuffle random draw. All use existing `xfade_dur` + clamp.
 
-### Acceptance checks
-
+**Acceptance checks:**
 - [ ] Transitions tab shows 5 chips + Shuffle button + Opening/Closing cut rows
 - [ ] Wipe and Zoom functional in rendered output
 - [ ] Shuffle produces varied transitions (pipeline log confirms)
 - [ ] Opening/Closing cut selectors applied in rendered output
-- [ ] CSS chip previews animate on hover
 - [ ] No regression: None/Crossfade/Dip to Black unchanged
 
 ---
@@ -685,6 +732,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.7     | 2026-05-17 | PRD restructure: added Batch K4 (dual-buffer black flash fix, next batch); split Batch M into M1 (transition preview CSS) + M2 (expanded types + shuffle + first/last cut); moved transition preview from 15e backlog into M1. |
 | 2.6     | 2026-05-17 | K3 Revised — Live Rough Mix: Master tab is full-screen film preview. Sequential clip playback via hidden `<video>` + `<audio>` music. Pause/resume, seekable progress bar (imperative DOM updates), `out_ms` boundary via `onTimeUpdate`, music sync + volume reset on seek, fade-out marker with label, idle overlay gated by `hasPlayedRef`. 9/9 fast E2E PASS. |
 | 2.5     | 2026-05-16 | Arrange clip playback polish (post-K1): video seeks to `in_ms` on loadedmetadata; stops at `out_ms` in handleTimeUpdate; scrubber clamped to `[in_ms, out_ms]`; elapsed/total shows trimmed duration; filmstrip playhead wired from per-clip currentMs; replay after clip-end fixed (seeks back to in_ms in togglePlay). filmPlayheadMs only shown on zoom tab. 9/9 fast PASS. LEARNINGS.md: per-clip video trim pattern. |
 | 2.4     | 2026-05-16 | Batch K split into K1 (Arrange full redesign: centred layout, Zoom tab, Ken Burns modes, clip badges, drag/DEL delete) and K2 (Sound screen: per-clip volume tab + music fade-out + Quick Preview). Old single Batch K spec replaced. |
