@@ -22,3 +22,50 @@
   40%  { opacity: 0.2; background-color: rgba(248, 113, 113, 0.6); }
   100% { opacity: 0; }
 }
+
+/* Transition preview card-chips — play-state control */
+.rc-trans-preview-a,
+.rc-trans-preview-b {
+  animation-play-state: paused;
+}
+.rc-trans-card--selected .rc-trans-preview-a,
+.rc-trans-card--selected .rc-trans-preview-b {
+  animation-play-state: running;
+}
+
+/* None — hard cut. steps(1, end) on the animation shorthand handles the snap;
+   keyframes declare A / B / back-to-A values at 0 / 50 / 100%. */
+@keyframes rc-trans-none-a {
+  0%   { opacity: 1; }
+  50%  { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes rc-trans-none-b {
+  0%   { opacity: 0; }
+  50%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Crossfade — smooth dissolve A→B→A */
+@keyframes rc-trans-cf-a {
+  0%, 15%  { opacity: 1; }
+  45%, 75% { opacity: 0; }
+  100%     { opacity: 1; }
+}
+@keyframes rc-trans-cf-b {
+  0%, 15%  { opacity: 0; }
+  45%, 75% { opacity: 1; }
+  100%     { opacity: 0; }
+}
+
+/* Dip to Black — A fades out → black gap → B fades in → back to A */
+@keyframes rc-trans-dip-a {
+  0%, 15%   { opacity: 1; }
+  30%, 85%  { opacity: 0; }
+  100%      { opacity: 1; }
+}
+@keyframes rc-trans-dip-b {
+  0%, 30%   { opacity: 0; }
+  50%, 70%  { opacity: 1; }
+  85%, 100% { opacity: 0; }
+}

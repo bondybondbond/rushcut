@@ -85,6 +85,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — IIFE in JSX causes stray-closing-tag compile errors
+
+**Problem:** Wrapping JSX in an IIFE (`{(() => { const x = ...; return (<JSX />); })()}`) to define local variables inline is fragile — the surrounding `return` and the JSX opening/closing tags must perfectly balance. A single extra or missing `</div>` inside the outer component produces a cryptic Babel "Adjacent JSX elements must be wrapped" error that points at the wrong line, making root cause non-obvious.
+**Solution:** Derive local variables in the component body above `return` (or in a small helper function), then reference them in the render path normally. Only use an IIFE if the variable depends on other JSX-internal context that truly can't be hoisted; if so, isolate it to the smallest possible scope and comment the intent.
+**Context:** Any JSX block where you need computed values (derived from state/props) that aren't worth a new component or a `useMemo`. Spotted during Batch M1 transition card-chip implementation.
+
+---
+
 ## Workflow — Visual eval bail-out when user is absent
 
 **Problem:** `request_access` for computer-use shows a dialog that the user must approve within 5 minutes. If the user isn't at their desk, two consecutive 5-minute timeouts (10 min total) are burned before giving up.

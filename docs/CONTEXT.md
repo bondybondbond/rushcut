@@ -15,17 +15,19 @@
 
 ## Current Phase
 
-**Phase 2 — Batch L (Cards tab + pipeline) COMPLETE (2026-05-17). Next: TBD.**
+**Phase 2 — Batch M1 (Transition preview card-chips) COMPLETE (2026-05-17). Next: TBD.**
 
 ---
 
 ## Immediate Next Task
 
-**TBD — founder to confirm.** Candidates: Batch M (Transitions tab expansion / preview), live StickyFilmStrip playhead on Master tab, or other pre-launch must-haves.
+**TBD — founder to confirm.** Candidates: Batch M2 (expanded transition types + shuffle + left-rail layout), live StickyFilmStrip playhead on Master tab, or other pre-launch must-haves.
 
 ---
 
 ## Recently shipped this session (2026-05-17)
+
+- **Batch M1 — Transition preview card-chips COMPLETE (2026-05-17):** Transitions tab chips on Arrange screen converted to card-chips (vertical card: animated thumbnail on top + label below). CSS `@keyframes` for None (hard cut via `steps(1, end)`), Crossfade (opacity dissolve), Dip to Black (fade-to-black gap). 3s looping animations; play-state `paused` by default, `running` on `.rc-trans-card--selected`. Thumbnails from first/last in-film `thumbnail_data` (base64 JPEG); colour-block fallback when no clips. Description text removed — visual demo replaces it. DESIGN.md extended with transition preview card-chip pattern. 9/9 fast E2E PASS. Deferred: M2 left-rail layout + expanded types + shuffle.
 
 - **Batch L — Cards tab COMPLETE (2026-05-17):** Cards tab on Arrange screen fully implemented. Two panels (Start card + End card). Start: toggle, title input (60 chars), subtitle input (80 chars), 3-swatch colour picker (peach/black/white), CSS preview. End: toggle, text input (40 chars), swatch picker, CSS preview. Defaults: both toggles OFF; start title seeds from project name on first load; end title = "The End". State persists in `rc_cards_${projectId}` sessionStorage. `buildJobConfig.ts` maps colour tokens → hex, respects toggle-OFF (emits empty string). Pipeline: `cards.py` `_make_png` extended with subtitle RGBA composite (60% alpha via `fill=(r,g,b,153)`, `getbbox`-based vertical centring). `render.py` passes `subtitle=config.get("intro_subtitle", "")`. DESIGN.md: two new subsections (Form text input + Card background swatch picker). PRD backlog: card in-film preview deferred post-launch. **Bugs fixed:** (1) `music.py` filter_complex trailing comma before `[mus]` output label (pre-existing; caused FFmpeg exit 8 on any render with music). (2) `run.py` not forwarding `intro_subtitle` from manifest to config dict (subtitle silently empty on render). 9/9 fast E2E PASS.
 

@@ -247,6 +247,29 @@ When a secondary chip group only applies in certain states (e.g. volume only whe
 )}
 ```
 
+### Transition preview card-chip
+
+Vertical card button with an animated thumbnail on top and a label below. Used on the Transitions tab of the Arrange screen. The animation plays on hover and while the chip is selected; other chips are static.
+
+- **Card:** `flex flex-col rounded-lg overflow-hidden border-2 min-w-[100px] focus:outline-none`
+- **Selected:** `rc-trans-card--selected border-[#99B3FF]` — add `rc-trans-card--selected` class alongside Tailwind classes
+- **Inactive:** `border-white/20 hover:border-white/50`
+- **Card must also carry the `rc-trans-card` class** — the CSS selectors in `globals.css` key off this to control `animation-play-state`
+- **Preview area:** `relative h-12 bg-black overflow-hidden` — `bg-black` is required so the mid-dip frame shows pure black for the Dip to Black transition
+  - Two `absolute inset-0` divs with classes `rc-trans-preview-a` (clip A, `bg-[#1e3a4c]`) and `rc-trans-preview-b` (clip B, `bg-[#2d1a2f]`)
+  - Each gets `style={{ animation: ANIM_KEYS[value].a/b }}` — the inline animation shorthand includes name, duration, iteration count, and timing function
+  - Default `animation-play-state: paused` set via `.rc-trans-preview-a/b` rule in `globals.css`
+  - Running state triggered via `.rc-trans-card:hover` and `.rc-trans-card--selected` CSS selectors (no JS needed)
+- **Label row:** `px-3 py-2 text-sm font-medium text-center text-[#e5e5e5] bg-white/5`
+- **`data-testid="chip-transition-{value}"`** preserved on the `<button>` for E2E
+
+**Keyframe naming convention** (`src/globals.css`):
+- `rc-trans-{type}-a` / `rc-trans-{type}-b` — type is `none`, `cf` (crossfade), `dip`
+- None: `steps(1, end)` timing; Crossfade + Dip: `ease-in-out`; all 3s duration
+- Clip colours: A = `#1e3a4c` (dark teal), B = `#2d1a2f` (dark purple), container bg = `#000000`
+
+When adding new transition types (Batch M2), add a new `rc-trans-{type}-a/b` keyframe pair and a new entry in `ANIM_KEYS`.
+
 ### Source selector pattern (Sound screen — three top-level sources)
 
 When the user chooses between fundamentally different content sources (e.g. No Music / Rushcut Library / Upload Own Track), render three source chips in a row at the top of the card. Selecting a source expands sub-content below with a thin separator.

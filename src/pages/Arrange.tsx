@@ -36,11 +36,17 @@ function cardTextColor(hex: string): string {
   return "#ffffff";
 }
 
-const TRANSITIONS: { value: TransitionValue; label: string; description: string }[] = [
-  { value: "none",        label: "None",        description: "Hard cut between clips — clean and fast." },
-  { value: "crossfade",   label: "Crossfade",   description: "Smooth 1.5s dissolve between clips." },
-  { value: "dip_to_black", label: "Dip to black", description: "Fades to black then back in — cinematic pacing." },
+const TRANSITIONS: { value: TransitionValue; label: string }[] = [
+  { value: "none",         label: "None" },
+  { value: "crossfade",    label: "Crossfade" },
+  { value: "dip_to_black", label: "Dip to black" },
 ];
+
+const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
+  none:         { a: "rc-trans-none-a 3s infinite steps(1, end)",  b: "rc-trans-none-b 3s infinite steps(1, end)" },
+  crossfade:    { a: "rc-trans-cf-a 3s infinite ease-in-out",      b: "rc-trans-cf-b 3s infinite ease-in-out" },
+  dip_to_black: { a: "rc-trans-dip-a 3s infinite ease-in-out",     b: "rc-trans-dip-b 3s infinite ease-in-out" },
+};
 
 // Zoom chips — labels per PRD, mapped to zoom_mode values used by the pipeline.
 const ZOOM_PRESETS: { label: string; value: string | null }[] = [
@@ -778,6 +784,14 @@ export default function Arrange() {
               <div className="border border-white/15 rounded-lg p-6 space-y-4">
                 <p className="text-xl font-medium text-[#e5e5e5]">Between clips</p>
 
+                {(() => {
+                  const fc = clips.filter(c => c.include === 1 && c.thumbnail_data);
+                  const tA = fc[0]?.thumbnail_data ?? null;
+                  const tB = (fc.length > 1 ? fc[fc.length - 1] : fc[0])?.thumbnail_data ?? null;
+                  const bgStyle = (t: string | null, fallback: string) =>
+                    t ? { backgroundImage: `url(${t})`, backgroundSize: "cover", backgroundPosition: "center" }
+                      : { backgroundColor: fallback };
+                  return (
                 <div className="flex flex-wrap gap-3">
                   {TRANSITIONS.map(({ value, label }) => (
                     <button
@@ -785,20 +799,30 @@ export default function Arrange() {
                       type="button"
                       data-testid={`chip-transition-${value}`}
                       onClick={() => handleSelectTransition(value)}
-                      className={`text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
+                      className={`rc-trans-card flex flex-col rounded-lg overflow-hidden border-2 transition-colors duration-200 min-w-[100px] focus:outline-none ${
                         transition === value
-                          ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
-                          : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+                          ? "rc-trans-card--selected border-[#99B3FF]"
+                          : "border-white/20 hover:border-white/50"
                       }`}
                     >
-                      {label}
+                      <div className="relative h-12 bg-black overflow-hidden">
+                        <div
+                          className="rc-trans-preview-a absolute inset-0"
+                          style={{ animation: ANIM_KEYS[value].a, ...bgStyle(tA, "#1e3a4c") }}
+                        />
+                        <div
+                          className="rc-trans-preview-b absolute inset-0"
+                          style={{ animation: ANIM_KEYS[value].b, ...bgStyle(tB, "#2d1a2f") }}
+                        />
+                      </div>
+                      <div className="px-3 py-2 text-sm font-medium text-center text-[#e5e5e5] bg-white/5">
+                        {label}
+                      </div>
                     </button>
                   ))}
                 </div>
-
-                <p className="text-sm text-[#a3a3a3]">
-                  {TRANSITIONS.find((t) => t.value === transition)?.description}
-                </p>
+                  );
+                })()}
               </div>
 
               <p className="text-sm text-[#a3a3a3]">

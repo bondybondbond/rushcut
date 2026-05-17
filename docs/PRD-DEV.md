@@ -475,27 +475,29 @@ A film that starts with raw footage and ends abruptly feels unfinished. Start an
 
 ### Batch M1 — Transition Preview (CSS only)
 
-> **Status: PLANNED.**
-> **Scope: `src/pages/Arrange.tsx` (or wherever the Transitions tab lives). No pipeline.**
+> **Status: DONE (2026-05-17).**
+> **Scope: `src/pages/Arrange.tsx` + `src/globals.css`. No pipeline.**
 
 Every major editor (Premiere, DaVinci, CapCut, iMovie) shows a looping visual demo when a transition is selected — table-stakes UX.
 
-**Per-chip CSS animation:** 2s looping pair (clip A fades/wipes/dips to clip B). Rendered inline below or beside each chip. No pipeline — pure CSS `@keyframes`.
+**Per-chip CSS animation:** 3s looping card-chip (vertical card: animated thumbnail on top + label below). Animation plays when selected; static otherwise. Thumbnails derived from first/last in-film clip (`thumbnail_data` base64 JPEG); colour-block fallback when no clips.
 
 | Chip | Animation |
 |---|---|
-| None | Static "hard cut" — two colour blocks side by side |
-| Crossfade | `opacity` crossfade A→B |
-| Dip to Black | A fades to black, B fades in |
+| None | Hard cut via `steps(1, end)` timing function |
+| Crossfade | `opacity` dissolve A→B→A |
+| Dip to Black | A fades out → black gap → B fades in → A |
 | Wipe (M2) | Horizontal wipe left |
 | Zoom (M2) | Scale-up fade |
 
 Wipe + Zoom previews added when those chips ship in M2.
 
 **Acceptance checks:**
-- [ ] Each chip shows a looping 2s CSS animation on hover or when selected
-- [ ] Animation uses representative clip-A/clip-B colour blocks (no real video needed)
-- [ ] No pipeline invoked; no performance impact during preview
+- [x] Each chip shows a looping CSS animation when selected (static when not selected)
+- [x] Thumbnails show real clip images (first/last in-film clip); colour-block fallback
+- [x] None = instant hard cut (no dissolve); Crossfade = smooth dissolve; Dip = black gap visible
+- [x] No pipeline invoked; no performance impact during preview
+- [x] 9/9 fast E2E PASS (testids preserved)
 
 ---
 
@@ -736,6 +738,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.8     | 2026-05-17 | Batch M1 DONE: transition chips on Arrange screen converted to card-chips with CSS-animated preview thumbnails. 3s looping `@keyframes` for None (`steps(1,end)` hard cut), Crossfade (opacity dissolve), Dip to Black (fade-to-black gap). Thumbnails from first/last in-film `thumbnail_data` with colour-block fallback. Animation plays on selected chip only; others static. 9/9 fast E2E PASS. |
 | 2.7     | 2026-05-17 | PRD restructure: added Batch K4 (dual-buffer black flash fix, next batch); split Batch M into M1 (transition preview CSS) + M2 (expanded types + shuffle + first/last cut); moved transition preview from 15e backlog into M1. |
 | 2.6     | 2026-05-17 | K3 Revised — Live Rough Mix: Master tab is full-screen film preview. Sequential clip playback via hidden `<video>` + `<audio>` music. Pause/resume, seekable progress bar (imperative DOM updates), `out_ms` boundary via `onTimeUpdate`, music sync + volume reset on seek, fade-out marker with label, idle overlay gated by `hasPlayedRef`. 9/9 fast E2E PASS. |
 | 2.5     | 2026-05-16 | Arrange clip playback polish (post-K1): video seeks to `in_ms` on loadedmetadata; stops at `out_ms` in handleTimeUpdate; scrubber clamped to `[in_ms, out_ms]`; elapsed/total shows trimmed duration; filmstrip playhead wired from per-clip currentMs; replay after clip-end fixed (seeks back to in_ms in togglePlay). filmPlayheadMs only shown on zoom tab. 9/9 fast PASS. LEARNINGS.md: per-clip video trim pattern. |
