@@ -501,34 +501,58 @@ Wipe + Zoom previews added when those chips ship in M2.
 
 ---
 
-### Batch M2 — Expanded Transition Types + Shuffle + First/Last Cut
+### Batch M2 — Expanded Transition Types + Left-Rail Layout + Shuffle
 
 > **Status: PLANNED.**
 > **Prerequisite: Batch J + M1.**
 > **Scope: `pipeline/transitions.py` + `Arrange.tsx` Transitions tab.**
 
-**5 transition types:**
+#### UI redesign — left-rail layout
 
-| Chip | FFmpeg xfade | Status |
+The current chip-row layout doesn't scale past 5 transitions. M2 replaces it with a **media-pantry-style left rail** + **centre video preview**:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  [left rail — scrollable]  │  [centre — video preview] │
+│                             │                           │
+│  ○ None                     │   ┌─────────────────┐    │
+│  ● Crossfade  ◀ selected    │   │  proxy clip A   │    │
+│  ○ Dip to Black             │   │  ─── fade ───   │    │
+│  ○ Wipe                     │   │  proxy clip B   │    │
+│  ○ Zoom                     │   └─────────────────┘    │
+│                             │   "Crossfade"             │
+│  [✦ Surprise me]            │                           │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Left rail:** vertical list of transition options (icon + label). Selected = `border-[#99B3FF]` highlight. Clicking a row selects it and starts the centre preview.
+- **Centre video preview:** plays the actual proxy video of the first/last in-film clip with the selected transition applied — CSS animation (same keyframes from M1) overlaid on the proxy thumbnails, OR a short pre-rendered proxy-quality clip if feasible. Start simple: reuse M1 CSS animation scaled up into a larger preview area using real thumbnails.
+- **"Surprise me" button:** below the list (lucide `Shuffle`, secondary outlined style). Sets `transition: "shuffle"` in sessionStorage. `transitions.py` random pick per cut from `[fade, fadeblack, wipeleft, zoom]`. Log `[M] cut N: {type}`.
+- **Animation trigger:** click to select → preview plays once then loops. No hover trigger (confirmed in M1).
+
+#### 5 transition types
+
+| Option | FFmpeg xfade | Status |
 |---|---|---|
 | None | — | Existing |
 | Crossfade | `fade` | Existing |
 | Dip to Black | `fadeblack` | Existing |
 | Wipe | `wipeleft` | New |
-| Zoom | `zoom` | New |
+| Zoom | `zoom` | New (FFmpeg xfade `zoom` — confirm availability; fallback `fade`) |
 
-**Shuffle mode:** "Surprise me" button (lucide `Shuffle`, secondary style). Sets `transition: "shuffle"` in sessionStorage. `transitions.py`: random pick per cut from `[fade, fadeblack, wipeleft, zoom]`. Log `[M] cut N: {type}`.
+#### Pipeline changes
 
-**First / last cut pickers:** "Opening cut" and "Closing cut" chip rows below global picker. Default = inherits global. Visible when ≥ 2 clips. `render.py` builds per-position type list: `[first_type, <global × N-2>, last_type]`.
+- `transitions.py`: add `wipeleft` + `zoom` to xfade dispatch. Shuffle random draw per cut. All use existing `xfade_dur` + clamp.
+- No first/last cut pickers in M2 — deferred (adds scope; not essential for launch).
 
-**`transitions.py`:** Add `wipeleft` + `zoom` to xfade dispatch. Per-position type list. Shuffle random draw. All use existing `xfade_dur` + clamp.
+#### Acceptance checks
 
-**Acceptance checks:**
-- [ ] Transitions tab shows 5 chips + Shuffle button + Opening/Closing cut rows
+- [ ] Transitions tab: left rail with 5 options + "Surprise me" button; centre shows enlarged preview
+- [ ] Selecting a transition updates centre preview immediately
 - [ ] Wipe and Zoom functional in rendered output
-- [ ] Shuffle produces varied transitions (pipeline log confirms)
-- [ ] Opening/Closing cut selectors applied in rendered output
+- [ ] Shuffle produces varied transitions (pipeline log confirms per-cut type)
 - [ ] No regression: None/Crossfade/Dip to Black unchanged
+- [ ] No console errors on Transitions tab
 
 ---
 ## Batch I — Branding & Visual Identity
