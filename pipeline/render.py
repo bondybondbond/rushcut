@@ -426,7 +426,7 @@ def run_pipeline(
     )
 
     crf, preset = (35, "ultrafast") if mode == "draft" else (22, "medium")
-    scale_h = "360" if mode == "draft" else ("2160" if output_resolution == "4k" else "1080")
+    scale_h = "480" if mode == "draft" else ("2160" if output_resolution == "4k" else "1080")
     log.info("[B1] render scale_h=%s (output_resolution=%s)", scale_h, output_resolution)
 
     if len(current_paths) == 1:

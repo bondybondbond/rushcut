@@ -86,7 +86,7 @@ def main() -> None:
     # Build job dict with nested config matching render.py expectations
     job = {
         "id": job_id,
-        "mode": "final",
+        "mode": manifest.get("mode", "final"),
         "config": {
             "music_mood": settings.get("music_mood", "none"),
             "zoom": settings.get("zoom", False),
@@ -138,49 +138,47 @@ def main() -> None:
         # This frees 1-3 GB per render from the WSL2 tmpfs immediately.
         shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)
 
-        # ----------------------------------------------------------------
-        # Render timing log — appended after every successful render so
-        # we can identify slow phases and optimisation opportunities.
-        # ----------------------------------------------------------------
-        try:
-            _a = {}
-            if _analysis_buf:
-                for kv in _analysis_buf[0].split(","):
-                    if "=" in kv:
-                        k, v = kv.split("=", 1)
-                        _a[k.strip()] = v.strip()
+        # Timing log — skip for draft/preview runs to avoid polluting benchmark data
+        if manifest.get("mode", "final") != "draft":
+            try:
+                _a = {}
+                if _analysis_buf:
+                    for kv in _analysis_buf[0].split(","):
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            _a[k.strip()] = v.strip()
 
-            output_mb = output_wsl.stat().st_size / (1024 * 1024) if output_wsl.exists() else 0
+                output_mb = output_wsl.stat().st_size / (1024 * 1024) if output_wsl.exists() else 0
 
-            record = {
-                "ts":              datetime.datetime.utcnow().isoformat() + "Z",
-                "instance":        manifest.get("instance", "unknown"),
-                "clips_used":      int(_a.get("clips_used", 0)),
-                "clips_total":     int(_a.get("clips_total", 0)),
-                "film_s":          float(_a.get("output_duration_s", 0)),
-                "raw_s":           float(_a.get("raw_duration_s", 0)),
-                "resolution":      settings.get("output_resolution", "1080p"),
-                "has_4k_source":   bool(int(_a.get("has_4k", 0))),
-                "proxy_used":      int(_a.get("proxy_used", 0)),
-                "proxy_skipped":   int(_a.get("proxy_skipped", 0)),
-                "transition":      settings.get("transition", "none"),
-                "music":           settings.get("music_mood", "none"),
-                "zoom":            bool(settings.get("zoom", False)),
-                "volume_custom":   bool(int(_a.get("volume_custom", 0))),
-                "t_normalise_s":   float(_a.get("normalise_s", 0)),
-                "t_trim_s":        float(_a.get("trim_s", 0)),
-                "t_zoom_s":        float(_a.get("zoom_s", 0)),
-                "t_render_s":      float(_a.get("render_s", 0)),
-                "t_music_s":       float(_a.get("music_s", 0)),
-                "t_loudnorm_s":    float(_a.get("loudnorm_s", 0)),
-                "t_total_s":       float(_a.get("total_s", 0)),
-                "output_mb":       round(output_mb, 1),
-            }
-            timing_log = manifest_path.parent / "render-timing-log.jsonl"
-            with open(timing_log, "a") as f:
-                f.write(json.dumps(record) + "\n")
-        except Exception as log_err:
-            logging.warning("[run.py] timing log write failed: %s", log_err)
+                record = {
+                    "ts":              datetime.datetime.utcnow().isoformat() + "Z",
+                    "instance":        manifest.get("instance", "unknown"),
+                    "clips_used":      int(_a.get("clips_used", 0)),
+                    "clips_total":     int(_a.get("clips_total", 0)),
+                    "film_s":          float(_a.get("output_duration_s", 0)),
+                    "raw_s":           float(_a.get("raw_duration_s", 0)),
+                    "resolution":      settings.get("output_resolution", "1080p"),
+                    "has_4k_source":   bool(int(_a.get("has_4k", 0))),
+                    "proxy_used":      int(_a.get("proxy_used", 0)),
+                    "proxy_skipped":   int(_a.get("proxy_skipped", 0)),
+                    "transition":      settings.get("transition", "none"),
+                    "music":           settings.get("music_mood", "none"),
+                    "zoom":            bool(settings.get("zoom", False)),
+                    "volume_custom":   bool(int(_a.get("volume_custom", 0))),
+                    "t_normalise_s":   float(_a.get("normalise_s", 0)),
+                    "t_trim_s":        float(_a.get("trim_s", 0)),
+                    "t_zoom_s":        float(_a.get("zoom_s", 0)),
+                    "t_render_s":      float(_a.get("render_s", 0)),
+                    "t_music_s":       float(_a.get("music_s", 0)),
+                    "t_loudnorm_s":    float(_a.get("loudnorm_s", 0)),
+                    "t_total_s":       float(_a.get("total_s", 0)),
+                    "output_mb":       round(output_mb, 1),
+                }
+                timing_log = manifest_path.parent / "render-timing-log.jsonl"
+                with open(timing_log, "a") as f:
+                    f.write(json.dumps(record) + "\n")
+            except Exception as log_err:
+                logging.warning("[run.py] timing log write failed: %s", log_err)
 
         print(f"DONE:{output_wsl}", flush=True)
     except Exception as e:

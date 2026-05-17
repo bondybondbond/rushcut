@@ -15,19 +15,21 @@
 
 ## Current Phase
 
-**Phase 2 — Batch K2 COMPLETE (2026-05-16). Next: Batch K3 (Quick Preview render).**
+**Phase 2 — K3 Revised (Live Rough Mix) COMPLETE (2026-05-17). Next: Batch L or backlog.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch K3 — Quick Preview render:** Rust `run_preview_cmd`, Python `--preview` pipeline mode (480p, ~15s), inline player on Master mixer tab.
+**TBD — founder to confirm.** Candidates: Batch L (Cards tab on Arrange), deferred dual-buffer clip advance (eliminates black flash between clips on Master tab), or transition preview.
 
 ---
 
-## Recently shipped this session (2026-05-16)
+## Recently shipped this session (2026-05-17)
 
-- **Batch K2 COMPLETE:** Arrange Sound tab (4th tab, per-clip volume chips Mute/50%/100%/Custom, `video.volume` for audible feedback, `update_clip_volume_cmd` param fix `volume`→`clipVolume`). Filmstrip volume badges: VolumeX red (mute), Volume1 purple (reduced) — both styled as coloured square badges matching Z badge pattern. Bottom nav "Sound"→"Music". Music screen two-tab shell (Music + Master mixer). Master mixer: volume chips + fade-out chips (None/2s/5s) + Quick Preview placeholder. Pipeline: `music_fade_out_s` wired run.py→music.py. Cross-tab video pause on tab switch. 9/9 fast E2E PASS.
+- **K3 Revised — Live Rough Mix Playback COMPLETE:** Master mixer tab is now a full-screen film preview (large video area + right sidebar). Hidden `<video>` element cycles through `inFilm` clips sequentially; `<audio>` element plays music simultaneously. No Rust invoke calls, no WSL/Python pipeline. Features: pause/resume (`isFilmPaused` state), seekable progress bar (imperative DOM updates via refs, avoids 4-66Hz re-renders), `out_ms` respected via `onTimeUpdate` guard (not `onEnded`), music syncs to seek position + volume reset on seek, fade-out marker with "fade Xs" label on progress bar, "Press play to preview" overlay suppressed after first play via `hasPlayedRef`. Fade-out settings moved to Music tab. `handleMusicTabChange` stops preview on Master-tab enter; stops film on other-tab switch. 9/9 fast E2E PASS.
+
+- **Batch K2 COMPLETE (2026-05-16):** Arrange Sound tab (4th tab, per-clip volume chips Mute/50%/100%/Custom, `video.volume` for audible feedback, `update_clip_volume_cmd` param fix `volume`→`clipVolume`). Filmstrip volume badges: VolumeX red (mute), Volume1 purple (reduced) — both styled as coloured square badges matching Z badge pattern. Bottom nav "Sound"→"Music". Music screen two-tab shell (Music + Master mixer). Master mixer: volume chips + fade-out chips (None/2s/5s) + Quick Preview placeholder. Pipeline: `music_fade_out_s` wired run.py→music.py. Cross-tab video pause on tab switch. 9/9 fast E2E PASS.
 
 - **Arrange clip playback fixes (post-K1):** Video player in Arrange zoom tab now seeks to `in_ms` on `loadedmetadata`, stops at `out_ms` in `handleTimeUpdate`, clamps scrubber to `[in_ms, out_ms]`, displays trimmed elapsed/total. Playhead wired from per-clip `currentMs` via `filmPlayheadMs` formula. Replay after clip ends fixed (seeks back to `in_ms` in `togglePlay`). 9/9 fast E2E PASS.
 

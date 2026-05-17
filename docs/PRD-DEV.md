@@ -385,9 +385,15 @@ Add a two-tab shell to Sound screen:
 
 **Pipeline (`music.py`):** Append `afade=t=out:st={max(0, film_dur - fade_s)}:d={fade_s}` to music filter chain before amix. `run.py` passes `music_fade_out_s` from config.
 
-### K2c — Quick Preview render
+### K2c / K3 Revised — Live Rough Mix (**DONE 2026-05-17**)
 
-**Pipeline:** `--preview` mode in JobConfig. Skip normalise (use proxy H.264 directly), `-preset ultrafast -crf 35 -vf scale=-2:480`, skip loudnorm. Write to `%TEMP%\rushcut\preview_{project_id}.mp4`. Ephemeral — not in `jobs` DB.
+**Decision:** Replaced planned Rust/WSL/480p render pipeline with instant front-end-only rough mix. Render wait (~15-20s) was wrong UX for "does this music sit right?" — users need directional confidence, not render accuracy.
+
+**Implementation:** `Sound.tsx` only — no Rust changes, no pipeline. Hidden `<video>` element (`filmVideoRef`) cycles through `inFilm` clips sequentially; `<audio>` element (`musicAudioRef`) plays music simultaneously. Full play/pause/seek, `out_ms` respected via `onTimeUpdate` guard, music synced to seek position with volume reset, fade-out marker on progress bar.
+
+**Deferred to future batch:**
+- Black flash between clips (dual-buffer ping-pong — mirrors `Trimmer.tsx` `advanceFilmClip` pattern)
+- Live playhead tracking on StickyFilmStrip during Master playback
 
 **Rust:** `run_preview_cmd(project_id)` Tauri command. Emits `preview-progress` + `preview-done:{path}`. Cancel = kill WSL process.
 
@@ -679,6 +685,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.6     | 2026-05-17 | K3 Revised — Live Rough Mix: Master tab is full-screen film preview. Sequential clip playback via hidden `<video>` + `<audio>` music. Pause/resume, seekable progress bar (imperative DOM updates), `out_ms` boundary via `onTimeUpdate`, music sync + volume reset on seek, fade-out marker with label, idle overlay gated by `hasPlayedRef`. 9/9 fast E2E PASS. |
 | 2.5     | 2026-05-16 | Arrange clip playback polish (post-K1): video seeks to `in_ms` on loadedmetadata; stops at `out_ms` in handleTimeUpdate; scrubber clamped to `[in_ms, out_ms]`; elapsed/total shows trimmed duration; filmstrip playhead wired from per-clip currentMs; replay after clip-end fixed (seeks back to in_ms in togglePlay). filmPlayheadMs only shown on zoom tab. 9/9 fast PASS. LEARNINGS.md: per-clip video trim pattern. |
 | 2.4     | 2026-05-16 | Batch K split into K1 (Arrange full redesign: centred layout, Zoom tab, Ken Burns modes, clip badges, drag/DEL delete) and K2 (Sound screen: per-clip volume tab + music fade-out + Quick Preview). Old single Batch K spec replaced. |
 | 2.3     | 2026-05-16 | Batch J COMPLETE — Arrange screen (`/arrange/:projectId`); 3-tab shell (Clips|Transitions|Cards); per-clip volume (`clip_volume` DB col, `update_clip_volume_cmd`, volume filter in transitions.py + render.py, Mute/50%/100%/150%/200%+Custom chips); Clips tab zoom+focal reuse; StickyFilmStrip `onSelectClip`. zoom.py static crop fix (ffprobe integer coords, replaces broken zoompan expression). Render timing JSONL log (per-render phases, instance detection wdio/direct). render.spec.ts `waitForExist` race fix. 15/15 render E2E PASS. LEARNINGS.md + e2e.md updated. CLAUDE.md two-instance + UX flow fixes. |

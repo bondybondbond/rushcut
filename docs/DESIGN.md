@@ -60,6 +60,23 @@ User decides. Pipeline executes. Every UI decision should reinforce this: give c
 className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base disabled:opacity-40 disabled:cursor-not-allowed"
 ```
 
+### Destructive CTA (red — cancel / irreversible action)
+
+Used when paired with a Primary CTA to offer a cancel/destroy action of equal visual weight. Colour (red) is the primary signal — the label change is secondary. Same dimensions as Primary CTA to prevent layout shift on swap.
+
+```tsx
+className="px-6 py-3 border border-red-400/60 text-red-400 hover:bg-red-400/10 hover:border-red-400 font-semibold rounded-md text-base transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+```
+
+**200ms debounce guard** — set `disabled` for 200ms on every phase transition (idle→rendering, rendering→idle). Prevents double-clicks firing both render and cancel simultaneously. Pattern:
+
+```tsx
+const [debounced, setDebounced] = useState(false);
+// on button click:
+setDebounced(true);
+setTimeout(() => setDebounced(false), 200);
+```
+
 ### Secondary (outlined)
 
 ```tsx
@@ -598,6 +615,70 @@ Requires `group` class on the tile's root div. `e.stopPropagation()` prevents th
 - Props: `clips: Clip[]`, `projectId`, `activeId?`, `onDeleteClip?`
 - **No sessionStorage reads inside StickyFilmStrip** — all values come via props.
 - `transitionValue` and `soundMood` props REMOVED in Batch H — those live in `ChosenEffects` (EditorShell timeline row aside).
+
+---
+
+## Master Tab — Full-Screen Film Preview
+
+The Master tab on the Sound screen is a full-screen film playback layout. It replaces the card-based settings layout used on other tabs. The film is primary; controls are secondary.
+
+### Layout
+
+```
+┌──────────────────────────────────────────────┬──────────┐
+│                                              │  Music   │
+│              <video> (black bg)              │  (label) │
+│           max-h-full max-w-full              │  Volume  │
+│           object-contain cursor-pointer      │  chips   │
+│                                              │  (footer)│
+├──────────────────────────────────────────────┴──────────┤
+│ [●play] ────────────────── ↑fade ─────────── 0:12/1:23 │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **Outer container:** `flex flex-1 min-h-0` (fills editor shell content area)
+- **Center column:** `flex flex-col flex-1 min-h-0 min-w-0` (video + controls)
+- **Video area:** `flex-1 bg-black flex items-center justify-center min-h-0 relative`
+- **Video element:** `max-h-full max-w-full object-contain` — never `display:none` (use className toggling)
+- **Right sidebar:** `w-52 flex-shrink-0 border-l border-white/10 overflow-y-auto`
+
+### Controls bar
+
+`flex items-center gap-3 px-4 py-3 border-t border-white/10 flex-shrink-0`
+
+| Element | Pattern |
+|---|---|
+| Play/Pause button | `w-8 h-8 rounded-full bg-[#FF8A65] text-[#0a0a0a]` — circular peach |
+| Progress bar track | `flex-1 h-1.5 bg-white/20 rounded-full cursor-pointer relative` |
+| Progress fill | `h-full bg-[#FF8A65] rounded-full pointer-events-none` — peach fill |
+| Elapsed/total timer | `text-sm text-[#a3a3a3] flex-shrink-0 tabular-nums font-mono` |
+
+### Fade-out marker on progress bar
+
+When music fade-out is enabled, a vertical tick marks where the fade starts. Positioned inside the progress bar track div.
+
+```tsx
+<div
+  className="absolute pointer-events-none"
+  style={{ left: `${pct}%`, top: "50%", transform: "translate(-50%, -50%)" }}
+>
+  <span className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 text-[9px] text-white/50 whitespace-nowrap leading-none">
+    fade {fadeLabel}
+  </span>
+  <div className="h-3 w-0.5 bg-white/70 mx-auto" />
+</div>
+```
+
+### Idle placeholder overlay
+
+Shown ONLY before the first play (`hasPlayedRef.current === false`) when not playing and not paused. After any play event, the overlay stays hidden permanently (last frame shown after film ends).
+
+`absolute inset-0 flex items-center justify-center pointer-events-none` — `text-sm text-[#a3a3a3]`
+
+### Performance rules
+
+- Progress bar fill and elapsed label updated via `ref.current.style.width` / `ref.current.textContent` — NEVER via `setState` in `onTimeUpdate` (4–66 Hz re-render flood)
+- Music sync and fade-out volume handled imperatively in `handleFilmTimeUpdate`
 
 ---
 

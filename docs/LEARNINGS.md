@@ -45,6 +45,30 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — imperative DOM updates for high-frequency media events
+
+**Problem:** React `setState` inside `onTimeUpdate` (fires 4–66 Hz) causes a re-render per tick. For a progress bar fill + elapsed label, this floods the React reconciler every 15–250ms, degrading playback smoothness.
+**Solution:** Keep `isFilmPlaying` / `isFilmPaused` as React state for render-gating. Use `useRef<HTMLDivElement>` + `useRef<HTMLSpanElement>` for the fill div and label; update via `ref.current.style.width` and `ref.current.textContent` in the handler. Zero re-renders during playback; React re-renders only on play/pause/stop state transitions.
+**Context:** Any media progress bar or elapsed timer updated from `onTimeUpdate`. Pattern confirmed in `Sound.tsx` `handleFilmTimeUpdate`.
+
+---
+
+## React — `onEnded` does not respect `out_ms` trim boundary
+
+**Problem:** `onEnded` fires when the video source file reaches its natural end — NOT at the user's `out_ms` trim point. A clip trimmed to stop at 8s in a 30s source will play to 30s (the source end), not 8s, before `onEnded` fires.
+**Solution:** In `onTimeUpdate`, check `if (v.currentTime >= outSec) { advanceClip(); return; }` before any other time-based logic. This is the primary clip-end detector for trimmed clips. `onEnded` is a fallback for untrimmed clips.
+**Context:** Any screen with sequential clip playback where clips have `out_ms` trim points. Confirmed in `Sound.tsx` rough-mix playback.
+
+---
+
+## React — double-advance guard for clip boundary race
+
+**Problem:** When a clip ends at its `out_ms` boundary, both `onTimeUpdate` (which detects `v.currentTime >= outSec`) and `onEnded` (which fires at file end when `out_ms === duration_ms`) can both trigger `advanceClip` in the same JS event loop tick, causing double-advance (skips a clip).
+**Solution:** Use a ref guard: `const isAdvancingRef = useRef(false)`. At the top of `advanceClip`, check `if (isAdvancingRef.current) return; isAdvancingRef.current = true;`. After loading the new clip, clear it: `setTimeout(() => { isAdvancingRef.current = false; }, 250)`. The 250ms window covers the time between the two events firing.
+**Context:** Any sequential clip player where `onTimeUpdate` and `onEnded` both drive clip advance. Confirmed in `Sound.tsx` `advanceFilmClipRough`.
+
+---
+
 ## React — per-clip video player must seek to in_ms on loadedmetadata
 
 **Problem:** Loading a raw clip or proxy into a `<video>` element with `video.load()` starts playback from `currentTime=0` (the beginning of the raw file). If the trimmed section starts at `in_ms > 0`, `currentMs` never reaches `in_ms`, so derived film-time formulas (`currentMs - in_ms`) stay negative (clamped to 0) and any playhead or timeline feature appears frozen.
