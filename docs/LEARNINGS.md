@@ -291,6 +291,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`readyState: 0` at useEffect mount is common with `preload="auto"` on proxy files** — Tauri's asset protocol may not have responded by the time React's useEffect runs immediately after mount. Setting `currentTime` when `readyState === 0` is a no-op. Always gate first-frame logic on `readyState >= 2` or on the `loadeddata` event; never assume the video has buffered by the time the first effect fires.
 - **`<video>` poster disappears after a failed `src` load — need explicit fallback state** — the HTML `poster` attribute only shows before the first `src` is set. Once `src` is assigned and the browser attempts to load it (even if it fails with `onError`), the poster is gone and the element shows a broken-media icon. Fix: add a `sourceFailed` boolean state, set it in `onError`, and render a sibling `<img src={thumbnailData}>` when `sourceFailed === true`. Hide the `<video>` with `style={{ display: sourceFailed ? "none" : undefined }}` — do NOT use conditional rendering (`sourceFailed ? ... : ...`) because that would unmount the video ref.
 
+## E2E cold-start race — pre-launch app before running pnpm test:e2e
+
+**Problem:** WDIO's `beforeSession` hook kills and relaunches the Tauri binary. On a cold system (no prior CDP session), the port 9222 can disappear in the window between `waitForPort(9222)` resolving and msedgedriver attaching — causing "cannot connect to Microsoft Edge at 127.0.0.1:9222" on the first run attempt.
+**Solution:** Pre-launch the app with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` *before* running `pnpm test:e2e`. The `beforeSession` cleanup kills and relaunches it — but having an existing CDP session means the port is already warm when WDIO starts. Two failed attempts in a fresh shell = this is the cause.
+**Context:** Any session that runs `pnpm test:e2e*` from a terminal that has never launched the Tauri binary with CDP flags. The fix is `cmd.exe /c "set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 && start C:\apps\rushcut\src-tauri\target\debug\rushcut.exe"` then wait 5s before starting WDIO.
+
+---
+
+## Proxy pipeline — background gen and render gate must both be resolution-aware
+
+**Problem:** Background proxy gen produced 1080p proxies. `render.py` accepted any `height >= 1080` proxy for all render modes. A 4K render that reused a 1080p proxy upscaled from 1080p → 2160p, degrading output quality — AND still got ~2s normalise (wrong skip for wrong reason). Separately, `get_clips_needing_bg_proxy` filtered `proxy_status != 'done'` which prevented 1080p proxies from being upgraded to 2160p.
+**Solution:** (1) Background gen always encodes at `scale=-2:2160` — a 2160p proxy qualifies for both 1080p (`h >= 1080` ✓) and 4K (`h >= 2160` ✓) renders. (2) `render.py` gate: `required_proxy_h = 2160 if output_resolution == "4k" else 1080` — rejects 1080p proxies for 4K renders and falls through to normalise from source. (3) `get_clips_needing_bg_proxy` returns ALL `include=1` clips; `run_bg_proxy_batch` calls `proxy_height_native()` to decide skip/upgrade/encode.
+**Context:** Any change touching `generate_proxy_file_low_priority()` in `lib.rs`, `_proxy_height()` in `render.py`, or `get_clips_needing_bg_proxy()` in `db.rs`. Hardcoded height value `1080` anywhere in the proxy/normalise path is a latent 4K bug — always parameterise by `output_resolution`.
+
+---
+
 ## Proxy pipeline
 
 - **Proxy encode timeout must be 600s, not 120s** — `subprocess.run(..., timeout=120)` is too short for 4K HEVC source clips longer than ~60s at software decode speeds. A 90-second 4K DJI clip with software HEVC decode takes 90–180s to encode to 480p H.264 ultrafast, depending on CPU load. Set `timeout=600` (10 min ceiling) in `generate_proxy()`. The timeout killing FFmpeg mid-write produces a corrupt file — see the moov-atom pattern below.

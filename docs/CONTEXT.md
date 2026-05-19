@@ -15,17 +15,24 @@
 
 ## Current Phase
 
-**Phase 2 — Batch M1 (Transition preview card-chips) COMPLETE (2026-05-17). Next: TBD.**
+**Phase 2 — Batch N (Background Proxy Pre-Generation) COMPLETE (2026-05-19). Next: TBD.**
 
 ---
 
 ## Immediate Next Task
 
-**TBD — founder to confirm.** Candidates: Batch M2 (expanded transition types + shuffle + left-rail layout), live StickyFilmStrip playhead on Master tab, or other pre-launch must-haves.
+**TBD — founder to confirm.** Batch N is fully shipped. Candidates from founder feedback:
+- Bug: Arrange screen per-raw-clip shared playback state (Sound + Zoom tabs) — see PRD backlog
+- Bug: Shuffle transition label shows cryptically on Music master screen + all other display sites — see PRD backlog
+- PRD items logged: reorder clips via drag, thumbnail at trimmed frame 0, click-to-edit from film timeline, inline trim handles on Film tab, media pantry tracks current clip, shuffle exclusion settings
 
 ---
 
-## Recently shipped this session (2026-05-17)
+## Recently shipped this session (2026-05-19)
+
+- **Batch N — Background Proxy Pre-Generation COMPLETE (2026-05-19):** Silent pre-build of 1080p H.264 proxies when user leaves Trimmer → Arrange. Trigger: `Trimmer.tsx` unmount `useEffect` cleanup calls `invoke("generate_proxies_cmd", { projectId, lowPriority: true })`. Rust `run_bg_proxy_batch`: serial HEVC encode at Windows `BELOW_NORMAL_PRIORITY_CLASS` + `-threads 1`; `update_clip_proxy` + `set_clip_proxy_status('done')` on success. Native-codec (H.264) clips skip encode instantly. Concurrency guard (existing `Arc<Mutex<HashSet>>`) prevents duplicate spawns. `proxy_path` written to DB by background gen → `start_job` manifest already includes it → `render.py` Batch C proxy-reuse logic skips normalise automatically. DB: additive `proxy_status TEXT` column + `set_clip_proxy_status()` + `get_clips_needing_bg_proxy()` helpers. Logs to `%TEMP%\rushcut\proxy-bg.log`. Step 5 log confirmed: 5 clips, elapsed 6–18s each, no duplicates, re-trigger guard fires `skip reason=no-clips-need-proxy`. E2E: 9/9 fast PASS, 23/23 arrange PASS, 15/15 render PASS (2026-05-19).
+
+- **Batch M2 — Transitions Expansion COMPLETE (2026-05-18):** 9 transition types (None / Crossfade / Dip to Black / Wipe / Wipe Down / Zoom / Dissolve / Barn Door / Band Wipe) + Shuffle card (random per-cut from all 8 non-none types, job-id seeded for determinism, logs `[M2] cut N: type`). Left-rail 10-card layout + enlarged centre preview (h-56). CSS keyframes for 4 new types: wipe_down (clip-path inset top/bottom), dissolve (opacity, same timing as crossfade), barn_door (scaleY squeeze), band_wipe (two-step clip-path right-to-left). Animation bug fixed: unselected cards use `animation: "none"` in JSX (inline style beats CSS play-state class). Opening / closing cut pickers removed from UI (pipeline plumbing retained). `TransitionConfig` JSON storage with compat reader. Pipeline: `_TRANSITION_MAP` extended (4 new FFmpeg xfade names), `_SHUFFLE_POOL` extended to all 8. 23/23 arrange E2E PASS. PRD: two post-launch backlog items added (animation accuracy polish + geometric mini-preview redesign).
 
 - **Batch M1 — Transition preview card-chips COMPLETE (2026-05-17):** Transitions tab chips on Arrange screen converted to card-chips (vertical card: animated thumbnail on top + label below). CSS `@keyframes` for None (hard cut via `steps(1, end)`), Crossfade (opacity dissolve), Dip to Black (fade-to-black gap). 3s looping animations; play-state `paused` by default, `running` on `.rc-trans-card--selected`. Thumbnails from first/last in-film `thumbnail_data` (base64 JPEG); colour-block fallback when no clips. Description text removed — visual demo replaces it. DESIGN.md extended with transition preview card-chip pattern. 9/9 fast E2E PASS. Deferred: M2 left-rail layout + expanded types + shuffle.
 

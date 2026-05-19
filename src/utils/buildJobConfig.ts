@@ -1,13 +1,64 @@
-import type { JobConfig } from "@/types/project";
+import type { JobConfig, TransitionValue } from "@/types/project";
 
 export const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 export const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
-export const VALID_TRANSITIONS = ["none", "crossfade", "dip_to_black"] as const;
+export const VALID_TRANSITIONS = ["none", "crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "dissolve", "barn_door", "band_wipe"] as const;
 export const VALID_FADE_OUTS = ["none", "2s", "5s"] as const;
+
+/** Shape stored in rc_transition_${projectId} since M2. Pre-M2 stored a plain string. */
+export interface TransitionConfig {
+  between: TransitionValue;
+  opening: TransitionValue;
+  closing: TransitionValue;
+  shuffleBetween: boolean;
+}
+
+/**
+ * Read transition config from sessionStorage.
+ * Handles both the legacy plain-string format (pre-M2) and the new JSON format (M2+).
+ */
+export function readTransitionConfig(projectId: string): TransitionConfig {
+  const defaults: TransitionConfig = {
+    between: "none",
+    opening: "none",
+    closing: "none",
+    shuffleBetween: false,
+  };
+  try {
+    const raw = sessionStorage.getItem(`rc_transition_${projectId}`);
+    if (!raw) return defaults;
+    // Compat: pre-M2 stored a plain transition string (e.g. "crossfade")
+    if (!raw.startsWith("{")) {
+      const val = raw as TransitionValue;
+      if ((VALID_TRANSITIONS as readonly string[]).includes(val)) {
+        return { ...defaults, between: val };
+      }
+      return defaults;
+    }
+    const parsed = JSON.parse(raw) as Partial<TransitionConfig>;
+    return {
+      between: (VALID_TRANSITIONS as readonly string[]).includes(parsed.between ?? "")
+        ? (parsed.between as TransitionValue)
+        : "none",
+      opening: (VALID_TRANSITIONS as readonly string[]).includes(parsed.opening ?? "")
+        ? (parsed.opening as TransitionValue)
+        : "none",
+      closing: (VALID_TRANSITIONS as readonly string[]).includes(parsed.closing ?? "")
+        ? (parsed.closing as TransitionValue)
+        : "none",
+      shuffleBetween: parsed.shuffleBetween === true,
+    };
+  } catch {
+    return defaults;
+  }
+}
 
 export const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
   transition: "none",
+  opening_transition: "none",
+  closing_transition: "none",
+  shuffle_between: false,
   intro_text: "",
   intro_subtitle: "",
   intro_color: "#000000",
@@ -21,10 +72,11 @@ export const DEFAULT_CONFIG: JobConfig = {
 export function buildJobConfig(projectId: string): JobConfig {
   const config: JobConfig = { ...DEFAULT_CONFIG };
   try {
-    const t = sessionStorage.getItem(`rc_transition_${projectId}`);
-    if (t && (VALID_TRANSITIONS as readonly string[]).includes(t)) {
-      config.transition = t as JobConfig["transition"];
-    }
+    const tc = readTransitionConfig(projectId);
+    config.transition = tc.between;
+    config.opening_transition = tc.opening;
+    config.closing_transition = tc.closing;
+    config.shuffle_between = tc.shuffleBetween;
   } catch { /* ignore */ }
   try {
     const raw = sessionStorage.getItem(`rc_sound_${projectId}`);

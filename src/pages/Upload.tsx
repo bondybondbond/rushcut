@@ -24,6 +24,7 @@ function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
     proxy_path: null,
     waveform_data: null,
     clip_volume: 1.0,
+    proxy_status: null,
   };
 }
 

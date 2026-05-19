@@ -90,7 +90,10 @@ def main() -> None:
         "config": {
             "music_mood": settings.get("music_mood", "none"),
             "zoom": settings.get("zoom", False),
-            "transition": settings.get("transition", "crossfade"),  # log: confirmed received
+            "transition": settings.get("transition", "none"),          # M2: between-clips type
+            "opening_transition": settings.get("opening_transition", "none"),
+            "closing_transition": settings.get("closing_transition", "none"),
+            "shuffle_between": settings.get("shuffle_between", False),
             "silence_removal": settings.get("silence_removal", False),
             "intro_color": settings.get("intro_color", "#000000"),
             "intro_text": intro_text,
@@ -114,7 +117,13 @@ def main() -> None:
         },
     }
 
-    print(f"[run.py] transition={job['config']['transition']}", flush=True)
+    print(
+        f"[run.py] transition={job['config']['transition']} "
+        f"shuffle={job['config']['shuffle_between']} "
+        f"opening={job['config']['opening_transition']} "
+        f"closing={job['config']['closing_transition']}",
+        flush=True,
+    )
 
     # Resolve WSL2 paths from local_path (stored as Windows paths in DB)
     clip_paths = [Path(win_to_wsl(c["local_path"])) for c in clips]

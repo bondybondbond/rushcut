@@ -264,11 +264,37 @@ Vertical card button with an animated thumbnail on top and a label below. Used o
 - **`data-testid="chip-transition-{value}"`** preserved on the `<button>` for E2E
 
 **Keyframe naming convention** (`src/globals.css`):
-- `rc-trans-{type}-a` / `rc-trans-{type}-b` — type is `none`, `cf` (crossfade), `dip`
-- None: `steps(1, end)` timing; Crossfade + Dip: `ease-in-out`; all 3s duration
+- `rc-trans-{type}-a` / `rc-trans-{type}-b` — type is `none`, `cf` (crossfade), `dip`, `wipe`, `zoom`
+- None: `steps(1, end)` timing; Crossfade + Dip: `ease-in-out`; Wipe: `clip-path: inset()` animation; Zoom: `transform: scale()` + opacity — all 3s duration
 - Clip colours: A = `#1e3a4c` (dark teal), B = `#2d1a2f` (dark purple), container bg = `#000000`
+- Wipe: A clips out left (`clip-path: inset(0 0 0 0)` → `inset(0 100% 0 0)`), B wipes in from right (`inset(0 100% 0 0)` → `inset(0 0 0 0)`)
+- Zoom: A scales+fades out (`scale(1) opacity:1` → `scale(1.35) opacity:0`), B scales+fades in (`scale(1.35) opacity:0` → `scale(1) opacity:1`)
 
-When adding new transition types (Batch M2), add a new `rc-trans-{type}-a/b` keyframe pair and a new entry in `ANIM_KEYS`.
+### Left-rail + centre-preview layout (Batch M2 — Transitions tab)
+
+For transition pickers with 5+ options, use a left rail + centre preview split rather than a horizontal chip row (chip rows don't scale past 5 with full card-chips).
+
+- **Container:** `flex gap-6` — `aside w-52` (rail) + `flex-1` (preview)
+- **Rail:** `flex flex-col gap-2` inside `aside w-52` — 6 vertical card-chips stretching to full width
+- **Centre preview:** bordered card (`border border-white/15 rounded-lg p-4 flex-1 flex flex-col`), `h-40` animation area with real thumbnails, label below (`text-xl font-medium text-[#e5e5e5]` + `text-sm text-[#a3a3a3]`)
+- Rail cards use `w-full` (stretch to aside width); preview area `h-40 max-w-md`
+- The "Surprise me" card is the 6th card in the rail with a `<Shuffle size={14}>` icon inline with the label
+
+### Opening/closing cut pickers (Batch M2)
+
+Horizontal card-chip rows rendered below the main between-clips block (separate bordered `<section>` each). Each section:
+
+- Heading `text-base font-medium text-[#e5e5e5]` + `text-sm text-[#a3a3a3]` description
+- 6-card horizontal flex (same 5 types + Surprise button): `flex flex-wrap gap-2`
+- Surprise button: resolves immediately on click — draws a random concrete value from `[crossfade, dip_to_black, wipe, zoom]` and stores it; never stores the string `"shuffle"` in config
+- `data-testid="chip-opening-{value}"` / `data-testid="chip-closing-{value}"` for E2E
+- Default: both `"none"` (None card selected/blue)
+
+### TransitionConfig storage shape (Batch M2)
+
+`rc_transition_${projectId}` in sessionStorage stores JSON: `{ between, opening, closing, shuffleBetween }`.
+A compat reader `readTransitionConfig(projectId)` handles the old plain-string format (pre-M2) and returns the struct.
+The pipeline never receives `"shuffle"` — `shuffleBetween: true` causes `transitions.py` to draw a random per-cut xfade name from `["fade","fadeblack","wipeleft","zoomin"]`.
 
 ### Source selector pattern (Sound screen — three top-level sources)
 

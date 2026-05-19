@@ -2,15 +2,16 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { ChevronLeft, ChevronRight, Play, Pause } from "lucide-react";
-import type { Clip, ProjectWithClips } from "@/types/project";
+import { ChevronLeft, ChevronRight, Play, Pause, Shuffle } from "lucide-react";
+import type { Clip, ProjectWithClips, TransitionValue } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
 import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 import { fmtMs } from "@/utils/fmtMs";
+import { readTransitionConfig } from "@/utils/buildJobConfig";
+import type { TransitionConfig } from "@/utils/buildJobConfig";
 
-type TransitionValue = "none" | "crossfade" | "dip_to_black";
 type ArrangeTab = "zoom" | "transitions" | "cards" | "sound";
 type CardColor = "peach" | "black" | "white";
 interface CardsState {
@@ -40,13 +41,28 @@ const TRANSITIONS: { value: TransitionValue; label: string }[] = [
   { value: "none",         label: "None" },
   { value: "crossfade",    label: "Crossfade" },
   { value: "dip_to_black", label: "Dip to black" },
+  { value: "wipe",         label: "Wipe" },
+  { value: "wipe_down",    label: "Wipe down" },
+  { value: "zoom",         label: "Zoom" },
+  { value: "dissolve",     label: "Dissolve" },
+  { value: "barn_door",    label: "Barn door" },
+  { value: "band_wipe",    label: "Band wipe" },
 ];
 
 const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
   none:         { a: "rc-trans-none-a 3s infinite steps(1, end)",  b: "rc-trans-none-b 3s infinite steps(1, end)" },
   crossfade:    { a: "rc-trans-cf-a 3s infinite ease-in-out",      b: "rc-trans-cf-b 3s infinite ease-in-out" },
   dip_to_black: { a: "rc-trans-dip-a 3s infinite ease-in-out",     b: "rc-trans-dip-b 3s infinite ease-in-out" },
+  wipe:         { a: "rc-trans-wipe-a 3s infinite ease-in-out",    b: "rc-trans-wipe-b 3s infinite ease-in-out" },
+  wipe_down:    { a: "rc-trans-wipd-a 3s infinite ease-in-out",    b: "rc-trans-wipd-b 3s infinite ease-in-out" },
+  zoom:         { a: "rc-trans-zoom-a 3s infinite ease-in-out",    b: "rc-trans-zoom-b 3s infinite ease-in-out" },
+  dissolve:     { a: "rc-trans-dis-a 3s infinite ease-in-out",     b: "rc-trans-dis-b 3s infinite ease-in-out" },
+  barn_door:    { a: "rc-trans-barn-a 3s infinite ease-in-out",    b: "rc-trans-barn-b 3s infinite ease-in-out" },
+  band_wipe:    { a: "rc-trans-band-a 3s infinite ease-in-out",    b: "rc-trans-band-b 3s infinite ease-in-out" },
 };
+
+// Random pool for shuffle — excludes "none" (shuffle implies a visible transition)
+const SHUFFLE_POOL: TransitionValue[] = ["crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "dissolve", "barn_door", "band_wipe"];
 
 // Zoom chips — labels per PRD, mapped to zoom_mode values used by the pipeline.
 const ZOOM_PRESETS: { label: string; value: string | null }[] = [
@@ -101,8 +117,8 @@ export default function Arrange() {
   const volumeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const storageKey = `rc_transition_${projectId}`;
-  const [transition, setTransition] = useState<TransitionValue>(
-    () => (sessionStorage.getItem(storageKey) as TransitionValue | null) ?? "none"
+  const [transConfig, setTransConfig] = useState<TransitionConfig>(
+    () => readTransitionConfig(projectId ?? "")
   );
 
   const [cardsState, setCardsState] = useState<CardsState>(() => {
@@ -231,9 +247,33 @@ export default function Arrange() {
     video.load();
   }, [selectedClipId, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function handleSelectTransition(val: TransitionValue) {
-    setTransition(val);
-    sessionStorage.setItem(storageKey, val);
+  function saveTransConfig(next: TransitionConfig) {
+    setTransConfig(next);
+    sessionStorage.setItem(storageKey, JSON.stringify(next));
+  }
+
+  function handleSelectBetween(val: TransitionValue) {
+    // "shuffle" is UI-only; mark flag but keep current between value for display
+    if (val === ("shuffle" as string)) return; // guard — shuffle handled separately
+    saveTransConfig({ ...transConfig, between: val, shuffleBetween: false });
+  }
+
+  function handleToggleShuffle() {
+    saveTransConfig({ ...transConfig, shuffleBetween: !transConfig.shuffleBetween });
+  }
+
+  function handleSelectOpening(val: TransitionValue) {
+    saveTransConfig({ ...transConfig, opening: val });
+  }
+
+  function handleSelectClosing(val: TransitionValue) {
+    saveTransConfig({ ...transConfig, closing: val });
+  }
+
+  // Surprise me for opening/closing: resolves immediately to a random concrete value
+  function handleSurpriseSlot(slot: "opening" | "closing") {
+    const pick = SHUFFLE_POOL[Math.floor(Math.random() * SHUFFLE_POOL.length)];
+    saveTransConfig({ ...transConfig, [slot]: pick });
   }
 
   // Optimistic local patch — keeps the right panel in sync without a refetch.
@@ -470,7 +510,7 @@ export default function Arrange() {
       totalMs={totalMs}
       activeTab="arrange"
       configured={configured}
-      transitionValue={transition}
+      transitionValue={transConfig.shuffleBetween ? "shuffle" : transConfig.between}
       soundMood={soundMoodVal}
       timelineHud={
         <StickyFilmStrip
@@ -773,7 +813,7 @@ export default function Arrange() {
         {/* ── Transitions tab ─────────────────────────────────────── */}
         {tab === "transitions" && (
           <div className="flex-1 overflow-y-auto">
-            <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
+            <div className="max-w-3xl mx-auto px-6 py-10 space-y-8">
               <div>
                 <h1 className="text-3xl font-semibold text-[#FF8A65]">Transitions</h1>
                 <p className="text-base text-[#a3a3a3] mt-1">
@@ -781,52 +821,107 @@ export default function Arrange() {
                 </p>
               </div>
 
-              <div className="border border-white/15 rounded-lg p-6 space-y-4">
-                <p className="text-xl font-medium text-[#e5e5e5]">Between clips</p>
+              {/* ── Between clips — left rail + centre preview ─────── */}
+              {(() => {
+                const fc = clips.filter(c => c.include === 1 && c.thumbnail_data);
+                const tA = fc[0]?.thumbnail_data ?? null;
+                const tB = (fc.length > 1 ? fc[fc.length - 1] : fc[0])?.thumbnail_data ?? null;
+                const bgStyle = (t: string | null, fallback: string) =>
+                  t ? { backgroundImage: `url(${t})`, backgroundSize: "cover", backgroundPosition: "center" }
+                    : { backgroundColor: fallback };
+                // The value shown in the centre preview:
+                // when shuffle is on, preview the last-selected between value (or crossfade as default)
+                const previewVal = transConfig.shuffleBetween
+                  ? (transConfig.between !== "none" ? transConfig.between : "crossfade")
+                  : transConfig.between;
+                return (
+                  <div className="border border-white/15 rounded-lg p-6 space-y-4">
+                    <p className="text-xl font-medium text-[#e5e5e5]">Between clips</p>
+                    <div className="flex gap-6">
+                      {/* Left rail — 5 type cards + Surprise me */}
+                      <aside className="w-52 flex-shrink-0 flex flex-col gap-2">
+                        {TRANSITIONS.map(({ value, label }) => {
+                          const isActive = !transConfig.shuffleBetween && transConfig.between === value;
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              data-testid={`chip-transition-${value}`}
+                              onClick={() => handleSelectBetween(value)}
+                              className={`rc-trans-card w-full flex flex-row items-center gap-3 rounded-lg overflow-hidden border-2 transition-colors duration-200 focus:outline-none ${
+                                isActive
+                                  ? "rc-trans-card--selected border-[#99B3FF] bg-[#99B3FF]/5"
+                                  : "border-white/20 hover:border-white/50"
+                              }`}
+                            >
+                              {/* Mini preview thumbnail — only animates when this card is selected */}
+                              <div className="relative w-16 h-10 bg-black flex-shrink-0 overflow-hidden">
+                                <div
+                                  className="rc-trans-preview-a absolute inset-0"
+                                  style={{ animation: isActive ? ANIM_KEYS[value].a : "none", ...bgStyle(tA, "#1e3a4c") }}
+                                />
+                                <div
+                                  className="rc-trans-preview-b absolute inset-0"
+                                  style={{ animation: isActive ? ANIM_KEYS[value].b : "none", ...bgStyle(tB, "#2d1a2f") }}
+                                />
+                              </div>
+                              <span className="text-sm font-medium text-[#e5e5e5] py-2 pr-2">{label}</span>
+                            </button>
+                          );
+                        })}
+                        {/* Shuffle card */}
+                        <button
+                          type="button"
+                          data-testid="chip-transition-shuffle"
+                          onClick={handleToggleShuffle}
+                          className={`w-full flex flex-row items-center gap-3 rounded-lg border-2 transition-colors duration-200 focus:outline-none px-3 py-2 ${
+                            transConfig.shuffleBetween
+                              ? "border-[#99B3FF] bg-[#99B3FF]/5 text-[#99B3FF]"
+                              : "border-white/20 hover:border-white/50 text-[#e5e5e5]"
+                          }`}
+                        >
+                          <Shuffle size={16} className="flex-shrink-0" />
+                          <span className="text-sm font-medium">Shuffle</span>
+                        </button>
+                      </aside>
 
-                {(() => {
-                  const fc = clips.filter(c => c.include === 1 && c.thumbnail_data);
-                  const tA = fc[0]?.thumbnail_data ?? null;
-                  const tB = (fc.length > 1 ? fc[fc.length - 1] : fc[0])?.thumbnail_data ?? null;
-                  const bgStyle = (t: string | null, fallback: string) =>
-                    t ? { backgroundImage: `url(${t})`, backgroundSize: "cover", backgroundPosition: "center" }
-                      : { backgroundColor: fallback };
-                  return (
-                <div className="flex flex-wrap gap-3">
-                  {TRANSITIONS.map(({ value, label }) => (
-                    <button
-                      key={value}
-                      type="button"
-                      data-testid={`chip-transition-${value}`}
-                      onClick={() => handleSelectTransition(value)}
-                      className={`rc-trans-card flex flex-col rounded-lg overflow-hidden border-2 transition-colors duration-200 min-w-[100px] focus:outline-none ${
-                        transition === value
-                          ? "rc-trans-card--selected border-[#99B3FF]"
-                          : "border-white/20 hover:border-white/50"
-                      }`}
-                    >
-                      <div className="relative h-12 bg-black overflow-hidden">
-                        <div
-                          className="rc-trans-preview-a absolute inset-0"
-                          style={{ animation: ANIM_KEYS[value].a, ...bgStyle(tA, "#1e3a4c") }}
-                        />
-                        <div
-                          className="rc-trans-preview-b absolute inset-0"
-                          style={{ animation: ANIM_KEYS[value].b, ...bgStyle(tB, "#2d1a2f") }}
-                        />
+                      {/* Centre preview — only animates when a real transition is selected */}
+                      {(() => {
+                        const shouldAnimate = transConfig.shuffleBetween || transConfig.between !== "none";
+                        return (
+                      <div className="flex-1 flex flex-col gap-3">
+                        <div className="relative h-56 rounded-lg overflow-hidden border border-white/15 bg-black">
+                          <div
+                            className="rc-trans-preview-a absolute inset-0"
+                            style={{ animation: shouldAnimate ? ANIM_KEYS[previewVal].a : "none", ...bgStyle(tA, "#1e3a4c") }}
+                          />
+                          <div
+                            className="rc-trans-preview-b absolute inset-0"
+                            style={{ animation: shouldAnimate ? ANIM_KEYS[previewVal].b : "none", ...bgStyle(tB, "#2d1a2f") }}
+                          />
+                        </div>
+                        <div>
+                          <p className="text-base font-medium text-[#e5e5e5]">
+                            {transConfig.shuffleBetween
+                              ? "Shuffle"
+                              : (TRANSITIONS.find(t => t.value === transConfig.between)?.label ?? "None")}
+                          </p>
+                          <p className="text-sm text-[#a3a3a3]">
+                            {transConfig.shuffleBetween
+                              ? "A different transition will be picked at random for each cut."
+                              : "Applied between every clip in your film."}
+                          </p>
+                        </div>
                       </div>
-                      <div className="px-3 py-2 text-sm font-medium text-center text-[#e5e5e5] bg-white/5">
-                        {label}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-                  );
-                })()}
-              </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <p className="text-sm text-[#a3a3a3]">
-                Your choice is saved automatically. Continue to Sound to choose music for your film.
+                All choices are saved automatically. Continue to Sound to choose music for your film.
               </p>
             </div>
           </div>

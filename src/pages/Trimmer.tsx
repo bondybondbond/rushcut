@@ -10,6 +10,7 @@ import { TrimBar } from "@/components/trimmer/TrimBar";
 import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
+import { readTransitionConfig } from "@/utils/buildJobConfig";
 import { projectCache } from "@/utils/projectCache";
 
 export default function Trimmer() {
@@ -74,6 +75,19 @@ export default function Trimmer() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+  }, [projectId]);
+
+  // Batch N: background proxy pre-gen trigger.
+  // On unmount (user leaves Trimmer by any path — bottom tab, Home, back),
+  // fire-and-forget generate_proxies_cmd with lowPriority. Rust selects only
+  // include=1 clips with proxy_status != 'done' — JS sends no clip list.
+  // React StrictMode double-mounts in dev; existing Arc<Mutex<HashSet>> guard
+  // de-dupes per-project concurrency, so double-call is harmless.
+  useEffect(() => {
+    if (!projectId) return;
+    return () => {
+      invoke("generate_proxies_cmd", { projectId, lowPriority: true }).catch(() => {});
+    };
   }, [projectId]);
 
   useEffect(() => {
@@ -610,7 +624,7 @@ export default function Trimmer() {
       ) + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
     : undefined;
   const configured = useConfiguredTabs(projectId ?? "");
-  const transitionVal = (() => { try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; } })();
+  const transitionVal = (() => { try { const tc = readTransitionConfig(projectId ?? ""); return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null); } catch { return null; } })();
   const soundMoodVal = (() => { try { const raw = sessionStorage.getItem(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })();
 
   const cutPaths = new Set(clips.filter(c => c.include === 1).map(c => c.local_path));

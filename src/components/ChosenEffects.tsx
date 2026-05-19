@@ -7,6 +7,13 @@ const TRANSITION_LABELS: Record<string, string> = {
   none: "No transition",
   crossfade: "Crossfade",
   dip_to_black: "Dip to black",
+  wipe: "Wipe",
+  wipe_down: "Wipe down",
+  zoom: "Zoom",
+  dissolve: "Dissolve",
+  barn_door: "Barn door",
+  band_wipe: "Band wipe",
+  shuffle: "Shuffle",
 };
 
 const MOOD_LABELS: Record<string, string> = {

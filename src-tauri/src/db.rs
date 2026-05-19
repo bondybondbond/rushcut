@@ -62,6 +62,7 @@ pub struct Clip {
     pub waveform_data: Option<String>,
     pub codec_name: Option<String>, // e.g. "hevc", "h264" — set at scan time, read by proxy gen
     pub clip_volume: f64,           // per-clip audio multiplier, default 1.0 (Batch J)
+    pub proxy_status: Option<String>, // NULL | "queued" | "done" — Batch N background proxy state
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -160,6 +161,7 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         ("waveform_data","TEXT"),
         ("codec_name",   "TEXT"),
         ("clip_volume",  "REAL DEFAULT 1.0"),
+        ("proxy_status", "TEXT"),
     ];
     for (col_name, col_type) in &clip_cols {
         let exists: bool = conn.query_row(
@@ -321,6 +323,38 @@ pub fn update_clip_proxy(clip_id: &str, proxy_path: &str) -> Result<(), rusqlite
         params![proxy_path, clip_id],
     )?;
     Ok(())
+}
+
+/// Set the background proxy status for a clip (Batch N).
+/// Valid values: "queued" | "done". Pass NULL/empty to clear (not normally needed).
+pub fn set_clip_proxy_status(clip_id: &str, status: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "UPDATE clips SET proxy_status = ?1 WHERE id = ?2",
+        params![status, clip_id],
+    )?;
+    Ok(())
+}
+
+/// Return all include=1 clips for a project for background proxy gen consideration (Batch N).
+/// Returns ALL include=1 clips — run_bg_proxy_batch decides per-clip whether to skip
+/// (already 2160p-valid proxy), upgrade (existing 1080p proxy → re-encode at 2160p),
+/// or encode fresh. No proxy_status filter here: height check in Rust is authoritative.
+pub fn get_clips_needing_bg_proxy(project_id: &str) -> Result<Vec<(String, String, Option<String>)>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, local_path, codec_name FROM clips
+         WHERE project_id = ?1
+           AND include = 1
+         ORDER BY sort_order ASC",
+    )?;
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
 }
 
 /// Update the thumbnail data for a clip (raw base64 JPEG, no data URI prefix).
@@ -505,11 +539,11 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
         //  5:width  6:height  7:has_audio  8:thumbnail_data  9:sort_order
         // 10:created_at  11:in_ms  12:out_ms  13:focal_x  14:focal_y
         // 15:zoom_mode  16:include  17:proxy_path  18:waveform_data  19:codec_name
-        // 20:clip_volume
+        // 20:clip_volume  21:proxy_status
         "SELECT id, project_id, filename, local_path, duration_ms, width, height,
                 has_audio, thumbnail_data, sort_order, created_at,
                 in_ms, out_ms, focal_x, focal_y, zoom_mode, include, proxy_path, waveform_data,
-                codec_name, clip_volume
+                codec_name, clip_volume, proxy_status
          FROM clips WHERE project_id = ?1 ORDER BY sort_order ASC",
     )?;
     let clips: Vec<Clip> = stmt
@@ -537,6 +571,7 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
                 waveform_data: row.get(18)?,  // 18
                 codec_name: row.get(19)?,     // 19
                 clip_volume: row.get::<_, Option<f64>>(20)?.unwrap_or(1.0), // 20 — default 1.0
+                proxy_status: row.get(21)?,   // 21 — Batch N: NULL | "queued" | "done"
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

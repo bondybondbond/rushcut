@@ -183,7 +183,7 @@ def run_pipeline(
     clips_excluded = 0
 
     # 1. Normalise -- report per-clip so progress doesn't appear stuck.
-    report_stage("Normalising clips")
+    report_stage("Preparing clips")
     log.info("[render] Step 1: normalise")
     report(10)
     t0 = time.time()
@@ -226,9 +226,12 @@ def run_pipeline(
         for f in futures:
             f.result()
 
-    # Partition clips: use 1080p proxy as normalise substitute where available.
-    # A proxy qualifies only if it is valid (moov atom present) AND height >= 1080
-    # (height < 1080 means it is a legacy 480p proxy from before Batch C — reject it).
+    # Partition clips: use proxy as normalise substitute where available.
+    # Required proxy height depends on output resolution:
+    #   1080p render → proxy must be >= 1080p (prevents upscaling artefacts)
+    #   4K render    → proxy must be >= 2160p (1080p proxies produce blurry 4K output)
+    # Background gen (Batch N) now encodes at 2160p so proxies qualify for both resolutions.
+    required_proxy_h = 2160 if output_resolution == "4k" else 1080
     proxy_clip_indices: set[int] = set()
     norm_clip_indices:  list[int] = []
 
@@ -237,14 +240,14 @@ def run_pipeline(
         # Cache both checks to avoid two ffprobe calls per clip
         valid = bool(pwsl and is_valid_proxy(pwsl))
         height = _proxy_height(pwsl) if valid else 0
-        if valid and height >= 1080:
+        if valid and height >= required_proxy_h:
             proxy_clip_indices.add(i)
-            log.info("[C-proxy] clip %d: using 1080p proxy, skipping normalise", i)
+            log.info("[C-proxy] clip %d: using %dp proxy, skipping normalise", i, height)
         else:
             norm_clip_indices.append(i)
             reason = (
                 "no proxy" if not pwsl
-                else ("invalid" if not valid else f"<1080p (h={height})")
+                else ("invalid" if not valid else f"proxy-{height}p < required-{required_proxy_h}p")
             )
             log.info("[C-proxy] clip %d: %s, normalising from source", i, reason)
 
@@ -271,7 +274,7 @@ def run_pipeline(
         norm_src = [pre_trimmed_paths[i] for i in norm_clip_indices]
 
         def _normalise_progress(done: int, total: int) -> None:
-            report_stage(f"Normalising clip {done} of {total}")
+            report_stage(f"Preparing clip {done} of {total}")
             report(10 + int(done / total * 40))  # 10% -> 50%
 
         normed = normalise(
@@ -456,10 +459,14 @@ def run_pipeline(
         log.info("[J] clip_volumes=%s", clip_volumes)
         fc, v_out, a_out = build_filter_complex(
             current_paths, durations, audio_flags,
-            transition=config.get("transition", "crossfade"),
+            transition=config.get("transition", "none"),
             mode=mode,
             output_resolution=output_resolution,
             clip_volumes=clip_volumes,
+            shuffle_between=config.get("shuffle_between", False),
+            seed=job.get("id"),
+            opening_transition=config.get("opening_transition", "none"),
+            closing_transition=config.get("closing_transition", "none"),
         )
         log.info("[render] filter_complex:\n  %s", fc)
 

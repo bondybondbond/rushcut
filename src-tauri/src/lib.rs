@@ -4,11 +4,12 @@ mod splash;
 
 use base64::Engine as _;
 use db::{
-    add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_job, get_project_output_paths,
-    get_project_with_clips, has_4k_clips, insert_clip, insert_job, insert_project, list_projects,
-    rename_project, reorder_clips, update_clip_proxy, update_clip_review, update_clip_thumbnail,
-    update_clip_volume, update_clip_waveform, update_job_analysis, update_job_done, update_job_error,
-    update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
+    add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_clips_needing_bg_proxy,
+    get_job, get_project_output_paths, get_project_with_clips, has_4k_clips, insert_clip,
+    insert_job, insert_project, list_projects, rename_project, reorder_clips,
+    set_clip_proxy_status, update_clip_proxy, update_clip_review, update_clip_thumbnail,
+    update_clip_volume, update_clip_waveform, update_job_analysis, update_job_done,
+    update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -303,6 +304,81 @@ fn is_valid_proxy_file(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Batch N: append a [PROXY_BG] log line to %TEMP%\rushcut\proxy-bg.log and stderr.
+/// Founder validation gate consumes this file directly. Best-effort: a log write
+/// failure must NOT block proxy gen.
+fn proxy_bg_log(msg: &str) {
+    eprintln!("{}", msg);
+    let path = std::env::temp_dir().join("rushcut").join("proxy-bg.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "{} {}", ts, msg);
+    }
+}
+
+/// Batch N: spawn a Windows ffmpeg process at BELOW_NORMAL_PRIORITY_CLASS with -threads 1.
+/// nice/ionice are Linux-only; Windows equivalent is the process priority class flag.
+/// Returns true on success.
+/// Return the video stream height of a proxy file (0 on error).
+/// Used to detect legacy 1080p proxies that need upgrading to 2160p for 4K render reuse.
+fn proxy_height_native(path: &str) -> u32 {
+    let out = std::process::Command::new(ffprobe_exe())
+        .args(["-v", "quiet", "-select_streams", "v:0",
+               "-show_entries", "stream=height", "-of", "csv=p=0", path])
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+/// Low-priority background proxy encode — 2160p so proxies qualify for both 1080p and 4K renders.
+/// Windows BELOW_NORMAL_PRIORITY_CLASS + -threads 1 ensures foreground stays responsive.
+/// NOTE: proxy.py was dead code since Batch 16; this native Rust path is the live one.
+fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
+    let encoder = detect_best_encoder();
+    proxy_bg_log(&format!("[PROXY_BG] encode-start src={} dst={} encoder={}", src, dst, encoder));
+
+    let mut cmd = std::process::Command::new(ffmpeg_exe());
+    cmd.args([
+        "-i", src,
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-vf", "scale=-2:2160,format=yuv420p",
+        "-r", "25",
+        "-fps_mode", "cfr",
+        "-c:v", encoder,
+        "-preset", "ultrafast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-ar", "48000",
+        "-threads", "1",
+        "-y",
+        dst,
+    ])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
+
+    // Windows: BELOW_NORMAL_PRIORITY_CLASS = 0x00004000 (the natural "nice -n 10" equivalent).
+    // Lets foreground UI / thumbnail loads preempt background ffmpeg without starving it.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+    }
+
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
 /// Encode a 480p H.264 proxy using the best available GPU encoder (detected once via OnceLock).
 /// GPU encoders (nvenc/qsv/amf) handle their own hardware decode — no separate hwaccel flag needed.
 /// Returns true on success.
@@ -489,6 +565,7 @@ fn add_clip_cut_cmd(
         waveform_data: source.waveform_data.clone(),
         codec_name: source.codec_name.clone(),
         clip_volume: 1.0,
+        proxy_status: source.proxy_status.clone(),
     };
 
     add_clip_cut(&cut).map_err(|e| format!("DB error (add clip cut): {}", e))?;
@@ -560,6 +637,7 @@ fn create_project(name: String, clips: Vec<ClipMeta>) -> Result<String, String> 
             waveform_data: None,
             codec_name: meta.codec_name.clone(),
             clip_volume: 1.0,
+            proxy_status: None,
         };
         insert_clip(&clip).map_err(|e| format!("DB error (insert clip {}): {}", meta.filename, e))?;
     }
@@ -796,19 +874,28 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
 // ---------------------------------------------------------------------------
 
 /// Kick off the upfront media batch (thumbnail + waveform) for all clips in a project.
-/// Proxy gen is now lazy — see generate_proxy_for_clip.
+///
+/// Batch N: when `low_priority=true`, additionally pre-encode proxies for clips
+/// where `include=1` AND `proxy_status != 'done'`. Triggered on Trimmer unmount —
+/// runs serially under BELOW_NORMAL_PRIORITY_CLASS so the user's Arrange/Sound
+/// editing window stays responsive. Selection is DB-side via
+/// `get_clips_needing_bg_proxy` so callers pass only `projectId + lowPriority`.
+///
 /// Returns immediately; batch runs in a background task.
 #[tauri::command]
 async fn generate_proxies_cmd(
     app: AppHandle,
     state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>,
     project_id: String,
+    low_priority: Option<bool>,
 ) -> Result<(), String> {
+    let low_priority = low_priority.unwrap_or(false);
+
     // Concurrency guard: only one batch run per project at a time.
     {
         let mut set = state.lock().unwrap();
         if set.contains(&project_id) {
-            eprintln!("[proxy] batch already running for project {}, skipping", project_id);
+            eprintln!("[proxy] batch already running for project {}, skipping (lowPriority={})", project_id, low_priority);
             return Ok(());
         }
         set.insert(project_id.clone());
@@ -826,11 +913,112 @@ async fn generate_proxies_cmd(
     let guard = Arc::clone(&*state);
     let pid = project_id.clone();
     tauri::async_runtime::spawn(async move {
-        run_media_batch(app, pid.clone(), all_clips).await;
+        run_media_batch(app.clone(), pid.clone(), all_clips).await;
+        if low_priority {
+            run_bg_proxy_batch(app, pid.clone()).await;
+        }
         guard.lock().unwrap().remove(&pid);
     });
 
     Ok(())
+}
+
+/// Batch N: background pre-encode of proxies for clips with include=1 AND
+/// proxy_status != 'done'. Serial (parallelism hits NTFS I/O ceiling per
+/// BATCH_N_PLAN.md), low-priority, idempotent. Marks `proxy_status='queued'`
+/// before each encode and `'done'` only after `is_valid_proxy_file` confirms
+/// success. Native-codec sources (H.264 / VP8 / VP9) skip encode and mark done
+/// with the source path as the proxy_path (matches existing run_media_batch logic).
+async fn run_bg_proxy_batch(app: AppHandle, project_id: String) {
+    let clips_to_encode = match get_clips_needing_bg_proxy(&project_id) {
+        Ok(v) => v,
+        Err(e) => {
+            proxy_bg_log(&format!("[PROXY_BG] error project_id={} get_clips failed: {}", project_id, e));
+            return;
+        }
+    };
+
+    if clips_to_encode.is_empty() {
+        proxy_bg_log(&format!("[PROXY_BG] skip project_id={} reason=no-clips-need-proxy", project_id));
+        return;
+    }
+
+    let appdata = match std::env::var("APPDATA") {
+        Ok(v) => v,
+        Err(_) => {
+            proxy_bg_log("[PROXY_BG] error APPDATA not set");
+            return;
+        }
+    };
+    let proxy_dir = format!(r"{}\rushcut\proxies", appdata);
+    let _ = std::fs::create_dir_all(&proxy_dir);
+
+    // Codecs WebView2 decodes natively — no transcode needed (matches proxy.py logic).
+    const NATIVE_CODECS: &[&str] = &["h264", "vp8", "vp9"];
+
+    proxy_bg_log(&format!("[PROXY_BG] batch-start project_id={} clip_count={}", project_id, clips_to_encode.len()));
+
+    for (clip_id, local_path, codec_name) in clips_to_encode {
+        let codec = codec_name.unwrap_or_default().to_lowercase();
+
+        // Native codec: source IS the proxy. Mark done immediately, point proxy_path at source.
+        if NATIVE_CODECS.contains(&codec.as_str()) {
+            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=native-codec codec={}", clip_id, codec));
+            let _ = update_clip_proxy(&clip_id, &local_path);
+            let _ = set_clip_proxy_status(&clip_id, "done");
+            let _ = app.emit("proxy-progress", json!({
+                "projectId": project_id,
+                "clipId": clip_id,
+                "winPath": local_path,
+            }));
+            continue;
+        }
+
+        let proxy_path = format!(r"{}\{}.mp4", proxy_dir, clip_id);
+
+        // Already a valid proxy on disk? Only skip re-encode if it is 2160p-compatible.
+        // Legacy 1080p proxies (from earlier Batch N sessions before this fix) fall through
+        // and get re-encoded at 2160p so they work for both 1080p and 4K renders.
+        if std::path::Path::new(&proxy_path).exists() && is_valid_proxy_file(&proxy_path) {
+            let h = proxy_height_native(&proxy_path);
+            if h >= 2160 {
+                proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=cached-2160p", clip_id));
+                let _ = update_clip_proxy(&clip_id, &proxy_path);
+                let _ = set_clip_proxy_status(&clip_id, "done");
+                let _ = app.emit("proxy-progress", json!({
+                    "projectId": project_id,
+                    "clipId": clip_id,
+                    "winPath": proxy_path,
+                }));
+                continue;
+            }
+            proxy_bg_log(&format!("[PROXY_BG] upgrade clip_id={} existing-height={}px re-encoding-at-2160p", clip_id, h));
+            // Fall through to re-encode at 2160p.
+        }
+
+        // Real encode path (HEVC / unknown).
+        let _ = set_clip_proxy_status(&clip_id, "queued");
+        proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={}", clip_id, codec));
+        let t0 = std::time::Instant::now();
+        let ok = generate_proxy_file_low_priority(&local_path, &proxy_path);
+        let elapsed = t0.elapsed().as_secs_f64();
+
+        if ok && is_valid_proxy_file(&proxy_path) {
+            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed={:.1}s", clip_id, elapsed));
+            let _ = update_clip_proxy(&clip_id, &proxy_path);
+            let _ = set_clip_proxy_status(&clip_id, "done");
+            let _ = app.emit("proxy-progress", json!({
+                "projectId": project_id,
+                "clipId": clip_id,
+                "winPath": proxy_path,
+            }));
+        } else {
+            proxy_bg_log(&format!("[PROXY_BG] failed clip_id={} elapsed={:.1}s", clip_id, elapsed));
+            // Leave proxy_status as 'queued' — next trigger will retry.
+        }
+    }
+
+    proxy_bg_log(&format!("[PROXY_BG] batch-done project_id={}", project_id));
 }
 
 /// Generate a proxy for a single clip on demand.
@@ -931,6 +1119,7 @@ async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
     if !needs_encode {
         eprintln!("[proxy] valid proxy already on disk for {}, emitting path", clip_id);
         let _ = update_clip_proxy(clip_id, &proxy_path);
+        let _ = set_clip_proxy_status(clip_id, "done");
         let _ = app.emit("proxy-progress", json!({
             "projectId": project_id,
             "clipId": clip_id,
@@ -941,6 +1130,7 @@ async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
 
     if generate_proxy_file(src, &proxy_path) {
         let _ = update_clip_proxy(clip_id, &proxy_path);
+        let _ = set_clip_proxy_status(clip_id, "done");
         let _ = app.emit("proxy-progress", json!({
             "projectId": project_id,
             "clipId": clip_id,

@@ -69,3 +69,76 @@
   50%, 70%  { opacity: 1; }
   85%, 100% { opacity: 0; }
 }
+
+/* Wipe — A slides out left, B slides in from right */
+@keyframes rc-trans-wipe-a {
+  0%, 15%  { clip-path: inset(0 0 0 0); }
+  50%, 75% { clip-path: inset(0 100% 0 0); }
+  100%     { clip-path: inset(0 0 0 0); }
+}
+@keyframes rc-trans-wipe-b {
+  0%, 15%  { clip-path: inset(0 100% 0 0); }
+  50%, 75% { clip-path: inset(0 0 0 0); }
+  100%     { clip-path: inset(0 100% 0 0); }
+}
+
+/* Zoom — A scales up and fades out, B scales down in from large */
+@keyframes rc-trans-zoom-a {
+  0%, 15%  { transform: scale(1);    opacity: 1; }
+  50%, 75% { transform: scale(1.35); opacity: 0; }
+  100%     { transform: scale(1);    opacity: 1; }
+}
+@keyframes rc-trans-zoom-b {
+  0%, 15%  { transform: scale(1.35); opacity: 0; }
+  50%, 75% { transform: scale(1);    opacity: 1; }
+  100%     { transform: scale(1.35); opacity: 0; }
+}
+
+/* Wipe down — B enters from top, A exits downward */
+@keyframes rc-trans-wipd-a {
+  0%, 15%  { clip-path: inset(0 0 0 0); }
+  50%, 75% { clip-path: inset(0 0 100% 0); }
+  100%     { clip-path: inset(0 0 0 0); }
+}
+@keyframes rc-trans-wipd-b {
+  0%, 15%  { clip-path: inset(100% 0 0 0); }
+  50%, 75% { clip-path: inset(0 0 0 0); }
+  100%     { clip-path: inset(100% 0 0 0); }
+}
+
+/* Dissolve — soft fade (like crossfade; pixel dissolve approximated) */
+@keyframes rc-trans-dis-a {
+  0%, 15%  { opacity: 1; }
+  45%, 75% { opacity: 0; }
+  100%     { opacity: 1; }
+}
+@keyframes rc-trans-dis-b {
+  0%, 15%  { opacity: 0; }
+  45%, 75% { opacity: 1; }
+  100%     { opacity: 0; }
+}
+
+/* Barn door — A squeezes vertically, B expands from centre */
+@keyframes rc-trans-barn-a {
+  0%, 15%  { transform: scaleY(1); opacity: 1; }
+  50%, 75% { transform: scaleY(0); opacity: 0; }
+  100%     { transform: scaleY(1); opacity: 1; }
+}
+@keyframes rc-trans-barn-b {
+  0%, 15%  { transform: scaleY(0); opacity: 0; }
+  50%, 75% { transform: scaleY(1); opacity: 1; }
+  100%     { transform: scaleY(0); opacity: 0; }
+}
+
+/* Band wipe — horizontal slice bands (hrslice approximation) */
+@keyframes rc-trans-band-a {
+  0%, 15%  { clip-path: inset(0 0 0 0); }
+  30%      { clip-path: inset(0 0 0 60%); }
+  50%, 75% { clip-path: inset(0 0 0 100%); }
+  100%     { clip-path: inset(0 0 0 0); }
+}
+@keyframes rc-trans-band-b {
+  0%, 30%  { clip-path: inset(0 100% 0 0); }
+  50%, 75% { clip-path: inset(0 0 0 0); }
+  100%     { clip-path: inset(0 100% 0 0); }
+}

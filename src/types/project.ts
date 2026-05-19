@@ -35,6 +35,7 @@ export interface Clip extends ClipMeta {
   proxy_path: string | null;
   waveform_data: string | null;
   clip_volume: number;          // per-clip audio multiplier, 0.0-2.0, default 1.0 (Batch J)
+  proxy_status: "queued" | "done" | null; // background proxy gen state (Batch N)
 }
 
 export interface ProjectWithClips {
@@ -55,9 +56,14 @@ export interface Job {
   updated_at: string;
 }
 
+export type TransitionValue = "none" | "crossfade" | "dip_to_black" | "wipe" | "wipe_down" | "zoom" | "dissolve" | "barn_door" | "band_wipe";
+
 export interface JobConfig {
   music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
-  transition: "none" | "crossfade" | "dip_to_black";
+  transition: TransitionValue;
+  opening_transition: TransitionValue;
+  closing_transition: TransitionValue;
+  shuffle_between: boolean;
   intro_text: string;
   intro_subtitle?: string;
   intro_color: string; // #rrggbb background colour for intro card

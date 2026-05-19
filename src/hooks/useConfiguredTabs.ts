@@ -1,10 +1,14 @@
+import { readTransitionConfig } from "@/utils/buildJobConfig";
+
 export type ConfigurableTab = "arrange" | "sound" | "render";
 
 export function useConfiguredTabs(projectId: string): Set<ConfigurableTab> {
   const configured = new Set<ConfigurableTab>();
 
-  const transitionVal = sessionStorage.getItem(`rc_transition_${projectId}`);
-  if (transitionVal && transitionVal !== "none") {
+  // M2: rc_transition_ stores JSON {between, opening, closing, shuffleBetween}.
+  // Treat "arrange" as configured when any of the three slots is non-none, or shuffle is on.
+  const tc = readTransitionConfig(projectId);
+  if (tc.between !== "none" || tc.opening !== "none" || tc.closing !== "none" || tc.shuffleBetween) {
     configured.add("arrange");
   }
 

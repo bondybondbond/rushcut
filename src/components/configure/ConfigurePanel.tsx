@@ -3,7 +3,10 @@ import { JobConfig } from "@/types/project";
 
 const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
-  transition: "crossfade",
+  transition: "none",
+  opening_transition: "none",
+  closing_transition: "none",
+  shuffle_between: false,
   zoom: false,
   intro_text: "",
   intro_color: "#000000",

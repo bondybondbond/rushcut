@@ -503,58 +503,134 @@ Wipe + Zoom previews added when those chips ship in M2.
 
 ### Batch M2 — Expanded Transition Types + Left-Rail Layout + Shuffle
 
-> **Status: PLANNED.**
-> **Prerequisite: Batch J + M1.**
-> **Scope: `pipeline/transitions.py` + `Arrange.tsx` Transitions tab.**
+> **Status: DONE (2026-05-18).**
+> **Scope: `pipeline/transitions.py` + `Arrange.tsx` Transitions tab + `src/globals.css` + `src/types/project.ts` + `src/utils/buildJobConfig.ts`.**
 
-#### UI redesign — left-rail layout
+Shipped: 9 transition types (None / Crossfade / Dip to Black / Wipe / Wipe Down / Zoom / Dissolve / Barn Door / Band Wipe) + Shuffle (random per-cut from all 8 non-none types, seeded by job_id for determinism). Left-rail layout (10 cards: 9 types + Shuffle) + enlarged centre preview (h-56). Opening / closing cut UI dropped (pipeline plumbing retained, always defaults to "none"). Animation bug fixed: unselected cards now use `animation: "none"` in JSX instead of CSS play-state (inline style beats class specificity). `TransitionConfig = { between, opening, closing, shuffleBetween }` JSON storage with compat reader. Pipeline: `_TRANSITION_MAP` extended (wipe_down→wipedown, dissolve→dissolve, barn_door→squeezev, band_wipe→hrslice); `_SHUFFLE_POOL` extended to all 8 FFmpeg names. 23/23 arrange E2E PASS.
 
-The current chip-row layout doesn't scale past 5 transitions. M2 replaces it with a **media-pantry-style left rail** + **centre video preview**:
+#### Deferred / known issues
 
-```
-┌─────────────────────────────────────────────────────┐
-│  [left rail — scrollable]  │  [centre — video preview] │
-│                             │                           │
-│  ○ None                     │   ┌─────────────────┐    │
-│  ● Crossfade  ◀ selected    │   │  proxy clip A   │    │
-│  ○ Dip to Black             │   │  ─── fade ───   │    │
-│  ○ Wipe                     │   │  proxy clip B   │    │
-│  ○ Zoom                     │   └─────────────────┘    │
-│                             │   "Crossfade"             │
-│  [✦ Surprise me]            │                           │
-└─────────────────────────────────────────────────────┘
-```
-
-- **Left rail:** vertical list of transition options (icon + label). Selected = `border-[#99B3FF]` highlight. Clicking a row selects it and starts the centre preview.
-- **Centre video preview:** plays the actual proxy video of the first/last in-film clip with the selected transition applied — CSS animation (same keyframes from M1) overlaid on the proxy thumbnails, OR a short pre-rendered proxy-quality clip if feasible. Start simple: reuse M1 CSS animation scaled up into a larger preview area using real thumbnails.
-- **"Surprise me" button:** below the list (lucide `Shuffle`, secondary outlined style). Sets `transition: "shuffle"` in sessionStorage. `transitions.py` random pick per cut from `[fade, fadeblack, wipeleft, zoom]`. Log `[M] cut N: {type}`.
-- **Animation trigger:** click to select → preview plays once then loops. No hover trigger (confirmed in M1).
-
-#### 5 transition types
-
-| Option | FFmpeg xfade | Status |
-|---|---|---|
-| None | — | Existing |
-| Crossfade | `fade` | Existing |
-| Dip to Black | `fadeblack` | Existing |
-| Wipe | `wipeleft` | New |
-| Zoom | `zoom` | New (FFmpeg xfade `zoom` — confirm availability; fallback `fade`) |
-
-#### Pipeline changes
-
-- `transitions.py`: add `wipeleft` + `zoom` to xfade dispatch. Shuffle random draw per cut. All use existing `xfade_dur` + clamp.
-- No first/last cut pickers in M2 — deferred (adds scope; not essential for launch).
-
-#### Acceptance checks
-
-- [ ] Transitions tab: left rail with 5 options + "Surprise me" button; centre shows enlarged preview
-- [ ] Selecting a transition updates centre preview immediately
-- [ ] Wipe and Zoom functional in rendered output
-- [ ] Shuffle produces varied transitions (pipeline log confirms per-cut type)
-- [ ] No regression: None/Crossfade/Dip to Black unchanged
-- [ ] No console errors on Transitions tab
+- **CSS animation accuracy:** The card-chip and centre preview CSS animations are functional approximations — they convey the transition concept but don't perfectly match the FFmpeg xfade output (e.g. barn door uses `scaleY` rather than true dual-inset clip-path; band wipe doesn't replicate `hrslice` slice bands). Acceptable for launch; polish in a future batch (see Post-Launch Backlog).
+- **Card-chip mini-preview thumbnails:** Rail cards show actual clip thumbnails (same image top + bottom until selected) — visually redundant. Better approach: replace with a simple 2-colour geometric visualisation (e.g. coloured rectangles/shapes) that shows the transition mechanic at a glance without needing real clip images. Centre preview (uses real thumbnails) is the primary demo surface; the mini-cards are just a selection mechanism. See Post-Launch Backlog.
 
 ---
+## Batch N — Background Proxy Pre-Generation (First-Render Speed)
+
+> **Status: DONE (2026-05-19).**
+> **Scope: `src-tauri/src/db.rs`, `src-tauri/src/lib.rs`, `src/pages/Trimmer.tsx`, `pipeline/render.py`.**
+
+Silent background proxy pre-generation. Trigger: `Trimmer.tsx` unmount `useEffect` cleanup calls `invoke("generate_proxies_cmd", { projectId, lowPriority: true })` fire-and-forget. Rust `run_bg_proxy_batch`: serial HEVC encode at Windows `BELOW_NORMAL_PRIORITY_CLASS` + `-threads 1`; encodes at `scale=-2:2160` (qualifies for both 1080p and 4K renders); `is_valid_proxy_file()` + height check on success → `update_clip_proxy` + `set_clip_proxy_status('done')`. Native-codec (H.264/VP8/VP9) clips skip encode instantly. Existing `Arc<Mutex<HashSet>>` concurrency guard prevents duplicate spawns. `proxy_path` written to DB → `start_job` manifest already includes it → `render.py` Batch C proxy-reuse logic skips normalise automatically.
+
+**4K fix (shipped same session):** Background gen upgraded from `scale=-2:1080` to `scale=-2:2160`. `render.py` `required_proxy_h = 2160 if output_resolution == "4k" else 1080` — rejects 1080p proxies for 4K renders. `get_clips_needing_bg_proxy` returns ALL `include=1` clips; `proxy_height_native()` in Rust detects and upgrades legacy 1080p proxies. Logs to `%TEMP%\rushcut\proxy-bg.log`.
+
+### Acceptance checks
+
+- [x] Leaving Trimmer tab fires background proxy gen for all `include=1` clips — confirmed in `proxy-bg.log` (5 clips, 6–18s each)
+- [x] Background gen uses Windows `BELOW_NORMAL_PRIORITY_CLASS` — low-priority, UI stays responsive
+- [x] Re-triggering (Trimmer → Arrange × N) does NOT spawn duplicate FFmpeg processes — `skip reason=no-clips-need-proxy` fires on second trigger
+- [x] First render after background gen completes: normalise stage ~2s (proxy_skip=N/N)
+- [x] If render starts before proxies done: graceful fallback to full normalise (existing Batch C path)
+- [x] `proxy_status` column persists correctly across app restarts
+- [x] No regression: 9/9 fast PASS · 23/23 arrange PASS · 15/15 render PASS (2026-05-19)
+- [x] 4K render uses 2160p proxy, not 1080p — quality confirmed by founder ("good 4K quality")
+
+---
+
+## Backlog — Bug: Arrange/Sound screen — shared video state across trimmed cuts from same source
+
+> **Bug — reported 2026-05-19. Affects Sound tab and Zoom tab of Arrange screen.**
+
+If the user has two trimmed cuts from the same raw clip (e.g. clip 5 and clip 6 are both trimmed from DJI_0042.MP4), switching from editing clip 5 to clip 6 does not reset the video player. The playback continues on the previous trimmed cut's video while the UI shows clip 6's controls. This happens because the `<video>` element's `src` doesn't change when both clips share the same `local_path` — the browser reuses the existing media element state.
+
+**Fix:** When `selectedClip` changes in Arrange, check if the new clip's source path (`proxy_path ?? local_path`) differs from the previous clip's source path. If same path but different `in_ms`/`out_ms`, force a re-seek to `in_ms` of the new clip. Consider using `key={clip.id}` on the `<video>` element to force React to unmount/remount it when the selected clip ID changes — this guarantees clean state regardless of whether paths are shared.
+
+**Scope:** `src/pages/Arrange.tsx` (or equivalent clip-selection handler). No DB or pipeline changes.
+
+---
+
+## Backlog — Bug: Shuffle transition label shown cryptically on all screens
+
+> **Partial fix existed; needs full fix across all screens (reported 2026-05-19).**
+
+When "Shuffle" is selected as the transition mode, the string `"shuffle"` (or serialised `TransitionConfig` JSON) leaks into display contexts where a human-readable label is expected — confirmed on the Music master screen, likely elsewhere (TopInfoBar, ChosenEffects chip, etc.).
+
+**Fix:** Centralise the display-name mapping. Add a `transitionDisplayName(config: TransitionConfig): string` utility that returns `"Shuffle"` when `config.transition === "shuffle"`. Update every place that renders a transition label — `ChosenEffects.tsx`, `TopInfoBar.tsx`, any summary text in Sound.tsx or Render.tsx — to use this utility. Do NOT read the raw `transition` field as a display string anywhere.
+
+**Scope:** `src/utils/transitionDisplayName.ts` (new utility), `src/components/ChosenEffects.tsx`, `src/components/TopInfoBar.tsx`, any other display sites.
+
+---
+
+## Backlog — Thumbnails show frame 0 of trimmed section (not raw clip start)
+
+> **PRD item — reported 2026-05-19. Adds visual clarity to per-clip editing.**
+
+Currently, clip thumbnails are extracted from the raw source clip at `~1s` seek (or wherever `scan.py` / native Rust extracts them). When a user has set `in_ms=15000ms` on a clip, the thumbnail still shows the clip's opening frame — not the frame they chose as their cut-in point. This makes it harder to identify which section of a long clip is being used.
+
+**Design:** On thumbnail generation, if `in_ms` is set, extract the frame at `in_ms` (or `in_ms + 500ms` to avoid a potential cut boundary). Update lazily: when the user saves an IN point change in the Trimmer, queue a thumbnail re-extract for that clip.
+
+**Scope:** `src-tauri/src/lib.rs` thumbnail extraction logic; `db::update_clip_thumbnail()`; potentially `Trimmer.tsx` to trigger re-extract on IN-point commit. May be too invasive for current batch — defer to a dedicated batch if so.
+
+---
+
+## Backlog — Click trimmed clip in film timeline to jump to editing it (Trim screen)
+
+> **PRD item — reported 2026-05-19.**
+
+On the Clip tab of the Trim screen, clicking a trimmed clip in the bottom film timeline (StickyFilmStrip) should:
+1. Select the corresponding raw clip in the media pantry (updating the pantry highlight)
+2. Load that raw clip into the video player with the saved IN/OUT handles restored
+3. Scroll the pantry to make the selected clip visible if needed
+
+Currently the only way to jump to editing a specific trimmed cut is to manually find and click its source clip in the media pantry.
+
+**Scope:** `StickyFilmStrip.tsx` (add `onSelectClip?: (clipId: string) => void` prop, emit on click); `src/pages/Trimmer.tsx` (handle `onSelectClip`, find matching pantry clip, set `selectedClipId`).
+
+---
+
+## Backlog — Adjust trim handles from Film tab (inline trim editing like DaVinci)
+
+> **PRD item — reported 2026-05-19. More advanced; DaVinci Resolve-style.**
+
+In the Film tab of the Trim screen, clicking a trimmed clip should show orange IN/OUT handles on its timeline tile. Dragging the left handle adjusts `in_ms` (earlier = expand clip start, later = trim clip start); dragging the right handle adjusts `out_ms`. Constrained to the raw clip's `[0, duration_ms]` range. Saves on drag-end via `update_clip_review_cmd`.
+
+**Design consideration:** This overlaps significantly with the Clip tab's TrimBar. Before building, decide if the two tabs should merge or stay distinct (see founder note: "having the two tabs / screens too similar might eliminate the need for clip and film tabs — so maybe it's ok to keep them distinct"). Document decision before implementation.
+
+**Scope:** `StickyFilmStrip.tsx` (drag handles on active tile), `src/pages/Trimmer.tsx` (save on release). Non-trivial — full own batch.
+
+---
+
+## Backlog — Media pantry highlight tracks current playing film clip
+
+> **PRD item — reported 2026-05-19.**
+
+When watching clips in the Film tab of the Trim screen (or Arrange screen), the media pantry highlight should update as the film advances — showing which raw source clip is currently playing. Currently the pantry highlight only updates on explicit user selection, not during film playback.
+
+**Scope:** `src/pages/Trimmer.tsx` (or Arrange) — on `advanceFilmClip`, emit which pantry clip (by `local_path`) is now active, update `selectedClipId` (or a separate `activeFilmPantryId` ref if we want to avoid disturbing the edit-selection state).
+
+---
+
+## Backlog — Reorder clips in Trim screen via drag left/right on film timeline
+
+> **PRD item — reported 2026-05-19.**
+
+Once clips are added to the film (Film tab of Trim screen, StickyFilmStrip), there is no way to reorder them. Drag-left currently deletes rather than repositions. Users should be able to click-and-hold a clip tile in the film timeline and drag it left or right to change its position in the film order.
+
+**Design:** Use the existing HTML5 DnD or pointer-event drag model already in StickyFilmStrip. On drag-start, lift the tile visually (slight opacity + scale); on drag-over another tile, show an insertion indicator; on drop, call `reorder_clips_cmd` with the new sort order. Drag-to-delete (drag left off the strip edge) should be preserved as a secondary gesture — differentiate by whether the drop target lands on another clip tile (reorder) vs. off the strip entirely (delete).
+
+**Scope:** `src/components/StickyFilmStrip.tsx` (drag reorder logic), `src-tauri/src/lib.rs` `reorder_clips_cmd` (already exists from Batch 14e — just needs to be called). No DB schema changes.
+
+---
+
+## Backlog — Shuffle: allow excluding specific transition types from pool
+
+> **PRD item — reported 2026-05-19.**
+
+When Shuffle mode is active, all 8 non-None transitions are eligible. Users should be able to exclude specific transitions they dislike (e.g. "I never want Barn Door"). UI: checkboxes or toggles per transition type, shown only when Shuffle is selected. Excluded types removed from `_SHUFFLE_POOL` for that render.
+
+**Scope:** `src/pages/Arrange.tsx` Transitions tab (conditional exclusion UI under Shuffle card); `src/utils/buildJobConfig.ts` (serialize excluded list); `pipeline/transitions.py` `_SHUFFLE_POOL` filtered at render time. Deferred — nice-to-have, not blocking launch.
+
+---
+
 ## Batch I — Branding & Visual Identity
 
 > **Status: DEFERRED — pending founder decision on logo option (A/B/C). Not blocking launch.**
@@ -725,6 +801,9 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 |---|---|
 | Music API / digital library | Loudly or Soundraw API; replaces bundled tracks |
 | Transition library | More xfade types; per-clip transition picker |
+| Transition CSS animation polish | Card-chip and centre preview animations are functional approximations; barn door (`scaleY`) and band wipe (two-step clip-path) don't match the FFmpeg xfade visual exactly. Revisit with more accurate CSS or canvas-based demos. |
+| Zoom transition — proper pipeline implementation | FFmpeg `zoomin` xfade zooms aggressively into a narrow pixel band — unusable. Currently falls back to `fade` (crossfade) in renders; CSS preview still shows zoom animation. Proper fix: implement a gentle zoom via a `zoompan` filter chain (scale up + crop + fade overlay) rather than FFmpeg xfade. Until fixed, Zoom renders identically to Crossfade. |
+| Transition card-chip mini-preview redesign | Replace the clip-thumbnail-backed mini-cards with a simple geometric 2-colour visualisation (coloured rectangles) that shows the transition mechanic at a glance — no real clip images needed. The centre panel handles real-thumbnail preview; mini-cards just need to communicate the shape of the cut. |
 | Quick Preview render | In Batch J (Sound screen, pre-export preview). Post-launch: secondary "Quick Preview" button on Render screen as well. |
 | Improved music loop | Waveform-matching loop point (librosa); see existing backlog item |
 | Smart music track ending | Spectral-optimal fade-out point (librosa); see existing backlog item |
@@ -762,6 +841,7 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.9     | 2026-05-18 | Batch M2 DONE: 9 transition types (added Wipe Down, Dissolve, Barn Door, Band Wipe); Shuffle button (random per-cut, job-id seeded); left-rail 10-card layout; centre preview h-56; animation-only-on-selected bug fixed (inline `animation:"none"` on unselected cards); opening/closing cut UI removed (pipeline defaults "none"); `TransitionConfig` JSON storage; pipeline `_TRANSITION_MAP` + `_SHUFFLE_POOL` extended; 23/23 arrange E2E PASS. Two backlog items added: CSS animation accuracy polish + geometric mini-preview redesign. |
 | 2.8     | 2026-05-17 | Batch M1 DONE: transition chips on Arrange screen converted to card-chips with CSS-animated preview thumbnails. 3s looping `@keyframes` for None (`steps(1,end)` hard cut), Crossfade (opacity dissolve), Dip to Black (fade-to-black gap). Thumbnails from first/last in-film `thumbnail_data` with colour-block fallback. Animation plays on selected chip only; others static. 9/9 fast E2E PASS. |
 | 2.7     | 2026-05-17 | PRD restructure: added Batch K4 (dual-buffer black flash fix, next batch); split Batch M into M1 (transition preview CSS) + M2 (expanded types + shuffle + first/last cut); moved transition preview from 15e backlog into M1. |
 | 2.6     | 2026-05-17 | K3 Revised — Live Rough Mix: Master tab is full-screen film preview. Sequential clip playback via hidden `<video>` + `<audio>` music. Pause/resume, seekable progress bar (imperative DOM updates), `out_ms` boundary via `onTimeUpdate`, music sync + volume reset on seek, fade-out marker with label, idle overlay gated by `hasPlayedRef`. 9/9 fast E2E PASS. |

@@ -111,6 +111,10 @@ def generate_proxy(src_wsl: str, proxy_wsl: str) -> bool:
     """
     Encode a 1080p H.264 proxy from src_wsl -> proxy_wsl.
 
+    NOTE (Batch 16): this WSL Python proxy path is DEAD CODE — Rust now owns proxy
+    generation natively (see src-tauri/src/lib.rs::generate_proxy_file). Kept for
+    reference / future fallback. Batch N background pre-gen lives in Rust, not here.
+
     Spec matches normalise.py output exactly so render.py can use the proxy as a
     normalised intermediate and skip the normalise step entirely on re-renders:
       - scale=-2:1080, format=yuv420p

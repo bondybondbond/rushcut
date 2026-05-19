@@ -227,28 +227,31 @@ describe("Arrange screen", () => {
 
   // ── Transitions tab ───────────────────────────────────────────────────────
 
-  it("clicking Transitions tab shows transition chips", async () => {
+  it("clicking Transitions tab shows all 10 between-clips cards (9 types + Shuffle)", async () => {
     if (!projectId) return;
     const transitionsTab = await $('[data-testid="arrange-tab-transitions"]');
     await transitionsTab.waitForExist({ timeout: 5_000 });
     await transitionsTab.click();
     await browser.pause(300);
 
-    const noneChip = await $('[data-testid="chip-transition-none"]');
-    await noneChip.waitForExist({ timeout: 5_000 });
-    expect(await noneChip.isDisplayed()).toBe(true);
-    expect(await $('[data-testid="chip-transition-crossfade"]').isDisplayed()).toBe(true);
-    expect(await $('[data-testid="chip-transition-dip_to_black"]').isDisplayed()).toBe(true);
+    for (const val of [
+      "none", "crossfade", "dip_to_black", "wipe", "wipe_down",
+      "zoom", "dissolve", "barn_door", "band_wipe", "shuffle",
+    ]) {
+      const chip = await $(`[data-testid="chip-transition-${val}"]`);
+      await chip.waitForExist({ timeout: 5_000 });
+      expect(await chip.isDisplayed()).toBe(true);
+    }
   });
 
-  it("'None' chip is active by default", async () => {
+  it("'None' between-clips card is active by default (blue border)", async () => {
     if (!projectId) return;
     const noneChip = await $('[data-testid="chip-transition-none"]');
     const className = await noneChip.getAttribute("class");
     expect(className).toContain("99B3FF");
   });
 
-  it("clicking 'Crossfade' chip makes it active", async () => {
+  it("clicking 'Crossfade' card makes it active", async () => {
     if (!projectId) return;
     const crossfadeChip = await $('[data-testid="chip-transition-crossfade"]');
     await crossfadeChip.click();
@@ -270,12 +273,18 @@ describe("Arrange screen", () => {
     expect(text.toLowerCase()).toContain("crossfade");
   });
 
-  it("sessionStorage persists the selected transition", async () => {
+  it("sessionStorage persists transition config as JSON with between=crossfade", async () => {
     if (!projectId) return;
     const stored = await browser.execute((id: string) => {
       return sessionStorage.getItem(`rc_transition_${id}`);
     }, projectId);
-    expect(stored).toBe("crossfade");
+    // M2: stored as JSON {between, opening, closing, shuffleBetween}
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored!);
+    expect(parsed.between).toBe("crossfade");
+    expect(parsed.opening).toBe("none");
+    expect(parsed.closing).toBe("none");
+    expect(parsed.shuffleBetween).toBe(false);
   });
 
   it("screenshot B: after selecting Crossfade transition", async () => {
