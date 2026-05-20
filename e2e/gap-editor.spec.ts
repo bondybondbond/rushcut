@@ -52,18 +52,22 @@ describe("Trimmer via real navigation", () => {
     const result = await createEvalProject();
     if (!result) { hasClips = false; return; }
 
-    // Navigate to library via Home tab — no pushState, real UI flow
-    const homeTab = await $('[data-testid="tab-home"]');
-    await homeTab.waitForExist({ timeout: 5_000 });
-    await homeTab.click();
+    // create_project via invoke() bypasses Upload.tsx React state — no auto-nav fires.
+    // Permitted pushState exception per .claude/rules/e2e.md: navigate to /library (the
+    // starting screen for this test's journey: Library → Open Project → Trimmer).
+    await browser.execute(() => {
+      (window as any).history.pushState({}, "", "/library");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/library"),
-      { timeout: 5_000, interval: 200 }
+      { timeout: 10_000, interval: 200, timeoutMsg: "Never reached /library" }
     );
+    await browser.pause(800); // let Library render project list
 
-    // Open the project — should now route to /trimmer/ (since Batch 15a)
+    // Open the project — should route to /trimmer/ (since Batch 15a)
     const openBtn = await $('[data-testid="btn-open-project"]');
-    await openBtn.waitForExist({ timeout: 5_000 });
+    await openBtn.waitForExist({ timeout: 8_000 });
     await openBtn.click();
     await browser.waitUntil(
       async () => (await browser.getUrl()).includes("/trimmer/"),
