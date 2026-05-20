@@ -102,11 +102,11 @@ export default function Arrange() {
   const videoBoxRef = useRef<HTMLDivElement>(null);
   const isDraggingFocalRef = useRef(false);
   const selectedClipRef = useRef<Clip | null>(null);
-  const loadedSrcRef = useRef<string>("");
+  const loadedClipIdRef = useRef<string>("");
 
   // Sound tab — independent video instance + playback state
   const soundVideoRef = useRef<HTMLVideoElement>(null);
-  const soundLoadedSrcRef = useRef<string>("");
+  const soundLoadedClipIdRef = useRef<string>("");
   const [soundIsPlaying, setSoundIsPlaying] = useState(false);
   const [soundCurrentMs, setSoundCurrentMs] = useState(0);
   const [soundDurationMs, setSoundDurationMs] = useState(0);
@@ -196,7 +196,7 @@ export default function Arrange() {
     if (!video) return;
 
     if (!selectedClip) {
-      loadedSrcRef.current = "";
+      loadedClipIdRef.current = "";
       video.src = "";
       setIsPlaying(false);
       setCurrentMs(0);
@@ -204,13 +204,12 @@ export default function Arrange() {
       return;
     }
 
+    if (selectedClip.id === loadedClipIdRef.current) return; // same clip — keep playback position
+
+    loadedClipIdRef.current = selectedClip.id;
     const src = selectedClip.proxy_path
       ? convertFileSrc(selectedClip.proxy_path)
       : convertFileSrc(selectedClip.local_path);
-
-    if (src === loadedSrcRef.current) return; // same clip — keep playback position
-
-    loadedSrcRef.current = src;
     setIsPlaying(false);
     setCurrentMs(0);
     setDurationMs(0);
@@ -225,7 +224,7 @@ export default function Arrange() {
     if (!video) return;
 
     if (!selectedClip) {
-      soundLoadedSrcRef.current = "";
+      soundLoadedClipIdRef.current = "";
       video.src = "";
       setSoundIsPlaying(false);
       setSoundCurrentMs(0);
@@ -233,13 +232,12 @@ export default function Arrange() {
       return;
     }
 
+    if (selectedClip.id === soundLoadedClipIdRef.current) return; // same clip — keep playback position
+
+    soundLoadedClipIdRef.current = selectedClip.id;
     const src = selectedClip.proxy_path
       ? convertFileSrc(selectedClip.proxy_path)
       : convertFileSrc(selectedClip.local_path);
-
-    if (src === soundLoadedSrcRef.current) return;
-
-    soundLoadedSrcRef.current = src;
     setSoundIsPlaying(false);
     setSoundCurrentMs(0);
     setSoundDurationMs(0);

@@ -15,20 +15,24 @@
 
 ## Current Phase
 
-**Phase 2 — Batch N (Background Proxy Pre-Generation) COMPLETE (2026-05-19). Next: TBD.**
+**Phase 2 — Post-Batch N bug fixes COMPLETE (2026-05-20). Next: TBD.**
 
 ---
 
 ## Immediate Next Task
 
-**TBD — founder to confirm.** Batch N is fully shipped. Candidates from founder feedback:
-- Bug: Arrange screen per-raw-clip shared playback state (Sound + Zoom tabs) — see PRD backlog
-- Bug: Shuffle transition label shows cryptically on Music master screen + all other display sites — see PRD backlog
-- PRD items logged: reorder clips via drag, thumbnail at trimmed frame 0, click-to-edit from film timeline, inline trim handles on Film tab, media pantry tracks current clip, shuffle exclusion settings
+**TBD — founder to confirm.** All reported bugs cleared. Remaining candidates:
+- PRD items: reorder clips via drag, thumbnail at trimmed frame 0, click-to-edit from film timeline, inline trim handles on Film tab, media pantry tracks current clip, shuffle exclusion settings
 
 ---
 
-## Recently shipped this session (2026-05-19)
+## Recently shipped this session (2026-05-20)
+
+- **Bug fix — Shuffle label raw JSON on Sound + Render screens:** `Sound.tsx` and `Render.tsx` were reading `rc_transition_${projectId}` via raw `sessionStorage.getItem()`, which since Batch M2 returns a full `TransitionConfig` JSON object. Passing that raw JSON string to `ChosenEffects` caused `TRANSITION_LABELS[jsonString] → undefined → chip shows raw JSON`. Fix: both pages now import and use `readTransitionConfig()` from `buildJobConfig.ts`, deriving `"shuffle"` / `tc.between` / `null` correctly. ChosenEffects chip shows "Shuffle" on all screens. 9/9 fast PASS.
+
+- **Bug fix — Shared video state for two cuts from same source clip (Arrange):** `loadedSrcRef` (URL-based) guard in Arrange zoom + sound tabs fired early when switching from Cut A to Cut B of the same raw clip (identical `proxy_path` URL). Renamed to `loadedClipIdRef` and `soundLoadedClipIdRef`; guard now compares `selectedClip.id` (always unique). Switching cuts correctly seeks to each cut's `in_ms`. 23/23 arrange PASS.
+
+## Recently shipped previous session (2026-05-19)
 
 - **Batch N — Background Proxy Pre-Generation COMPLETE (2026-05-19):** Silent pre-build of 1080p H.264 proxies when user leaves Trimmer → Arrange. Trigger: `Trimmer.tsx` unmount `useEffect` cleanup calls `invoke("generate_proxies_cmd", { projectId, lowPriority: true })`. Rust `run_bg_proxy_batch`: serial HEVC encode at Windows `BELOW_NORMAL_PRIORITY_CLASS` + `-threads 1`; `update_clip_proxy` + `set_clip_proxy_status('done')` on success. Native-codec (H.264) clips skip encode instantly. Concurrency guard (existing `Arc<Mutex<HashSet>>`) prevents duplicate spawns. `proxy_path` written to DB by background gen → `start_job` manifest already includes it → `render.py` Batch C proxy-reuse logic skips normalise automatically. DB: additive `proxy_status TEXT` column + `set_clip_proxy_status()` + `get_clips_needing_bg_proxy()` helpers. Logs to `%TEMP%\rushcut\proxy-bg.log`. Step 5 log confirmed: 5 clips, elapsed 6–18s each, no duplicates, re-trigger guard fires `skip reason=no-clips-need-proxy`. E2E: 9/9 fast PASS, 23/23 arrange PASS, 15/15 render PASS (2026-05-19).
 

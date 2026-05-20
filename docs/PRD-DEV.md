@@ -536,28 +536,6 @@ Silent background proxy pre-generation. Trigger: `Trimmer.tsx` unmount `useEffec
 
 ---
 
-## Backlog — Bug: Arrange/Sound screen — shared video state across trimmed cuts from same source
-
-> **Bug — reported 2026-05-19. Affects Sound tab and Zoom tab of Arrange screen.**
-
-If the user has two trimmed cuts from the same raw clip (e.g. clip 5 and clip 6 are both trimmed from DJI_0042.MP4), switching from editing clip 5 to clip 6 does not reset the video player. The playback continues on the previous trimmed cut's video while the UI shows clip 6's controls. This happens because the `<video>` element's `src` doesn't change when both clips share the same `local_path` — the browser reuses the existing media element state.
-
-**Fix:** When `selectedClip` changes in Arrange, check if the new clip's source path (`proxy_path ?? local_path`) differs from the previous clip's source path. If same path but different `in_ms`/`out_ms`, force a re-seek to `in_ms` of the new clip. Consider using `key={clip.id}` on the `<video>` element to force React to unmount/remount it when the selected clip ID changes — this guarantees clean state regardless of whether paths are shared.
-
-**Scope:** `src/pages/Arrange.tsx` (or equivalent clip-selection handler). No DB or pipeline changes.
-
----
-
-## Backlog — Bug: Shuffle transition label shown cryptically on all screens
-
-> **Partial fix existed; needs full fix across all screens (reported 2026-05-19).**
-
-When "Shuffle" is selected as the transition mode, the string `"shuffle"` (or serialised `TransitionConfig` JSON) leaks into display contexts where a human-readable label is expected — confirmed on the Music master screen, likely elsewhere (TopInfoBar, ChosenEffects chip, etc.).
-
-**Fix:** Centralise the display-name mapping. Add a `transitionDisplayName(config: TransitionConfig): string` utility that returns `"Shuffle"` when `config.transition === "shuffle"`. Update every place that renders a transition label — `ChosenEffects.tsx`, `TopInfoBar.tsx`, any summary text in Sound.tsx or Render.tsx — to use this utility. Do NOT read the raw `transition` field as a display string anywhere.
-
-**Scope:** `src/utils/transitionDisplayName.ts` (new utility), `src/components/ChosenEffects.tsx`, `src/components/TopInfoBar.tsx`, any other display sites.
-
 ---
 
 ## Backlog — Thumbnails show frame 0 of trimmed section (not raw clip start)
@@ -841,6 +819,8 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 3.1     | 2026-05-20 | Bug fixes: (1) Shuffle label showing raw JSON or `"shuffle"` on Sound + Render screens — `Sound.tsx` + `Render.tsx` migrated from raw `sessionStorage.getItem()` to `readTransitionConfig()` (compat reader in `buildJobConfig.ts`). ChosenEffects chip now shows "Shuffle" correctly on all screens. (2) Shared video state for two cuts from same raw clip in Arrange — `loadedSrcRef`/`soundLoadedSrcRef` (URL-based guards) renamed to `loadedClipIdRef`/`soundLoadedClipIdRef` (clip-ID guards); switching Cut A → Cut B of same source file now correctly seeks to Cut B's `in_ms`. 9/9 fast + 23/23 arrange PASS. |
+| 3.0     | 2026-05-19 | Batch N DONE: Silent background proxy pre-generation when user leaves Trimmer. `Trimmer.tsx` unmount cleanup calls `invoke("generate_proxies_cmd", { projectId, lowPriority: true })`. Rust: `BELOW_NORMAL_PRIORITY_CLASS` + `-threads 1`, encodes at `scale=-2:2160` (qualifies for 1080p + 4K), concurrency guard via `Arc<Mutex<HashSet>>`. `render.py` `required_proxy_h = 2160 if 4k else 1080`. `get_clips_needing_bg_proxy` returns ALL `include=1` clips; `proxy_height_native()` detects + upgrades legacy 1080p proxies. First render after background gen: normalise ~2s (was ~45s). 9/9 fast + 23/23 arrange + 15/15 render PASS. |
 | 2.9     | 2026-05-18 | Batch M2 DONE: 9 transition types (added Wipe Down, Dissolve, Barn Door, Band Wipe); Shuffle button (random per-cut, job-id seeded); left-rail 10-card layout; centre preview h-56; animation-only-on-selected bug fixed (inline `animation:"none"` on unselected cards); opening/closing cut UI removed (pipeline defaults "none"); `TransitionConfig` JSON storage; pipeline `_TRANSITION_MAP` + `_SHUFFLE_POOL` extended; 23/23 arrange E2E PASS. Two backlog items added: CSS animation accuracy polish + geometric mini-preview redesign. |
 | 2.8     | 2026-05-17 | Batch M1 DONE: transition chips on Arrange screen converted to card-chips with CSS-animated preview thumbnails. 3s looping `@keyframes` for None (`steps(1,end)` hard cut), Crossfade (opacity dissolve), Dip to Black (fade-to-black gap). Thumbnails from first/last in-film `thumbnail_data` with colour-block fallback. Animation plays on selected chip only; others static. 9/9 fast E2E PASS. |
 | 2.7     | 2026-05-17 | PRD restructure: added Batch K4 (dual-buffer black flash fix, next batch); split Batch M into M1 (transition preview CSS) + M2 (expanded types + shuffle + first/last cut); moved transition preview from 15e backlog into M1. |

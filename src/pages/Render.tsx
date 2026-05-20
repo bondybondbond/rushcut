@@ -7,7 +7,7 @@ import type { ProjectWithClips, JobConfig, PipelineProgressEvent } from "@/types
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
-import { buildJobConfig } from "@/utils/buildJobConfig";
+import { buildJobConfig, readTransitionConfig } from "@/utils/buildJobConfig";
 
 const STAGE_LABELS: Record<string, string> = {
   normalise:    "Normalising clips...",
@@ -63,7 +63,10 @@ export default function Render() {
   const configured = useConfiguredTabs(projectId ?? "");
 
   const transitionVal = (() => {
-    try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; }
+    try {
+      const tc = readTransitionConfig(projectId ?? "");
+      return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null);
+    } catch { return null; }
   })();
   const soundMoodVal = (() => {
     try {

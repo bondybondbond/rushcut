@@ -101,6 +101,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — SessionStorage format migration must update ALL reader sites
+
+**Problem:** When a sessionStorage key's format changes (e.g., plain string → JSON object), pages using a canonical reader utility get the fix automatically, but pages calling `sessionStorage.getItem()` directly still receive the raw serialised value — leaking JSON strings into display contexts.
+**Solution:** When changing any sessionStorage key's format, grep for ALL `sessionStorage.getItem` calls for that key across `src/pages/` and `src/components/`. Every reader must go through the canonical utility (`readTransitionConfig()`, etc.) — never raw `sessionStorage.getItem()`.
+**Context:** `src/utils/buildJobConfig.ts` owns canonical readers. `Sound.tsx` and `Render.tsx` missed Batch M2's `TransitionConfig` format change and showed raw JSON in ChosenEffects chips until fixed in the post-M2 cleanup session (2026-05-20).
+
+---
+
+## React — Clip-ID ref guard vs. URL ref guard for same-source cuts
+
+**Problem:** Using `if (url === loadedSrcRef.current) return` to prevent redundant video reloads fails when two clips share the same source file URL. Switching from Cut A to Cut B (same `proxy_path`, different `in_ms`/`out_ms`) triggers the guard and skips the seek — Cut B's player shows Cut A's position.
+**Solution:** Guard on clip ID instead: `if (selectedClip.id === loadedClipIdRef.current) return`. IDs are always unique even for multiple cuts from the same source, yet the "return to same tab" optimisation still works because the ID also matches in that case.
+**Context:** Arrange.tsx zoom tab + sound tab `useEffect` video load guards. Fixed 2026-05-20.
+
+---
+
 ## Workflow — Worktree sessions
 
 - **Edits in a worktree are NOT visible to the running app** — `pnpm dev` launched from `C:\apps\rushcut` reads the main branch, not the worktree at `C:\apps\rushcut\.claude\worktrees\<name>`. Any fix applied only in the worktree appears to have no effect when the user tests. Always apply fixes to the main-branch files (`C:\apps\rushcut\src\...`) when the goal is immediate user-visible verification, or merge the worktree branch first.

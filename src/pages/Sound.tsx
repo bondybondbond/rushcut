@@ -8,6 +8,7 @@ import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
+import { readTransitionConfig } from "@/utils/buildJobConfig";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
 type LibraryMood = "cinematic" | "upbeat" | "chill" | "electronic";
@@ -137,7 +138,10 @@ export default function Sound() {
   inFilmRef.current = inFilm;
 
   const transitionVal = (() => {
-    try { return sessionStorage.getItem(`rc_transition_${projectId}`) ?? null; } catch { return null; }
+    try {
+      const tc = readTransitionConfig(projectId ?? "");
+      return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null);
+    } catch { return null; }
   })();
 
   useEffect(() => {
