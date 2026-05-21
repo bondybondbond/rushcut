@@ -105,10 +105,24 @@ From 62 raw clips → ~50 contribute something → each contributes 3–15s of t
 | **Free**    | £0       | 1080p      | Basic (silence/motion removal, beat-sync, vibe) | ~20 free tracks  | Never     |
 | **Creator** | £4.99/mo | 4K         | Smart (GVI frame-level extraction, face zoom)   | Licensed library | Never     |
 
+### Near-term feature backlog (pre-monetisation)
+
+These are the gaps between current state and a **solid, complete tool** for the serious recreational user. Not pro features — the minimum to be genuinely better than CapCut for this niche.
+
+| Feature | Value | Complexity | Priority |
+| --- | --- | --- | --- |
+| **Beat-sync cutting** (`librosa`) | Cuts land on music hits — the single biggest "wow" moment for users; transforms slideshow → trailer feel | Medium | High |
+| **Text / lower thirds** | Basic title overlays. Without this, can't compete with CapCut for social output | Medium | High |
+| **Export presets** | Instagram Reels, TikTok, YouTube Shorts — one-click correct aspect ratio + spec | Low | High |
+| **Multi-track / B-roll** | Drop a second angle over the main clip. Unlocks real "directorial" editing | High | Medium |
+| **GPU encode — NVENC/AMF/QSV** | 5–10x faster render for GPU-equipped users. AMD (h264_amf) first; NVENC + QSV when user hardware diversity is known | Medium | Medium |
+| **Scrub/preview without full render** | Biggest UX gap vs. pro tools today | High | Medium |
+| **Undo history** | Beyond arrangement changes | Low | Low |
+
 ### Permanently Out of Scope
 
 - AI video generation (text-to-video)
-- Multi-track timeline editor
+- Multi-track timeline editor (full)
 - Colour grading
 - Captions / subtitles
 - Team / collaboration
@@ -151,3 +165,47 @@ From 62 raw clips → ~50 contribute something → each contributes 3–15s of t
 - DEC-027: Post-review Editor is intentionally minimal
 
 Full decision log: `docs/DECISIONS.md`
+
+---
+
+## 8. Long-Term Vision — AI Director (v3+)
+
+> *"You filmed it. RushCut directed it."*
+
+The north star product: the user imports raw footage and receives a finished film that required zero creative decisions from them. Not AI generation — AI direction over real footage.
+
+### What this requires
+
+**Visual intelligence layer** — the pipeline must understand *what is happening* in each frame, not just silence/motion heuristics:
+
+- **Face + subject detection** — identify people, centre attention on them for zoom/crop decisions
+- **Action recognition** — detect the peak moment within a clip (drone cresting a mountain, a goal being scored, a jump landing) — not just "motion is high here"
+- **Scene classification** — sky, water, crowd, landscape, indoor — drives vibe-appropriate transitions and music matching
+- **Saliency mapping** — where should the viewer's eye go? Drives focal point selection automatically
+
+**Orchestration layer** — once visual intelligence exists, the AI Director combines:
+
+1. Beat-sync music cutting (librosa — already planned)
+2. Automatic focal point selection (face/action detection → zoom target)
+3. Fitting text/title overlays at natural pause points
+4. Transition selection based on energy level (cut on beat, dissolve on slow moments)
+5. Sound effect triggers on action peaks
+6. Clip ordering by narrative arc (establish → build → peak → resolution)
+
+### Why this is the monetisation moment
+
+The current product saves time. The AI Director creates output the user *could not have produced themselves* — even with hours in DaVinci. That's a fundamentally different value proposition and justifies a higher price point (£9.99–14.99/mo Creator+ tier).
+
+This is also the competitive moat that's hardest to copy: the visual intelligence model trained on action/drone/travel footage specifically, combined with RushCut's opinionated output style.
+
+### Technical prerequisites
+
+| Capability | Approach | When |
+| --- | --- | --- |
+| Face/subject detection | OpenCV (local, free tier) or Google Vision API (paid tier) | v2 |
+| Action peak detection | Google Video Intelligence API | v2 paid |
+| Beat-sync cutting | `librosa` (already in plan) | Near-term |
+| Scene classification | GVI scene labels | v2 paid |
+| Orchestration logic | Deterministic rules engine first; LLM-assisted ordering (Gemini Flash) second | v3 |
+
+**Deferred reason:** Visual intelligence APIs add per-export cost and latency. Build the deterministic pipeline to excellence first — beat-sync, text, export presets — then layer AI direction on top as a paid upgrade. Don't add AI cost before there's revenue to cover it.
