@@ -333,9 +333,10 @@ def run_pipeline(
     for i, p in enumerate(current_paths):
         log_av_sync(p, f"post-trim_{i}")
 
-    # 3. Zoom (per-clip, before transitions).
-    # Skipped in draft mode -- zoompan is CPU-intensive and can exceed timeout.
-    # Per-clip zoom_mode from Review screen takes precedence over global config.zoom.
+    # 3. Zoom (per-clip, before transitions). Static crop-in or gradual Ken
+    # Burns -- both are single-pass and fast (see pipeline/zoom.py); the old
+    # zoompan path is gone. Skipped in draft mode to keep previews quick.
+    # Per-clip zoom_mode from the Arrange screen takes precedence over global config.zoom.
     report_stage("zoom")
     report(55)
     t_zoom = time.time()

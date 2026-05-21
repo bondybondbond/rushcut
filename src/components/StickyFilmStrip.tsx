@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { VolumeX, Volume1 } from "lucide-react";
 import type { Clip } from "@/types/project";
 import { fmtMs } from "@/utils/fmtMs";
+import { zoomLabel } from "@/utils/zoom";
 
 interface StickyFilmStripProps {
   clips: Clip[];
@@ -440,7 +441,7 @@ export function StickyFilmStrip({
                     {/* State badge icons — bottom-right */}
                     <div className="absolute bottom-1 right-1 flex gap-0.5 z-10 pointer-events-none">
                       {clip.zoom_mode != null && (
-                        <div className="w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center" title="Zoom set">
+                        <div className="w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center" title={zoomLabel(clip.zoom_mode)}>
                           <span className="text-[8px] font-bold text-[#0a0a0a] leading-none select-none">Z</span>
                         </div>
                       )}

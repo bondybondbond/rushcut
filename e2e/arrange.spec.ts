@@ -195,21 +195,69 @@ describe("Arrange screen", () => {
     expect(await playBtn.isDisplayed()).toBe(true);
   });
 
-  it("zoom chips: Off, 1.3x, 1.5x, 2x are all visible", async () => {
+  it("zoom style chips: Off, Fixed, Gradual are all visible", async () => {
     if (!projectId) return;
-    for (const label of ["Off", "1.3×", "1.5×", "2×"]) {
-      const chip = await $(`[data-testid="chip-zoom-${label}"]`);
+    for (const style of ["off", "fixed", "gradual"]) {
+      const chip = await $(`[data-testid="chip-zoom-style-${style}"]`);
       await chip.waitForExist({ timeout: 5_000 });
       expect(await chip.isDisplayed()).toBe(true);
     }
   });
 
-  it("Off zoom chip is active by default (blue border)", async () => {
+  it("Off zoom style is active by default (blue border)", async () => {
     if (!projectId) return;
-    const offChip = await $('[data-testid="chip-zoom-Off"]');
+    const offChip = await $('[data-testid="chip-zoom-style-off"]');
     await offChip.waitForExist({ timeout: 5_000 });
     const className = await offChip.getAttribute("class");
     expect(className).toContain("99B3FF");
+  });
+
+  it("selecting Fixed reveals the amount chips", async () => {
+    if (!projectId) return;
+    await (await $('[data-testid="chip-zoom-style-fixed"]')).click();
+    await browser.pause(300);
+    for (const amount of ["gentle", "medium", "tight"]) {
+      const chip = await $(`[data-testid="chip-zoom-amount-${amount}"]`);
+      await chip.waitForExist({ timeout: 5_000 });
+      expect(await chip.isDisplayed()).toBe(true);
+    }
+  });
+
+  it("selecting Gradual reveals Direction, Amount and Speed chips", async () => {
+    if (!projectId) return;
+    await (await $('[data-testid="chip-zoom-style-gradual"]')).click();
+    await browser.pause(300);
+    const ids = [
+      "chip-zoom-dir-in", "chip-zoom-dir-out",
+      "chip-zoom-kb-1.3", "chip-zoom-kb-1.5", "chip-zoom-kb-2.0",
+      "chip-zoom-speed-slow", "chip-zoom-speed-med", "chip-zoom-speed-fast",
+    ];
+    for (const id of ids) {
+      const chip = await $(`[data-testid="${id}"]`);
+      await chip.waitForExist({ timeout: 5_000 });
+      expect(await chip.isDisplayed()).toBe(true);
+    }
+  });
+
+  it("Gradual chip selection persists across a tab switch", async () => {
+    if (!projectId) return;
+    // Pick a non-default Gradual config.
+    await (await $('[data-testid="chip-zoom-dir-out"]')).click();
+    await (await $('[data-testid="chip-zoom-kb-2.0"]')).click();
+    await (await $('[data-testid="chip-zoom-speed-fast"]')).click();
+    await browser.pause(300);
+
+    // Leave the Zoom tab and return.
+    await (await $('[data-testid="arrange-tab-transitions"]')).click();
+    await browser.pause(300);
+    await (await $('[data-testid="arrange-tab-zoom"]')).click();
+    await browser.pause(300);
+
+    for (const id of ["chip-zoom-dir-out", "chip-zoom-kb-2.0", "chip-zoom-speed-fast"]) {
+      const chip = await $(`[data-testid="${id}"]`);
+      await chip.waitForExist({ timeout: 5_000 });
+      expect(await chip.getAttribute("class")).toContain("99B3FF");
+    }
   });
 
   it("volume chips are NOT present in the Arrange screen", async () => {

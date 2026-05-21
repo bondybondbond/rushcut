@@ -115,7 +115,7 @@ export function ConfigurePanel({ onConfigChange }: Props) {
       <div className={row}>
         <div className="flex items-center justify-between">
           <div>
-            <p className={label}>Ken Burns Zoom</p>
+            <p className={label}>Gradual Zoom</p>
             <p className={sublabel + " mb-0"}>Subtle zoom on clips.</p>
           </div>
           <Toggle checked={config.zoom} onChange={(v) => update({ zoom: v })} />

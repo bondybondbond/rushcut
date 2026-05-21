@@ -56,7 +56,7 @@ pub struct Clip {
     pub out_ms: Option<i64>,
     pub focal_x: Option<f64>,
     pub focal_y: Option<f64>,
-    pub zoom_mode: Option<String>,  // "gentle" | "medium" | "tight"
+    pub zoom_mode: Option<String>,  // static "gentle"/"medium"/"tight" OR Ken Burns "kb_<dir>_<ratio>_<speed>"
     pub include: i64,               // 1 = include, 0 = skip
     pub proxy_path: Option<String>,
     pub waveform_data: Option<String>,

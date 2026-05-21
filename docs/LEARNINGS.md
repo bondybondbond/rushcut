@@ -165,6 +165,23 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **Do NOT use `-af apad` in normalise.py** — `apad` without an explicit `whole_dur` in a DJI HEVC normalise command causes normalise to hang indefinitely (10+ min, never completes). Root cause: DJI HEVC containers have unreliable or N/A duration headers; `-fps_mode cfr` + `apad` together cause FFmpeg to keep encoding frames past the real EOF waiting for the audio to close, which never happens. The correct fix for the audio/video duration mismatch (64–120ms per clip) is to apply `apad=whole_dur={video_dur}` per clip inside the filter_complex at the render/concat step — where the exact video duration is already known from `get_duration()`.
 - **`aresample=async=N` worsens monotonic drift from CFR resampling** — `async` mode compensates drift by inserting/dropping audio samples. DJI HEVC decoded to 25fps CFR produces *monotonic* drift (same direction every clip); `async` fights it by inserting samples, creating audible pops/jumps rather than smooth drift. Do not use `aresample=async` for this class of drift. The correct fix requires reading `[sync-check]` log output to identify where drift enters (normalise → concat → music), then correcting timestamps at that specific step.
 - **`volumedetect` mean_volume is unreliable on DJI wind-noise footage** — DJI clips with wind noise register mean_volume of -14 to -16 dBFS. Using this as a relative anchor (e.g. `clip_mean + offset_db`) pushes music to -26 to -28 dBFS at "balanced" preset — effectively inaudible. Use `loudnorm` integrated LUFS instead, or clamp the measured mean to a floor (e.g. -20 dBFS) before computing the offset.
+- **`crop` filter has NO `eval` option in FFmpeg 6.1.1** — adding `:eval=frame` to a `crop` filter raises `Error applying option 'eval' to filter 'crop': Option not found`. Only the `scale` filter requires `eval=frame` for time-varying dimensions. The `crop` filter's `x` and `y` expressions re-evaluate every frame natively without any flag — pass the time-varying expressions as the x/y arguments directly.
+
+## Workflow — WSL inline commands: use script files not nested quoting
+
+**Problem:** Passing complex bash commands through PowerShell → WSL → bash requires three layers of quoting. Variables, semicolons, and tee/pipe operators all have characters that get swallowed or mis-escaped by each shell layer, causing silent failures or syntax errors that are very hard to diagnose.
+**Solution:** Write the command to a `.sh` file in a Windows temp path (e.g. `/mnt/c/Users/Manasak/AppData/Local/Temp/`), then invoke `wsl -d Ubuntu-24.04 -u root -- bash /mnt/c/.../script.sh`. The script file avoids all quoting layers entirely. Use this pattern for any WSL command beyond a simple one-liner.
+**Context:** Any session running multi-step FFmpeg pipelines or Python scripts via WSL from PowerShell.
+
+---
+
+## React/CSS — Animate a wrapper div, not the video element itself (WebView2)
+
+**Problem:** Applying a CSS `transform: scale()` animation directly to a `<video>` element in WebView2 causes choppy playback — the video decoder and the CSS compositor compete for the same GPU layer, producing frame drops or stutter at 4K.
+**Solution:** Wrap the `<video>` in a `<div ref={wrapRef} className="absolute inset-0 will-change-transform">`. Apply the CSS animation (and `transform-origin`) to the wrapper div imperatively; leave the `<video>` element completely unstyled. The video decoder gets its own layer; the scale animation composites cleanly on top.
+**Context:** Any CSS animation on `<video>` in Arrange.tsx or future screens that scale/transform clips in the editor preview. Confirmed fix in the gradual zoom batch (2026-05-21).
+
+---
 
 ## Lambda pipeline
 

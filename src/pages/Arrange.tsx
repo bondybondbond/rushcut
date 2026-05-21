@@ -11,6 +11,10 @@ import { projectCache } from "@/utils/projectCache";
 import { fmtMs } from "@/utils/fmtMs";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
+import {
+  parseZoom, buildZoomMode, zoomLabel, FIXED_AMOUNTS, KB_AMOUNTS,
+} from "@/utils/zoom";
+import type { ZoomStyle, ZoomState } from "@/utils/zoom";
 
 type ArrangeTab = "zoom" | "transitions" | "cards" | "sound";
 type CardColor = "peach" | "black" | "white";
@@ -64,13 +68,31 @@ const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
 // Random pool for shuffle — excludes "none" (shuffle implies a visible transition)
 const SHUFFLE_POOL: TransitionValue[] = ["crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "dissolve", "barn_door", "band_wipe"];
 
-// Zoom chips — labels per PRD, mapped to zoom_mode values used by the pipeline.
-const ZOOM_PRESETS: { label: string; value: string | null }[] = [
-  { label: "Off",  value: null },
-  { label: "1.3×", value: "gentle" },
-  { label: "1.5×", value: "medium" },
-  { label: "2×",   value: "tight" },
+// Zoom model (parse / build / label) lives in @/utils/zoom — shared so badges
+// on other screens never render the raw zoom_mode string. UI-only chip lists
+// stay here.
+const ZOOM_STYLES: { value: ZoomStyle; label: string }[] = [
+  { value: "off",      label: "Off" },
+  { value: "fixed",    label: "Fixed" },
+  { value: "gradual",  label: "Gradual" },
 ];
+const KB_DIRECTIONS: { value: "in" | "out"; label: string }[] = [
+  { value: "in",  label: "Zoom in" },
+  { value: "out", label: "Zoom out" },
+];
+// Speed = fraction of clip when zoom fully realizes, then holds.
+const KB_SPEEDS: { value: string; label: string; sub: string }[] = [
+  { value: "slow", label: "Slow", sub: "full clip" },
+  { value: "med",  label: "Med",  sub: "75% of clip" },
+  { value: "fast", label: "Fast", sub: "50% of clip" },
+];
+
+const zoomChipClass = (active: boolean) =>
+  `text-sm rounded-md px-3 py-1.5 border transition-all duration-200 font-medium ${
+    active
+      ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+      : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+  }`;
 
 const ARRANGE_TABS: { id: ArrangeTab; label: string }[] = [
   { id: "zoom",         label: "Zoom" },
@@ -100,9 +122,14 @@ export default function Arrange() {
 
   const focalImgRef = useRef<HTMLDivElement>(null);
   const videoBoxRef = useRef<HTMLDivElement>(null);
+  // Wrapper div that receives the Ken Burns CSS animation so the <video>
+  // element itself is never transformed — avoids compositor conflicts that
+  // cause choppy playback in WebView2.
+  const videoWrapRef = useRef<HTMLDivElement>(null);
   const isDraggingFocalRef = useRef(false);
   const selectedClipRef = useRef<Clip | null>(null);
   const loadedClipIdRef = useRef<string>("");
+  const isPlayingRef    = useRef(false);   // mirror of isPlaying for use in effects
 
   // Sound tab — independent video instance + playback state
   const soundVideoRef = useRef<HTMLVideoElement>(null);
@@ -217,6 +244,42 @@ export default function Arrange() {
     video.load();
   }, [selectedClipId, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep isPlayingRef in sync so the zoom animation effect can read play
+  // state without adding isPlaying to its dependency array (which would
+  // re-trigger the animation on every play/pause toggle).
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+
+  // Gradual zoom preview animation — applied to a wrapper <div> (not the
+  // <video> itself) so the video decoder and the CSS compositor run on separate
+  // layers, eliminating WebView2 choppy-playback when scaling is active.
+  // Fires once on clip select / chip change ONLY while paused, then holds at
+  // the end frame. While playing, restartZoomAnim() owns the animation instead.
+  useEffect(() => {
+    const wrap = videoWrapRef.current;
+    if (!wrap) return;
+    const z = parseZoom(selectedClip?.zoom_mode ?? null);
+    if (tab !== "zoom" || z.style !== "gradual") {
+      wrap.style.animation = "";
+      wrap.style.removeProperty("--kb-from");
+      wrap.style.removeProperty("--kb-to");
+      wrap.style.transformOrigin = "";
+      return;
+    }
+    const scale = parseFloat(z.kbRatio) || 1.5;
+    const focalX = (selectedClip?.focal_x ?? 0.5) * 100;
+    const focalY = (selectedClip?.focal_y ?? 0.5) * 100;
+    wrap.style.setProperty("--kb-from", z.kbDir === "in" ? "1" : String(scale));
+    wrap.style.setProperty("--kb-to",   z.kbDir === "in" ? String(scale) : "1");
+    wrap.style.transformOrigin = `${focalX}% ${focalY}%`;
+    // Only play the preview animation while paused. If the clip is already
+    // playing, leave the running animation untouched — restartZoomAnim()
+    // handles reset + replay when the user presses play.
+    if (isPlayingRef.current) return;
+    wrap.style.animation = "none";
+    void wrap.offsetHeight;
+    wrap.style.animation = `rc-kenburns 4s ease-in-out 1 both`;
+  }, [selectedClipId, selectedClip?.zoom_mode, selectedClip?.focal_x, selectedClip?.focal_y, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Sound tab — independent video reload (mirrors zoom tab pattern, separate state)
   useEffect(() => {
     if (tab !== "sound") return;
@@ -299,6 +362,12 @@ export default function Arrange() {
     } catch (err) {
       console.error("[arrange] update_clip_review_cmd failed", err);
     }
+  }
+
+  // Merge a partial zoom change into the clip's zoom_mode string and persist.
+  function updateZoom(clip: Clip, patch: Partial<ZoomState>) {
+    const next = { ...parseZoom(clip.zoom_mode), ...patch };
+    saveReview(clip, { zoom_mode: buildZoomMode(next) });
   }
 
   // Save per-clip volume (percent 0–200 → float 0–2.0).
@@ -390,6 +459,19 @@ export default function Arrange() {
     if (selectedIndex < inFilm.length - 1) setSelectedClipId(inFilm[selectedIndex + 1].id);
   }, [selectedIndex, inFilm]);
 
+  // Reset the gradual zoom wrapper to its start frame and fire the animation
+  // once. Called on play so the zoom runs in sync with the video from frame 0.
+  function restartZoomAnim() {
+    const wrap = videoWrapRef.current;
+    if (!wrap) return;
+    // Only act when a gradual zoom is configured.
+    const z = parseZoom(selectedClipRef.current?.zoom_mode ?? null);
+    if (z.style !== "gradual") return;
+    wrap.style.animation = "none";
+    void wrap.offsetHeight;               // flush so the reset takes effect
+    wrap.style.animation = "rc-kenburns 4s ease-in-out 1 both";
+  }
+
   // Playback controls
   function togglePlay() {
     const video = videoRef.current;
@@ -403,6 +485,8 @@ export default function Arrange() {
       }
       video.play().catch(() => {});
       setIsPlaying(true);
+      // Reset zoom animation so it plays from the start alongside the clip.
+      restartZoomAnim();
     } else {
       video.pause();
       setIsPlaying(false);
@@ -580,7 +664,10 @@ export default function Arrange() {
                       <div className="absolute bottom-0 inset-x-0 flex items-end justify-between bg-gradient-to-t from-black/80 to-transparent pt-3 px-1 pb-0.5 pointer-events-none">
                         <span className="text-[9px] text-white font-mono drop-shadow-sm">{fmtMs(trimmedMs)}</span>
                         {clip.zoom_mode != null && (
-                          <div className="w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center">
+                          <div
+                            className="w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center"
+                            title={zoomLabel(clip.zoom_mode)}
+                          >
                             <span className="text-[8px] font-bold text-[#0a0a0a] leading-none select-none">Z</span>
                           </div>
                         )}
@@ -613,7 +700,9 @@ export default function Arrange() {
                 {/* Video wrapper — stretches to row height, then 16:9 box centered inside */}
                 <div className="flex-1 min-w-0 self-stretch flex items-center justify-center overflow-hidden">
                   {(() => {
-                    const zoomScale = ZOOM_SCALE[selectedClip?.zoom_mode ?? ""] ?? 1;
+                    const zoomState = parseZoom(selectedClip?.zoom_mode ?? null);
+                    const fixedScale = zoomState.style === "fixed"
+                      ? (ZOOM_SCALE[zoomState.fixedRatio] ?? 1) : 1;
                     const focalX = (selectedClip?.focal_x ?? 0.5) * 100;
                     const focalY = (selectedClip?.focal_y ?? 0.5) * 100;
                     return (
@@ -624,30 +713,41 @@ export default function Arrange() {
                           height: "100%",
                           aspectRatio: "16/9",
                           maxWidth: "100%",
-                          cursor: selectedClip?.zoom_mode ? "crosshair" : "default",
+                          cursor: zoomState.style !== "off" ? "crosshair" : "default",
                         }}
                         onMouseDown={handleVideoMouseDown}
                       >
-                        <video
-                          ref={videoRef}
-                          className="absolute inset-0 w-full h-full object-cover"
+                        {/* Wrapper receives the gradual zoom CSS animation so the
+                            video decoder and compositor run on separate layers —
+                            avoids choppy playback when scaling. */}
+                        <div
+                          ref={videoWrapRef}
+                          className="absolute inset-0 will-change-transform"
                           style={{
-                            transform: zoomScale > 1 ? `scale(${zoomScale})` : undefined,
+                            // Fixed zoom is applied here as a static scale so it
+                            // shares the same layer isolation benefit.
+                            transform: zoomState.style === "fixed" && fixedScale > 1
+                              ? `scale(${fixedScale})` : undefined,
                             transformOrigin: `${focalX}% ${focalY}%`,
-                            transition: "transform 0.3s ease",
+                            transition: zoomState.style === "fixed" ? "transform 0.3s ease" : undefined,
                           }}
-                          onTimeUpdate={handleTimeUpdate}
-                          onLoadedMetadata={handleLoadedMetadata}
-                          onEnded={handleVideoEnded}
-                          onError={() => {
-                            const video = videoRef.current;
-                            if (!video || !selectedClip) return;
-                            if (selectedClip.proxy_path) {
-                              video.src = convertFileSrc(selectedClip.local_path);
-                              video.load();
-                            }
-                          }}
-                        />
+                        >
+                          <video
+                            ref={videoRef}
+                            className="absolute inset-0 w-full h-full object-cover"
+                            onTimeUpdate={handleTimeUpdate}
+                            onLoadedMetadata={handleLoadedMetadata}
+                            onEnded={handleVideoEnded}
+                            onError={() => {
+                              const video = videoRef.current;
+                              if (!video || !selectedClip) return;
+                              if (selectedClip.proxy_path) {
+                                video.src = convertFileSrc(selectedClip.local_path);
+                                video.load();
+                              }
+                            }}
+                          />
+                        </div>
                         {/* Focal point crosshair indicator — only when zoom active */}
                         {selectedClip?.zoom_mode && (
                           <div
@@ -740,69 +840,150 @@ export default function Arrange() {
                 <p className="text-sm text-[#a3a3a3] italic">Select a clip from the left to adjust</p>
               ) : (
                 <div className="space-y-5">
-                  {/* Zoom */}
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Zoom</p>
-                    <div className="flex flex-wrap gap-2">
-                      {ZOOM_PRESETS.map(({ label, value }) => {
-                        const active = (selectedClip.zoom_mode ?? null) === value;
-                        return (
-                          <button
-                            key={label}
-                            type="button"
-                            data-testid={`chip-zoom-${label}`}
-                            onClick={() => saveReview(selectedClip, { zoom_mode: value })}
-                            className={`text-sm rounded-md px-3 py-1.5 border transition-all duration-200 font-medium ${
-                              active
-                                ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
-                                : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  {(() => {
+                    const zoomState = parseZoom(selectedClip.zoom_mode);
+                    return (
+                      <>
+                        {/* Style — Off / Fixed / Gradual */}
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-[#e5e5e5]">Zoom</p>
+                          <div className="flex flex-wrap gap-2">
+                            {ZOOM_STYLES.map(({ value, label }) => (
+                              <button
+                                key={value}
+                                type="button"
+                                data-testid={`chip-zoom-style-${value}`}
+                                onClick={() => updateZoom(selectedClip, { style: value })}
+                                className={zoomChipClass(zoomState.style === value)}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
 
-                  {/* Focal point — only when zoom is on */}
-                  {selectedClip.zoom_mode && (
-                    <div className="space-y-2 pt-4 border-t border-white/10">
-                      <p className="text-sm font-medium text-[#e5e5e5]">Focal point</p>
-                      <div
-                        ref={focalImgRef}
-                        onClick={(e) => handleFocalClick(selectedClip, e)}
-                        className="relative rounded-md overflow-hidden bg-black border border-white/15 cursor-crosshair"
-                        style={{ aspectRatio: "16/9" }}
-                      >
-                        {selectedClip.thumbnail_data ? (
-                          <img
-                            src={selectedClip.thumbnail_data}
-                            alt="focal target"
-                            className="w-full h-full object-cover pointer-events-none"
-                          />
-                        ) : (
-                          <div className="w-full h-full bg-white/5" />
+                        {/* Fixed — amount */}
+                        {zoomState.style === "fixed" && (
+                          <div className="space-y-2">
+                            <p className="text-sm font-medium text-[#e5e5e5]">Amount</p>
+                            <div className="flex flex-wrap gap-2">
+                              {FIXED_AMOUNTS.map(({ value, label }) => (
+                                <button
+                                  key={value}
+                                  type="button"
+                                  data-testid={`chip-zoom-amount-${value}`}
+                                  onClick={() => updateZoom(selectedClip, { fixedRatio: value })}
+                                  className={zoomChipClass(zoomState.fixedRatio === value)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         )}
-                        {selectedClip.focal_x !== null && selectedClip.focal_y !== null && (
-                          <div
-                            className="absolute w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/30 pointer-events-none"
-                            style={{
-                              left: `${selectedClip.focal_x * 100}%`,
-                              top: `${selectedClip.focal_y * 100}%`,
-                            }}
-                          />
+
+                        {/* Gradual — direction / amount / speed */}
+                        {zoomState.style === "gradual" && (
+                          <>
+                            <div className="space-y-2">
+                              <p className="text-sm font-medium text-[#e5e5e5]">Direction</p>
+                              <div className="flex flex-wrap gap-2">
+                                {KB_DIRECTIONS.map(({ value, label }) => (
+                                  <button
+                                    key={value}
+                                    type="button"
+                                    data-testid={`chip-zoom-dir-${value}`}
+                                    onClick={() => updateZoom(selectedClip, { kbDir: value })}
+                                    className={zoomChipClass(zoomState.kbDir === value)}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <p className="text-sm font-medium text-[#e5e5e5]">Amount</p>
+                              <div className="flex flex-wrap gap-2">
+                                {KB_AMOUNTS.map(({ value, label }) => (
+                                  <button
+                                    key={value}
+                                    type="button"
+                                    data-testid={`chip-zoom-kb-${value}`}
+                                    onClick={() => updateZoom(selectedClip, { kbRatio: value })}
+                                    className={zoomChipClass(zoomState.kbRatio === value)}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <p className="text-sm font-medium text-[#e5e5e5]">Speed</p>
+                              <div className="flex flex-wrap gap-2">
+                                {KB_SPEEDS.map(({ value, label, sub }) => (
+                                  <button
+                                    key={value}
+                                    type="button"
+                                    data-testid={`chip-zoom-speed-${value}`}
+                                    onClick={() => updateZoom(selectedClip, { kbSpeed: value })}
+                                    className={zoomChipClass(zoomState.kbSpeed === value)}
+                                    title={sub}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                              <p className="text-xs text-[#a3a3a3]">
+                                {KB_SPEEDS.find(s => s.value === zoomState.kbSpeed)?.sub ?? ""}
+                              </p>
+                            </div>
+                          </>
                         )}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => saveReview(selectedClip, { focal_x: null, focal_y: null })}
-                        className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
-                      >
-                        Reset to centre
-                      </button>
-                    </div>
-                  )}
+
+                        {/* Focal point — when any zoom is active */}
+                        {zoomState.style !== "off" && (
+                          <div className="space-y-2 pt-4 border-t border-white/10">
+                            <p className="text-sm font-medium text-[#e5e5e5]">Focal point</p>
+                            <div
+                              ref={focalImgRef}
+                              onClick={(e) => handleFocalClick(selectedClip, e)}
+                              className="relative rounded-md overflow-hidden bg-black border border-white/15 cursor-crosshair"
+                              style={{ aspectRatio: "16/9" }}
+                            >
+                              {selectedClip.thumbnail_data ? (
+                                <img
+                                  src={selectedClip.thumbnail_data}
+                                  alt="focal target"
+                                  className="w-full h-full object-cover pointer-events-none"
+                                />
+                              ) : (
+                                <div className="w-full h-full bg-white/5" />
+                              )}
+                              {selectedClip.focal_x !== null && selectedClip.focal_y !== null && (
+                                <div
+                                  className="absolute w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/30 pointer-events-none"
+                                  style={{
+                                    left: `${selectedClip.focal_x * 100}%`,
+                                    top: `${selectedClip.focal_y * 100}%`,
+                                  }}
+                                />
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => saveReview(selectedClip, { focal_x: null, focal_y: null })}
+                              className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors"
+                            >
+                              Reset to centre
+                            </button>
+                            {zoomState.style === "gradual" && (
+                              <p className="text-sm text-[#a3a3a3]">RushCut zooms toward this point.</p>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </aside>

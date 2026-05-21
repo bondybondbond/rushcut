@@ -270,6 +270,35 @@ Vertical card button with an animated thumbnail on top and a label below. Used o
 - Wipe: A clips out left (`clip-path: inset(0 0 0 0)` → `inset(0 100% 0 0)`), B wipes in from right (`inset(0 100% 0 0)` → `inset(0 0 0 0)`)
 - Zoom: A scales+fades out (`scale(1) opacity:1` → `scale(1.35) opacity:0`), B scales+fades in (`scale(1.35) opacity:0` → `scale(1) opacity:1`)
 
+### Zoom controls (Arrange Zoom tab)
+
+The Zoom tab right panel offers two zoom styles via a **Style** chip row
+(`Off` / `Fixed` / `Ken Burns`). All chips use the standard chip pattern
+(`zoomChipClass` helper): active `border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10`,
+inactive `border-white/35 text-[#e5e5e5]`.
+
+- **Fixed** reveals one **Amount** group: `1.3×` / `1.5×` / `2×`.
+- **Ken Burns** reveals three groups: **Direction** (`Zoom in` / `Zoom out`),
+  **Amount** (`1.3×` / `1.5×` / `2×`), **Speed** (`Slow` / `Medium` / `Fast`).
+- Each group is `<div className="space-y-2">` with a `text-sm font-medium
+  text-[#e5e5e5]` label; groups stack within the parent `space-y-5`.
+- The focal-point picker shows whenever the style is not `Off`; under Ken Burns
+  it carries the helper line *"RushCut zooms toward this point."*
+  (`text-sm text-[#a3a3a3]`).
+
+The full state is encoded into the single `zoom_mode` string by `@/utils/zoom`
+(`parseZoom` / `buildZoomMode`); `zoomLabel()` from the same module produces the
+human-readable badge tooltip used on every screen — no screen renders the raw
+`kb_*` string.
+
+**Ken Burns preview animation** — the centre preview video animates the zoom
+live via the `rc-kenburns` keyframe (`src/globals.css`):
+`transform: scale(var(--kb-from))` → `scale(var(--kb-to))`, `ease-in-out`, 4s.
+The endpoints (`--kb-from` / `--kb-to`) and the `animation` shorthand are set
+imperatively in an Arrange `useEffect` so the `<video>` element never remounts.
+It plays once on clip select and loops (`animation-iteration-count: infinite`)
+while the preview box is hovered.
+
 ### Left-rail + centre-preview layout (Batch M2 — Transitions tab)
 
 For transition pickers with 5+ options, use a left rail + centre preview split rather than a horizontal chip row (chip rows don't scale past 5 with full card-chips).

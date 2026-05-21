@@ -94,6 +94,13 @@
   100%     { transform: scale(1.35); opacity: 0; }
 }
 
+/* Ken Burns preview — gradual zoom; scale endpoints set via --kb-from / --kb-to.
+   Direction (in vs out) is just which endpoint is the larger scale. */
+@keyframes rc-kenburns {
+  from { transform: scale(var(--kb-from, 1)); }
+  to   { transform: scale(var(--kb-to, 1)); }
+}
+
 /* Wipe down — B enters from top, A exits downward */
 @keyframes rc-trans-wipd-a {
   0%, 15%  { clip-path: inset(0 0 0 0); }

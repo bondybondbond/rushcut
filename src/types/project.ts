@@ -30,7 +30,7 @@ export interface Clip extends ClipMeta {
   out_ms: number | null;
   focal_x: number | null;       // 0.0-1.0, null = centre
   focal_y: number | null;       // 0.0-1.0, null = centre
-  zoom_mode: string | null;     // "gentle" | "medium" | "tight"
+  zoom_mode: string | null;     // static "gentle"|"medium"|"tight" OR gradual "kb_<dir>_<ratio>_slow"
   include: number;              // 1 = include, 0 = skip
   proxy_path: string | null;
   waveform_data: string | null;

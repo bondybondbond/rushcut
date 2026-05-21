@@ -15,18 +15,25 @@
 
 ## Current Phase
 
-**Phase 2 — Post-Batch N bug fixes COMPLETE (2026-05-20). Next: TBD.**
+**Phase 2 — Batch O (Gradual/Ken Burns Zoom) COMPLETE (2026-05-21). Next: Render performance.**
 
 ---
 
 ## Immediate Next Task
 
-**TBD — founder to confirm.** All reported bugs cleared. Remaining candidates:
-- PRD items: reorder clips via drag, thumbnail at trimmed frame 0, click-to-edit from film timeline, inline trim handles on Film tab, media pantry tracks current clip, shuffle exclusion settings
+**Render performance** — see `C:\Users\Manasak\AppData\Local\Temp\rushcut-perf-notes.md` for full write-up. Priority order:
+1. Parallelise zoom step (`ThreadPoolExecutor` in render.py Step 3 — high impact, ~1 day)
+2. Background zoom pre-compute in Arrange (eliminates zoom cost on render entirely)
+3. Draft render preset (`-preset fast` when `mode=draft`)
+4. Zoom output caching / invalidation keyed on `(clip, in_ms, out_ms, zoom_mode, focal_x, focal_y)`
 
 ---
 
-## Recently shipped this session (2026-05-20)
+## Recently shipped this session (2026-05-21)
+
+- **Batch O — Gradual Zoom (Ken Burns) COMPLETE:** Per-clip gradual zoom added to Arrange Zoom tab. `zoom_mode` encoding: `kb_<dir>_<ratio>_<speed>` (e.g. `kb_in_1.5_slow`). UI: Style row (Off / Fixed / Gradual) + Direction / Amount / Speed chips. Speed semantics: slow=100%, med=75%, fast=50% of trimmed clip duration. Preview: CSS `rc-kenburns` keyframe on a **wrapper div** (not video element — avoids WebView2 compositor conflict that caused choppy playback); plays once on selection, resets on play. backend: `zoom.py` `_probe()` single ffprobe (w+h+duration), `_parse_kenburns()`, `_kenburns_vf()` with comma-free smoothstep clamp `(a+1-abs(a-1))/2`; `-preset ultrafast` for intermediate. `crop` filter has no `eval` option — x/y re-evaluate per frame natively. `src/utils/zoom.ts` canonical model: `parseZoom()`, `buildZoomMode()`, `zoomLabel()` — no screen shows raw `kb_*` string. 1080p render: zoom=3.7s. 4K render: zoom=9.9s. 9/9 fast PASS, 26/26 arrange PASS. Performance note: 6 clips 4K ~1m20s = 9m first render / 6.5m re-render; zoom step 1.5m for 6 clips — parallelisation needed next batch.
+
+## Recently shipped previous session (2026-05-20)
 
 - **Bug fix — Shuffle label raw JSON on Sound + Render screens:** `Sound.tsx` and `Render.tsx` were reading `rc_transition_${projectId}` via raw `sessionStorage.getItem()`, which since Batch M2 returns a full `TransitionConfig` JSON object. Passing that raw JSON string to `ChosenEffects` caused `TRANSITION_LABELS[jsonString] → undefined → chip shows raw JSON`. Fix: both pages now import and use `readTransitionConfig()` from `buildJobConfig.ts`, deriving `"shuffle"` / `tc.between` / `null` correctly. ChosenEffects chip shows "Shuffle" on all screens. 9/9 fast PASS.
 
