@@ -133,14 +133,28 @@ These are the gaps between current state and a **solid, complete tool** for the 
 
 **Clipchamp is the primary competitor** — pre-installed on every Windows PC, free at 1080p, no watermarks. Beat it on direction power and moment extraction, not features.
 
-| Tool            | Windows | Auto-compile | Moment Extraction | Watermark | Price       |
-| --------------- | ------- | ------------ | ----------------- | --------- | ----------- |
-| **RushCut**     | ✅       | ✅            | ✅ (paid: GVI)     | Never     | £4.99/mo    |
-| DJI LightCut    | ❌       | ✅            | Basic             | No        | Free        |
-| GoPro Quik      | ❌       | ✅            | Basic             | No        | Free        |
-| Clipchamp       | ✅       | ❌            | ❌                 | No        | Free / M365 |
-| CapCut          | Partial | ✅            | Basic             | Free tier | £64.99/yr   |
-| DaVinci Resolve | ✅       | ❌            | ❌                 | No        | Free / £270 |
+| Tool            | Windows | Auto-compile | AI Direction | Zero Timeline | Moment Extraction | Watermark | Price       |
+| --------------- | ------- | ------------ | ------------ | ------------- | ----------------- | --------- | ----------- |
+| **RushCut**     | ✅       | ✅            | ✅ (v3 vision) | ✅             | ✅ (paid: GVI)     | Never     | £4.99/mo    |
+| DJI LightCut    | ❌       | ✅            | ❌ template   | ✅             | Basic             | No        | Free        |
+| GoPro Quik      | ❌       | ✅            | ❌ template   | ✅             | Basic             | No        | Free        |
+| Clipchamp       | ✅       | ❌            | ❌            | ❌             | ❌                 | No        | Free / M365 |
+| CapCut          | Partial | ✅            | ❌ template   | ✅             | Basic             | Free tier | £64.99/yr   |
+| DaVinci Resolve | ✅       | ❌            | ❌ passive¹   | ❌             | ❌                 | No        | Free / £270 |
+| Runway ML       | ✅       | ❌            | Generative²  | ✅             | ❌                 | Yes       | $15+/mo     |
+
+¹ DaVinci Resolve 19 added "IntelliTrack" (object/face tracking) and AI scene cut detection — but these are passive assists to manual editing, not creative direction. The user still builds the timeline.
+
+² Runway generates synthetic footage from text prompts. Not direction over real clips — a fundamentally different product category.
+
+### The whitespace nobody owns
+
+**Visual intelligence over your own real footage + zero-timeline UX + desktop 4K output.**
+
+- CapCut gets close on UX but is template-driven — it applies a style, it doesn't understand your footage.
+- Resolve gets close on output quality but requires full manual timeline editing.
+- LightCut/Quik get close on zero-timeline but are mobile-only and editorially shallow.
+- Nobody has assembled all three for desktop. That's the gap.
 
 ---
 
@@ -198,6 +212,10 @@ The current product saves time. The AI Director creates output the user *could n
 
 This is also the competitive moat that's hardest to copy: the visual intelligence model trained on action/drone/travel footage specifically, combined with RushCut's opinionated output style.
 
+### Key UX constraint
+
+AI direction works brilliantly ~80% of the time — and embarrassingly 20% of the time. The AI Director must ship with a strong **"override anything" UX layer** so users can fix the 20% without rebuilding from scratch. Without this safety net, first-time failures cause churn.
+
 ### Technical prerequisites
 
 | Capability | Approach | When |
@@ -206,6 +224,7 @@ This is also the competitive moat that's hardest to copy: the visual intelligenc
 | Action peak detection | Google Video Intelligence API | v2 paid |
 | Beat-sync cutting | `librosa` (already in plan) | Near-term |
 | Scene classification | GVI scene labels | v2 paid |
-| Orchestration logic | Deterministic rules engine first; LLM-assisted ordering (Gemini Flash) second | v3 |
+| Narrative ordering | Gemini Flash with clip thumbnails + metadata (~$0.005/export) | v3 |
+| Orchestration logic | Deterministic rules engine first; LLM-assisted second | v3 |
 
 **Deferred reason:** Visual intelligence APIs add per-export cost and latency. Build the deterministic pipeline to excellence first — beat-sync, text, export presets — then layer AI direction on top as a paid upgrade. Don't add AI cost before there's revenue to cover it.
