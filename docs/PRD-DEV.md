@@ -795,6 +795,37 @@ New route: `/director/:projectId` — inserted into flow after scan, before `/ed
 | More card optionality | Font choice, card duration control, animated cards |
 | GPU-accelerated rendering | DaVinci Resolve, Premiere et al. auto-detect available GPU encoder at launch (NVENC → AMF → QSV → libx264 CPU fallback). RushCut should do the same for the final render step and the zoom encode step. Spike: detect available hardware encoder via `ffmpeg -encoders` at app start, store result, inject correct `-c:v` flag at render time. Three code paths to validate (quality + speed). Expected gain: 5–10x faster encode on GPU-equipped machines (~214s render step → ~25–40s with NVENC). Swap: `-c:v libx264 -preset fast -crf 22` → `-c:v h264_nvenc -preset p4 -cq 22` with graceful x264 fallback. Deferred: multi-platform quality validation + 3 encoder paths. Revisit when render speed is a top post-launch complaint. |
 
+## Vision Notes — Future Directions (inspiration, not scheduled)
+
+> Not a roadmap. Ideas worth keeping in mind when looking for what to build next.
+
+### Codebase score: 6/10 (as of 2026-05-21)
+
+Well-built for its scope. Proxy system, pipeline architecture, E2E test suite, two-instance safety, atomic writes, timing logs — these are senior engineer decisions. But the feature surface is narrow.
+
+### What would move the needle to 8+
+
+For the target niche (serious recreational, handheld footage, social output) — not DaVinci, but genuinely better than CapCut for this use case:
+
+**Product gaps (user-facing)**
+
+- **Multi-track / B-roll** — single clip-per-slot model. Real directorial editing means cutting away to a second angle or overlay. The biggest structural gap.
+- **Cut-to-music** — beat detection + auto-sync is the #1 feature serious social editors want. Nothing else signals "this is for creators" more clearly.
+- **Text / titles** — even basic lower thirds. Without this, can't compete with CapCut for socials.
+- **Export presets** — Instagram Reels, TikTok, YouTube Shorts ratios and specs as one-click targets.
+
+**Technical gaps (pipeline)**
+
+- GPU encode — in progress (Batch P2).
+- No scrubbing / preview without full render — biggest UX gap vs pro tools.
+- No undo history beyond arrangement changes.
+
+### Score ceiling
+
+Fill the four product gaps above → 8/10 for this niche. Genuinely better than CapCut for serious recreational users, and differentiated enough to matter.
+
+---
+
 ## AI Enablement (large, pre-GTM)
 
 > **Biggest remaining piece of work. Target: before go-to-market.**
