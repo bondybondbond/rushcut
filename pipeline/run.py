@@ -29,10 +29,6 @@ import sys
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-# Mirror all logs to a fixed file so tooling can read them after a render
-_log_file = logging.FileHandler("/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log", mode="w")
-_log_file.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
-logging.getLogger().addHandler(_log_file)
 
 
 def win_to_wsl(path: str) -> str:
@@ -76,6 +72,24 @@ def main() -> None:
 
     manifest = json.loads(manifest_path.read_text())
     job_id = manifest["job_id"]
+
+    # Per-job log (safe with concurrent runs) + symlink as pipeline-latest.log.
+    _log_dir = Path("/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut")
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _fmt = logging.Formatter("[%(levelname)s] %(message)s")
+    _job_log = logging.FileHandler(_log_dir / f"pipeline-{job_id}.log", mode="w")
+    _job_log.setFormatter(_fmt)
+    logging.getLogger().addHandler(_job_log)
+    # Overwrite pipeline-latest.log to point at this job (best-effort).
+    try:
+        latest = _log_dir / "pipeline-latest.log"
+        latest.unlink(missing_ok=True)
+        latest.symlink_to(f"pipeline-{job_id}.log")
+    except OSError:
+        _latest_fh = logging.FileHandler(_log_dir / "pipeline-latest.log", mode="w")
+        _latest_fh.setFormatter(_fmt)
+        logging.getLogger().addHandler(_latest_fh)
+
     clips = manifest["clips"]
     settings = manifest.get("settings", {})
     output_path_win = manifest.get("output_path", f"C:\\clips\\processed\\{job_id}.mp4")
@@ -178,6 +192,7 @@ def main() -> None:
                     "t_normalise_s":   float(_a.get("normalise_s", 0)),
                     "t_trim_s":        float(_a.get("trim_s", 0)),
                     "t_zoom_s":        float(_a.get("zoom_s", 0)),
+                    "zoom_cache_hits": int(_a.get("zoom_cache_hits", 0)),
                     "t_render_s":      float(_a.get("render_s", 0)),
                     "t_music_s":       float(_a.get("music_s", 0)),
                     "t_loudnorm_s":    float(_a.get("loudnorm_s", 0)),

@@ -15,21 +15,26 @@
 
 ## Current Phase
 
-**Phase 2 — Batch O (Gradual/Ken Burns Zoom) COMPLETE (2026-05-21). Next: Render performance.**
+**Phase 2 — Batch P (Render Performance) COMPLETE (2026-05-21). Next: Audio re-encode + opencl.**
 
 ---
 
 ## Immediate Next Task
 
-**Render performance** — see `C:\Users\Manasak\AppData\Local\Temp\rushcut-perf-notes.md` for full write-up. Priority order:
-1. Parallelise zoom step (`ThreadPoolExecutor` in render.py Step 3 — high impact, ~1 day)
-2. Background zoom pre-compute in Arrange (eliminates zoom cost on render entirely)
-3. Draft render preset (`-preset fast` when `mode=draft`)
-4. Zoom output caching / invalidation keyed on `(clip, in_ms, out_ms, zoom_mode, focal_x, focal_y)`
+**Batch P2 — two quick render wins (new chat):**
+
+> Before starting: log only, no fixes — read `render.py` final render command and confirm whether audio is being re-encoded after loudnorm has already run. If `-c:a` is not `copy` in the final concat/render step, that's a wasted ~27s per render. If confirmed, change to `-c:a copy`. Separately, add `x264opts opencl=true` to the final render ffmpeg command — one flag, no quality impact, marginal free speedup on the CPU encode path.
+
+1. **Audio copy in final render** — if loudnorm already ran, the final concat's `-c:a aac -b:a 128k` is redundant; switch to `-c:a copy` to save ~27s
+2. **`x264opts opencl=true`** — one flag, free marginal speedup, zero quality risk
+
+GPU encoding (NVENC) is the next large lever but requires GPU detection + 3 encoder code paths + quality validation. See PRD-DEV.md backlog.
 
 ---
 
 ## Recently shipped this session (2026-05-21)
+
+- **Batch P — Render Performance COMPLETE:** Zoom step parallelised via `ThreadPoolExecutor(min(4, cpu_count))` with per-worker `-threads N -filter_threads N` cap (mirrors normalise.py). Persistent zoom output cache at `/tmp/rushcut-zoom-cache/` — sha1 key on `(src_path, size, in_ms, out_ms, zoom_mode, focal_x, focal_y, resolution)`; atomic writes via `os.replace(tmp→final)`; INVALID detection via `is_valid_proxy()` for corrupt mid-encode cache entries. Render preset `medium → fast` (CRF 22 kept). `zoom_cache_hits` added to ANALYSIS line + `render-timing-log.jsonl`. `run.py` per-job log file (`pipeline-{job_id}.log`) with `pipeline-latest.log` as symlink — prevents concurrent runs corrupting the log. Measured: 6-clip 4K re-render ~3 min (was ~6.5 min). First renders unaffected by cache (all MISS). E2E: 9/9 fast + 5/5 gap-editor + 26/26 arrange + 15/15 render PASS.
 
 - **Batch O — Gradual Zoom (Ken Burns) COMPLETE:** Per-clip gradual zoom added to Arrange Zoom tab. `zoom_mode` encoding: `kb_<dir>_<ratio>_<speed>` (e.g. `kb_in_1.5_slow`). UI: Style row (Off / Fixed / Gradual) + Direction / Amount / Speed chips. Speed semantics: slow=100%, med=75%, fast=50% of trimmed clip duration. Preview: CSS `rc-kenburns` keyframe on a **wrapper div** (not video element — avoids WebView2 compositor conflict that caused choppy playback); plays once on selection, resets on play. backend: `zoom.py` `_probe()` single ffprobe (w+h+duration), `_parse_kenburns()`, `_kenburns_vf()` with comma-free smoothstep clamp `(a+1-abs(a-1))/2`; `-preset ultrafast` for intermediate. `crop` filter has no `eval` option — x/y re-evaluate per frame natively. `src/utils/zoom.ts` canonical model: `parseZoom()`, `buildZoomMode()`, `zoomLabel()` — no screen shows raw `kb_*` string. 1080p render: zoom=3.7s. 4K render: zoom=9.9s. 9/9 fast PASS, 26/26 arrange PASS. Performance note: 6 clips 4K ~1m20s = 9m first render / 6.5m re-render; zoom step 1.5m for 6 clips — parallelisation needed next batch.
 

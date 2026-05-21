@@ -146,6 +146,7 @@ def apply_zoom(
     focal_x: float | None = None,
     focal_y: float | None = None,
     zoom_mode: str | None = None,
+    threads: int | None = None,
 ) -> Path:
     """
     Apply a zoom (static crop-in or gradual Ken Burns) to clip_path.
@@ -157,6 +158,12 @@ def apply_zoom(
         focal_y:   Focal point Y (0.0-1.0). None = centre (0.5).
         zoom_mode: Static  -> "gentle" / "medium" / "tight" (None = "gentle").
                    Ken Burns -> "kb_<dir>_<ratio>_<speed>", e.g. "kb_in_1.5_med".
+        threads:   Cap FFmpeg to N threads (decode + encode) AND N filter
+                   threads. Set when run from a parallel pool so N concurrent
+                   encoders don't oversubscribe cores. None = uncapped (FFmpeg
+                   grabs all cores — correct for a serial caller). The
+                   eval=frame 4K scale is filtergraph-bound, so -filter_threads
+                   matters as much as -threads.
 
     Returns out_path.
     """
@@ -210,8 +217,13 @@ def apply_zoom(
             iw, ih, crop_w, crop_h, x, y, scale_w, scale_h,
         )
 
+    thread_args: list[str] = []
+    if threads is not None and threads >= 1:
+        thread_args = ["-threads", str(threads), "-filter_threads", str(threads)]
+
     ffmpeg_run([
         FFMPEG, "-y",
+        *thread_args,
         "-i", str(clip_path),
         "-vf", vf,
         "-c:v", "libx264",

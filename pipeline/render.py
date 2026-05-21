@@ -15,6 +15,7 @@ Entry points:
   run_local(clips_dir, output_dir)          -> None  (no R2/Supabase)
 """
 
+import hashlib
 import logging
 import os
 import shutil
@@ -66,6 +67,61 @@ TMP_BASE = Path("/tmp")
 # Movie audio ducking per music_volume preset (0.2=subtle, 0.4=balanced, 0.7=prominent).
 # As music gets louder, movie audio is ducked proportionally so music actually dominates.
 _MOVIE_VOL = {0.2: 1.0, 0.4: 0.4, 0.7: 0.3}
+
+# Zoom step parallelism. Each clip's zoom is an independent FFmpeg pass; running
+# up to 4 concurrently turns the serial zoom loop into ~cores/4 wall time.
+MAX_PARALLEL_ZOOM = min(4, os.cpu_count() or 1)
+
+# Persistent zoom-output cache. Re-renders with unchanged zoom params reuse the
+# encoded clip instead of re-running the eval=frame scale pass. /tmp is WSL
+# tmpfs (RAM) — fast, but cleared on WSL restart; acceptable since the dominant
+# re-render pattern is same-session iteration.
+ZOOM_CACHE_DIR = Path("/tmp/rushcut-zoom-cache")
+_ZOOM_CACHE_MAX_AGE_S = 2 * 86400  # prune entries older than 2 days
+
+
+def _prune_zoom_cache() -> None:
+    """Best-effort prune of zoom cache files older than 2 days.
+
+    NOT strict eviction — concurrent renders may both prune harmlessly. Wrapped
+    so any failure is swallowed: a cache-cleanup error must never fail a render.
+    """
+    try:
+        cutoff = time.time() - _ZOOM_CACHE_MAX_AGE_S
+        for f in ZOOM_CACHE_DIR.glob("*.mp4"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _zoom_cache_key(
+    src_path: Path,
+    in_ms,
+    out_ms,
+    zoom_mode,
+    focal_x,
+    focal_y,
+    output_resolution: str,
+) -> str:
+    """sha1 of every input that determines the zoomed clip's content.
+
+    in_ms/out_ms must be the ORIGINAL user-facing offsets (clips[i]), not the
+    B-0-adjusted pipeline_clips offsets — otherwise the same logical trim keys
+    differently depending on whether a proxy was available. output_resolution
+    is included so a 1080p render can never reuse a 4K zoom entry.
+    """
+    try:
+        size = src_path.stat().st_size
+    except OSError:
+        size = 0
+    raw = "|".join(str(x) for x in (
+        src_path, size, in_ms, out_ms, zoom_mode, focal_x, focal_y, output_resolution
+    ))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -340,28 +396,86 @@ def run_pipeline(
     report_stage("zoom")
     report(55)
     t_zoom = time.time()
+    zoom_cache_hits = 0
     has_per_clip_zoom = any(c.get("zoom_mode") for c in pipeline_clips)
     global_zoom = config.get("zoom", False) and mode == "final"
 
     if has_per_clip_zoom or global_zoom:
         log.info("[render] Step 3: zoom (per_clip=%s, global=%s)", has_per_clip_zoom, global_zoom)
-        zoomed = []
-        for i, (p, clip_meta) in enumerate(zip(current_paths, pipeline_clips)):
+
+        ZOOM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _prune_zoom_cache()
+
+        n = len(current_paths)
+        zoomed: list = [None] * n
+        zoom_status: list[str] = [""] * n  # "hit" | "invalid" | "miss" | "passthrough"
+        # Cap each worker's threads so MAX_PARALLEL_ZOOM concurrent encoders
+        # don't oversubscribe cores (mirrors normalise.py).
+        threads_per_worker = max(1, (os.cpu_count() or 4) // MAX_PARALLEL_ZOOM)
+
+        def _zoom_worker(i: int, p: Path, clip_meta: dict) -> None:
             clip_zoom = clip_meta.get("zoom_mode")
             if clip_zoom:
-                # Per-clip zoom with focal point
-                zoomed.append(apply_zoom(
-                    p, tmp / f"zoom_{i}.mp4",
-                    focal_x=clip_meta.get("focal_x"),
-                    focal_y=clip_meta.get("focal_y"),
-                    zoom_mode=clip_zoom,
-                ))
+                effective_mode = clip_zoom
+                fx = clip_meta.get("focal_x")
+                fy = clip_meta.get("focal_y")
             elif global_zoom:
-                # Global zoom (legacy: centre, tight)
-                zoomed.append(apply_zoom(p, tmp / f"zoom_{i}.mp4"))
+                # Legacy global zoom: centre focal, apply_zoom default preset.
+                effective_mode = None
+                fx = fy = None
             else:
-                zoomed.append(p)
+                zoomed[i] = p
+                zoom_status[i] = "passthrough"
+                return
+
+            # Key on the ORIGINAL clips[i] offsets — see _zoom_cache_key docstring.
+            key = _zoom_cache_key(
+                clip_paths[i], clips[i].get("in_ms"), clips[i].get("out_ms"),
+                effective_mode, fx, fy, output_resolution,
+            )
+            cache_file = ZOOM_CACHE_DIR / f"{key}.mp4"
+
+            if cache_file.exists():
+                if is_valid_proxy(str(cache_file)):
+                    zoomed[i] = cache_file
+                    zoom_status[i] = "hit"
+                    log.info("[zoom-cache] clip %d: HIT %s", i, key)
+                    return
+                log.info("[zoom-cache] clip %d: INVALID (re-encoding) %s", i, key)
+                try:
+                    cache_file.unlink()
+                except OSError:
+                    pass
+                zoom_status[i] = "invalid"
+            else:
+                log.info("[zoom-cache] clip %d: MISS %s", i, key)
+                zoom_status[i] = "miss"
+
+            # Encode to a temp file colocated in the cache dir, then publish via
+            # os.replace() — an atomic rename on the same filesystem, so a
+            # concurrent job (two-instance rule) never reads a half-written file.
+            tmp_cache = ZOOM_CACHE_DIR / f"{key}.tmp.{os.getpid()}.{i}.mp4"
+            apply_zoom(
+                p, tmp_cache,
+                focal_x=fx, focal_y=fy,
+                zoom_mode=effective_mode,
+                threads=threads_per_worker,
+            )
+            os.replace(tmp_cache, cache_file)
+            zoomed[i] = cache_file
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ZOOM) as pool:
+            futures = [pool.submit(_zoom_worker, i, p, cm)
+                       for i, (p, cm) in enumerate(zip(current_paths, pipeline_clips))]
+            for f in futures:
+                f.result()  # re-raise any worker exception
+
         current_paths = zoomed
+        zoom_cache_hits = sum(1 for s in zoom_status if s == "hit")
+        zoom_cache_invalid = sum(1 for s in zoom_status if s == "invalid")
+        zoom_cache_miss = sum(1 for s in zoom_status if s == "miss")
+        log.info("[zoom-cache] %d hits / %d invalid / %d misses",
+                 zoom_cache_hits, zoom_cache_invalid, zoom_cache_miss)
     else:
         log.info("[render] Step 3: zoom skipped (mode=%s)", mode)
     zoom_s = time.time() - t_zoom
@@ -430,7 +544,10 @@ def run_pipeline(
         current_paths, durations, audio_flags, tmp
     )
 
-    crf, preset = (35, "ultrafast") if mode == "draft" else (22, "medium")
+    # final: "fast" over "medium" — ~2x faster x264 encode, quality near-identical
+    # at the same CRF for typical DJI footage. The render step is the pipeline's
+    # single biggest cost (~55% of wall time on a 4K render).
+    crf, preset = (35, "ultrafast") if mode == "draft" else (22, "fast")
     scale_h = "480" if mode == "draft" else ("2160" if output_resolution == "4k" else "1080")
     log.info("[B1] render scale_h=%s (output_resolution=%s)", scale_h, output_resolution)
 
@@ -586,6 +703,7 @@ def run_pipeline(
             f",proxy_skipped={len(norm_clip_indices)}"
             f",output_resolution={output_resolution}"
             f",volume_custom={volume_custom}"
+            f",zoom_cache_hits={zoom_cache_hits}"
         )
     except Exception as e:
         log.warning("[render] ANALYSIS emit failed: %s", e)

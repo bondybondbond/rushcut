@@ -16,6 +16,11 @@ Applies when working on `pipeline/**`, `src-tauri/src/lib.rs` (pipeline spawn), 
 - **Background proxy gen (`generate_proxy_file_low_priority`) must encode at 2160p** — encoding at `scale=-2:1080` permanently limits the proxy to 1080p reuse only. Always use `scale=-2:2160`; the extra encode cost (~20% more than 1080p at ultrafast) is negligible compared to the bug it prevents. `_proxy_height()` in `render.py` distinguishes old 1080p proxies from new 2160p ones and logs accordingly.
 - **`get_clips_needing_bg_proxy` must return ALL `include=1` clips, not only `proxy_status IS NULL`** — filtering by `proxy_status != 'done'` prevents upgrading legacy 1080p proxies to 2160p. The Rust `run_bg_proxy_batch` function calls `proxy_height_native()` per clip and decides: skip (≥2160p), upgrade (existing but <2160p), or encode fresh. Height check in Rust is authoritative; DB filter is only for `include=1`.
 
+## Concurrent renders and log isolation
+
+- **Exit code 15 = SIGTERM from WSL restart** — not a code bug. Check `wsl -- ls /tmp/<job_id>` before debugging; a missing dir means WSL killed everything (memory pressure or a concurrent heavy render). Re-run once WSL is stable.
+- **`pipeline-latest.log` must be a symlink, not a shared file** — two concurrent `run.py` processes opening the same file with `mode="w"` produce a sparse file with null-byte gaps (second process truncates but retains old offset). Pattern: each job writes to `pipeline-{job_id}.log`; update `pipeline-latest.log` symlink atomically: `latest.unlink(missing_ok=True); latest.symlink_to(f"pipeline-{job_id}.log")`.
+
 ## Sync / performance fixes — logs first
 
 Before writing any A/V sync fix or normalise speed fix, run a real render and read the `[sync-check]` log output. Identify WHERE drift enters (normalise output? post-trim? concat?) before touching code. `aresample=async` worsens DJI monotonic drift — see LEARNINGS.md.
