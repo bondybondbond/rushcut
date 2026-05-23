@@ -23,7 +23,14 @@ function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage;
 }
 
-type Phase = "ready" | "starting" | "rendering" | "done" | "error";
+type Phase = "ready" | "awaiting-proxies" | "starting" | "rendering" | "done" | "error";
+
+type ProxyReadiness = {
+  ready: number;
+  total: number;
+  blocking_clip_ids: string[];
+  target_fps_int: number;
+};
 
 export default function Render() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -62,6 +69,15 @@ export default function Render() {
   const [elapsedLabel, setElapsedLabel] = useState("0s");
   const completedRef = useRef(false);
   const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Batch R: proxy-readiness gate state. Render only auto-starts once every
+  // include=1 clip has a proxy that matches render.py's reuse gate; otherwise
+  // we fall into the 504s full-normalise path documented in the timing log.
+  const [proxyReady, setProxyReady] = useState(0);
+  const [proxyTotal, setProxyTotal] = useState(0);
+  const [proxyEtaLabel, setProxyEtaLabel] = useState<string>("Estimating...");
+  const waitStartRef = useRef<number>(0);
+  const waitStartReadyRef = useRef<number>(0);
 
   const configured = useConfiguredTabs(projectId ?? "");
 
@@ -108,7 +124,7 @@ export default function Render() {
     resizeDragRef.current = null;
   }
 
-  async function submitJob(pid: string) {
+  async function startRenderNow(pid: string) {
     const config = buildJobConfig(pid);
     setPhase("starting");
     try {
@@ -124,6 +140,33 @@ export default function Render() {
     } catch (e) {
       setErrorMsg(`Failed to start render: ${e}`);
       setPhase("error");
+    }
+  }
+
+  // Batch R: gate render on proxy readiness. Returns true once proceeding to
+  // actual job submit. If clips are blocking, transitions to "awaiting-proxies"
+  // and lets the polling effect drive the transition.
+  async function submitJob(pid: string) {
+    try {
+      const status = await invoke<ProxyReadiness>("get_proxy_readiness_cmd", {
+        projectId: pid,
+        outputResolution: outputRes,
+      });
+      setProxyReady(status.ready);
+      setProxyTotal(status.total);
+      if (status.ready >= status.total) {
+        await startRenderNow(pid);
+        return;
+      }
+      // Kick off normal-priority proxy gen and enter wait state.
+      waitStartRef.current = Date.now();
+      waitStartReadyRef.current = status.ready;
+      setProxyEtaLabel("Estimating...");
+      setPhase("awaiting-proxies");
+      invoke("generate_proxies_cmd", { projectId: pid, lowPriority: false }).catch(console.error);
+    } catch (e) {
+      console.error("[render] readiness check failed, proceeding without gate", e);
+      await startRenderNow(pid);
     }
   }
 
@@ -237,6 +280,60 @@ export default function Render() {
     return () => clearInterval(interval);
   }, [phase]);
 
+  // Batch R: poll proxy readiness and listen to proxy-progress while in the
+  // awaiting-proxies wait state. ETA = (remaining * elapsed/completed_so_far);
+  // shows "Estimating..." until at least one proxy lands during the wait.
+  useEffect(() => {
+    if (phase !== "awaiting-proxies" || !projectId) return;
+    let cancelled = false;
+
+    async function check(): Promise<boolean> {
+      try {
+        const status = await invoke<ProxyReadiness>("get_proxy_readiness_cmd", {
+          projectId: projectId!,
+          outputResolution: outputRes,
+        });
+        if (cancelled) return true;
+        setProxyReady(status.ready);
+        setProxyTotal(status.total);
+
+        const completedSinceStart = status.ready - waitStartReadyRef.current;
+        if (completedSinceStart > 0) {
+          const elapsedSec = (Date.now() - waitStartRef.current) / 1000;
+          const avgPerClip = elapsedSec / completedSinceStart;
+          const remaining = Math.max(0, status.total - status.ready);
+          const eta = Math.round(avgPerClip * remaining);
+          setProxyEtaLabel(remaining === 0 ? "Ready" : `About ~${eta}s remaining`);
+        }
+
+        if (status.ready >= status.total && status.total > 0) {
+          startRenderNow(projectId!);
+          return true;
+        }
+      } catch (e) {
+        console.error("[render] readiness poll failed", e);
+      }
+      return false;
+    }
+
+    check();
+    const interval = setInterval(check, 2000);
+
+    const unlistenProxy = listen<{ projectId: string; clipId: string; winPath: string }>(
+      "proxy-progress",
+      (event) => {
+        if (event.payload.projectId !== projectId) return;
+        check();
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      unlistenProxy.then((f) => f());
+    };
+  }, [phase, projectId, outputRes]);
+
   async function handleRetry() {
     if (!projectId || inFilmCount === 0) return;
     setPhase("starting");
@@ -333,6 +430,39 @@ export default function Render() {
                 className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base"
               >
                 Render Film
+              </button>
+            </div>
+          )}
+
+          {/* Awaiting proxies — Batch R gate */}
+          {phase === "awaiting-proxies" && (
+            <div className="space-y-4" data-testid="awaiting-proxies">
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-[#e5e5e5]">
+                    Preparing proxies -- {proxyReady} / {proxyTotal} ready
+                  </span>
+                  <span className="text-[#a3a3a3] font-mono" data-testid="proxy-eta">
+                    {proxyEtaLabel}
+                  </span>
+                </div>
+                <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#22c55e] rounded-full transition-all duration-500"
+                    style={{ width: `${proxyTotal > 0 ? Math.round((proxyReady / proxyTotal) * 100) : 0}%` }}
+                  />
+                </div>
+                <p className="text-xs text-[#a3a3a3]">
+                  Render starts automatically when proxies finish. Skipping makes this render much slower.
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="btn-start-anyway"
+                onClick={() => projectId && startRenderNow(projectId)}
+                className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-sm rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
+              >
+                Start anyway (slower)
               </button>
             </div>
           )}

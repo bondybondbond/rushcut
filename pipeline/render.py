@@ -129,14 +129,28 @@ _MOVIE_VOL = {0.2: 1.0, 0.4: 0.4, 0.7: 0.3}
 MAX_PARALLEL_ZOOM = min(4, os.cpu_count() or 1)
 
 # Persistent zoom-output cache. Re-renders with unchanged zoom params reuse the
-# encoded clip instead of re-running the eval=frame scale pass. /tmp is WSL
-# tmpfs (RAM) — fast, but cleared on WSL restart; acceptable since the dominant
-# re-render pattern is same-session iteration.
-ZOOM_CACHE_DIR = Path("/tmp/rushcut-zoom-cache")
+# encoded clip instead of re-running the eval=frame scale pass. Lives on
+# Windows-backed NTFS (via /mnt/c) so it survives WSL --shutdown and Windows
+# reboots; the previous /tmp tmpfs location lost the cache on every WSL restart
+# (render-timing-log.jsonl showed zoom_cache_hits=0 on all entries).
+# Path resolution: env var RUSHCUT_ZOOM_CACHE_DIR (set by run.py from
+# manifest_path.parent) -> default Windows %TEMP%\rushcut\zoom-cache mapped to
+# /mnt/c -> /tmp fallback for tests with no Windows env.
 _ZOOM_CACHE_MAX_AGE_S = 2 * 86400  # prune entries older than 2 days
 
 
-def _prune_zoom_cache() -> None:
+def _resolve_zoom_cache_dir() -> Path:
+    env = os.environ.get("RUSHCUT_ZOOM_CACHE_DIR")
+    if env:
+        return Path(env)
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        user = Path(userprofile).name
+        return Path(f"/mnt/c/Users/{user}/AppData/Local/Temp/rushcut/zoom-cache")
+    return Path("/tmp/rushcut-zoom-cache")
+
+
+def _prune_zoom_cache(cache_dir: Path) -> None:
     """Best-effort prune of zoom cache files older than 2 days.
 
     NOT strict eviction — concurrent renders may both prune harmlessly. Wrapped
@@ -144,7 +158,7 @@ def _prune_zoom_cache() -> None:
     """
     try:
         cutoff = time.time() - _ZOOM_CACHE_MAX_AGE_S
-        for f in ZOOM_CACHE_DIR.glob("*.mp4"):
+        for f in cache_dir.glob("*.mp4"):
             try:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
@@ -475,8 +489,10 @@ def run_pipeline(
     if has_per_clip_zoom or global_zoom:
         log.info("[render] Step 3: zoom (per_clip=%s, global=%s)", has_per_clip_zoom, global_zoom)
 
-        ZOOM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _prune_zoom_cache()
+        zoom_cache_dir = _resolve_zoom_cache_dir()
+        zoom_cache_dir.mkdir(parents=True, exist_ok=True)
+        log.info("[zoom-cache] dir=%s", zoom_cache_dir)
+        _prune_zoom_cache(zoom_cache_dir)
 
         n = len(current_paths)
         zoomed: list = [None] * n
@@ -505,7 +521,7 @@ def run_pipeline(
                 clip_paths[i], clips[i].get("in_ms"), clips[i].get("out_ms"),
                 effective_mode, fx, fy, output_resolution,
             )
-            cache_file = ZOOM_CACHE_DIR / f"{key}.mp4"
+            cache_file = zoom_cache_dir / f"{key}.mp4"
 
             if cache_file.exists():
                 if is_valid_proxy(str(cache_file)):
@@ -526,7 +542,7 @@ def run_pipeline(
             # Encode to a temp file colocated in the cache dir, then publish via
             # os.replace() — an atomic rename on the same filesystem, so a
             # concurrent job (two-instance rule) never reads a half-written file.
-            tmp_cache = ZOOM_CACHE_DIR / f"{key}.tmp.{os.getpid()}.{i}.mp4"
+            tmp_cache = zoom_cache_dir / f"{key}.tmp.{os.getpid()}.{i}.mp4"
             apply_zoom(
                 p, tmp_cache,
                 focal_x=fx, focal_y=fy,

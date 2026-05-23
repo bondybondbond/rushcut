@@ -357,6 +357,28 @@ pub fn get_clips_needing_bg_proxy(project_id: &str) -> Result<Vec<(String, Strin
     Ok(rows)
 }
 
+/// Batch R: return (id, local_path, proxy_path) for every include=1 clip in
+/// sort_order. Used by get_proxy_readiness_cmd to mirror render.py's
+/// per-clip proxy reuse gate (height + fps) against the live filesystem.
+pub fn get_included_clips_with_proxy(
+    project_id: &str,
+) -> Result<Vec<(String, String, Option<String>)>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, local_path, proxy_path FROM clips
+         WHERE project_id = ?1
+           AND include = 1
+         ORDER BY sort_order ASC",
+    )?;
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
 /// Update the thumbnail data for a clip (raw base64 JPEG, no data URI prefix).
 pub fn update_clip_thumbnail(clip_id: &str, thumbnail_data: &str) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;

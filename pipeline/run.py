@@ -24,6 +24,7 @@ import argparse
 import datetime
 import json
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -159,6 +160,11 @@ def main() -> None:
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from pipeline.render import run_pipeline
+
+        # Zoom cache lives next to render-timing-log.jsonl (Windows-backed NTFS
+        # via /mnt/c) so it survives WSL --shutdown -- /tmp tmpfs was clearing
+        # the cache on every reboot, giving zoom_cache_hits=0 on every render.
+        os.environ["RUSHCUT_ZOOM_CACHE_DIR"] = str(manifest_path.parent / "zoom-cache")
 
         tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage, on_analysis=on_analysis)
 

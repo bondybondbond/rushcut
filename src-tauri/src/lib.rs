@@ -5,11 +5,12 @@ mod splash;
 use base64::Engine as _;
 use db::{
     add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_clips_needing_bg_proxy,
-    get_job, get_project_output_paths, get_project_with_clips, has_4k_clips, insert_clip,
-    insert_job, insert_project, list_projects, rename_project, reorder_clips,
-    set_clip_proxy_status, update_clip_proxy, update_clip_review, update_clip_thumbnail,
-    update_clip_volume, update_clip_waveform, update_job_analysis, update_job_done,
-    update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary, ProjectWithClips,
+    get_included_clips_with_proxy, get_job, get_project_output_paths, get_project_with_clips,
+    has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
+    reorder_clips, set_clip_proxy_status, update_clip_proxy, update_clip_review,
+    update_clip_thumbnail, update_clip_volume, update_clip_waveform, update_job_analysis,
+    update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary,
+    ProjectWithClips,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -387,6 +388,45 @@ fn probe_clip_fps(src: &str) -> Option<String> {
     }
 }
 
+/// Batch R: probe a proxy file's video stream height + integer fps in one ffprobe call.
+/// Mirrors render.py `_proxy_meta()` so the readiness gate matches the render-time gate.
+/// Returns (0, 0) on any error.
+fn proxy_meta_native(path: &str) -> (u32, u32) {
+    let out = std::process::Command::new(ffprobe_exe())
+        .args([
+            "-v", "quiet",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=height,r_frame_rate",
+            "-of", "csv=p=0",
+            path,
+        ])
+        .output();
+    let stdout = match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Err(_) => return (0, 0),
+    };
+    // ffprobe CSV for one stream looks like "2160,30000/1001"
+    let first_line = stdout.lines().next().unwrap_or("");
+    let mut parts = first_line.split(',');
+    let height = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    let fps_str = parts.next().unwrap_or("25");
+    let fps_int = round_fps_to_standard(fps_str);
+    (height, fps_int)
+}
+
+/// Batch R: rounded standard fps from ffprobe rational ("30000/1001" -> 30).
+/// Mirrors render.py `round_to_standard_fps`.
+fn round_fps_to_standard(s: &str) -> u32 {
+    let f = if let Some((num, den)) = s.split_once('/') {
+        let n: f64 = num.parse().unwrap_or(0.0);
+        let d: f64 = den.parse().unwrap_or(1.0);
+        if d == 0.0 { 0.0 } else { n / d }
+    } else {
+        s.parse::<f64>().unwrap_or(0.0)
+    };
+    f.round() as u32
+}
+
 /// Low-priority background proxy encode — 2160p so proxies qualify for both 1080p and 4K renders.
 /// Windows BELOW_NORMAL_PRIORITY_CLASS + -threads 1 ensures foreground stays responsive.
 /// NOTE: proxy.py was dead code since Batch 16; this native Rust path is the live one.
@@ -431,6 +471,44 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
     }
 
     cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Batch R: normal-priority variant of `generate_proxy_file_low_priority` for the
+/// Render-screen boost path. Same FFmpeg args except no BELOW_NORMAL priority class
+/// and `-threads 0` (auto) so the user's wait state clears faster. Spec must stay
+/// in lockstep with the low-priority variant -- both produce the proxy that
+/// render.py's reuse gate accepts.
+fn generate_proxy_file_normal_priority(src: &str, dst: &str) -> bool {
+    let encoder = detect_best_encoder();
+    let fps = probe_clip_fps(src).unwrap_or_else(|| {
+        proxy_bg_log(&format!("[Q2] WARNING: fps probe failed for {}, defaulting to 25", src));
+        "25".to_string()
+    });
+    proxy_bg_log(&format!("[PROXY_BG] encode-start (normal priority) src={} dst={} encoder={} fps={}", src, dst, encoder, fps));
+
+    std::process::Command::new(ffmpeg_exe())
+        .args([
+            "-i", src,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-vf", "scale=-2:2160,format=yuv420p",
+            "-r", &fps,
+            "-fps_mode", "cfr",
+            "-c:v", encoder,
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "48000",
+            "-threads", "0",
+            "-y",
+            dst,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Encode a 480p H.264 proxy using the best available GPU encoder (detected once via OnceLock).
@@ -932,6 +1010,74 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
 // Proxy generation (background)
 // ---------------------------------------------------------------------------
 
+/// Batch R: report which include=1 clips are NOT yet render-ready (proxy missing
+/// or below the height/fps gate render.py uses). The Render screen polls this
+/// before auto-starting so the user never falls into the full-normalise slow
+/// path (Q2 fps-rejected proxies = 504s 8-clip render vs 214s baseline).
+///
+/// Mirrors render.py: `required_proxy_h = 2160 if 4k else 1080`, plus
+/// `proxy_fps_int == target_fps_int` (target = native fps of clip 0).
+/// A clip with `proxy_path == null`, missing file, height < required, or
+/// fps mismatch is "blocking".
+#[derive(serde::Serialize)]
+struct ProxyReadiness {
+    ready: u32,
+    total: u32,
+    blocking_clip_ids: Vec<String>,
+    target_fps_int: u32,
+}
+
+#[tauri::command]
+fn get_proxy_readiness_cmd(
+    project_id: String,
+    output_resolution: Option<String>,
+) -> Result<ProxyReadiness, String> {
+    let clips = get_included_clips_with_proxy(&project_id)
+        .map_err(|e| format!("DB error: {}", e))?;
+
+    let total = clips.len() as u32;
+    if total == 0 {
+        return Ok(ProxyReadiness {
+            ready: 0,
+            total: 0,
+            blocking_clip_ids: vec![],
+            target_fps_int: 0,
+        });
+    }
+
+    let required_h: u32 = if output_resolution.as_deref() == Some("4k") { 2160 } else { 1080 };
+    // Target fps derived from clip 0's source — matches render.py `_probe_fps()` semantics.
+    let target_fps_int = probe_clip_fps(&clips[0].1)
+        .map(|s| round_fps_to_standard(&s))
+        .unwrap_or(25);
+
+    let mut ready = 0u32;
+    let mut blocking = Vec::new();
+    for (id, _local, proxy) in &clips {
+        let Some(proxy_path) = proxy else {
+            blocking.push(id.clone());
+            continue;
+        };
+        if !std::path::Path::new(proxy_path).exists() {
+            blocking.push(id.clone());
+            continue;
+        }
+        let (h, fps_int) = proxy_meta_native(proxy_path);
+        if h >= required_h && fps_int == target_fps_int {
+            ready += 1;
+        } else {
+            blocking.push(id.clone());
+        }
+    }
+
+    Ok(ProxyReadiness {
+        ready,
+        total,
+        blocking_clip_ids: blocking,
+        target_fps_int,
+    })
+}
+
 /// Kick off the upfront media batch (thumbnail + waveform) for all clips in a project.
 ///
 /// Batch N: when `low_priority=true`, additionally pre-encode proxies for clips
@@ -973,9 +1119,10 @@ async fn generate_proxies_cmd(
     let pid = project_id.clone();
     tauri::async_runtime::spawn(async move {
         run_media_batch(app.clone(), pid.clone(), all_clips).await;
-        if low_priority {
-            run_bg_proxy_batch(app, pid.clone()).await;
-        }
+        // Batch R: always run the proxy batch. The low_priority flag now selects
+        // priority (BELOW_NORMAL for Trimmer-unmount fire-and-forget vs normal
+        // for the Render-screen boost), not whether to run it at all.
+        run_bg_proxy_batch(app, pid.clone(), low_priority).await;
         guard.lock().unwrap().remove(&pid);
     });
 
@@ -988,7 +1135,7 @@ async fn generate_proxies_cmd(
 /// before each encode and `'done'` only after `is_valid_proxy_file` confirms
 /// success. Native-codec sources (H.264 / VP8 / VP9) skip encode and mark done
 /// with the source path as the proxy_path (matches existing run_media_batch logic).
-async fn run_bg_proxy_batch(app: AppHandle, project_id: String) {
+async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bool) {
     let clips_to_encode = match get_clips_needing_bg_proxy(&project_id) {
         Ok(v) => v,
         Err(e) => {
@@ -1015,7 +1162,7 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String) {
     // Codecs WebView2 decodes natively — no transcode needed (matches proxy.py logic).
     const NATIVE_CODECS: &[&str] = &["h264", "vp8", "vp9"];
 
-    proxy_bg_log(&format!("[PROXY_BG] batch-start project_id={} clip_count={}", project_id, clips_to_encode.len()));
+    proxy_bg_log(&format!("[PROXY_BG] batch-start project_id={} clip_count={} low_priority={}", project_id, clips_to_encode.len(), low_priority));
 
     for (clip_id, local_path, codec_name) in clips_to_encode {
         let codec = codec_name.unwrap_or_default().to_lowercase();
@@ -1059,7 +1206,11 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String) {
         let _ = set_clip_proxy_status(&clip_id, "queued");
         proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={}", clip_id, codec));
         let t0 = std::time::Instant::now();
-        let ok = generate_proxy_file_low_priority(&local_path, &proxy_path);
+        let ok = if low_priority {
+            generate_proxy_file_low_priority(&local_path, &proxy_path)
+        } else {
+            generate_proxy_file_normal_priority(&local_path, &proxy_path)
+        };
         let elapsed = t0.elapsed().as_secs_f64();
 
         if ok && is_valid_proxy_file(&proxy_path) {
@@ -1396,6 +1547,7 @@ pub fn run() {
             delete_project_cmd,
             open_output_path,
             generate_proxies_cmd,
+            get_proxy_readiness_cmd,
             generate_proxy_for_clip,
             vacuum_proxies_cmd,
             get_music_dir_cmd,

@@ -159,6 +159,19 @@ describe("Full E2E render — /render/:projectId", () => {
       // No button = non-4K project auto-started; stage-label will appear without a click.
     }
 
+    // Batch R: project may land in awaiting-proxies wait state if include=1
+    // clips don't yet have a valid proxy (height/fps gate). Click "Start anyway"
+    // to bypass and keep the existing render assertions intact.
+    // KNOWN E2E GAP: the gate transition itself (awaiting -> rendering on
+    // proxy-progress completion) has no automated coverage in this batch.
+    const startAnyway = await $('[data-testid="btn-start-anyway"]');
+    try {
+      await startAnyway.waitForExist({ timeout: 5_000 });
+      await startAnyway.click();
+    } catch {
+      // Proxies already ready -- render started directly, no wait state shown.
+    }
+
     // Wait for pipeline stage label (appears once rendering begins)
     const stageLabel = await $('[data-testid="stage-label"]');
     await stageLabel.waitForExist({ timeout: 30_000 });
