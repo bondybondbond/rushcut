@@ -15,24 +15,31 @@
 
 ## Current Phase
 
-**Phase 2 — Batch P (Render Performance) COMPLETE (2026-05-21). Next: Audio re-encode + opencl.**
+**Phase 2 — Batch P2 (Loudnorm fusion) COMPLETE (2026-05-23). Next: Batch Q — GPU AMF render.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch P2 — two quick render wins (new chat):**
+**Batch Q — GPU AMF render via Windows `h264_amf` (new chat):**
 
-> Before starting: log only, no fixes — read `render.py` final render command and confirm whether audio is being re-encoded after loudnorm has already run. If `-c:a` is not `copy` in the final concat/render step, that's a wasted ~27s per render. If confirmed, change to `-c:a copy`. Separately, add `x264opts opencl=true` to the final render ffmpeg command — one flag, no quality impact, marginal free speedup on the CPU encode path.
+Architecture: route the final render encode through the Windows-native `ffmpeg.exe` (WinGet-installed, has `h264_amf`) rather than WSL2 ffmpeg (no AMF on Linux). Pipeline produces intermediates in WSL2 `/tmp/<job_id>/`; Step 5 / Step 6 ffmpeg call is swapped to `ffmpeg.exe` with Windows paths. libx264 fallback retained.
 
-1. **Audio copy in final render** — if loudnorm already ran, the final concat's `-c:a aac -b:a 128k` is redundant; switch to `-c:a copy` to save ~27s
-2. **`x264opts opencl=true`** — one flag, free marginal speedup, zero quality risk
+Pre-confirmed facts:
+- `h264_amf` 1-frame test encode returned `AMF_OK` on this AMD GPU with Windows ffmpeg
+- WSL2 `/dev/dri` absent — VAAPI/QSV dead; no `h264_amf` on Linux FFmpeg; NVENC needs NVIDIA
+- Windows ffmpeg path: installed via WinGet, accessible as `ffmpeg.exe` from PowerShell
+- WSL2 `/tmp/<job_id>/` intermediates are accessible from Windows as `\\wsl.localhost\Ubuntu-24.04\tmp\<job_id>\`
 
-GPU encoding (NVENC) is the next large lever but requires GPU detection + 3 encoder code paths + quality validation. See PRD-DEV.md backlog.
+Key risks: Windows path translation in render.py, `-cq` vs `-crf` quality param mapping for AMF, audio handling with Windows ffmpeg.
 
 ---
 
-## Recently shipped this session (2026-05-21)
+## Recently shipped this session (2026-05-23)
+
+- **Batch P2 — Loudnorm fusion COMPLETE:** Eliminated the separate two-pass loudnorm Step 7 (~17–32s on 4K renders) by fusing single-pass `loudnorm` directly into the encode that already happens. Music-off single-clip: appended to `-af` chain. Music-off multi-clip: `[aout]loudnorm=...[aloud]` label in `filter_complex`, gated on `not music_on` to prevent double-apply. Music-on (any): fused into `music.py` amix tail as `[amixed]loudnorm=...[aout]` via `apply_loudnorm=True`. `loudnorm.py` rewritten: two-pass `loudnorm()` + Lambda dead code deleted; `loudnorm_filter()` helper added. Step 7 replaced with `loudnorm_s=0.0` stub so ANALYSIS/timing log stays intact. Verified: `t_loudnorm_s=0.0` all paths; music-on -13.5/-14.2 LUFS PASS; music-off single-clip -14.4 LUFS PASS; music-off multi-clip -15.7 LUFS accepted (single-pass ±2.0 bar for acrossfade content). A/B listen: "absolutely fine." LEARNINGS.md updated with ±2.0 LUFS bar note.
+
+## Recently shipped previous session (2026-05-21)
 
 - **Batch P — Render Performance COMPLETE:** Zoom step parallelised via `ThreadPoolExecutor(min(4, cpu_count))` with per-worker `-threads N -filter_threads N` cap (mirrors normalise.py). Persistent zoom output cache at `/tmp/rushcut-zoom-cache/` — sha1 key on `(src_path, size, in_ms, out_ms, zoom_mode, focal_x, focal_y, resolution)`; atomic writes via `os.replace(tmp→final)`; INVALID detection via `is_valid_proxy()` for corrupt mid-encode cache entries. Render preset `medium → fast` (CRF 22 kept). `zoom_cache_hits` added to ANALYSIS line + `render-timing-log.jsonl`. `run.py` per-job log file (`pipeline-{job_id}.log`) with `pipeline-latest.log` as symlink — prevents concurrent runs corrupting the log. Measured: 6-clip 4K re-render ~3 min (was ~6.5 min). First renders unaffected by cache (all MISS). E2E: 9/9 fast + 5/5 gap-editor + 26/26 arrange + 15/15 render PASS.
 
