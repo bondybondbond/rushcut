@@ -131,6 +131,8 @@ def main() -> None:
             # Batch Q: Windows ffmpeg.exe path for h264_amf GPU encode (Step 5).
             # Resolved in Rust via where.exe; "" means fallback to libx264.
             "win_ffmpeg_path": manifest.get("win_ffmpeg_path", ""),
+            # use_amf: True when UI "Fast render" toggle is on (or RUSHCUT_USE_AMF env set).
+            "use_amf": bool(settings.get("use_amf", False)),
         },
     }
 

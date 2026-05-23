@@ -38,47 +38,46 @@ def _win_to_wsl(win_path: str) -> str:
     return p  # already a WSL/POSIX path
 
 
-def _detect_amf(win_ffmpeg_path: str) -> bool:
-    """Return True if h264_amf is available AND explicitly opted in via RUSHCUT_USE_AMF=1.
+def _detect_amf(win_ffmpeg_path: str, explicit: bool = False) -> bool:
+    """Return True if h264_amf is available.
 
     AMF is NOT the default. h264_amf on AMD hardware lacks B-frame support (driver-level
     limitation, confirmed: -bf ignored in both CQP and VBR modes), producing subtly
     choppier motion on pans vs libx264 -preset fast (has_b_frames=2). libx264 is the
-    default final encode for quality. Set RUSHCUT_USE_AMF=1 to opt into faster AMF output.
+    default final encode for quality.
 
-    RUSHCUT_FORCE_LIBX264=1 explicitly forces libx264 (test seam, overrides AMF opt-in).
+    Opt-in paths (either suffices):
+      - RUSHCUT_USE_AMF=1 env var (developer/power-user)
+      - explicit=True (passed when UI "Fast render" toggle is on)
+
+    RUSHCUT_FORCE_LIBX264=1 overrides both opt-in paths (test seam).
     """
     global _amf_available
-    if _amf_available is not None:
-        return _amf_available
     if os.environ.get("RUSHCUT_FORCE_LIBX264"):
         log.info("[encoder] RUSHCUT_FORCE_LIBX264 set -- using libx264 (WSL)")
-        _amf_available = False
-        return False
-    if not os.environ.get("RUSHCUT_USE_AMF"):
-        log.info("[encoder] AMF opt-in not set -- using libx264 (WSL) for quality")
-        _amf_available = False
         return False
     if not win_ffmpeg_path or win_ffmpeg_path == "ffmpeg":
         log.info("[encoder] win_ffmpeg_path not resolved -- falling back to libx264 (WSL)")
-        _amf_available = False
         return False
-    wsl_ffmpeg = _win_to_wsl(win_ffmpeg_path)
-    try:
-        result = subprocess.run(
-            [wsl_ffmpeg, "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=10,
-        )
-        _amf_available = "h264_amf" in result.stdout
-    except Exception as e:
-        log.warning("[encoder] AMF probe failed: %s -- using libx264", e)
-        _amf_available = False
+    # Probe once and cache
+    if _amf_available is None:
+        wsl_ffmpeg = _win_to_wsl(win_ffmpeg_path)
+        try:
+            result = subprocess.run(
+                [wsl_ffmpeg, "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=10,
+            )
+            _amf_available = "h264_amf" in result.stdout
+        except Exception as e:
+            log.warning("[encoder] AMF probe failed: %s -- using libx264", e)
+            _amf_available = False
 
     if _amf_available:
-        log.info("[encoder] RUSHCUT_USE_AMF=1 -- using h264_amf via %s", win_ffmpeg_path)
+        source = "UI toggle" if explicit else "RUSHCUT_USE_AMF=1"
+        log.info("[encoder] %s -- using h264_amf via %s", source, win_ffmpeg_path)
     else:
-        log.info("[encoder] RUSHCUT_USE_AMF=1 set but AMF unavailable -- using libx264 (WSL)")
-    return _amf_available
+        log.info("[encoder] AMF requested but unavailable -- using libx264 (WSL)")
+    return bool(_amf_available)
 
 
 def to_win_path(p: "str | object") -> str:
@@ -104,6 +103,7 @@ def video_encoder_args(
     output_resolution: str,
     win_ffmpeg_path: str,
     force_libx264: bool = False,
+    use_amf: bool = False,
 ) -> "tuple[list[str], list[str], bool]":
     """Return (ffmpeg_binary_argv, codec_args_list, is_amf).
 
@@ -111,10 +111,14 @@ def video_encoder_args(
                           WSL Python calls the Windows ffmpeg.exe via /mnt/c/... path.
     codec_args_list    -- -c:v ... -qp/-crf ... -quality/-preset args only.
     is_amf             -- True means caller must translate file paths via to_win_path().
+
+    use_amf=True overrides the RUSHCUT_USE_AMF env var check, allowing the UI toggle
+    to enable AMF without requiring a system env var to be set.
     """
     is_draft = mode == "draft"
 
-    if not force_libx264 and _detect_amf(win_ffmpeg_path):
+    amf_requested = use_amf or bool(os.environ.get("RUSHCUT_USE_AMF"))
+    if not force_libx264 and amf_requested and _detect_amf(win_ffmpeg_path, explicit=use_amf):
         qp      = AMF_QP_DRAFT if is_draft else AMF_QP
         quality = AMF_QUALITY_DRAFT if is_draft else AMF_QUALITY
         codec_args = [

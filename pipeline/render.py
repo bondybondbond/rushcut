@@ -555,7 +555,8 @@ def run_pipeline(
 
     # Batch Q: resolve encoder once for both paths (single-clip + multi-clip).
     win_ffmpeg = config.get("win_ffmpeg_path", "")
-    bin_argv, codec_args, is_amf = video_encoder_args(mode, output_resolution, win_ffmpeg)
+    use_amf = bool(config.get("use_amf", False))
+    bin_argv, codec_args, is_amf = video_encoder_args(mode, output_resolution, win_ffmpeg, use_amf=use_amf)
     log.info("[Q] encoder=%s is_amf=%s", codec_args[1] if len(codec_args) > 1 else "?", is_amf)
 
     # Contention warning: if any clip still lacks a proxy, bg gen may be running.

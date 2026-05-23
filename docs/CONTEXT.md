@@ -15,27 +15,31 @@
 
 ## Current Phase
 
-**Phase 2 — Batch P2 (Loudnorm fusion) COMPLETE (2026-05-23). Next: Batch Q — GPU AMF render.**
+**Phase 2 — Batch Q (GPU AMF render + Fast Render toggle) COMPLETE (2026-05-23). Next: Batch Q2 — FPS stutter fix.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch Q — GPU AMF render via Windows `h264_amf` (new chat):**
+**Batch Q2 — FPS stutter fix (constant-motion clips judder on pans):**
 
-Architecture: route the final render encode through the Windows-native `ffmpeg.exe` (WinGet-installed, has `h264_amf`) rather than WSL2 ffmpeg (no AMF on Linux). Pipeline produces intermediates in WSL2 `/tmp/<job_id>/`; Step 5 / Step 6 ffmpeg call is swapped to `ffmpeg.exe` with Windows paths. libx264 fallback retained.
+Root cause: pipeline hardcodes `-r 25 -fps_mode cfr`. DJI clips are 29.97fps. 29.97→25 drops ~1 frame per 5 output frames, visible as stutter on pans.
+Full spec: `docs/BATCH-Q2-FPS-STUTTER.md`.
 
-Pre-confirmed facts:
-- `h264_amf` 1-frame test encode returned `AMF_OK` on this AMD GPU with Windows ffmpeg
-- WSL2 `/dev/dri` absent — VAAPI/QSV dead; no `h264_amf` on Linux FFmpeg; NVENC needs NVIDIA
-- Windows ffmpeg path: installed via WinGet, accessible as `ffmpeg.exe` from PowerShell
-- WSL2 `/tmp/<job_id>/` intermediates are accessible from Windows as `\\wsl.localhost\Ubuntu-24.04\tmp\<job_id>\`
-
-Key risks: Windows path translation in render.py, `-cq` vs `-crf` quality param mapping for AMF, audio handling with Windows ffmpeg.
+Key changes needed:
+1. `render.py` — detect `target_fps` from source clips (ffprobe, round 29.97→30, 25→25)
+2. `normalise.py` — replace hardcoded `-r 25` with `target_fps`
+3. `proxy.py` — replace hardcoded `-r 25` with source clip's native FPS
+4. `render.py` proxy reuse gate — add FPS check; reject proxy if FPS ≠ target_fps (auto-triggers regeneration)
 
 ---
 
 ## Recently shipped this session (2026-05-23)
+
+- **Batch Q — GPU AMF render + Fast Render UI toggle COMPLETE:** `pipeline/encoder.py` (new module): `video_encoder_args()`, `to_win_path()`, `_detect_amf()`. AMF default=OFF (libx264 for quality); opt-in via `RUSHCUT_USE_AMF=1` env var OR "Fast render" UI toggle. AMF_QP=23 chosen after benchmarking (67 MB vs libx264 63 MB, +6%). B-frame hardware limitation confirmed (AMD driver ignores `-bf`; `has_b_frames=0` in CQP+VBR). `render.py` + `run.py` updated to thread `use_amf` from manifest. `src/pages/Render.tsx`: "Fast render" toggle in `phase==="ready"` (4K gate only) — pill toggle, `#99B3FF` when on, helper text "slightly lower motion quality". `src/types/project.ts` + `buildJobConfig.ts` wired. 9/9 fast PASS.
+- **Batch Q2 deferred — FPS stutter diagnosed:** Stutter on constant-motion DJI clips traced to 29.97fps→25fps conversion in proxy + normalise. Plan documented in `docs/BATCH-Q2-FPS-STUTTER.md`.
+
+## Recently shipped previous session (2026-05-23)
 
 - **Batch P2 — Loudnorm fusion COMPLETE:** Eliminated the separate two-pass loudnorm Step 7 (~17–32s on 4K renders) by fusing single-pass `loudnorm` directly into the encode that already happens. Music-off single-clip: appended to `-af` chain. Music-off multi-clip: `[aout]loudnorm=...[aloud]` label in `filter_complex`, gated on `not music_on` to prevent double-apply. Music-on (any): fused into `music.py` amix tail as `[amixed]loudnorm=...[aout]` via `apply_loudnorm=True`. `loudnorm.py` rewritten: two-pass `loudnorm()` + Lambda dead code deleted; `loudnorm_filter()` helper added. Step 7 replaced with `loudnorm_s=0.0` stub so ANALYSIS/timing log stays intact. Verified: `t_loudnorm_s=0.0` all paths; music-on -13.5/-14.2 LUFS PASS; music-off single-clip -14.4 LUFS PASS; music-off multi-clip -15.7 LUFS accepted (single-pass ±2.0 bar for acrossfade content). A/B listen: "absolutely fine." LEARNINGS.md updated with ±2.0 LUFS bar note.
 

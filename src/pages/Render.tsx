@@ -50,6 +50,9 @@ export default function Render() {
       return "1080p";
     }
   });
+  const [fastRender, setFastRender] = useState(() => {
+    try { return sessionStorage.getItem(`rc_fast_render_${projectId}`) === "1"; } catch { return false; }
+  });
 
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -78,6 +81,12 @@ export default function Render() {
   function handleResSelect(res: "1080p" | "4k") {
     setOutputRes(res);
     try { sessionStorage.setItem(`rc_render_res_${projectId}`, res); } catch { /* ignore */ }
+  }
+
+  function handleFastRenderToggle() {
+    const next = !fastRender;
+    setFastRender(next);
+    try { sessionStorage.setItem(`rc_fast_render_${projectId}`, next ? "1" : "0"); } catch { /* ignore */ }
   }
 
   function onResizePointerDown(e: React.PointerEvent) {
@@ -293,6 +302,29 @@ export default function Render() {
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div className="border border-white/10 rounded-lg p-4 space-y-1">
+                <label className="flex items-center gap-3 cursor-pointer select-none">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={fastRender}
+                    data-testid="toggle-fast-render"
+                    onClick={handleFastRenderToggle}
+                    className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                      fastRender ? "bg-[#99B3FF]" : "bg-white/20"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${
+                        fastRender ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm text-[#e5e5e5]">Fast render</span>
+                </label>
+                <p className="text-xs text-[#a3a3a3] pl-12">slightly lower motion quality</p>
               </div>
 
               <button

@@ -37,6 +37,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — debug binary uses embedded assets, not live Vite server
+
+**Problem:** Launching `src-tauri/target/debug/rushcut.exe` directly (without `pnpm dev`) serves assets baked in at the last `tauri build --debug`. Even if Vite is then started on port 1420, the already-running WebView2 won't pick up the live source. Source changes are invisible until the binary is killed and relaunched via `pnpm dev`.
+**Solution:** For UI verification of in-session TypeScript changes, always use `pnpm dev` (sequences Vite then cargo run). Navigating to `http://localhost:1420` (not `tauri.localhost`) confirms you're on the live Vite assets. If the binary was launched directly, kill it and restart via `pnpm dev` before screenshotting any new UI.
+**Context:** Any session that makes TypeScript/TSX changes and then uses chrome-devtools MCP to screenshot the result.
+
+---
+
 ## Workflow — `Start-Process` in PowerShell does not inherit `$env:` vars reliably
 
 **Problem:** Setting `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "..."` in PowerShell and then using `Start-Process -FilePath rushcut.exe` does not propagate the variable to the child process on Windows PowerShell 5.x. The variable is silently dropped, so WebView2 never enters remote-debugging mode.
