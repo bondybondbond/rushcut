@@ -42,27 +42,80 @@ from .zoom import apply_zoom
 log = logging.getLogger(__name__)
 
 
-def _proxy_height(proxy_wsl: str) -> int:
-    """Return video stream height of proxy file, or 0 on error.
+def round_to_standard_fps(r_frame_rate: str) -> int:
+    """Round ffprobe r_frame_rate string to nearest standard fps.
 
-    Used to detect legacy 480p proxies — those cannot substitute for a 1080p
-    normalised intermediate and must fall back to the normalise path.
+    Returns an int for proxy comparison and log messages ONLY.
+    Never pass this to FFmpeg -r; use the raw rational string instead.
+    """
+    try:
+        num, den = map(int, r_frame_rate.split("/"))
+        fps = num / den
+        for standard in [24, 25, 30, 50, 60]:
+            if abs(fps - standard) < 0.5:
+                return standard
+    except Exception:
+        pass
+    return 25  # fallback
+
+
+def _probe_fps(path: Path) -> str:
+    """Return raw r_frame_rate string from first video stream (e.g. '30000/1001').
+
+    This is what gets passed directly to FFmpeg -r so the rational is preserved.
+    Returns '25' on any failure so the pipeline degrades to existing behaviour.
     """
     try:
         r = subprocess.run(
             [
                 "/usr/bin/ffprobe", "-v", "quiet",
                 "-select_streams", "v:0",
-                "-show_entries", "stream=height",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        val = r.stdout.decode().strip()
+        if val and "/" in val:
+            return val
+    except Exception:
+        pass
+    return "25"
+
+
+def _proxy_meta(proxy_wsl: str) -> tuple[int, int]:
+    """Return (height, fps_int) of proxy file, or (0, 0) on error.
+
+    height: used to gate proxy reuse (must meet required_proxy_h).
+    fps_int: rounded standard fps, compared against target_fps_int to detect
+             legacy 25fps proxies that need regeneration.
+    """
+    try:
+        r = subprocess.run(
+            [
+                "/usr/bin/ffprobe", "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=height,r_frame_rate",
                 "-of", "csv=p=0",
                 proxy_wsl,
             ],
             capture_output=True,
             timeout=10,
         )
-        return int(r.stdout.decode().strip())
+        lines = r.stdout.decode().strip().splitlines()
+        # ffprobe csv output: one line per selected entry field, two fields selected
+        # Typical output for one stream: "2160,30000/1001"
+        if lines:
+            parts = lines[0].split(",")
+            height = int(parts[0]) if parts else 0
+            fps_raw = parts[1].strip() if len(parts) > 1 else "25"
+            fps_int = round_to_standard_fps(fps_raw)
+            return height, fps_int
     except Exception:
-        return 0
+        pass
+    return 0, 0
 
 MUSIC_DIR = Path(__file__).parent.parent / "music"
 TMP_BASE = Path("/tmp")
@@ -250,6 +303,13 @@ def run_pipeline(
     report(10)
     t0 = time.time()
 
+    # Detect target fps from the first source clip.
+    # target_fps_raw: passed to FFmpeg -r (preserves rational e.g. "30000/1001")
+    # target_fps_int: used ONLY for proxy comparison and log messages, never passed to FFmpeg
+    target_fps_raw = _probe_fps(clip_paths[0]) if clip_paths else "25"
+    target_fps_int = round_to_standard_fps(target_fps_raw)
+    log.info("[Q2] target_fps=%d (source %s from clip 0)", target_fps_int, target_fps_raw)
+
     # Pre-trim: extract only the needed segment from each source clip before normalise.
     # DJI clips can be 60-120s; user typically uses 5-30s. Normalising the full clip
     # wastes 4-10x time. Fast copy-seek to [in_s - 2s, out_s + 0.5s], then normalise
@@ -299,18 +359,23 @@ def run_pipeline(
 
     for i, cm in enumerate(pipeline_clips):
         pwsl = cm.get("proxy_path_wsl")
-        # Cache both checks to avoid two ffprobe calls per clip
+        # Cache checks to avoid multiple ffprobe calls per clip
         valid = bool(pwsl and is_valid_proxy(pwsl))
-        height = _proxy_height(pwsl) if valid else 0
-        if valid and height >= required_proxy_h:
+        height, proxy_fps_int = _proxy_meta(pwsl) if valid else (0, 0)
+        fps_ok = (proxy_fps_int == target_fps_int)
+        if valid and height >= required_proxy_h and fps_ok:
             proxy_clip_indices.add(i)
-            log.info("[C-proxy] clip %d: using %dp proxy, skipping normalise", i, height)
+            log.info("[C-proxy] clip %d: using %dp %dfps proxy, skipping normalise", i, height, proxy_fps_int)
         else:
             norm_clip_indices.append(i)
-            reason = (
-                "no proxy" if not pwsl
-                else ("invalid" if not valid else f"proxy-{height}p < required-{required_proxy_h}p")
-            )
+            if not pwsl:
+                reason = "no proxy"
+            elif not valid:
+                reason = "invalid"
+            elif height < required_proxy_h:
+                reason = f"proxy-{height}p < required-{required_proxy_h}p"
+            else:
+                reason = f"proxy FPS mismatch: proxy-{proxy_fps_int}fps != target-{target_fps_int}fps"
             log.info("[C-proxy] clip %d: %s, normalising from source", i, reason)
 
     log.info("[C-proxy] %d proxy-skip / %d normalise", len(proxy_clip_indices), len(norm_clip_indices))
@@ -343,6 +408,7 @@ def run_pipeline(
             norm_src, tmp, mode=mode,
             on_clip_done=_normalise_progress,
             output_resolution=output_resolution,
+            target_fps=target_fps_raw,
         )
         for j, i in enumerate(norm_clip_indices):
             current_paths[i] = normed[j]
@@ -514,6 +580,7 @@ def run_pipeline(
             out_path=tmp / "intro_card.mp4",
             size=card_size,
             subtitle=config.get("intro_subtitle", ""),
+            target_fps=target_fps_raw,
         )
         current_paths = [card] + current_paths
         clip_volumes = [1.0] + clip_volumes
@@ -531,6 +598,7 @@ def run_pipeline(
             duration_s=3.0,
             out_path=tmp / "end_card.mp4",
             size=card_size,
+            target_fps=target_fps_raw,
         )
         current_paths = current_paths + [card]
         clip_volumes = clip_volumes + [1.0]

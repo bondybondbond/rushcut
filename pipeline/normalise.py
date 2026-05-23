@@ -33,6 +33,7 @@ def normalise(
     mode: str = "draft",
     on_clip_done: "Callable[[int, int], None] | None" = None,
     output_resolution: str = "1080p",
+    target_fps: str = "25",
 ) -> list[Path]:
     """
     Normalise each clip to H.264/yuv420p/25fps/AAC 128k.
@@ -83,7 +84,7 @@ def normalise(
             "-map", "0:v:0",
             "-map", "0:a:0?",
             "-vf", scale_filter,
-            "-r", "25",
+            "-r", target_fps,
             "-fps_mode", "cfr",
             "-c:v", "libx264",
             "-preset", preset,

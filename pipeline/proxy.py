@@ -107,6 +107,34 @@ def is_valid_proxy(proxy_wsl: str) -> bool:
         return False
 
 
+def get_source_fps(src_wsl: str) -> str:
+    """Return raw r_frame_rate string from source clip (e.g. '30000/1001').
+
+    Falls back to '25' on any failure.
+    NOTE: proxy.py is dead code since Batch 16 (Rust owns proxy gen).
+    This function is kept for parity with render.py's _probe_fps.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/ffprobe",
+                "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "csv=p=0",
+                src_wsl,
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        val = result.stdout.decode("utf-8", errors="replace").strip()
+        if val and "/" in val:
+            return val
+    except Exception:
+        pass
+    return "25"
+
+
 def generate_proxy(src_wsl: str, proxy_wsl: str) -> bool:
     """
     Encode a 1080p H.264 proxy from src_wsl -> proxy_wsl.
@@ -125,7 +153,8 @@ def generate_proxy(src_wsl: str, proxy_wsl: str) -> bool:
 
     Timeout 600s: HEVC decode is the bottleneck regardless of output resolution.
     """
-    print(f"[C-proxy] generating 1080p H.264 proxy for {proxy_wsl}", file=sys.stderr)
+    source_fps = get_source_fps(src_wsl)
+    print(f"[C-proxy] generating 1080p H.264 proxy for {proxy_wsl} fps={source_fps}", file=sys.stderr)
     try:
         result = subprocess.run(
             [
@@ -134,7 +163,7 @@ def generate_proxy(src_wsl: str, proxy_wsl: str) -> bool:
                 "-map", "0:v:0",
                 "-map", "0:a:0?",
                 "-vf", "scale=-2:1080,format=yuv420p",
-                "-r", "25",
+                "-r", source_fps,
                 "-fps_mode", "cfr",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",

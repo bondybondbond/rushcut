@@ -123,6 +123,7 @@ def make_card(
     out_path: Path,
     size: str,
     subtitle: str = "",
+    target_fps: str = "25",
 ) -> Path:
     """
     Render a card with centred text as a short H.264 video clip.
@@ -152,7 +153,7 @@ def make_card(
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-profile:v", "main",
-            "-r", "25",
+            "-r", target_fps,
             "-t", f"{duration_s:.4f}",
             # Cards have no audio — silence is injected later in render.py
             str(out_path),

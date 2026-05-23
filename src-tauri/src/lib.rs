@@ -351,9 +351,6 @@ fn proxy_bg_log(msg: &str) {
     }
 }
 
-/// Batch N: spawn a Windows ffmpeg process at BELOW_NORMAL_PRIORITY_CLASS with -threads 1.
-/// nice/ionice are Linux-only; Windows equivalent is the process priority class flag.
-/// Returns true on success.
 /// Return the video stream height of a proxy file (0 on error).
 /// Used to detect legacy 1080p proxies that need upgrading to 2160p for 4K render reuse.
 fn proxy_height_native(path: &str) -> u32 {
@@ -367,11 +364,41 @@ fn proxy_height_native(path: &str) -> u32 {
     }
 }
 
+/// [Q2] Probe native r_frame_rate of a source clip (e.g. "30000/1001" for 29.97fps).
+/// Returns None if ffprobe is unavailable or the clip has no video stream.
+/// Step 8a: log-only. Do NOT use as an -r argument until the log confirms ffprobe
+/// works correctly in the Rust Windows subprocess context.
+fn probe_clip_fps(src: &str) -> Option<String> {
+    let out = std::process::Command::new(ffprobe_exe())
+        .args([
+            "-v", "quiet",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "csv=p=0",
+            src,
+        ])
+        .output();
+    match out {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.contains('/') { Some(s) } else { None }
+        }
+        Err(_) => None,
+    }
+}
+
 /// Low-priority background proxy encode — 2160p so proxies qualify for both 1080p and 4K renders.
 /// Windows BELOW_NORMAL_PRIORITY_CLASS + -threads 1 ensures foreground stays responsive.
 /// NOTE: proxy.py was dead code since Batch 16; this native Rust path is the live one.
 fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
     let encoder = detect_best_encoder();
+    // [Q2 Step 8a] Log-only fps probe — verifies ffprobe is reachable from Rust subprocess context.
+    // STOP: do not replace -r "25" until this log confirms the probed fps value is correct.
+    let probed_fps = probe_clip_fps(src);
+    proxy_bg_log(&format!(
+        "[Q2] fps-probe src={} result={:?} (log-only, -r still hardcoded 25)",
+        src, probed_fps
+    ));
     proxy_bg_log(&format!("[PROXY_BG] encode-start src={} dst={} encoder={}", src, dst, encoder));
 
     let mut cmd = std::process::Command::new(ffmpeg_exe());
