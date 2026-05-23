@@ -392,14 +392,13 @@ fn probe_clip_fps(src: &str) -> Option<String> {
 /// NOTE: proxy.py was dead code since Batch 16; this native Rust path is the live one.
 fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
     let encoder = detect_best_encoder();
-    // [Q2 Step 8a] Log-only fps probe — verifies ffprobe is reachable from Rust subprocess context.
-    // STOP: do not replace -r "25" until this log confirms the probed fps value is correct.
-    let probed_fps = probe_clip_fps(src);
-    proxy_bg_log(&format!(
-        "[Q2] fps-probe src={} result={:?} (log-only, -r still hardcoded 25)",
-        src, probed_fps
-    ));
-    proxy_bg_log(&format!("[PROXY_BG] encode-start src={} dst={} encoder={}", src, dst, encoder));
+    // [Q2 Step 8b] Use native source fps so proxy matches render target_fps and passes reuse gate.
+    // Fallback to "25" if probe fails — renders will reject and re-normalise, no silent regression.
+    let fps = probe_clip_fps(src).unwrap_or_else(|| {
+        proxy_bg_log(&format!("[Q2] WARNING: fps probe failed for {}, defaulting to 25", src));
+        "25".to_string()
+    });
+    proxy_bg_log(&format!("[PROXY_BG] encode-start src={} dst={} encoder={} fps={}", src, dst, encoder, fps));
 
     let mut cmd = std::process::Command::new(ffmpeg_exe());
     cmd.args([
@@ -407,7 +406,7 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
         "-map", "0:v:0",
         "-map", "0:a:0?",
         "-vf", "scale=-2:2160,format=yuv420p",
-        "-r", "25",
+        "-r", &fps,
         "-fps_mode", "cfr",
         "-c:v", encoder,
         "-preset", "ultrafast",
@@ -439,9 +438,11 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
 /// Returns true on success.
 fn generate_proxy_file(src: &str, dst: &str) -> bool {
     let encoder = detect_best_encoder();
-    eprintln!("[C-proxy] encoding 1080p proxy {} -> {} using {}", src, dst, encoder);
+    // [Q2] Use native source fps so proxy matches render target_fps and passes reuse gate.
+    let fps = probe_clip_fps(src).unwrap_or_else(|| "25".to_string());
+    eprintln!("[C-proxy] encoding 1080p proxy {} -> {} using {} fps={}", src, dst, encoder, fps);
     // Spec matches normalise.py output so render.py can skip normalise on re-renders:
-    //   scale=-2:1080 yuv420p, 25fps CFR, libx264/GPU ultrafast, AAC 48kHz
+    //   scale=-2:1080 yuv420p, native fps CFR, libx264/GPU ultrafast, AAC 48kHz
     // -c:a aac + -ar 48000: DJI records at 96kHz — must re-encode, not stream-copy.
     let ok = std::process::Command::new(ffmpeg_exe())
         .args([
@@ -449,7 +450,7 @@ fn generate_proxy_file(src: &str, dst: &str) -> bool {
             "-map", "0:v:0",
             "-map", "0:a:0?",
             "-vf", "scale=-2:1080,format=yuv420p",
-            "-r", "25",
+            "-r", &fps,
             "-fps_mode", "cfr",
             "-c:v", encoder,
             "-preset", "ultrafast",
