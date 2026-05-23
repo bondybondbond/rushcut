@@ -346,6 +346,8 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 **AMF vs libx264 file size tradeoff:** At the default quality parity point (`-rc cqp -qp_i 20 -qp_p 20`) AMF produces ~50% larger files than libx264 `-crf 22 -preset fast` on 4K DJI footage (96 MB vs 63 MB for a 30s clip). `AMF_QP = 23` brings file size to ~6% larger (67 MB) with no measurable encode time difference — this is the shipped default in `encoder.py`.
 
+**B-frames not supported on AMD AMF (hardware-level, not a config issue):** h264_amf with `-rc cqp` produces `has_b_frames=0` regardless of any `-bf N` flag — the AMD driver silently ignores it. This was confirmed at both CQP and VBR rate control modes on this hardware (AMD GPU, WinGet ffmpeg 8.0.1). libx264 `-preset fast` produces `has_b_frames=2`, which makes pans look noticeably smoother. There is no AMF flag combination that restores B-frames on this machine. Workaround if motion quality matters: use libx264 via `RUSHCUT_FORCE_LIBX264=1` or add a quality-mode UI selector. NVENC (Nvidia) does support B-frames and would not have this limitation.
+
 **Encode speed:** 1.7× faster than libx264 on AMD GPU (30s 4K clip: 27.8s AMF vs 46.6s libx264). AMD AMF is structurally slower than Nvidia NVENC — do not expect 5–10× speedup on AMD hardware. On a real 8-clip 4K render, Step 5 drops by roughly 70s.
 
 **Path translation (WSL Python → Windows ffmpeg.exe):** Windows ffmpeg.exe cannot be invoked via a `C:\...` string from WSL `subprocess.run` — it needs the `/mnt/c/...` WSL-accessible form. Conversely, file path *arguments* to Windows ffmpeg must be Windows-form (`C:\...` or `\\wsl.localhost\Ubuntu-24.04\...`). Two separate helpers handle this: `_win_to_wsl()` (binary path) and `to_win_path()` (file args) in `pipeline/encoder.py`.
