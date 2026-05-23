@@ -71,6 +71,34 @@ fn win_to_wsl(path: &str) -> String {
 fn ffmpeg_exe() -> &'static str { "ffmpeg" }
 fn ffprobe_exe() -> &'static str { "ffprobe" }
 
+/// Resolve the full Windows filesystem path to ffmpeg.exe once and cache it.
+/// Python (running in WSL2) cannot call bare "ffmpeg" — it needs the absolute Windows
+/// path so it can invoke ffmpeg.exe from WSL via /mnt/c/... or the wsl.localhost UNC path.
+static WIN_FFMPEG_PATH: OnceLock<String> = OnceLock::new();
+
+fn resolve_win_ffmpeg_path() -> &'static str {
+    WIN_FFMPEG_PATH.get_or_init(|| {
+        let output = std::process::Command::new("where")
+            .arg("ffmpeg")
+            .output()
+            .ok();
+        if let Some(out) = output {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                if let Some(first) = s.lines().next() {
+                    let p = first.trim().to_string();
+                    if !p.is_empty() {
+                        eprintln!("[encoder] Windows ffmpeg path resolved: {}", p);
+                        return p;
+                    }
+                }
+            }
+        }
+        eprintln!("[encoder] could not resolve Windows ffmpeg path via where.exe -- using 'ffmpeg'");
+        "ffmpeg".to_string()
+    })
+}
+
 /// Detect the best available H.264 encoder once and cache the result.
 /// Order: h264_nvenc (Nvidia) → h264_qsv (Intel) → h264_amf (AMD) → libx264 (software).
 /// Each candidate is tested with a 1-frame lavfi encode to /dev/null.
@@ -704,6 +732,8 @@ async fn start_job(
     let manifest = json!({
         "job_id": job_id,
         "instance": instance,
+        // Batch Q: full Windows path to ffmpeg.exe for Python's h264_amf encode path.
+        "win_ffmpeg_path": resolve_win_ffmpeg_path(),
         "clips": included_clips.iter().map(|c| {
             // Clamp out_ms to clip duration to prevent FFmpeg crash on out-of-bounds trim
             let clamped_out = c.out_ms.map(|o| o.min(c.duration_ms));
@@ -721,6 +751,7 @@ async fn start_job(
                 "focal_y": c.focal_y,
                 "zoom_mode": c.zoom_mode,
                 "proxy_path": c.proxy_path,
+                "proxy_status": c.proxy_status,
                 "clip_volume": c.clip_volume,
             })
         }).collect::<Vec<_>>(),

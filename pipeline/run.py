@@ -128,6 +128,9 @@ def main() -> None:
             "music_fade_out_s": {"none": 0.0, "2s": 2.0, "5s": 5.0}.get(
                 settings.get("music_fade_out", "2s"), 2.0
             ),
+            # Batch Q: Windows ffmpeg.exe path for h264_amf GPU encode (Step 5).
+            # Resolved in Rust via where.exe; "" means fallback to libx264.
+            "win_ffmpeg_path": manifest.get("win_ffmpeg_path", ""),
         },
     }
 
@@ -198,6 +201,7 @@ def main() -> None:
                     "t_loudnorm_s":    float(_a.get("loudnorm_s", 0)),
                     "t_total_s":       float(_a.get("total_s", 0)),
                     "output_mb":       round(output_mb, 1),
+                    "encoder":         _a.get("encoder", "libx264"),
                 }
                 timing_log = manifest_path.parent / "render-timing-log.jsonl"
                 with open(timing_log, "a") as f:

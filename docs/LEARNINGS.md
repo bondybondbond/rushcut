@@ -342,6 +342,20 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Pipeline — h264_amf GPU encoder (AMD, Windows-native ffmpeg, Batch Q)
+
+**AMF vs libx264 file size tradeoff:** At the default quality parity point (`-rc cqp -qp_i 20 -qp_p 20`) AMF produces ~50% larger files than libx264 `-crf 22 -preset fast` on 4K DJI footage (96 MB vs 63 MB for a 30s clip). `AMF_QP = 23` brings file size to ~6% larger (67 MB) with no measurable encode time difference — this is the shipped default in `encoder.py`.
+
+**Encode speed:** 1.7× faster than libx264 on AMD GPU (30s 4K clip: 27.8s AMF vs 46.6s libx264). AMD AMF is structurally slower than Nvidia NVENC — do not expect 5–10× speedup on AMD hardware. On a real 8-clip 4K render, Step 5 drops by roughly 70s.
+
+**Path translation (WSL Python → Windows ffmpeg.exe):** Windows ffmpeg.exe cannot be invoked via a `C:\...` string from WSL `subprocess.run` — it needs the `/mnt/c/...` WSL-accessible form. Conversely, file path *arguments* to Windows ffmpeg must be Windows-form (`C:\...` or `\\wsl.localhost\Ubuntu-24.04\...`). Two separate helpers handle this: `_win_to_wsl()` (binary path) and `to_win_path()` (file args) in `pipeline/encoder.py`.
+
+**WSL tmpfs is invisible to Windows via wsl.localhost if WSL was restarted:** `/tmp` files written before a `wsl --shutdown` or OOM restart are gone; and immediately after restart, the `\\wsl.localhost\Ubuntu-24.04\tmp\` share may appear empty. The pipeline is safe because WSL stays alive for the entire render job — but benchmark scripts that regenerate test sources after a WSL restart must write to an NTFS path (`/mnt/c/...`) to be accessible from Windows ffmpeg.
+
+**RUSHCUT_FORCE_LIBX264=1 env var bypasses AMF detection** — use this to test the libx264 fallback path without touching hardware.
+
+---
+
 ## Proxy pipeline — background gen and render gate must both be resolution-aware
 
 **Problem:** Background proxy gen produced 1080p proxies. `render.py` accepted any `height >= 1080` proxy for all render modes. A 4K render that reused a 1080p proxy upscaled from 1080p → 2160p, degrading output quality — AND still got ~2s normalise (wrong skip for wrong reason). Separately, `get_clips_needing_bg_proxy` filtered `proxy_status != 'done'` which prevented 1080p proxies from being upgraded to 2160p.

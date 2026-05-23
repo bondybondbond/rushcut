@@ -29,6 +29,7 @@ import subprocess
 
 from .cards import make_card
 from .detect import detect_trim_points
+from .encoder import to_win_path, video_encoder_args
 from .loudnorm import loudnorm_filter
 from .music import mix_music
 from .normalise import normalise
@@ -549,44 +550,64 @@ def run_pipeline(
         current_paths, durations, audio_flags, tmp
     )
 
-    # final: "fast" over "medium" — ~2x faster x264 encode, quality near-identical
-    # at the same CRF for typical DJI footage. The render step is the pipeline's
-    # single biggest cost (~55% of wall time on a 4K render).
-    crf, preset = (35, "ultrafast") if mode == "draft" else (22, "fast")
     scale_h = "480" if mode == "draft" else ("2160" if output_resolution == "4k" else "1080")
     log.info("[B1] render scale_h=%s (output_resolution=%s)", scale_h, output_resolution)
+
+    # Batch Q: resolve encoder once for both paths (single-clip + multi-clip).
+    win_ffmpeg = config.get("win_ffmpeg_path", "")
+    bin_argv, codec_args, is_amf = video_encoder_args(mode, output_resolution, win_ffmpeg)
+    log.info("[Q] encoder=%s is_amf=%s", codec_args[1] if len(codec_args) > 1 else "?", is_amf)
+
+    # Contention warning: if any clip still lacks a proxy, bg gen may be running.
+    if is_amf and any(c.get("proxy_status") != "done" for c in clips):
+        log.warning("[encoder] WARNING: background proxy gen may be running -- AMF throughput may be reduced")
+
+    def _run_with_amf_fallback(cmd: list, fallback_cmd_fn) -> None:
+        """Run cmd; on AMF failure rebuild with libx264 and retry once."""
+        try:
+            ffmpeg_run(cmd)
+        except RuntimeError as e:
+            if is_amf:
+                log.warning("[encoder] AMF encode failed: %s -- retrying with libx264", e)
+                ffmpeg_run(fallback_cmd_fn())
+            else:
+                raise
 
     if len(current_paths) == 1:
         # Single-clip shortcut: no filter_complex needed (CLAUDE.md).
         log.info("[render] Single clip -- using simple -vf scale")
-        cmd = [
-            FFMPEG, "-y",
-            "-i", str(current_paths[0]),
-            "-vf", f"scale=-2:{scale_h}",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-profile:v", "main",
-            "-crf", str(crf),
-            "-preset", preset,
-        ]
+        in_arg  = to_win_path(current_paths[0]) if is_amf else str(current_paths[0])
+        out_arg = to_win_path(output)           if is_amf else str(output)
+
+        # Per-clip volume multiplier (Batch J). volume=0 is valid — produces silence.
+        # loudnorm fuses into -af when final mode + music off (with music it
+        # fuses into the step 6 encode instead) — no separate pass either way.
+        af_parts = []
         if audio_flags[0]:
-            # Per-clip volume multiplier (Batch J). volume=0 is valid — produces silence.
-            # loudnorm fuses into -af when final mode + music off (with music it
-            # fuses into the step 6 encode instead) — no separate pass either way.
             vol0 = clip_volumes[0] if clip_volumes else 1.0
-            af_parts = []
             if abs(vol0 - 1.0) > 1e-6:
                 af_parts.append(f"volume={vol0:.4f}")
                 log.info("[J] single-clip volume=%.4f", vol0)
             if mode != "draft" and not music_on:
                 af_parts.append(loudnorm_filter())
-            if af_parts:
-                cmd += ["-af", ",".join(af_parts)]
-            cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
-        cmd.append(str(output))
-        # Single-clip path uses -vf/-af only — never -filter_complex. Log to confirm.
+
+        def _build_single(b_argv, c_args, i_arg, o_arg, has_aud, af_p):
+            c = b_argv + ["-y", "-i", i_arg, "-vf", f"scale=-2:{scale_h}"] + c_args
+            if has_aud:
+                if af_p:
+                    c += ["-af", ",".join(af_p)]
+                c += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+            c.append(o_arg)
+            return c
+
+        cmd = _build_single(bin_argv, codec_args, in_arg, out_arg, audio_flags[0], af_parts)
         log.info("[render] single-clip cmd: %s", " ".join(cmd))
-        ffmpeg_run(cmd)
+
+        def _fallback_single():
+            fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
+            return _build_single(fb_argv, fb_codec, str(current_paths[0]), str(output), audio_flags[0], af_parts)
+
+        _run_with_amf_fallback(cmd, _fallback_single)
     else:
         log.info("[J] clip_volumes=%s", clip_volumes)
         fc, v_out, a_out = build_filter_complex(
@@ -608,26 +629,42 @@ def run_pipeline(
             a_map = "[aloud]"
         log.info("[render] filter_complex:\n  %s", fc)
 
-        inputs = [arg for p in current_paths for arg in ("-i", str(p))]
-        cmd = (
-            [FFMPEG, "-y"]
-            + inputs
-            + ["-filter_complex", fc, "-map", v_out]
-            + (["-map", a_map] if a_map else [])
-            + [
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-profile:v", "main",
-                "-crf", str(crf),
-                "-preset", preset,
-            ]
-            + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
-            + [str(output)]
-        )
-        ffmpeg_run(cmd)
+        def _build_multi(b_argv, c_args, paths, out_path):
+            if is_amf:
+                in_args = [arg for p in paths for arg in ("-i", to_win_path(p))]
+                o = to_win_path(out_path)
+            else:
+                in_args = [arg for p in paths for arg in ("-i", str(p))]
+                o = str(out_path)
+            return (
+                b_argv + ["-y"] + in_args
+                + ["-filter_complex", fc, "-map", v_out]
+                + (["-map", a_map] if a_map else [])
+                + c_args
+                + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
+                + [o]
+            )
 
+        cmd = _build_multi(bin_argv, codec_args, current_paths, output)
+
+        def _fallback_multi():
+            fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
+            # Rebuild without is_amf path translation for WSL paths
+            in_args = [arg for p in current_paths for arg in ("-i", str(p))]
+            return (
+                fb_argv + ["-y"] + in_args
+                + ["-filter_complex", fc, "-map", v_out]
+                + (["-map", a_map] if a_map else [])
+                + fb_codec
+                + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
+                + [str(output)]
+            )
+
+        _run_with_amf_fallback(cmd, _fallback_multi)
+
+    encoder_name = codec_args[1] if len(codec_args) > 1 else "libx264"
     render_s = time.time() - t0
-    print(f"TIMING:render={render_s:.1f}s", flush=True)
+    print(f"TIMING:render={render_s:.1f}s encoder={encoder_name}", flush=True)
 
     # 6. Mix music.
     report_stage("Mixing music")
@@ -718,6 +755,7 @@ def run_pipeline(
             f",output_resolution={output_resolution}"
             f",volume_custom={volume_custom}"
             f",zoom_cache_hits={zoom_cache_hits}"
+            f",encoder={encoder_name}"
         )
     except Exception as e:
         log.warning("[render] ANALYSIS emit failed: %s", e)
