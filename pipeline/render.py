@@ -8,7 +8,9 @@ Pipeline order:
   4.  cards          -> prepend intro, append outro (if text provided)
   5.  render         -> filter_complex xfade + scale, or single-clip shortcut
   6.  mix_music      -> (if config.music_mood != "none")
-  7.  loudnorm       -> two-pass EBU R128 (final mode only)
+
+  Single-pass EBU R128 loudnorm (-14 LUFS, final mode only) is fused into the
+  step 5 encode (music off) or the step 6 encode (music on) -- no separate pass.
 
 Entry points:
   run_pipeline(job, clips, clip_paths, ...) -> Path
@@ -27,7 +29,7 @@ import subprocess
 
 from .cards import make_card
 from .detect import detect_trim_points
-from .loudnorm import loudnorm
+from .loudnorm import loudnorm_filter
 from .music import mix_music
 from .normalise import normalise
 from .proxy import is_valid_proxy
@@ -182,7 +184,7 @@ def run_pipeline(
         job:         Job row dict (id, mode, config).
         clips:       Clip row dicts (metadata, unused in pipeline body).
         clip_paths:  Ordered list of downloaded clip Paths.
-        context:     Lambda context (loudnorm timeout guard). None in local mode.
+        context:     Legacy Lambda context. Unused in local mode (always None).
         on_progress: Callback(pct: int) -- progress 0-100.
         on_stage:    Callback(stage: str) -- human-readable stage label.
         on_analysis: Callback(data: str) -- ANALYSIS stats string for Rust to store.
@@ -232,6 +234,9 @@ def run_pipeline(
         Path(config["custom_music_path"])
         if music_mood == "custom" and config.get("custom_music_path") else None
     )
+    # When music is on, loudnorm fuses into the step 6 music encode; when off,
+    # it fuses into the step 5 render encode. Exactly one site applies it.
+    music_on = bool(music_filename or custom_music_path_wsl)
 
     # ANALYSIS counters -- all clips used, no motion filtering.
     clips_total = len(clip_paths)
@@ -566,12 +571,21 @@ def run_pipeline(
         ]
         if audio_flags[0]:
             # Per-clip volume multiplier (Batch J). volume=0 is valid — produces silence.
+            # loudnorm fuses into -af when final mode + music off (with music it
+            # fuses into the step 6 encode instead) — no separate pass either way.
             vol0 = clip_volumes[0] if clip_volumes else 1.0
+            af_parts = []
             if abs(vol0 - 1.0) > 1e-6:
-                cmd += ["-af", f"volume={vol0:.4f}"]
+                af_parts.append(f"volume={vol0:.4f}")
                 log.info("[J] single-clip volume=%.4f", vol0)
+            if mode != "draft" and not music_on:
+                af_parts.append(loudnorm_filter())
+            if af_parts:
+                cmd += ["-af", ",".join(af_parts)]
             cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
         cmd.append(str(output))
+        # Single-clip path uses -vf/-af only — never -filter_complex. Log to confirm.
+        log.info("[render] single-clip cmd: %s", " ".join(cmd))
         ffmpeg_run(cmd)
     else:
         log.info("[J] clip_volumes=%s", clip_volumes)
@@ -586,6 +600,12 @@ def run_pipeline(
             opening_transition=config.get("opening_transition", "none"),
             closing_transition=config.get("closing_transition", "none"),
         )
+        # Fuse single-pass loudnorm into the audio tail when final mode + music
+        # off (with music it fuses into the step 6 encode). Draft skips loudnorm.
+        a_map = a_out
+        if a_out and mode != "draft" and not music_on:
+            fc += f"; {a_out}{loudnorm_filter()}[aloud]"
+            a_map = "[aloud]"
         log.info("[render] filter_complex:\n  %s", fc)
 
         inputs = [arg for p in current_paths for arg in ("-i", str(p))]
@@ -593,7 +613,7 @@ def run_pipeline(
             [FFMPEG, "-y"]
             + inputs
             + ["-filter_complex", fc, "-map", v_out]
-            + (["-map", a_out] if a_out else [])
+            + (["-map", a_map] if a_map else [])
             + [
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
@@ -601,7 +621,7 @@ def run_pipeline(
                 "-crf", str(crf),
                 "-preset", preset,
             ]
-            + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_out else [])
+            + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
             + [str(output)]
         )
         ffmpeg_run(cmd)
@@ -624,23 +644,17 @@ def run_pipeline(
         output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out,
                            music_volume=music_volume, movie_vol=movie_vol,
                            custom_track_path=custom_music_path_wsl,
-                           fade_out_s=fade_out_s)
+                           fade_out_s=fade_out_s,
+                           apply_loudnorm=(mode != "draft"))
     else:
         log.info("[render] Step 6: music skipped")
     music_s = time.time() - t0
     print(f"TIMING:music={music_s:.1f}s", flush=True)
 
-    # 7. Loudnorm (final only -- two-pass is too slow for draft).
-    report_stage("Loudnorm")
+    # 7. Loudnorm — fused into the Step 5 (music-off) / Step 6 (music-on) encode.
+    # No separate pass; single-pass loudnorm rides the encode that already runs.
     report(88)
-    t0 = time.time()
-    if mode != "draft":
-        log.info("[render] Step 7: loudnorm")
-        final_out = tmp / "final.mp4"
-        output = loudnorm(output, final_out, context=context)
-    else:
-        log.info("[render] Step 7: loudnorm skipped (draft mode)")
-    loudnorm_s = time.time() - t0
+    loudnorm_s = 0.0
     print(f"TIMING:loudnorm={loudnorm_s:.1f}s", flush=True)
 
     report(95)

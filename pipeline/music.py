@@ -15,6 +15,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from .loudnorm import loudnorm_filter
 from .utils import FFMPEG, ffmpeg_run, get_duration
 
 log = logging.getLogger(__name__)
@@ -76,11 +77,15 @@ def _build_filter(
     music_volume: float,
     movie_vol: float = 1.0,
     fade_out_s: float = FADE_OUT_S,
+    apply_loudnorm: bool = False,
 ) -> str:
     """Build filter_complex for n_copies inputs (FFmpeg indices 1..n_copies).
 
     Each copy is pre-trimmed to the active audio region before crossfading,
     so boundaries land on musically active content rather than silence.
+
+    When apply_loudnorm is set, single-pass loudnorm is fused onto the mixed
+    audio so the separate two-pass loudnorm step can be skipped.
     """
     eff_fade = fade_out_s if fade_out_s > 0 else 0.0
     fade_start = max(0.0, video_dur - eff_fade) if eff_fade > 0 else video_dur
@@ -91,11 +96,17 @@ def _build_filter(
     # Final trim + volume + optional fade + mix tail (applied after all acrossfade ops).
     # Movie audio is ducked by movie_vol so prominent music actually dominates.
     fade_filter = f",afade=t=out:st={fade_start:.4f}:d={eff_fade:.4f}" if eff_fade > 0 else ""
+    amix = "[movaudio][mus]amix=inputs=2:duration=first:dropout_transition=3"
+    amix_tail = (
+        f"{amix}[amixed];[amixed]{loudnorm_filter()}[aout]"
+        if apply_loudnorm
+        else f"{amix}[aout]"
+    )
     tail = (
         f"atrim=0:{video_dur:.4f},asetpts=PTS-STARTPTS,"
         f"volume={music_volume:.4f}{fade_filter}[mus];"
         f"[0:a]volume={movie_vol:.4f}[movaudio];"
-        f"[movaudio][mus]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+        + amix_tail
     )
 
     if n_copies == 1:
@@ -126,6 +137,7 @@ def mix_music(
     movie_vol: float = 1.0,
     custom_track_path: "Path | None" = None,
     fade_out_s: float = FADE_OUT_S,
+    apply_loudnorm: bool = False,
 ) -> Path:
     """
     Mix a background music track into video_path.
@@ -167,7 +179,7 @@ def mix_music(
         track_name, active_start, active_end, video_duration_s, n_copies, crossfade_s, music_volume,
     )
 
-    fc = _build_filter(n_copies, active_start, active_end, crossfade_s, video_duration_s, music_volume, movie_vol, fade_out_s)
+    fc = _build_filter(n_copies, active_start, active_end, crossfade_s, video_duration_s, music_volume, movie_vol, fade_out_s, apply_loudnorm)
     log.info("[music] filter_complex: %s", fc)
 
     cmd = [FFMPEG, "-y", "-i", str(video_path)]
