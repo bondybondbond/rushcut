@@ -53,6 +53,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — use `cargo check` not `cargo build` to verify Rust syntax mid-session
+
+**Problem:** `cargo build` on this project fails with a linker error (`msvcrt.lib not found`) when called from bash/PowerShell without the full VS2019 environment. This triggers a false "compile failure" even when the Rust code is valid.
+**Solution:** Use `cargo check` to validate syntax and types — it skips linking entirely and returns in <2s. Only use `cargo build` when you need the actual binary (e.g. before E2E tests).
+**Context:** Any session editing `src-tauri/src/lib.rs` or other Rust files.
+
+---
+
 ## React — imperative DOM updates for high-frequency media events
 
 **Problem:** React `setState` inside `onTimeUpdate` (fires 4–66 Hz) causes a re-render per tick. For a progress bar fill + elapsed label, this floods the React reconciler every 15–250ms, degrading playback smoothness.

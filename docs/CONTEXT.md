@@ -15,22 +15,13 @@
 
 ## Current Phase
 
-**Phase 2 — Batch Q (GPU AMF render + Fast Render toggle) COMPLETE (2026-05-23). Next: Batch Q2 — FPS stutter fix.**
+**Phase 2 — Batch Q2 (FPS stutter fix) COMPLETE (2026-05-23). Next: render performance (8+ min total time).**
 
 ---
 
 ## Immediate Next Task
 
-**Batch Q2 — FPS stutter fix (constant-motion clips judder on pans):**
-
-Root cause: pipeline hardcodes `-r 25 -fps_mode cfr`. DJI clips are 29.97fps. 29.97→25 drops ~1 frame per 5 output frames, visible as stutter on pans.
-Full spec: `docs/BATCH-Q2-FPS-STUTTER.md`.
-
-Key changes needed:
-1. `render.py` — detect `target_fps` from source clips (ffprobe, round 29.97→30, 25→25)
-2. `normalise.py` — replace hardcoded `-r 25` with `target_fps`
-3. `proxy.py` — replace hardcoded `-r 25` with source clip's native FPS
-4. `render.py` proxy reuse gate — add FPS check; reject proxy if FPS ≠ target_fps (auto-triggers regeneration)
+**Render performance — total render time 8+ min is too slow.** Root cause TBD — needs timing log analysis before proposing a fix. Read `%TEMP%\rushcut\render-timing-log.jsonl` to identify the dominant bottleneck phase (normalise / zoom / render encode / music). Batch R or Q3 pending scope discussion.
 
 ---
 
