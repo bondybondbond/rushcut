@@ -39,17 +39,24 @@ def _win_to_wsl(win_path: str) -> str:
 
 
 def _detect_amf(win_ffmpeg_path: str) -> bool:
-    """Return True if h264_amf is listed in Windows ffmpeg's encoders. Result cached.
+    """Return True if h264_amf is available AND explicitly opted in via RUSHCUT_USE_AMF=1.
 
-    Converts the Windows path to a WSL-accessible path before invoking (WSL Python
-    can execute Windows .exe files via /mnt/c/... paths). Result is cached globally.
-    RUSHCUT_FORCE_LIBX264=1 bypasses detection (test seam for fallback acceptance check).
+    AMF is NOT the default. h264_amf on AMD hardware lacks B-frame support (driver-level
+    limitation, confirmed: -bf ignored in both CQP and VBR modes), producing subtly
+    choppier motion on pans vs libx264 -preset fast (has_b_frames=2). libx264 is the
+    default final encode for quality. Set RUSHCUT_USE_AMF=1 to opt into faster AMF output.
+
+    RUSHCUT_FORCE_LIBX264=1 explicitly forces libx264 (test seam, overrides AMF opt-in).
     """
     global _amf_available
     if _amf_available is not None:
         return _amf_available
     if os.environ.get("RUSHCUT_FORCE_LIBX264"):
         log.info("[encoder] RUSHCUT_FORCE_LIBX264 set -- using libx264 (WSL)")
+        _amf_available = False
+        return False
+    if not os.environ.get("RUSHCUT_USE_AMF"):
+        log.info("[encoder] AMF opt-in not set -- using libx264 (WSL) for quality")
         _amf_available = False
         return False
     if not win_ffmpeg_path or win_ffmpeg_path == "ffmpeg":
@@ -68,9 +75,9 @@ def _detect_amf(win_ffmpeg_path: str) -> bool:
         _amf_available = False
 
     if _amf_available:
-        log.info("[encoder] using h264_amf via %s", win_ffmpeg_path)
+        log.info("[encoder] RUSHCUT_USE_AMF=1 -- using h264_amf via %s", win_ffmpeg_path)
     else:
-        log.info("[encoder] AMF unavailable -- falling back to libx264 (WSL)")
+        log.info("[encoder] RUSHCUT_USE_AMF=1 set but AMF unavailable -- using libx264 (WSL)")
     return _amf_available
 
 
