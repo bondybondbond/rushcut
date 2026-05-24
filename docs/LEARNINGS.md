@@ -374,6 +374,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Pipeline — AMF availability probe: encoder-list check ≠ encode capability
+
+**Problem:** `_detect_amf()` in `pipeline/encoder.py` only runs `ffmpeg -encoders | grep h264_amf` — encoder *listed* does not mean the AMD driver bridge is *functional*. A WSL-packaged ffmpeg (e.g. Ubuntu apt ffmpeg) always fails AMF regardless of the encoder list because it was compiled without AMF support and the Windows AMD driver bridge requires Windows ffmpeg.exe.
+**Solution:** Probe with a real synthetic encode: `wsl -- /mnt/c/.../ffmpeg.exe -f lavfi -i color=c=black:size=1920x1080:r=30 -t 2 -c:v h264_amf -qp 23 /tmp/amf_test.mp4`. Success = exit 0 + "Output #0, mp4" in stderr. This tests the full WSL2 → Windows ffmpeg.exe → AMD driver bridge end-to-end. WSL ubuntu ffmpeg will fail with "Unknown encoder 'h264_amf'" — that is expected and correct; retry with the Windows ffmpeg.exe at its `/mnt/c/...` WSL path.
+**Context:** AMF probing in `pipeline/encoder.py`. Windows ffmpeg path resolved by Rust `resolve_win_ffmpeg_path()` (OnceLock, `where ffmpeg`). On this machine: `C:\Users\Manasak\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_...\bin\ffmpeg.exe`.
+
+---
+
 ## Pipeline — h264_amf GPU encoder (AMD, Windows-native ffmpeg, Batch Q)
 
 **AMF vs libx264 file size tradeoff:** At the default quality parity point (`-rc cqp -qp_i 20 -qp_p 20`) AMF produces ~50% larger files than libx264 `-crf 22 -preset fast` on 4K DJI footage (96 MB vs 63 MB for a 30s clip). `AMF_QP = 23` brings file size to ~6% larger (67 MB) with no measurable encode time difference — this is the shipped default in `encoder.py`.
@@ -387,6 +395,10 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **WSL tmpfs is invisible to Windows via wsl.localhost if WSL was restarted:** `/tmp` files written before a `wsl --shutdown` or OOM restart are gone; and immediately after restart, the `\\wsl.localhost\Ubuntu-24.04\tmp\` share may appear empty. The pipeline is safe because WSL stays alive for the entire render job — but benchmark scripts that regenerate test sources after a WSL restart must write to an NTFS path (`/mnt/c/...`) to be accessible from Windows ffmpeg.
 
 **RUSHCUT_FORCE_LIBX264=1 env var bypasses AMF detection** — use this to test the libx264 fallback path without touching hardware.
+
+**`amf_fallback` pattern for silent encoder fallback detection:** When `use_amf=True` and the initial AMF encode raises `RuntimeError`, `render.py` retries with libx264 via `_run_with_amf_fallback()`. A list-closure `amf_fallback_flag = [False]` tracks whether fallback occurred (list used for mutability inside a nested function). At pipeline end, `amf_fallback=0/1` is appended to the ANALYSIS stdout line. `src-tauri/src/lib.rs` captures `last_analysis` per job and emits it in the `pipeline-done` event's `"analysis"` JSON field. React reads `/(^|,)amf_fallback=1(,|$)/.test(analysis)` to surface a toast. This pattern is reusable for any silent fallback that must be surfaced to the user after the fact.
+
+**`pipeline-done` event carries `analysis` field (Batch R Part C):** The `pipeline-done` Tauri event payload now includes `{ jobId, stage, progress, message, outputPath, analysis }` where `analysis` is the full ANALYSIS stdout string (or null if not emitted). React listeners must be typed `PipelineProgressEvent & { analysis?: string | null }` to access it. The field allows post-render decision surfacing (encoder used, fallback state, proxy stats) without requiring a DB query.
 
 ---
 

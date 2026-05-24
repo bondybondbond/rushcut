@@ -19,6 +19,12 @@ Applies when working on `pipeline/**`, `src-tauri/src/lib.rs` (pipeline spawn), 
 
 - **FPS stutter on constant-motion clips — FIXED (Batch Q2):** Pipeline no longer hardcodes `-r 25`. `render.py` probes `target_fps_raw` from `clip_paths[0]` via `_probe_fps()` at Step 1 start; passes to `normalise()`, `make_card()`. Rust proxy gen (`generate_proxy_file_low_priority`, `generate_proxy_file`) uses `probe_clip_fps()` for native fps. Output is `30000/1001` for DJI 29.97fps source. Legacy 25fps proxies are rejected by the reuse gate (fps_int mismatch) and re-encoded on next bg pass.
 
+## AMF encoder fallback — silent-fallback detection pattern
+
+- **`_run_with_amf_fallback()` pattern in `render.py`:** When `use_amf=True` and an AMF encode raises `RuntimeError`, retry with libx264 via a fallback command function. Track the fallback state with a list-closure (`amf_fallback_flag = [False]`) rather than a plain bool (lists are mutable inside nested functions in Python). Append `amf_fallback=0/1` to the ANALYSIS stdout line at pipeline end.
+- **`pipeline-done` event `analysis` field contract:** `src-tauri/src/lib.rs` captures the last `ANALYSIS:` stdout line per job into `last_analysis: Option<String>`. The `pipeline-done` Tauri event payload now includes `"analysis": last_analysis` alongside `jobId`, `outputPath`. React listeners: `listen<PipelineProgressEvent & { analysis?: string | null }>("pipeline-done", ...)`. Parse with regex: `/(^|,)key=value(,|$)/.test(analysis)` to extract fields without a full CSV parser.
+- **Do NOT surface AMF fallback as an error** — the render succeeded; user just got libx264 quality instead of AMF. Toast is correct UX (informational, not blocking). The `amf_fallback=1` toast reads: "Fast render unavailable -- rendered at standard quality" (6s auto-dismiss).
+
 ## Concurrent renders and log isolation
 
 - **Exit code 15 = SIGTERM from WSL restart** — not a code bug. Check `wsl -- ls /tmp/<job_id>` before debugging; a missing dir means WSL killed everything (memory pressure or a concurrent heavy render). Re-run once WSL is stable.

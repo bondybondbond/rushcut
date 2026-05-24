@@ -649,6 +649,12 @@ def run_pipeline(
     bin_argv, codec_args, is_amf = video_encoder_args(mode, output_resolution, win_ffmpeg, use_amf=use_amf)
     log.info("[Q] encoder=%s is_amf=%s", codec_args[1] if len(codec_args) > 1 else "?", is_amf)
 
+    # Batch R Part C: surface silent fallback to the UI. Set when the user asked
+    # for AMF (Fast render toggle / RUSHCUT_USE_AMF) but we ended up on libx264 --
+    # either detect-time (encoder list / probe failed) or runtime (encode error,
+    # libx264 retry below). Reported via ANALYSIS amf_fallback=1 -> toast in Render.tsx.
+    amf_fallback_flag = [use_amf and not is_amf]
+
     # Contention warning: if any clip still lacks a proxy, bg gen may be running.
     if is_amf and any(c.get("proxy_status") != "done" for c in clips):
         log.warning("[encoder] WARNING: background proxy gen may be running -- AMF throughput may be reduced")
@@ -660,6 +666,7 @@ def run_pipeline(
         except RuntimeError as e:
             if is_amf:
                 log.warning("[encoder] AMF encode failed: %s -- retrying with libx264", e)
+                amf_fallback_flag[0] = True
                 ffmpeg_run(fallback_cmd_fn())
             else:
                 raise
@@ -847,6 +854,7 @@ def run_pipeline(
             f",volume_custom={volume_custom}"
             f",zoom_cache_hits={zoom_cache_hits}"
             f",encoder={encoder_name}"
+            f",amf_fallback={1 if amf_fallback_flag[0] else 0}"
         )
     except Exception as e:
         log.warning("[render] ANALYSIS emit failed: %s", e)

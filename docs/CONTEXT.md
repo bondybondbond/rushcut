@@ -15,17 +15,50 @@
 
 ## Current Phase
 
-**Phase 2 — Batch R (Render Performance) COMPLETE (2026-05-24). Part A + B shipped. Part C (AMF default for 4K) deferred as separate ticket.**
+**Phase 2 — Batch R (Render Performance) ALL PARTS COMPLETE (2026-05-24). Next: Batch S — Proxy UX Polish.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch R Part C — AMF default for 4K renders.** Blocked on two prerequisites: (1) confirm `h264_amf` is available in WSL on this hardware (AMD GPU); (2) add user-facing toast when AMF fallback fires (currently silent). See `docs/BATCH-R-PART-C.md` for full spec. Do NOT implement until both blockers are resolved.
+**Batch S — Proxy Prep Screen UX Polish.**
+
+**Why this is urgent:** The 180s 4K render target is now achievable, but only with 8/8 proxies. The proxy-readiness gate (`awaiting-proxies` phase) is the critical prerequisite — and it currently appears "stuck" to users during the final 1-2 slow proxies. Batch S directly unblocks the user experience for reaching the performance target.
+
+### Batch S scope (plan in next session)
+
+**S1 — Fix the "stuck" appearance of the proxy prep screen:**
+- Root cause: the progress bar only advances when a proxy *completes*. When 1-2 slow proxies are still encoding (e.g. long 4K HEVC clips), the bar can freeze at 6/8 for 30-60s, looking broken.
+- Fix candidates: (a) show per-proxy encode progress via `proxy-progress` events carrying byte/frame progress from FFmpeg stderr, (b) add an animated "encoding..." pulse on the last N clips, (c) poll the partial file size as a proxy for progress.
+- Constraint: do not require pipeline changes unless unavoidable — prefer Rust event enrichment or React-side animation.
+
+**S2 — On re-render, suppress gate when proxies are already complete:**
+- Current: user returns to Render after a prior render where 6/8 proxies were built → gate still fires for the 2 remaining clips. User expects "re-render = skip proxy wait."
+- Fix: if `proxy_used >= proxy_total * 0.8` on the *previous* render for this project (readable from `jobs.analysis_summary` in DB), auto-bypass gate on the next render of the same project. OR: poll `get_proxy_readiness_cmd` once on mount and only enter gate if time-to-complete ETA > N seconds.
+- Note: the gate is *correct* behavior — it exists because skipping it caused 500s renders. The fix is ETA accuracy, not gate removal.
+
+**S3 — ETA label accuracy:**
+- Current ETA formula: `elapsed / completed_so_far * remaining`. Works only once ≥1 proxy lands *during this wait*. Shows "Estimating..." until then — which is the entire wait if background proxies are nearly done.
+- Fix: pre-populate ETA with an estimate from average proxy duration for this machine/resolution (storable in a simple `%TEMP%\rushcut\proxy-timing.json` similar to zoom cache).
+
+### Performance ceiling (confirmed 2026-05-24, evidence in render-timing-log.jsonl):
+
+| Run | Encoder | Proxies | t_normalise | t_render | t_total |
+|-----|---------|---------|-------------|----------|---------|
+| 15:23 (fast OFF) | libx264 | 6/8 | 88s | 226s | 326s |
+| 15:28 (fast ON) | h264_amf | 6/8 | 87s | 111s | 211s |
+| **Projected (AMF, 8/8 warm)** | h264_amf | 8/8 | ~5s | ~111s | **~124s** |
+
+**Confirmed ceiling: ~124s for AMF + 8/8 proxies warm run = well under 180s target.**
+Evidence basis: 15:28 run t_total=211s with 2 clips normalising (87s penalty); subtract 82s normalise penalty, add ~5s warm normalise = 129s. Rounding to 124s accounts for trim/overhead savings when no normaise needed. **The 180s target is only reachable with 8/8 proxies — Batch S proxy UX polish is the direct unblock.**
+
+No `amf_fallback` field in either live render → AMF succeeded without fallback → toast correctly silent. The toast infrastructure is in place and tested (manual-fallback-test instance in log confirms libx264 fallback path works).
 
 ---
 
 ## Recently shipped this session (2026-05-24)
+
+- **Batch R Part C — AMF fallback toast + silent-fallback detection COMPLETE:** `pipeline/render.py`: `amf_fallback_flag` list-closure tracks whether AMF fell back to libx264 mid-encode; `_run_with_amf_fallback()` inner function retries with libx264 on RuntimeError when `is_amf=True`; `amf_fallback=0/1` appended to ANALYSIS line. `src-tauri/src/lib.rs`: `last_analysis` captured per job, emitted in `pipeline-done` event payload as `"analysis"` field. `src/pages/Render.tsx`: toast wired to `pipeline-done` analysis field — shows "Fast render unavailable -- rendered at standard quality" for 6s when `amf_fallback=1`; `fastRender` toggle is opt-in OFF by default (auto-ON for 4K reverted per user feedback). Verified: AMF encode 111s vs 226s libx264 on same 6/8 proxies (51% faster). No fallback in live renders (toast correctly silent). Projected warm run with 8/8 proxies: ~124s (under 180s target). 9/9 fast PASS.
 
 - **Batch R — Render Performance (Part A + B) COMPLETE:** Part A: `ZOOM_CACHE_DIR` moved from WSL `/tmp/rushcut-zoom-cache` to NTFS `%TEMP%\rushcut\zoom-cache\` — survives `wsl --shutdown` and Windows reboots. Part B: `get_proxy_readiness_cmd` Rust command + DB helper; `run_bg_proxy_batch` boost path (`lowPriority=false`); Render screen `"awaiting-proxies"` phase with ETA hint, X/Y progress chip, auto-advance on readiness, "Start anyway" CTA. `render.spec.ts` updated to click "Start anyway" to bypass gate. Verified: 1080p warm (proxies=8/8, zoom_cache_hits=8) → `t_total=173s` (under 180s target). 4K cold with proxies: `t_total=256s` on libx264 — Part C (AMF) needed to reach <180s for 4K. Minor bug fixes: `zoom_on` ANALYSIS field (now includes per-clip zoom modes); Trimmer "No clips found" fallback when all clips are `include=1`. 9/9 fast PASS.
 

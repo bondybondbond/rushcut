@@ -944,6 +944,10 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = BufReader::new(stdout);
 
+    // Batch R Part C: capture latest ANALYSIS line so the pipeline-done event
+    // can carry it to the UI (Render.tsx parses amf_fallback for the toast).
+    let mut last_analysis: Option<String> = None;
+
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -958,7 +962,9 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
         } else if let Some(data) = line.strip_prefix("ANALYSIS:") {
             // Store motion analysis summary from pipeline (Batch 13).
             // Format: clips_used=N,clips_total=M,clips_excluded=X
-            let _ = update_job_analysis(&job_id, data.trim());
+            let trimmed = data.trim().to_string();
+            let _ = update_job_analysis(&job_id, &trimmed);
+            last_analysis = Some(trimmed);
         } else if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
             let pct: i64 = pct_str.trim().parse().unwrap_or(0);
             let _ = update_job_progress(&job_id, pct, "processing");
@@ -981,7 +987,8 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
                     "stage": "done",
                     "progress": 100,
                     "message": "Done",
-                    "outputPath": win_out
+                    "outputPath": win_out,
+                    "analysis": last_analysis,
                 }),
             );
             // Fire-and-forget proxy vacuum — delete orphaned/stale proxies on a background thread.

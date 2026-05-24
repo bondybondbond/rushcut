@@ -58,8 +58,11 @@ export default function Render() {
     }
   });
   const [fastRender, setFastRender] = useState(() => {
-    try { return sessionStorage.getItem(`rc_fast_render_${projectId}`) === "1"; } catch { return false; }
+    try {
+      return sessionStorage.getItem(`rc_fast_render_${projectId}`) === "1";
+    } catch { return false; }
   });
+  const [toast, setToast] = useState<string | null>(null);
 
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -243,13 +246,20 @@ export default function Render() {
       resetActivityTimer();
     });
 
-    const unlistenDone = listen<PipelineProgressEvent>("pipeline-done", (event) => {
+    const unlistenDone = listen<PipelineProgressEvent & { analysis?: string | null }>("pipeline-done", (event) => {
       if (event.payload.jobId !== jobId) return;
       completedRef.current = true;
       if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
       setProgress(100);
       setOutputPath(event.payload.outputPath ?? null);
       setPhase("done");
+      // Batch R Part C: surface silent AMF -> libx264 fallback as a toast so
+      // a "Fast render" toggle that did nothing doesn't look like a no-op.
+      const analysis = event.payload.analysis;
+      if (analysis && /(^|,)amf_fallback=1(,|$)/.test(analysis)) {
+        setToast("Fast render unavailable -- rendered at standard quality");
+        setTimeout(() => setToast(null), 6000);
+      }
       if (projectId) {
         invoke("generate_proxies_cmd", { projectId }).catch(console.error);
       }
@@ -567,6 +577,16 @@ export default function Render() {
 
         </div>
       </div>
+
+      {/* AMF fallback toast (above bottom tab bar) */}
+      {toast && (
+        <div
+          data-testid="toast-amf-fallback"
+          className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none"
+        >
+          <p className="text-sm text-[#e5e5e5] whitespace-nowrap">{toast}</p>
+        </div>
+      )}
     </EditorShell>
   );
 }
