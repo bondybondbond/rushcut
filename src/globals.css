@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+@keyframes rc-proxy-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(153, 179, 255, 0.2); }
+  50%      { box-shadow: 0 0 0 2px rgba(153, 179, 255, 0.85); }
+}
+.rc-proxy-pulse {
+  animation: rc-proxy-pulse 1.4s ease-in-out infinite;
+}
+
 @keyframes rc-fly-in {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0);    }

@@ -7,7 +7,8 @@ use db::{
     add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_project_output_paths, get_project_with_clips,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
-    reorder_clips, set_clip_proxy_status, update_clip_proxy, update_clip_review,
+    claim_clip_for_encoding, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
+    update_clip_proxy, update_clip_review,
     update_clip_thumbnail, update_clip_volume, update_clip_waveform, update_job_analysis,
     update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary,
     ProjectWithClips,
@@ -350,6 +351,63 @@ fn proxy_bg_log(msg: &str) {
             .unwrap_or(0);
         let _ = writeln!(f, "{} {}", ts, msg);
     }
+}
+
+/// Batch S: record a real-encode proxy timing sample to %TEMP%\rushcut\proxy-timing.json.
+/// Skipped for native-codec and cache-hit paths (0s would skew the avg).
+/// Keeps last 50 entries; atomic write (tmp → rename) to prevent JSON corruption.
+fn record_proxy_timing(elapsed_s: f64, height: u32) {
+    let dir = std::env::temp_dir().join("rushcut");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("proxy-timing.json");
+    let tmp = dir.join("proxy-timing.json.tmp");
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut entries: Vec<serde_json::Value> = path
+        .exists()
+        .then(|| std::fs::read(&path).ok())
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+
+    entries.push(json!({ "ts": ts, "elapsed_s": elapsed_s, "height": height }));
+    if entries.len() > 50 {
+        entries = entries.into_iter().rev().take(50).rev().collect();
+    }
+
+    if let Ok(data) = serde_json::to_vec(&entries) {
+        let _ = std::fs::write(&tmp, data).and_then(|_| std::fs::rename(&tmp, &path));
+    }
+}
+
+/// Batch S: return the mean elapsed_s of the last 10 real-encode proxy samples that
+/// match the target height (2160 for 4K, 1080 otherwise). Returns None when < 3 samples.
+#[tauri::command]
+fn get_proxy_avg_timing_cmd(output_resolution: Option<String>) -> Result<Option<f64>, String> {
+    let required_h: u32 = if output_resolution.as_deref() == Some("4k") { 2160 } else { 1080 };
+    let path = std::env::temp_dir().join("rushcut").join("proxy-timing.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(&data).unwrap_or_default();
+
+    let samples: Vec<f64> = entries.iter().rev().take(10)
+        .filter_map(|e| {
+            let h = e.get("height")?.as_u64()? as u32;
+            if h >= required_h { e.get("elapsed_s")?.as_f64() } else { None }
+        })
+        .collect();
+
+    if samples.len() < 3 {
+        return Ok(None);
+    }
+    let avg = samples.iter().sum::<f64>() / samples.len() as f64;
+    Ok(Some(avg))
 }
 
 /// Return the video stream height of a proxy file (0 on error).
@@ -1103,12 +1161,25 @@ async fn generate_proxies_cmd(
 ) -> Result<(), String> {
     let low_priority = low_priority.unwrap_or(false);
 
-    // Concurrency guard: only one batch run per project at a time.
+    // Concurrency guard: prevents duplicate batches of the same or lower priority.
+    // Batch S2: a normal-priority (boost) call is allowed through even when a
+    // low-priority batch is already running — the two batches share work safely via
+    // the claim_clip_for_encoding DB lock (each clip is encoded by exactly one batch).
     {
         let mut set = state.lock().unwrap();
         if set.contains(&project_id) {
-            eprintln!("[proxy] batch already running for project {}, skipping (lowPriority={})", project_id, low_priority);
-            return Ok(());
+            if low_priority {
+                eprintln!("[proxy] batch already running for project {}, skipping low-priority duplicate", project_id);
+                return Ok(());
+            }
+            // Normal-priority boost: allow through. Both batches will race for clips
+            // via claim_clip_for_encoding; the boost encodes unclaimed clips at full
+            // thread count while the in-flight low-priority encode finishes its clip.
+            eprintln!("[proxy] boosting project {} — normal-priority batch starting alongside in-flight low-priority batch", project_id);
+        } else {
+            // First batch for this project — reset stale 'encoding' claims from
+            // a prior crashed session (safe only when no concurrent batch is running).
+            let _ = reset_stale_encoding_claims(&project_id);
         }
         set.insert(project_id.clone());
     }
@@ -1210,8 +1281,22 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
         }
 
         // Real encode path (HEVC / unknown).
-        let _ = set_clip_proxy_status(&clip_id, "queued");
-        proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={}", clip_id, codec));
+        // Batch S2: atomic claim — prevents concurrent batches from double-encoding
+        // the same clip. claim_clip_for_encoding sets proxy_status='encoding' only if
+        // no other batch has already claimed it (compare-and-set, minimal lock time).
+        match claim_clip_for_encoding(&clip_id) {
+            Ok(true) => {} // we own this encode slot — proceed
+            Ok(false) => {
+                proxy_bg_log(&format!("[PROXY_BG] skip clip_id={} reason=encoding-in-progress", clip_id));
+                continue;
+            }
+            Err(e) => {
+                proxy_bg_log(&format!("[PROXY_BG] claim-error clip_id={} err={}", clip_id, e));
+                continue;
+            }
+        }
+
+        proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={} low_priority={}", clip_id, codec, low_priority));
         let t0 = std::time::Instant::now();
         let ok = if low_priority {
             generate_proxy_file_low_priority(&local_path, &proxy_path)
@@ -1224,6 +1309,7 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
             proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed={:.1}s", clip_id, elapsed));
             let _ = update_clip_proxy(&clip_id, &proxy_path);
             let _ = set_clip_proxy_status(&clip_id, "done");
+            record_proxy_timing(elapsed, 2160);
             let _ = app.emit("proxy-progress", json!({
                 "projectId": project_id,
                 "clipId": clip_id,
@@ -1231,7 +1317,8 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
             }));
         } else {
             proxy_bg_log(&format!("[PROXY_BG] failed clip_id={} elapsed={:.1}s", clip_id, elapsed));
-            // Leave proxy_status as 'queued' — next trigger will retry.
+            // Reset to NULL (not 'encoding') so the next batch can re-claim and retry.
+            let _ = set_clip_proxy_status(&clip_id, "queued");
         }
     }
 
@@ -1555,6 +1642,7 @@ pub fn run() {
             open_output_path,
             generate_proxies_cmd,
             get_proxy_readiness_cmd,
+            get_proxy_avg_timing_cmd,
             generate_proxy_for_clip,
             vacuum_proxies_cmd,
             get_music_dir_cmd,

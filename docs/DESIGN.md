@@ -229,6 +229,76 @@ Rules:
 - `buildConfig()` is called at click time (not at mount) so it captures the current chip state.
 - `"ready"` phase is conditional: only entered when `is4K === true`. Non-4K projects skip directly to `"starting"`.
 
+### Proxy prep panel (`awaiting-proxies` phase — Render screen)
+
+When a 4K cold render is triggered (0/N proxies ready), the Render screen enters `awaiting-proxies` phase instead of starting the pipeline immediately. This panel shows progress and blocks the render until proxies are ready.
+
+**Trigger:** Gate fires on `submitJob` when `has4K === true` AND `status.ready < status.total`. This includes the fully cold case (ready = 0) — do NOT bypass on ready = 0 for 4K projects (pre-Batch-S2 bug: `ready === 0` was used as a bypass condition).
+
+**Panel layout (centred, `space-y-4`):**
+
+```tsx
+{phase === "awaiting-proxies" && (
+  <div className="space-y-4">
+    {/* Status line + elapsed */}
+    <div className="flex items-center justify-between text-sm">
+      <span className="text-[#e5e5e5]">Preparing proxies -- {ready} / {total} ready</span>
+      <span className="text-[#a3a3a3] font-mono" data-testid="proxy-elapsed">{elapsedLabel} elapsed</span>
+    </div>
+
+    {/* Progress bar — green, always #22c55e */}
+    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+      <div className="h-full bg-[#22c55e] rounded-full transition-all duration-500"
+           style={{ width: `${total > 0 ? (ready / total) * 100 : 0}%` }} />
+    </div>
+
+    {/* Helper text */}
+    <p className="text-sm text-[#a3a3a3]">
+      Render starts automatically when proxies finish.{" "}
+      <span className="text-[#FF8A65]">Skipping makes this render much slower.</span>
+    </p>
+
+    {/* Clip tile grid */}
+    {includedClips.length > 0 && (
+      <div className="flex flex-wrap gap-2">
+        {includedClips.map((c) => {
+          const encoding = blockingIds.has(c.id);
+          return (
+            <div key={c.id} data-testid={`proxy-tile-${c.id}`}
+              data-encoding={encoding ? "true" : "false"}
+              className={`relative w-16 aspect-video rounded border border-white/15 bg-black bg-cover bg-center flex-shrink-0 overflow-hidden${encoding ? " rc-proxy-pulse" : ""}`}
+              style={c.thumbnail_data ? { backgroundImage: `url(${c.thumbnail_data})` } : {}}>
+              {!encoding && (
+                <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-sm bg-[#22c55e] flex items-center justify-center">
+                  <Check size={10} strokeWidth={3} className="text-[#0a0a0a]" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    )}
+
+    {/* Escape hatch */}
+    <button onClick={startRenderNow}
+      className="text-sm px-4 py-2 rounded-md border border-white/30 text-[#e5e5e5] hover:bg-white/5 transition-colors">
+      Start anyway (slower)
+    </button>
+  </div>
+)}
+```
+
+**Clip tile states:**
+- **Encoding (pulsing):** `rc-proxy-pulse` class — `box-shadow` blue ring at `rgba(153, 179, 255, 0.2–0.85)`, 1.4s ease-in-out infinite (defined in `globals.css`). Thumbnail visible in background.
+- **Done (green check):** No pulse class. Green `#22c55e` badge `w-4 h-4 rounded-sm` top-right with `<Check size={10} strokeWidth={3} text-[#0a0a0a]>`.
+- **Tile base:** `w-16 aspect-video rounded border border-white/15 bg-black bg-cover bg-center`.
+
+**Elapsed timer:** Count-up from gate entry, ticks every 1s via `setInterval`. Format: `Xs` for <60s, `Xm Ys` for ≥60s. `font-mono text-[#a3a3a3]`. Initialise `waitStartRef.current = Date.now()` when phase enters `awaiting-proxies`.
+
+**Auto-advance:** When polling returns `ready >= total`, call `startRenderNow()` directly (no user action needed).
+
+**`includedClips` state** must be populated BEFORE `submitJob` is called (to prevent a flash of empty tiles). Set `includedClips` from the cached clip list in the mount `useEffect`, before `await submitJob(projectId)`.
+
 ### Conditional chip row (Sound screen pattern)
 
 When a secondary chip group only applies in certain states (e.g. volume only when a music mood is selected), render it conditionally — no animation, plain `{condition && <div>...</div>}`. Separate from the primary chip group with `border-t border-white/10 pt-2 space-y-3`. Sub-heading uses `text-base font-medium text-[#e5e5e5]` + description `text-sm text-[#a3a3a3]`.

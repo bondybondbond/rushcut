@@ -15,31 +15,16 @@
 
 ## Current Phase
 
-**Phase 2 — Batch R (Render Performance) ALL PARTS COMPLETE (2026-05-24). Next: Batch S — Proxy UX Polish.**
+**Phase 2 — Batch S (Proxy UX Polish + Cold 4K Gate Fix) ALL PARTS COMPLETE (2026-05-24). Next: TBD — see PRD-DEV.md.**
 
 ---
 
 ## Immediate Next Task
 
-**Batch S — Proxy Prep Screen UX Polish.**
-
-**Why this is urgent:** The 180s 4K render target is now achievable, but only with 8/8 proxies. The proxy-readiness gate (`awaiting-proxies` phase) is the critical prerequisite — and it currently appears "stuck" to users during the final 1-2 slow proxies. Batch S directly unblocks the user experience for reaching the performance target.
-
-### Batch S scope (plan in next session)
-
-**S1 — Fix the "stuck" appearance of the proxy prep screen:**
-- Root cause: the progress bar only advances when a proxy *completes*. When 1-2 slow proxies are still encoding (e.g. long 4K HEVC clips), the bar can freeze at 6/8 for 30-60s, looking broken.
-- Fix candidates: (a) show per-proxy encode progress via `proxy-progress` events carrying byte/frame progress from FFmpeg stderr, (b) add an animated "encoding..." pulse on the last N clips, (c) poll the partial file size as a proxy for progress.
-- Constraint: do not require pipeline changes unless unavoidable — prefer Rust event enrichment or React-side animation.
-
-**S2 — On re-render, suppress gate when proxies are already complete:**
-- Current: user returns to Render after a prior render where 6/8 proxies were built → gate still fires for the 2 remaining clips. User expects "re-render = skip proxy wait."
-- Fix: if `proxy_used >= proxy_total * 0.8` on the *previous* render for this project (readable from `jobs.analysis_summary` in DB), auto-bypass gate on the next render of the same project. OR: poll `get_proxy_readiness_cmd` once on mount and only enter gate if time-to-complete ETA > N seconds.
-- Note: the gate is *correct* behavior — it exists because skipping it caused 500s renders. The fix is ETA accuracy, not gate removal.
-
-**S3 — ETA label accuracy:**
-- Current ETA formula: `elapsed / completed_so_far * remaining`. Works only once ≥1 proxy lands *during this wait*. Shows "Estimating..." until then — which is the entire wait if background proxies are nearly done.
-- Fix: pre-populate ETA with an estimate from average proxy duration for this machine/resolution (storable in a simple `%TEMP%\rushcut\proxy-timing.json` similar to zoom cache).
+See PRD-DEV.md for next batch candidates. Likely candidates:
+- **Batch T** — Library screen shows only E2E test projects (clips5/clips11 missing from Library UI — filter bug). Investigate why projects without a `jobs` entry don't appear.
+- **Render screen polish** — 1080p non-4K: confirm gate still bypasses correctly on cold start (accepted by design).
+- **Proxy upgrade path** — Old 1080p proxies need upgrade to 2160p for 4K renders; `run_bg_proxy_batch` height check already handles this but worth verifying end-to-end.
 
 ### Performance ceiling (confirmed 2026-05-24, evidence in render-timing-log.jsonl):
 

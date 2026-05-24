@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
+import { Check } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ProjectWithClips, JobConfig, PipelineProgressEvent } from "@/types/project";
+import type { ProjectWithClips, JobConfig, PipelineProgressEvent, Clip } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
@@ -48,6 +49,10 @@ export default function Render() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string>(_cached?.name ?? "");
 
+  // Batch S: clip tiles for awaiting-proxies panel
+  const [includedClips, setIncludedClips] = useState<Clip[]>(_cachedIncluded);
+  const [blockingIds, setBlockingIds] = useState<Set<string>>(new Set());
+
   const [has4K, setHas4K] = useState(false);
   const [outputRes, setOutputRes] = useState<"1080p" | "4k">(() => {
     try {
@@ -78,7 +83,7 @@ export default function Render() {
   // we fall into the 504s full-normalise path documented in the timing log.
   const [proxyReady, setProxyReady] = useState(0);
   const [proxyTotal, setProxyTotal] = useState(0);
-  const [proxyEtaLabel, setProxyEtaLabel] = useState<string>("Estimating...");
+  const [proxyElapsedLabel, setProxyElapsedLabel] = useState("0s");
   const waitStartRef = useRef<number>(0);
   const waitStartReadyRef = useRef<number>(0);
 
@@ -157,16 +162,19 @@ export default function Render() {
       });
       setProxyReady(status.ready);
       setProxyTotal(status.total);
-      // Skip gate when all proxies ready OR none exist at all (cold render).
-      // Gate only holds when partially done: some clips ready, some not.
-      if (status.ready >= status.total || status.ready === 0) {
+      setBlockingIds(new Set(status.blocking_clip_ids));
+      // Skip gate when all proxies ready.
+      // Skip gate when cold AND non-4K (normalise is fast enough at 1080p).
+      // For cold 4K renders, always gate: background proxies are in flight and
+      // the normalise penalty (169s) dwarfs the wait time. Batch S2.
+      if (status.ready >= status.total || (status.ready === 0 && !has4K)) {
         await startRenderNow(pid);
         return;
       }
       // Kick off normal-priority proxy gen and enter wait state.
       waitStartRef.current = Date.now();
       waitStartReadyRef.current = status.ready;
-      setProxyEtaLabel("Estimating...");
+      setProxyElapsedLabel("0s");
       setPhase("awaiting-proxies");
       invoke("generate_proxies_cmd", { projectId: pid, lowPriority: false }).catch(console.error);
     } catch (e) {
@@ -187,6 +195,7 @@ export default function Render() {
 
       projectCache.set(projectId, { name: data.project.name, clips: data.clips });
       const included = data.clips.filter((c) => c.include !== 0);
+      setIncludedClips(included); // set before submitJob to avoid empty-tile flash
       const count = included.length;
       const ms = included.reduce((sum, c) => {
         const start = c.in_ms ?? 0;
@@ -292,9 +301,8 @@ export default function Render() {
     return () => clearInterval(interval);
   }, [phase]);
 
-  // Batch R: poll proxy readiness and listen to proxy-progress while in the
-  // awaiting-proxies wait state. ETA = (remaining * elapsed/completed_so_far);
-  // shows "Estimating..." until at least one proxy lands during the wait.
+  // Batch R+S: poll proxy readiness and listen to proxy-progress while in the
+  // awaiting-proxies wait state. Elapsed timer ticks every second.
   useEffect(() => {
     if (phase !== "awaiting-proxies" || !projectId) return;
     let cancelled = false;
@@ -308,15 +316,7 @@ export default function Render() {
         if (cancelled) return true;
         setProxyReady(status.ready);
         setProxyTotal(status.total);
-
-        const completedSinceStart = status.ready - waitStartReadyRef.current;
-        if (completedSinceStart > 0) {
-          const elapsedSec = (Date.now() - waitStartRef.current) / 1000;
-          const avgPerClip = elapsedSec / completedSinceStart;
-          const remaining = Math.max(0, status.total - status.ready);
-          const eta = Math.round(avgPerClip * remaining);
-          setProxyEtaLabel(remaining === 0 ? "Ready" : `About ~${eta}s remaining`);
-        }
+        setBlockingIds(new Set(status.blocking_clip_ids));
 
         if (status.ready >= status.total && status.total > 0) {
           startRenderNow(projectId!);
@@ -327,6 +327,12 @@ export default function Render() {
       }
       return false;
     }
+
+    // Batch S: elapsed count-up — mirrors the rendering elapsed timer pattern.
+    const ticker = setInterval(() => {
+      const sec = Math.floor((Date.now() - waitStartRef.current) / 1000);
+      setProxyElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
+    }, 1000);
 
     check();
     const interval = setInterval(check, 2000);
@@ -341,6 +347,7 @@ export default function Render() {
 
     return () => {
       cancelled = true;
+      clearInterval(ticker);
       clearInterval(interval);
       unlistenProxy.then((f) => f());
     };
@@ -454,8 +461,8 @@ export default function Render() {
                   <span className="text-[#e5e5e5]">
                     Preparing proxies -- {proxyReady} / {proxyTotal} ready
                   </span>
-                  <span className="text-[#a3a3a3] font-mono" data-testid="proxy-eta">
-                    {proxyEtaLabel}
+                  <span className="text-[#a3a3a3] font-mono" data-testid="proxy-elapsed">
+                    {proxyElapsedLabel} elapsed
                   </span>
                 </div>
                 <div className="h-2 bg-white/10 rounded-full overflow-hidden">
@@ -468,6 +475,30 @@ export default function Render() {
                   Render starts automatically when proxies finish. Skipping makes this render much slower.
                 </p>
               </div>
+              {/* Batch S: per-clip tile grid — pulsing ring on encoding, green check on done */}
+              {includedClips.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {includedClips.map((c) => {
+                    const encoding = blockingIds.has(c.id);
+                    return (
+                      <div
+                        key={c.id}
+                        data-testid={`proxy-tile-${c.id}`}
+                        data-encoding={encoding ? "true" : "false"}
+                        className={`relative w-16 aspect-video rounded border border-white/15 bg-black bg-cover bg-center flex-shrink-0 overflow-hidden${encoding ? " rc-proxy-pulse" : ""}`}
+                        style={c.thumbnail_data ? { backgroundImage: `url(${c.thumbnail_data})` } : {}}
+                      >
+                        {!encoding && (
+                          <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-sm bg-[#22c55e] flex items-center justify-center">
+                            <Check size={10} strokeWidth={3} className="text-[#0a0a0a]" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <button
                 type="button"
                 data-testid="btn-start-anyway"

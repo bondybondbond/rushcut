@@ -402,6 +402,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Proxy gate — `ready === 0` bypass condition is stale after Batch N
+
+**Problem:** `submitJob` in `Render.tsx` contained `if (status.ready >= status.total || status.ready === 0)` to skip the proxy-wait gate. The `ready === 0` branch was correct before Batch N (no background gen existed; 0 ready = proxies not applicable). After Batch N, bg gen starts on Trimmer exit — cold 4K projects have 0 proxies ready *while encoding is in flight*. The bypass fires anyway, skips the gate, and launches the full 169s HEVC normalise immediately.
+**Solution:** Change to `if (status.ready >= status.total || (status.ready === 0 && !has4K))`. Non-4K cold renders still bypass (normalise is fast at 1080p). 4K cold renders fall through to the gate and get boosted bg gen. Measured result: t_normalise_s dropped from 169s → 1s.
+**Context:** `src/pages/Render.tsx` `submitJob` function. Any future change to the proxy gate condition must handle the cold-start case explicitly — `ready === 0` is NOT a safe bypass when 4K clips exist.
+
+---
+
+## Proxy pipeline — `HashSet` concurrency guard silently drops priority-upgrade calls
+
+**Problem:** `generate_proxies_cmd` uses `Arc<Mutex<HashSet<project_id>>>` to prevent duplicate bg gen batches. When the render gate calls `generate_proxies_cmd(lowPriority: false)` to boost an in-flight low-priority batch, the guard detects the project is already running and returns `Ok(())` silently — the boost never reaches FFmpeg. Clips continue encoding at `-threads 1 BELOW_NORMAL_PRIORITY_CLASS` (60–110s each) instead of `-threads 0 normal` (~10–20s each).
+**Solution:** Allow the normal-priority boost to bypass the guard: `if set.contains(&project_id) && low_priority { return Ok(()); }`. Both batches run concurrently; a DB atomic claim (`UPDATE clips SET proxy_status='encoding' WHERE proxy_status NOT IN ('encoding','done')` → `rows_affected == 1`) prevents two FFmpeg processes from writing the same proxy file. First batch to claim a clip owns the encode; second batch skips claimed clips via `continue`. On encode failure, reset status to `'queued'` (not `'encoding'`) so the other batch retries.
+**Context:** `src-tauri/src/lib.rs` `generate_proxies_cmd` + `run_bg_proxy_batch`. `src-tauri/src/db.rs` `claim_clip_for_encoding` + `reset_stale_encoding_claims`. The `HashSet` pattern protects against duplicate runs but must NOT block priority escalation — use the DB claim for per-clip mutual exclusion instead.
+
+---
+
 ## Proxy pipeline — background gen and render gate must both be resolution-aware
 
 **Problem:** Background proxy gen produced 1080p proxies. `render.py` accepted any `height >= 1080` proxy for all render modes. A 4K render that reused a 1080p proxy upscaled from 1080p → 2160p, degrading output quality — AND still got ~2s normalise (wrong skip for wrong reason). Separately, `get_clips_needing_bg_proxy` filtered `proxy_status != 'done'` which prevented 1080p proxies from being upgraded to 2160p.

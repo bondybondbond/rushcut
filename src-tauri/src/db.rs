@@ -357,6 +357,34 @@ pub fn get_clips_needing_bg_proxy(project_id: &str) -> Result<Vec<(String, Strin
     Ok(rows)
 }
 
+/// Batch S2: atomically claim a clip for encoding by setting proxy_status='encoding'.
+/// Returns true if this caller now owns the encode slot; false if another batch
+/// has already claimed it. Lock time is minimal — the UPDATE is the only DB write;
+/// the FFmpeg work happens entirely outside this transaction.
+pub fn claim_clip_for_encoding(clip_id: &str) -> Result<bool, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let rows = conn.execute(
+        "UPDATE clips SET proxy_status = 'encoding'
+         WHERE id = ?1 AND (proxy_status IS NULL OR proxy_status NOT IN ('encoding', 'done'))",
+        params![clip_id],
+    )?;
+    Ok(rows == 1)
+}
+
+/// Batch S2: reset stale 'encoding' claims for a project back to NULL.
+/// Called once at the start of the FIRST batch for a project (before the
+/// concurrency guard is set) to recover from a previous crashed session.
+/// Must NOT be called when a concurrent batch is already running for the project,
+/// as that would corrupt its active claims.
+pub fn reset_stale_encoding_claims(project_id: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "UPDATE clips SET proxy_status = NULL WHERE project_id = ?1 AND proxy_status = 'encoding'",
+        params![project_id],
+    )?;
+    Ok(())
+}
+
 /// Batch R: return (id, local_path, proxy_path) for every include=1 clip in
 /// sort_order. Used by get_proxy_readiness_cmd to mirror render.py's
 /// per-clip proxy reuse gate (height + fps) against the live filesystem.
