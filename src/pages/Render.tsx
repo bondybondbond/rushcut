@@ -154,7 +154,9 @@ export default function Render() {
       });
       setProxyReady(status.ready);
       setProxyTotal(status.total);
-      if (status.ready >= status.total) {
+      // Skip gate when all proxies ready OR none exist at all (cold render).
+      // Gate only holds when partially done: some clips ready, some not.
+      if (status.ready >= status.total || status.ready === 0) {
         await startRenderNow(pid);
         return;
       }

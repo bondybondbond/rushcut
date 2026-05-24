@@ -483,7 +483,12 @@ def run_pipeline(
     report(55)
     t_zoom = time.time()
     zoom_cache_hits = 0
-    has_per_clip_zoom = any(c.get("zoom_mode") for c in pipeline_clips)
+    # "none" (the DB default string) is truthy in Python but means no zoom.
+    # Only count clips with an actual zoom mode as having per-clip zoom.
+    has_per_clip_zoom = any(
+        c.get("zoom_mode") and c.get("zoom_mode") != "none"
+        for c in pipeline_clips
+    )
     global_zoom = config.get("zoom", False) and mode == "final"
 
     if has_per_clip_zoom or global_zoom:
@@ -503,7 +508,8 @@ def run_pipeline(
 
         def _zoom_worker(i: int, p: Path, clip_meta: dict) -> None:
             clip_zoom = clip_meta.get("zoom_mode")
-            if clip_zoom:
+            # "none" is the DB default string — treat it the same as null (passthrough).
+            if clip_zoom and clip_zoom != "none":
                 effective_mode = clip_zoom
                 fx = clip_meta.get("focal_x")
                 fy = clip_meta.get("focal_y")
@@ -807,7 +813,7 @@ def run_pipeline(
         # Settings used
         music_on      = 0 if config.get("music_mood", "none") == "none" else 1
         cards_on      = 1 if (config.get("intro_text") or config.get("outro_text")) else 0
-        zoom_on       = 1 if config.get("zoom") else 0
+        zoom_on       = 1 if (config.get("zoom") or has_per_clip_zoom) else 0
         transition    = config.get("transition", "none")
 
         volume_custom = int(any(

@@ -21,7 +21,8 @@ export default function Trimmer() {
   const [clips, setClips] = useState<Clip[]>(_cached?.clips ?? []);
   const [loading, setLoading] = useState(!_cached);
   const [projectName, setProjectName] = useState(_cached?.name ?? "");
-  const _firstSource = _cached?.clips.find(c => c.include === 0) ?? null;
+  // Fall back to first in-film clip if all clips are already include=1 (no pantry clips)
+  const _firstSource = _cached?.clips.find(c => c.include === 0) ?? _cached?.clips.find(c => c.include === 1) ?? null;
   const [selectedClip, setSelectedClip] = useState<Clip | null>(_firstSource);
   const [inMs, setInMs] = useState(_firstSource?.in_ms ?? 0);
   const [outMs, setOutMs] = useState(_firstSource?.out_ms ?? _firstSource?.duration_ms ?? 0);
@@ -61,7 +62,8 @@ export default function Trimmer() {
         projectCache.set(projectId, { name: data.project.name, clips: data.clips });
         setClips(data.clips);
         setProjectName(data.project.name);
-        const firstSource = data.clips.find(c => c.include === 0);
+        // Fall back to first in-film clip if all clips are already include=1 (no pantry clips)
+        const firstSource = data.clips.find(c => c.include === 0) ?? data.clips.find(c => c.include === 1) ?? null;
         if (firstSource) {
           setSelectedClip(firstSource);
           setInMs(firstSource.in_ms ?? 0);

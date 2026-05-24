@@ -207,6 +207,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`run_local()` safe defaults** — synthetic job dicts must default all boolean config flags to `False` explicitly. Missing keys cause KeyError deep in the pipeline, not at the entry point.
 - **Supabase REST from Lambda via `requests`** — use raw REST API with service role key (`apikey` + `Authorization: Bearer` headers); skip supabase-py. PATCH requires `Prefer: return=minimal` header.
 
+## Workflow — WSL sqlite3 reads stale NTFS data; use invoke() for live DB debugging
+
+**Problem:** Reading `%APPDATA%\rushcut\rushcut.db` via `wsl sqlite3` can show data that is one or more writes behind the live Tauri app. The WSL filesystem cache for NTFS-backed files does not flush on every write, so a query run immediately after a Tauri session may return rows from a previous session or omit recently-inserted rows entirely.
+**Solution:** Use `invoke("list_projects_cmd")` or `invoke("get_project", ...)` from the running Tauri app (via `mcp__chrome-devtools__evaluate_script`) to inspect live DB state. Only fall back to WSL sqlite3 when the app itself is not running.
+**Context:** Any debugging session that checks DB state after a render or project creation — especially when troubleshooting "project not found" or missing proxy_status rows.
+
+---
+
+## Pipeline — Zoom cache keys are resolution-specific (1080p entries don't satisfy 4K)
+
+**Problem:** The zoom cache sha1 key includes `output_resolution`. A full set of 1080p zoom cache hits produces 0 hits on the next 4K render of the same project, because the cache files differ. This means a "warm cache" verification done at 1080p does NOT confirm 4K warm-cache behaviour.
+**Solution:** When testing zoom cache persistence or warm-cache timing, always render at the SAME resolution used to populate the cache. For cross-resolution coverage, do two consecutive renders: once to populate at target resolution, once to verify hits. The `zoom_cache_hits` ANALYSIS field will confirm hits.
+**Context:** `pipeline/render.py` `_zoom_cache_key()`, any session verifying Batch P/R zoom cache. Cold 4K zoom (8 clips, ~11s avg trim, 29.97fps DJI source) takes ~54s; 1080p cold zoom on longer clips (346s film) took 177s — both parallelised across 4 workers.
+
+---
+
 ## Workflow — Diagnosing pipeline failures: check WSL /tmp state first
 
 **Problem:** A render returns "Pipeline exited with status: exit code: 15" or similar non-zero exit. Reading `pipeline-latest.log` shows a half-complete run that ends mid-stage with no ERROR line.

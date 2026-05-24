@@ -15,17 +15,21 @@
 
 ## Current Phase
 
-**Phase 2 — Batch Q2 (FPS stutter fix) COMPLETE (2026-05-23). Next: render performance (8+ min total time).**
+**Phase 2 — Batch R (Render Performance) COMPLETE (2026-05-24). Part A + B shipped. Part C (AMF default for 4K) deferred as separate ticket.**
 
 ---
 
 ## Immediate Next Task
 
-**Render performance — total render time 8+ min is too slow.** Root cause TBD — needs timing log analysis before proposing a fix. Read `%TEMP%\rushcut\render-timing-log.jsonl` to identify the dominant bottleneck phase (normalise / zoom / render encode / music). Batch R or Q3 pending scope discussion.
+**Batch R Part C — AMF default for 4K renders.** Blocked on two prerequisites: (1) confirm `h264_amf` is available in WSL on this hardware (AMD GPU); (2) add user-facing toast when AMF fallback fires (currently silent). See `docs/BATCH-R-PART-C.md` for full spec. Do NOT implement until both blockers are resolved.
 
 ---
 
-## Recently shipped this session (2026-05-23)
+## Recently shipped this session (2026-05-24)
+
+- **Batch R — Render Performance (Part A + B) COMPLETE:** Part A: `ZOOM_CACHE_DIR` moved from WSL `/tmp/rushcut-zoom-cache` to NTFS `%TEMP%\rushcut\zoom-cache\` — survives `wsl --shutdown` and Windows reboots. Part B: `get_proxy_readiness_cmd` Rust command + DB helper; `run_bg_proxy_batch` boost path (`lowPriority=false`); Render screen `"awaiting-proxies"` phase with ETA hint, X/Y progress chip, auto-advance on readiness, "Start anyway" CTA. `render.spec.ts` updated to click "Start anyway" to bypass gate. Verified: 1080p warm (proxies=8/8, zoom_cache_hits=8) → `t_total=173s` (under 180s target). 4K cold with proxies: `t_total=256s` on libx264 — Part C (AMF) needed to reach <180s for 4K. Minor bug fixes: `zoom_on` ANALYSIS field (now includes per-clip zoom modes); Trimmer "No clips found" fallback when all clips are `include=1`. 9/9 fast PASS.
+
+## Recently shipped previous session (2026-05-23)
 
 - **Batch Q — GPU AMF render + Fast Render UI toggle COMPLETE:** `pipeline/encoder.py` (new module): `video_encoder_args()`, `to_win_path()`, `_detect_amf()`. AMF default=OFF (libx264 for quality); opt-in via `RUSHCUT_USE_AMF=1` env var OR "Fast render" UI toggle. AMF_QP=23 chosen after benchmarking (67 MB vs libx264 63 MB, +6%). B-frame hardware limitation confirmed (AMD driver ignores `-bf`; `has_b_frames=0` in CQP+VBR). `render.py` + `run.py` updated to thread `use_amf` from manifest. `src/pages/Render.tsx`: "Fast render" toggle in `phase==="ready"` (4K gate only) — pill toggle, `#99B3FF` when on, helper text "slightly lower motion quality". `src/types/project.ts` + `buildJobConfig.ts` wired. 9/9 fast PASS.
 - **Batch Q2 deferred — FPS stutter diagnosed:** Stutter on constant-motion DJI clips traced to 29.97fps→25fps conversion in proxy + normalise. Plan documented in `docs/BATCH-Q2-FPS-STUTTER.md`.
