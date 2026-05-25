@@ -108,23 +108,50 @@ static BEST_ENCODER: OnceLock<String> = OnceLock::new();
 
 fn detect_best_encoder() -> &'static str {
     BEST_ENCODER.get_or_init(|| {
+        // [S3 Step 2] Probe args: 320x240, 30 frames, yuv420p. AMF rejects any input
+        // below 256x256 with "Could not open encoder before EOF" (encoder pipeline
+        // refuses to initialize at sub-256 resolutions), silently falling back to
+        // libx264 even on AMD machines. The bigger probe also gives nvenc/qsv enough
+        // frames to initialize a real session, not just a partial init.
         for enc in &["h264_nvenc", "h264_qsv", "h264_amf"] {
-            let ok = std::process::Command::new(ffmpeg_exe())
+            let output = std::process::Command::new(ffmpeg_exe())
                 .args([
-                    "-f", "lavfi", "-i", "color=black:s=128x72:r=1",
-                    "-vframes", "1", "-c:v", enc, "-f", "null", "-",
+                    "-f", "lavfi", "-i", "color=black:s=320x240:r=25",
+                    "-vframes", "30", "-pix_fmt", "yuv420p",
+                    "-c:v", enc, "-f", "null", "-",
                 ])
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if ok {
-                eprintln!("[proxy] GPU encoder selected: {}", enc);
-                return enc.to_string();
+                .stderr(std::process::Stdio::piped())
+                .output();
+            match output {
+                Ok(out) if out.status.success() => {
+                    eprintln!("[encoder-probe] OK selected={}", enc);
+                    return enc.to_string();
+                }
+                Ok(out) => {
+                    let err_full = String::from_utf8_lossy(&out.stderr);
+                    // Last 6 non-empty lines usually contain the real failure reason
+                    let tail: Vec<&str> = err_full
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .rev()
+                        .take(6)
+                        .collect();
+                    let mut tail_rev = tail.clone();
+                    tail_rev.reverse();
+                    eprintln!(
+                        "[encoder-probe] FAIL enc={} exit={:?} stderr-tail={:?}",
+                        enc,
+                        out.status.code(),
+                        tail_rev.join(" | ")
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[encoder-probe] SPAWN-ERR enc={} err={}", enc, e);
+                }
             }
         }
-        eprintln!("[proxy] no GPU encoder available, using libx264 (software)");
+        eprintln!("[encoder-probe] no GPU encoder available, using libx264 (software)");
         "libx264".to_string()
     })
 }
@@ -536,37 +563,82 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
 /// and `-threads 0` (auto) so the user's wait state clears faster. Spec must stay
 /// in lockstep with the low-priority variant -- both produce the proxy that
 /// render.py's reuse gate accepts.
-fn generate_proxy_file_normal_priority(src: &str, dst: &str) -> bool {
+fn generate_proxy_file_normal_priority(src: &str, dst: &str, threads: u32) -> bool {
     let encoder = detect_best_encoder();
     let fps = probe_clip_fps(src).unwrap_or_else(|| {
         proxy_bg_log(&format!("[Q2] WARNING: fps probe failed for {}, defaulting to 25", src));
         "25".to_string()
     });
-    proxy_bg_log(&format!("[PROXY_BG] encode-start (normal priority) src={} dst={} encoder={} fps={}", src, dst, encoder, fps));
+    // [S3] threads=0 means "auto, all cores" (use when batch is 1 worker).
+    // For parallel batches we pass cpu_count/n_workers so the workers don't fight
+    // for the same cores.
+    let threads_str = threads.to_string();
+    let is_amf = encoder == "h264_amf";
+    proxy_bg_log(&format!("[PROXY_BG] encode-start (normal priority) src={} dst={} encoder={} fps={} threads={}", src, dst, encoder, fps, threads));
 
-    std::process::Command::new(ffmpeg_exe())
-        .args([
-            "-i", src,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-vf", "scale=-2:2160,format=yuv420p",
-            "-r", &fps,
-            "-fps_mode", "cfr",
-            "-c:v", encoder,
+    // [S3] AMF uses different encode-control args than libx264. -preset and -crf
+    // are libx264-only; AMF needs -rc cqp + -qp_i/-qp_p + -quality. Passing the
+    // wrong args fails AMF init with "Could not open encoder before EOF".
+    // QP 30 / quality=speed is the proxy preset (intermediate quality, fast).
+    let mut args: Vec<&str> = vec![
+        "-hide_banner", "-loglevel", "error",
+        "-i", src,
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-vf", "scale=-2:2160,format=yuv420p",
+        "-r", &fps,
+        "-fps_mode", "cfr",
+        "-c:v", encoder,
+    ];
+    if is_amf {
+        args.extend([
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "main",
+            "-rc", "cqp",
+            "-qp_i", "30",
+            "-qp_p", "30",
+            "-quality", "speed",
+        ]);
+    } else {
+        args.extend([
             "-preset", "ultrafast",
             "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-ar", "48000",
-            "-threads", "0",
-            "-y",
-            dst,
-        ])
+        ]);
+    }
+    args.extend([
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-ar", "48000",
+        "-threads", threads_str.as_str(),
+        "-y",
+        dst,
+    ]);
+
+    // Capture stderr so failures are diagnosable in proxy-bg.log instead of silently
+    // returning `false`. Truncate to last ~400 bytes to keep the log readable.
+    let output = std::process::Command::new(ffmpeg_exe())
+        .args(&args)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match output {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            let err_full = String::from_utf8_lossy(&out.stderr);
+            let tail_idx = err_full.len().saturating_sub(400);
+            proxy_bg_log(&format!(
+                "[PROXY_BG] ffmpeg-fail encoder={} exit={:?} stderr-tail={:?}",
+                encoder,
+                out.status.code(),
+                &err_full[tail_idx..]
+            ));
+            false
+        }
+        Err(e) => {
+            proxy_bg_log(&format!("[PROXY_BG] ffmpeg-spawn-err encoder={} err={}", encoder, e));
+            false
+        }
+    }
 }
 
 /// Encode a 480p H.264 proxy using the best available GPU encoder (detected once via OnceLock).
@@ -1207,12 +1279,106 @@ async fn generate_proxies_cmd(
     Ok(())
 }
 
+/// Per-clip encode logic, extracted so parallel workers can share it.
+/// Idempotent + safe to call concurrently from multiple workers on the same project
+/// thanks to `claim_clip_for_encoding`'s atomic compare-and-set on `proxy_status`.
+fn encode_one_clip(
+    app: &AppHandle,
+    project_id: &str,
+    proxy_dir: &str,
+    clip_id: &str,
+    local_path: &str,
+    codec_name: Option<String>,
+    low_priority: bool,
+    threads_per_clip: u32,
+) {
+    // Codecs WebView2 decodes natively — no transcode needed (matches proxy.py logic).
+    const NATIVE_CODECS: &[&str] = &["h264", "vp8", "vp9"];
+    let codec = codec_name.unwrap_or_default().to_lowercase();
+
+    // Native codec: source IS the proxy. Mark done immediately, point proxy_path at source.
+    if NATIVE_CODECS.contains(&codec.as_str()) {
+        proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=native-codec codec={}", clip_id, codec));
+        let _ = update_clip_proxy(clip_id, local_path);
+        let _ = set_clip_proxy_status(clip_id, "done");
+        let _ = app.emit("proxy-progress", json!({
+            "projectId": project_id,
+            "clipId": clip_id,
+            "winPath": local_path,
+        }));
+        return;
+    }
+
+    let proxy_path = format!(r"{}\{}.mp4", proxy_dir, clip_id);
+
+    // Already a valid proxy on disk? Only skip re-encode if it is 2160p-compatible.
+    // Legacy 1080p proxies (from earlier Batch N sessions before this fix) fall through
+    // and get re-encoded at 2160p so they work for both 1080p and 4K renders.
+    if std::path::Path::new(&proxy_path).exists() && is_valid_proxy_file(&proxy_path) {
+        let h = proxy_height_native(&proxy_path);
+        if h >= 2160 {
+            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=cached-2160p", clip_id));
+            let _ = update_clip_proxy(clip_id, &proxy_path);
+            let _ = set_clip_proxy_status(clip_id, "done");
+            let _ = app.emit("proxy-progress", json!({
+                "projectId": project_id,
+                "clipId": clip_id,
+                "winPath": proxy_path,
+            }));
+            return;
+        }
+        proxy_bg_log(&format!("[PROXY_BG] upgrade clip_id={} existing-height={}px re-encoding-at-2160p", clip_id, h));
+        // Fall through to re-encode at 2160p.
+    }
+
+    // Real encode path (HEVC / unknown).
+    // Batch S2: atomic claim — prevents concurrent batches/workers from double-encoding
+    // the same clip. claim_clip_for_encoding sets proxy_status='encoding' only if
+    // no other claim is active (compare-and-set, minimal lock time).
+    match claim_clip_for_encoding(clip_id) {
+        Ok(true) => {} // we own this encode slot — proceed
+        Ok(false) => {
+            proxy_bg_log(&format!("[PROXY_BG] skip clip_id={} reason=encoding-in-progress", clip_id));
+            return;
+        }
+        Err(e) => {
+            proxy_bg_log(&format!("[PROXY_BG] claim-error clip_id={} err={}", clip_id, e));
+            return;
+        }
+    }
+
+    proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={} low_priority={}", clip_id, codec, low_priority));
+    let t0 = std::time::Instant::now();
+    let ok = if low_priority {
+        generate_proxy_file_low_priority(local_path, &proxy_path)
+    } else {
+        generate_proxy_file_normal_priority(local_path, &proxy_path, threads_per_clip)
+    };
+    let elapsed = t0.elapsed().as_secs_f64();
+
+    if ok && is_valid_proxy_file(&proxy_path) {
+        proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed={:.1}s", clip_id, elapsed));
+        let _ = update_clip_proxy(clip_id, &proxy_path);
+        let _ = set_clip_proxy_status(clip_id, "done");
+        record_proxy_timing(elapsed, 2160);
+        let _ = app.emit("proxy-progress", json!({
+            "projectId": project_id,
+            "clipId": clip_id,
+            "winPath": proxy_path,
+        }));
+    } else {
+        proxy_bg_log(&format!("[PROXY_BG] failed clip_id={} elapsed={:.1}s", clip_id, elapsed));
+        // Reset to NULL (not 'encoding') so the next batch can re-claim and retry.
+        let _ = set_clip_proxy_status(clip_id, "queued");
+    }
+}
+
 /// Batch N: background pre-encode of proxies for clips with include=1 AND
-/// proxy_status != 'done'. Serial (parallelism hits NTFS I/O ceiling per
-/// BATCH_N_PLAN.md), low-priority, idempotent. Marks `proxy_status='queued'`
-/// before each encode and `'done'` only after `is_valid_proxy_file` confirms
-/// success. Native-codec sources (H.264 / VP8 / VP9) skip encode and mark done
-/// with the source path as the proxy_path (matches existing run_media_batch logic).
+/// proxy_status != 'done'. Low-priority runs serial (-threads 1, BELOW_NORMAL)
+/// to preserve user responsiveness. Normal-priority (Render gate boost) runs
+/// parallel workers — `claim_clip_for_encoding` provides per-clip mutex so
+/// workers can race safely on a shared queue. Native-codec sources (H.264 /
+/// VP8 / VP9) skip encode and mark done with the source path as proxy_path.
 async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bool) {
     let clips_to_encode = match get_clips_needing_bg_proxy(&project_id) {
         Ok(v) => v,
@@ -1237,89 +1403,80 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
     let proxy_dir = format!(r"{}\rushcut\proxies", appdata);
     let _ = std::fs::create_dir_all(&proxy_dir);
 
-    // Codecs WebView2 decodes natively — no transcode needed (matches proxy.py logic).
-    const NATIVE_CODECS: &[&str] = &["h264", "vp8", "vp9"];
+    // [S3] Parallel workers for normal-priority (gate-critical) batch only.
+    // Low-priority bg gen keeps 1 worker / -threads 1 so it stays out of the way.
+    //
+    // GPU-encoder caveat: AMD AMF, Intel QSV, and Nvidia NVENC each expose a
+    // limited number of concurrent encode sessions per GPU (typically 1–2 on
+    // consumer cards). Spawning multiple concurrent FFmpeg AMF processes triggers
+    // "Could not open encoder before EOF" failures on session init. So:
+    //   - GPU encoder detected -> n_workers = 1, threads = 0 (serial GPU encode,
+    //     which is still ~2x per-clip vs libx264 at threads=0 on this hardware).
+    //   - Software libx264 -> n_workers up to 4, threads_per_clip splits cpu count.
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let encoder = detect_best_encoder();
+    let is_gpu_encoder = encoder != "libx264";
+    // GPU encoders: 2 workers max (AMD H.264 engine + NVENC/QSV all support 2
+    // concurrent sessions in practice; >2 starts to fail on session init).
+    // libx264: up to 4 workers based on cpu count.
+    let n_workers: usize = if low_priority {
+        1
+    } else if is_gpu_encoder {
+        clips_to_encode.len().min(2)
+    } else {
+        clips_to_encode.len().min(4).min((cpu_count / 4).max(1))
+    };
+    let threads_per_clip: u32 = if low_priority || n_workers <= 1 {
+        0 // -threads 0 = FFmpeg auto, all cores (only 1 worker so no contention)
+    } else {
+        ((cpu_count / n_workers).max(1)) as u32
+    };
 
-    proxy_bg_log(&format!("[PROXY_BG] batch-start project_id={} clip_count={} low_priority={}", project_id, clips_to_encode.len(), low_priority));
+    proxy_bg_log(&format!(
+        "[PROXY_BG] batch-start project_id={} clip_count={} low_priority={} encoder={} n_workers={} threads_per_clip={} cpu_count={}",
+        project_id, clips_to_encode.len(), low_priority, encoder, n_workers, threads_per_clip, cpu_count
+    ));
 
-    for (clip_id, local_path, codec_name) in clips_to_encode {
-        let codec = codec_name.unwrap_or_default().to_lowercase();
+    // Shared queue. Workers pop until empty; the per-clip DB claim prevents
+    // double-encode if a low-priority batch is also running concurrently.
+    let queue: Arc<Mutex<Vec<(String, String, Option<String>)>>> =
+        Arc::new(Mutex::new(clips_to_encode));
 
-        // Native codec: source IS the proxy. Mark done immediately, point proxy_path at source.
-        if NATIVE_CODECS.contains(&codec.as_str()) {
-            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=native-codec codec={}", clip_id, codec));
-            let _ = update_clip_proxy(&clip_id, &local_path);
-            let _ = set_clip_proxy_status(&clip_id, "done");
-            let _ = app.emit("proxy-progress", json!({
-                "projectId": project_id,
-                "clipId": clip_id,
-                "winPath": local_path,
-            }));
-            continue;
-        }
-
-        let proxy_path = format!(r"{}\{}.mp4", proxy_dir, clip_id);
-
-        // Already a valid proxy on disk? Only skip re-encode if it is 2160p-compatible.
-        // Legacy 1080p proxies (from earlier Batch N sessions before this fix) fall through
-        // and get re-encoded at 2160p so they work for both 1080p and 4K renders.
-        if std::path::Path::new(&proxy_path).exists() && is_valid_proxy_file(&proxy_path) {
-            let h = proxy_height_native(&proxy_path);
-            if h >= 2160 {
-                proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=cached-2160p", clip_id));
-                let _ = update_clip_proxy(&clip_id, &proxy_path);
-                let _ = set_clip_proxy_status(&clip_id, "done");
-                let _ = app.emit("proxy-progress", json!({
-                    "projectId": project_id,
-                    "clipId": clip_id,
-                    "winPath": proxy_path,
-                }));
-                continue;
+    let mut handles = Vec::with_capacity(n_workers);
+    for worker_idx in 0..n_workers {
+        let queue = Arc::clone(&queue);
+        let app = app.clone();
+        let project_id = project_id.clone();
+        let proxy_dir = proxy_dir.clone();
+        handles.push(tokio::task::spawn_blocking(move || {
+            loop {
+                let next = { queue.lock().unwrap().pop() };
+                match next {
+                    None => {
+                        proxy_bg_log(&format!("[PROXY_BG] worker-done idx={} project_id={}", worker_idx, project_id));
+                        break;
+                    }
+                    Some((clip_id, local_path, codec_name)) => {
+                        encode_one_clip(
+                            &app,
+                            &project_id,
+                            &proxy_dir,
+                            &clip_id,
+                            &local_path,
+                            codec_name,
+                            low_priority,
+                            threads_per_clip,
+                        );
+                    }
+                }
             }
-            proxy_bg_log(&format!("[PROXY_BG] upgrade clip_id={} existing-height={}px re-encoding-at-2160p", clip_id, h));
-            // Fall through to re-encode at 2160p.
-        }
+        }));
+    }
 
-        // Real encode path (HEVC / unknown).
-        // Batch S2: atomic claim — prevents concurrent batches from double-encoding
-        // the same clip. claim_clip_for_encoding sets proxy_status='encoding' only if
-        // no other batch has already claimed it (compare-and-set, minimal lock time).
-        match claim_clip_for_encoding(&clip_id) {
-            Ok(true) => {} // we own this encode slot — proceed
-            Ok(false) => {
-                proxy_bg_log(&format!("[PROXY_BG] skip clip_id={} reason=encoding-in-progress", clip_id));
-                continue;
-            }
-            Err(e) => {
-                proxy_bg_log(&format!("[PROXY_BG] claim-error clip_id={} err={}", clip_id, e));
-                continue;
-            }
-        }
-
-        proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={} low_priority={}", clip_id, codec, low_priority));
-        let t0 = std::time::Instant::now();
-        let ok = if low_priority {
-            generate_proxy_file_low_priority(&local_path, &proxy_path)
-        } else {
-            generate_proxy_file_normal_priority(&local_path, &proxy_path)
-        };
-        let elapsed = t0.elapsed().as_secs_f64();
-
-        if ok && is_valid_proxy_file(&proxy_path) {
-            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed={:.1}s", clip_id, elapsed));
-            let _ = update_clip_proxy(&clip_id, &proxy_path);
-            let _ = set_clip_proxy_status(&clip_id, "done");
-            record_proxy_timing(elapsed, 2160);
-            let _ = app.emit("proxy-progress", json!({
-                "projectId": project_id,
-                "clipId": clip_id,
-                "winPath": proxy_path,
-            }));
-        } else {
-            proxy_bg_log(&format!("[PROXY_BG] failed clip_id={} elapsed={:.1}s", clip_id, elapsed));
-            // Reset to NULL (not 'encoding') so the next batch can re-claim and retry.
-            let _ = set_clip_proxy_status(&clip_id, "queued");
-        }
+    for h in handles {
+        let _ = h.await;
     }
 
     proxy_bg_log(&format!("[PROXY_BG] batch-done project_id={}", project_id));

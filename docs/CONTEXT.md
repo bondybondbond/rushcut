@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch S (Proxy UX Polish + Cold 4K Gate Fix) ALL PARTS COMPLETE (2026-05-24). Next: TBD — see PRD-DEV.md.**
+**Phase 2 — Batch S (S1+S2+S3 Proxy UX Polish + Cold 4K Gate Fix + Parallel GPU Proxy) ALL PARTS COMPLETE (2026-05-25). Next: TBD — see PRD-DEV.md.**
 
 ---
 
@@ -23,21 +23,18 @@
 
 See PRD-DEV.md for next batch candidates. Likely candidates:
 - **Batch T** — Library screen shows only E2E test projects (clips5/clips11 missing from Library UI — filter bug). Investigate why projects without a `jobs` entry don't appear.
+- **Long-clip proxy gate** — Sessions with >2min clips exceed the 120s gate target due to HEVC decode floor (~1x realtime). Partial-ready gate (advance when short clips done) is mitigation.
 - **Render screen polish** — 1080p non-4K: confirm gate still bypasses correctly on cold start (accepted by design).
-- **Proxy upgrade path** — Old 1080p proxies need upgrade to 2160p for 4K renders; `run_bg_proxy_batch` height check already handles this but worth verifying end-to-end.
 
-### Performance ceiling (confirmed 2026-05-24, evidence in render-timing-log.jsonl):
+### Performance confirmed (2026-05-25, Batch S3 cold benchmark):
 
-| Run | Encoder | Proxies | t_normalise | t_render | t_total |
-|-----|---------|---------|-------------|----------|---------|
-| 15:23 (fast OFF) | libx264 | 6/8 | 88s | 226s | 326s |
-| 15:28 (fast ON) | h264_amf | 6/8 | 87s | 111s | 211s |
-| **Projected (AMF, 8/8 warm)** | h264_amf | 8/8 | ~5s | ~111s | **~124s** |
+| Scenario | Gate (proxy gen) | t_normalise | t_total |
+|----------|-----------------|-------------|---------|
+| Cold 8-clip (≤31s clips), AMF | **121s** | 2s | **133s** |
+| Cold 4K 3-clip, AMF (S2 eval) | — | 1s | 17s |
+| Warm 4K 8-clip, AMF (S2 run) | ~0s | 2s | ~133s |
 
-**Confirmed ceiling: ~124s for AMF + 8/8 proxies warm run = well under 180s target.**
-Evidence basis: 15:28 run t_total=211s with 2 clips normalising (87s penalty); subtract 82s normalise penalty, add ~5s warm normalise = 129s. Rounding to 124s accounts for trim/overhead savings when no normaise needed. **The 180s target is only reachable with 8/8 proxies — Batch S proxy UX polish is the direct unblock.**
-
-No `amf_fallback` field in either live render → AMF succeeded without fallback → toast correctly silent. The toast infrastructure is in place and tested (manual-fallback-test instance in log confirms libx264 fallback path works).
+**All S3 targets met.** AMF proxy: `n_workers=2`, `threads_per_clip=8`, `encoder=h264_amf` confirmed in `proxy-bg.log`.
 
 ---
 
