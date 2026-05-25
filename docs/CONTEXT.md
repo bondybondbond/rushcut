@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch S (S1+S2+S3 Proxy UX Polish + Cold 4K Gate Fix + Parallel GPU Proxy) ALL PARTS COMPLETE (2026-05-25). Next: TBD — see PRD-DEV.md.**
+**Phase 2 — Batch S (S1+S2+S3+S4 Proxy UX Polish + Cold 4K Gate Fix + Parallel GPU Proxy + Earlier Trigger) ALL PARTS COMPLETE (2026-05-25). Next: TBD — see PRD-DEV.md.**
 
 ---
 
@@ -38,7 +38,11 @@ See PRD-DEV.md for next batch candidates. Likely candidates:
 
 ---
 
-## Recently shipped this session (2026-05-24)
+## Recently shipped this session (2026-05-25)
+
+- **Batch S4 — Earlier proxy trigger COMPLETE:** `generate_proxies_cmd` gains `all_clips: Option<bool>` param. New `db.rs` `get_all_clips_for_bg_proxy()` omits `include=1` filter. `run_bg_proxy_batch` switches query based on `all_clips` flag. `Upload.tsx` updated from bare `invoke("generate_proxies_cmd", { projectId })` to `invoke("generate_proxies_cmd", { projectId, lowPriority: true, allClips: true })`. Bug fix bundled: `generate_proxy_file_low_priority` was passing libx264 args to AMF encoder (same bug fixed for normal-priority in Batch S) — all low-priority encodes on AMF hardware failed silently with elapsed=0.1s. Fixed by mirroring the AMF/libx264 arg branching from the normal-priority function. Confirmed: `batch-start all_clips=true encoder=h264_amf` in proxy-bg.log; clip 1 done in 4.1s, clip 2 done in 100.3s; no regressions (9/9 fast PASS).
+
+## Recently shipped previous session (2026-05-24)
 
 - **Batch R Part C — AMF fallback toast + silent-fallback detection COMPLETE:** `pipeline/render.py`: `amf_fallback_flag` list-closure tracks whether AMF fell back to libx264 mid-encode; `_run_with_amf_fallback()` inner function retries with libx264 on RuntimeError when `is_amf=True`; `amf_fallback=0/1` appended to ANALYSIS line. `src-tauri/src/lib.rs`: `last_analysis` captured per job, emitted in `pipeline-done` event payload as `"analysis"` field. `src/pages/Render.tsx`: toast wired to `pipeline-done` analysis field — shows "Fast render unavailable -- rendered at standard quality" for 6s when `amf_fallback=1`; `fastRender` toggle is opt-in OFF by default (auto-ON for 4K reverted per user feedback). Verified: AMF encode 111s vs 226s libx264 on same 6/8 proxies (51% faster). No fallback in live renders (toast correctly silent). Projected warm run with 8/8 proxies: ~124s (under 180s target). 9/9 fast PASS.
 

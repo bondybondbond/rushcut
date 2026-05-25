@@ -400,6 +400,8 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 **`pipeline-done` event carries `analysis` field (Batch R Part C):** The `pipeline-done` Tauri event payload now includes `{ jobId, stage, progress, message, outputPath, analysis }` where `analysis` is the full ANALYSIS stdout string (or null if not emitted). React listeners must be typed `PipelineProgressEvent & { analysis?: string | null }` to access it. The field allows post-render decision surfacing (encoder used, fallback state, proxy stats) without requiring a DB query.
 
+**`generate_proxy_file_low_priority` must use the same AMF/libx264 arg branching as the normal-priority variant:** `generate_proxy_file_normal_priority` was fixed in Batch S to branch on `is_amf = encoder == "h264_amf"` (AMF needs `-rc cqp -qp_i 30 -qp_p 30 -quality speed`; libx264 needs `-preset ultrafast -crf 23`). The low-priority function was NOT updated at the same time. It kept the libx264-style args while still calling `detect_best_encoder()` — so on AMF hardware, every low-priority encode failed silently with `elapsed=0.1s`. The fix (Batch S4) mirrors the full arg branching from the normal-priority function. **Rule:** whenever touching either proxy encode function, always check that BOTH functions stay in sync on encoder args.
+
 ---
 
 ## Proxy gate — `ready === 0` bypass condition is stale after Batch N

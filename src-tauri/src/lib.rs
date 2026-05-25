@@ -4,7 +4,7 @@ mod splash;
 
 use base64::Engine as _;
 use db::{
-    add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_clips_needing_bg_proxy,
+    add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_all_clips_for_bg_proxy, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_project_output_paths, get_project_with_clips,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
@@ -515,8 +515,13 @@ fn round_fps_to_standard(s: &str) -> u32 {
 /// Low-priority background proxy encode — 2160p so proxies qualify for both 1080p and 4K renders.
 /// Windows BELOW_NORMAL_PRIORITY_CLASS + -threads 1 ensures foreground stays responsive.
 /// NOTE: proxy.py was dead code since Batch 16; this native Rust path is the live one.
+///
+/// [TRAP / Batch S4]: AMF and libx264 need DIFFERENT args. `-preset` / `-crf` are libx264-only;
+/// passing them to AMF causes "Could not open encoder before EOF" (silent failure, elapsed=0.1s).
+/// Fixed here to mirror the same branching as `generate_proxy_file_normal_priority`.
 fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
     let encoder = detect_best_encoder();
+    let is_amf = encoder == "h264_amf";
     // [Q2 Step 8b] Use native source fps so proxy matches render target_fps and passes reuse gate.
     // Fallback to "25" if probe fails — renders will reject and re-normalise, no silent regression.
     let fps = probe_clip_fps(src).unwrap_or_else(|| {
@@ -525,8 +530,9 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
     });
     proxy_bg_log(&format!("[PROXY_BG] encode-start src={} dst={} encoder={} fps={}", src, dst, encoder, fps));
 
-    let mut cmd = std::process::Command::new(ffmpeg_exe());
-    cmd.args([
+    // Build arg list with AMF vs libx264 branching (mirrors generate_proxy_file_normal_priority).
+    let mut args: Vec<&str> = vec![
+        "-hide_banner", "-loglevel", "error",
         "-i", src,
         "-map", "0:v:0",
         "-map", "0:a:0?",
@@ -534,17 +540,32 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
         "-r", &fps,
         "-fps_mode", "cfr",
         "-c:v", encoder,
-        "-preset", "ultrafast",
-        "-crf", "23",
+    ];
+    if is_amf {
+        args.extend([
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "main",
+            "-rc", "cqp",
+            "-qp_i", "30",
+            "-qp_p", "30",
+            "-quality", "speed",
+        ]);
+    } else {
+        args.extend(["-preset", "ultrafast", "-crf", "23"]);
+    }
+    args.extend([
         "-c:a", "aac",
         "-b:a", "128k",
         "-ar", "48000",
         "-threads", "1",
         "-y",
         dst,
-    ])
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null());
+    ]);
+
+    let mut cmd = std::process::Command::new(ffmpeg_exe());
+    cmd.args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
 
     // Windows: BELOW_NORMAL_PRIORITY_CLASS = 0x00004000 (the natural "nice -n 10" equivalent).
     // Lets foreground UI / thumbnail loads preempt background ffmpeg without starving it.
@@ -555,7 +576,19 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
         cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
     }
 
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    match cmd.output() {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail: String = stderr.chars().rev().take(400).collect::<String>().chars().rev().collect();
+            proxy_bg_log(&format!("[PROXY_BG] encode-error (low priority) src={} stderr_tail={}", src, tail));
+            false
+        }
+        Err(e) => {
+            proxy_bg_log(&format!("[PROXY_BG] encode-spawn-error src={} err={}", src, e));
+            false
+        }
+    }
 }
 
 /// Batch R: normal-priority variant of `generate_proxy_file_low_priority` for the
@@ -1220,8 +1253,11 @@ fn get_proxy_readiness_cmd(
 /// Batch N: when `low_priority=true`, additionally pre-encode proxies for clips
 /// where `include=1` AND `proxy_status != 'done'`. Triggered on Trimmer unmount —
 /// runs serially under BELOW_NORMAL_PRIORITY_CLASS so the user's Arrange/Sound
-/// editing window stays responsive. Selection is DB-side via
-/// `get_clips_needing_bg_proxy` so callers pass only `projectId + lowPriority`.
+/// editing window stays responsive.
+///
+/// Batch S4: `all_clips=true` (Upload-time trigger) encodes ALL scanned clips
+/// regardless of include flag — gives the full session time as warm-up buffer.
+/// Wasted work on clips the user never includes is acceptable vs waiting at the gate.
 ///
 /// Returns immediately; batch runs in a background task.
 #[tauri::command]
@@ -1230,8 +1266,10 @@ async fn generate_proxies_cmd(
     state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>,
     project_id: String,
     low_priority: Option<bool>,
+    all_clips: Option<bool>,
 ) -> Result<(), String> {
     let low_priority = low_priority.unwrap_or(false);
+    let use_all_clips = all_clips.unwrap_or(false);
 
     // Concurrency guard: prevents duplicate batches of the same or lower priority.
     // Batch S2: a normal-priority (boost) call is allowed through even when a
@@ -1259,8 +1297,8 @@ async fn generate_proxies_cmd(
     let project_data = get_project_with_clips(&project_id)
         .map_err(|e| format!("DB error (get clips): {}", e))?;
 
-    let all_clips = project_data.clips;
-    if all_clips.is_empty() {
+    let clips_for_media = project_data.clips;
+    if clips_for_media.is_empty() {
         state.lock().unwrap().remove(&project_id);
         return Ok(());
     }
@@ -1268,11 +1306,12 @@ async fn generate_proxies_cmd(
     let guard = Arc::clone(&*state);
     let pid = project_id.clone();
     tauri::async_runtime::spawn(async move {
-        run_media_batch(app.clone(), pid.clone(), all_clips).await;
-        // Batch R: always run the proxy batch. The low_priority flag now selects
+        run_media_batch(app.clone(), pid.clone(), clips_for_media).await;
+        // Batch R: always run the proxy batch. The low_priority flag selects
         // priority (BELOW_NORMAL for Trimmer-unmount fire-and-forget vs normal
-        // for the Render-screen boost), not whether to run it at all.
-        run_bg_proxy_batch(app, pid.clone(), low_priority).await;
+        // for the Render-screen boost). use_all_clips=true (Upload trigger) encodes
+        // all scanned clips; false (Trimmer unmount / Render boost) encodes include=1 only.
+        run_bg_proxy_batch(app, pid.clone(), low_priority, use_all_clips).await;
         guard.lock().unwrap().remove(&pid);
     });
 
@@ -1379,8 +1418,15 @@ fn encode_one_clip(
 /// parallel workers — `claim_clip_for_encoding` provides per-clip mutex so
 /// workers can race safely on a shared queue. Native-codec sources (H.264 /
 /// VP8 / VP9) skip encode and mark done with the source path as proxy_path.
-async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bool) {
-    let clips_to_encode = match get_clips_needing_bg_proxy(&project_id) {
+///
+/// Batch S4: `all_clips=true` uses `get_all_clips_for_bg_proxy` (no include filter)
+/// for Upload-time pre-warm — encodes all scanned clips before user enters Trimmer.
+async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bool, all_clips: bool) {
+    let clips_to_encode = match if all_clips {
+        get_all_clips_for_bg_proxy(&project_id)
+    } else {
+        get_clips_needing_bg_proxy(&project_id)
+    } {
         Ok(v) => v,
         Err(e) => {
             proxy_bg_log(&format!("[PROXY_BG] error project_id={} get_clips failed: {}", project_id, e));
@@ -1435,8 +1481,8 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
     };
 
     proxy_bg_log(&format!(
-        "[PROXY_BG] batch-start project_id={} clip_count={} low_priority={} encoder={} n_workers={} threads_per_clip={} cpu_count={}",
-        project_id, clips_to_encode.len(), low_priority, encoder, n_workers, threads_per_clip, cpu_count
+        "[PROXY_BG] batch-start project_id={} clip_count={} low_priority={} all_clips={} encoder={} n_workers={} threads_per_clip={} cpu_count={}",
+        project_id, clips_to_encode.len(), low_priority, all_clips, encoder, n_workers, threads_per_clip, cpu_count
     ));
 
     // Shared queue. Workers pop until empty; the per-clip DB claim prevents

@@ -357,6 +357,26 @@ pub fn get_clips_needing_bg_proxy(project_id: &str) -> Result<Vec<(String, Strin
     Ok(rows)
 }
 
+/// Return ALL clips for a project (regardless of include flag) for the Upload-time
+/// all-clips proxy pre-build (Batch S4). The include=0 filter is intentionally absent —
+/// the user hasn't selected clips yet; encode everything so by the time they reach
+/// Render, proxies are warm. run_bg_proxy_batch handles per-clip codec/height decisions.
+pub fn get_all_clips_for_bg_proxy(project_id: &str) -> Result<Vec<(String, String, Option<String>)>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, local_path, codec_name FROM clips
+         WHERE project_id = ?1
+         ORDER BY sort_order ASC",
+    )?;
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
 /// Batch S2: atomically claim a clip for encoding by setting proxy_status='encoding'.
 /// Returns true if this caller now owns the encode slot; false if another batch
 /// has already claimed it. Lock time is minimal — the UPDATE is the only DB write;

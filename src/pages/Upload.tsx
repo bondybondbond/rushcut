@@ -160,10 +160,12 @@ export default function Upload() {
         clips: orderedMetas,
       });
 
-      // Start proxy generation immediately — fire and forget before navigation so that
-      // by the time the user finishes trimming clip 1, clips 2+ may already have proxies.
+      // Batch S4: encode ALL scanned clips at low priority from scan completion — gives
+      // the full session time (Upload → Trimmer → Arrange → Sound) as warm-up buffer.
+      // allClips=true bypasses the include=1 filter so clips the user hasn't selected yet
+      // are still pre-encoded. Wasted work on unused clips is acceptable vs gate wait.
       // Safe here: brand-new project has no concurrent render job.
-      invoke("generate_proxies_cmd", { projectId }).catch(() => {});
+      invoke("generate_proxies_cmd", { projectId, lowPriority: true, allClips: true }).catch(() => {});
 
       navigate(`/trimmer/${projectId}`);
     } catch (e) {
