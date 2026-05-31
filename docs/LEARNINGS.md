@@ -37,11 +37,11 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
-## Workflow — debug binary uses embedded assets, not live Vite server
+## Workflow — user always launches the .exe directly; never pnpm dev
 
-**Problem:** Launching `src-tauri/target/debug/rushcut.exe` directly (without `pnpm dev`) serves assets baked in at the last `tauri build --debug`. Even if Vite is then started on port 1420, the already-running WebView2 won't pick up the live source. Source changes are invisible until the binary is killed and relaunched via `pnpm dev`.
-**Solution:** For UI verification of in-session TypeScript changes, always use `pnpm dev` (sequences Vite then cargo run). Navigating to `http://localhost:1420` (not `tauri.localhost`) confirms you're on the live Vite assets. If the binary was launched directly, kill it and restart via `pnpm dev` before screenshotting any new UI.
-**Context:** Any session that makes TypeScript/TSX changes and then uses chrome-devtools MCP to screenshot the result.
+**Problem:** `pnpm dev` is NOT how this user runs RushCut. Suggesting it wastes a round trip and breaks trust. The user has an always-on Vite dev server; they launch `C:\apps\rushcut\src-tauri\target\debug\rushcut.exe` directly by double-click. That debug binary connects to the live Vite server on port 1420 and picks up TS/TSX changes via HMR — no rebuild or relaunch needed for React changes.
+**Solution:** For React/TS-only changes: HMR picks them up automatically — no action needed, just navigate in the running app. For Rust changes (`src-tauri/**`): rebuild via `cargo build --manifest-path src-tauri\Cargo.toml --config src-tauri\.cargo\config.toml`, then tell the user to kill and re-launch the .exe. Never say "run pnpm dev".
+**Context:** Every session. This applies to screenshot verification, build instructions, and any step that involves reloading the app.
 
 ---
 
