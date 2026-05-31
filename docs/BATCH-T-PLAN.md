@@ -189,9 +189,21 @@ isolate regressions.
 
 ## Open questions before T3
 
-1. Is normalise output quality bit-identical to proxy reuse output?
+1. **Cold-start diagnostic (answer before T3, possibly before T2):**
+   Confirm via `proxy-bg.log` whether the 1-min / 0-of-8 symptom is
+   (a) all 8 encodes still running after 1 min (Upload trigger fired,
+   just slow), or (b) the Upload trigger not firing at all. T2 may
+   eliminate this symptom entirely by reducing 8 encodes to 3 — validate
+   after T2 ships before investing in T3. If T2 means 3 encodes at ~60s
+   each = ~3 min total and the user spends longer than that before
+   reaching Render, the gate may rarely fire in practice — making T3
+   optional polish rather than a UX fix.
+
+2. Is normalise output quality bit-identical to proxy reuse output?
    (Affects whether Option B is ever viable)
-2. For T3 Option A: should the "Preparing clips" stage show elapsed
+
+3. For T3 Option A: should the "Preparing clips" stage show elapsed
    time or an ETA? (ETA requires knowing encode rate per clip)
-3. For T4: is there a maximum number of jobs to show per project in
+
+4. For T4: is there a maximum number of jobs to show per project in
    Library, or just the most recent?
