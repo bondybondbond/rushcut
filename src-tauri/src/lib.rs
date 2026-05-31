@@ -364,6 +364,100 @@ fn is_valid_proxy_file(path: &str) -> bool {
 /// Batch N: append a [PROXY_BG] log line to %TEMP%\rushcut\proxy-bg.log and stderr.
 /// Founder validation gate consumes this file directly. Best-effort: a log write
 /// failure must NOT block proxy gen.
+/// Batch T2 follow-up: ensure %USERPROFILE%\.wslconfig grants WSL2 at least `min_mb` MB.
+/// 4K xfade renders need >8 GB (the default) on 16 GB machines — without this they get
+/// SIGTERM'd mid-encode. Called once at startup, fire-and-forget.
+///
+/// Parsing rules (from WSL docs):
+///   memory=12GB  → 12 * 1024 MB
+///   memory=12288MB → 12288 MB
+///   memory=12288  → 12288 MB (unitless = MB in practice)
+fn parse_memory_mb(s: &str) -> u64 {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix("GB").or_else(|| s.strip_suffix("gb")) {
+        n.trim().parse::<u64>().unwrap_or(0).saturating_mul(1024)
+    } else if let Some(n) = s.strip_suffix("MB").or_else(|| s.strip_suffix("mb")) {
+        n.trim().parse::<u64>().unwrap_or(0)
+    } else {
+        s.parse::<u64>().unwrap_or(0)
+    }
+}
+
+fn wslconfig_memory_mb(content: &str) -> u64 {
+    let mut in_wsl2 = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.eq_ignore_ascii_case("[wsl2]") { in_wsl2 = true; continue; }
+        if t.starts_with('[') { in_wsl2 = false; }
+        if in_wsl2 {
+            if let Some(val) = t.strip_prefix("memory=") {
+                return parse_memory_mb(val);
+            }
+        }
+    }
+    0
+}
+
+fn ensure_wsl_memory(min_mb: u64) {
+    let userprofile = match std::env::var("USERPROFILE") {
+        Ok(v) => v,
+        Err(_) => { eprintln!("[wslconfig] USERPROFILE not set, skipping"); return; }
+    };
+    let path = std::path::PathBuf::from(&userprofile).join(".wslconfig");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+
+    if wslconfig_memory_mb(&existing) >= min_mb {
+        return; // already meets requirement
+    }
+
+    // Format memory value (prefer GB when evenly divisible)
+    let mem_str = if min_mb % 1024 == 0 {
+        format!("{}GB", min_mb / 1024)
+    } else {
+        format!("{}MB", min_mb)
+    };
+
+    let has_wsl2 = existing.lines().any(|l| l.trim().eq_ignore_ascii_case("[wsl2]"));
+    let new_content = if !has_wsl2 {
+        // Append a fresh [wsl2] section
+        let sep = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
+        format!("{}{}[wsl2]\nmemory={}\nprocessors=8\n", existing, sep, mem_str)
+    } else {
+        // Update or insert memory= inside the existing [wsl2] section
+        let mut out = String::with_capacity(existing.len() + 32);
+        let mut in_wsl2 = false;
+        let mut written = false;
+        for line in existing.lines() {
+            let t = line.trim();
+            if t.eq_ignore_ascii_case("[wsl2]") {
+                in_wsl2 = true;
+                out.push_str(line); out.push('\n');
+                continue;
+            }
+            if t.starts_with('[') && in_wsl2 {
+                if !written { out.push_str(&format!("memory={}\n", mem_str)); written = true; }
+                in_wsl2 = false;
+            }
+            if in_wsl2 && t.starts_with("memory=") {
+                out.push_str(&format!("memory={}\n", mem_str));
+                written = true;
+                continue;
+            }
+            out.push_str(line); out.push('\n');
+        }
+        if in_wsl2 && !written { out.push_str(&format!("memory={}\n", mem_str)); }
+        out
+    };
+
+    match std::fs::write(&path, &new_content) {
+        Ok(_) => eprintln!(
+            "[wslconfig] WARNING: set memory={} in {} — run 'wsl --shutdown' once to apply",
+            mem_str, path.display()
+        ),
+        Err(e) => eprintln!("[wslconfig] ERROR: could not write {}: {}", path.display(), e),
+    }
+}
+
 fn proxy_bg_log(msg: &str) {
     eprintln!("{}", msg);
     let path = std::env::temp_dir().join("rushcut").join("proxy-bg.log");
@@ -1911,6 +2005,14 @@ pub fn run() {
 
             app.emit("app-ready", ()).ok();
             // Native splash is closed by confirm_app_loaded (called from React on first mount).
+
+            // Ensure %USERPROFILE%\.wslconfig grants WSL2 >=12 GB. 4K xfade renders are
+            // SIGTERM'd by the kernel on 16 GB machines with the default 8 GB WSL limit.
+            // One-time silent write; does NOT restart WSL (user must run 'wsl --shutdown'
+            // once, but existing sessions survive — the fix lands on the next WSL start).
+            tauri::async_runtime::spawn(async move {
+                tokio::task::spawn_blocking(|| ensure_wsl_memory(12288)).await.ok();
+            });
 
             // WSL check moved async — was blocking setup() for 6-8s on every launch.
             // spawn_blocking required: std::process::Command is blocking I/O and must
