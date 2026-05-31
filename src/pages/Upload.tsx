@@ -281,7 +281,7 @@ export default function Upload() {
                       <p className="text-[#e5e5e5] text-sm font-medium truncate">{p.name}</p>
                       <p className="text-[#e5e5e5]/50 text-xs">
                         {new Date(p.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
-                        {" · "}{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}
+                        {" · "}{p.file_count} file{p.file_count !== 1 ? "s" : ""} &middot; {p.cut_count} cut{p.cut_count !== 1 ? "s" : ""}
                       </p>
                     </div>
                   </button>

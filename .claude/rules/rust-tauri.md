@@ -114,3 +114,18 @@ Adding `"dataDirectory": "webview-data"` to a window in `tauri.conf.json` has no
 ## Cargo / PATH
 
 After `winget install Rustlang.Rustup`, `cargo` is only available in new terminals. Existing shells: `$env:PATH += ";$env:USERPROFILE\.cargo\bin"`.
+
+## cargo build from repo root silently ignores src-tauri/.cargo/config.toml
+
+`src-tauri/.cargo/config.toml` holds MSVC `-L` lib paths (this machine's VC install only has `msvcrt.lib` under `lib\onecore\x64`, not the standard `lib\x64` path the linker expects). Cargo discovers config by walking up from the **current working directory**, not the manifest path. Running `cargo build --manifest-path src-tauri\Cargo.toml` from the repo root skips the config entirely → `LNK1104: cannot open file 'msvcrt.lib'`.
+
+Fix: always run from inside `src-tauri/`, or pass `--config src-tauri\.cargo\config.toml` explicitly:
+```
+cargo build --manifest-path src-tauri\Cargo.toml --config src-tauri\.cargo\config.toml
+```
+
+## DB path — not Tauri's appDataDir
+
+The DB lives at `%APPDATA%\rushcut\rushcut.db` (set by `dirs::data_dir()` in db.rs). Tauri's own `appDataDir()` returns `%APPDATA%\com.rushcut.app` — a different directory that does NOT contain the DB. Do not confuse them.
+
+For cross-checks while the app is running, use `invoke("list_projects_cmd")` (or another Tauri command) via CDP rather than querying the sqlite file directly. The running app holds the DB open in WAL mode; an external sqlite3 process may see a stale pre-WAL snapshot — correct file, wrong data.

@@ -61,6 +61,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — DB cross-check: use invoke() not sqlite3 while app is running
+
+**Problem:** Running `sqlite3 rushcut.db` via WSL while the app holds the DB open in WAL mode returns a stale snapshot — correct file, wrong data. The WAL file has uncommitted/uncheckpointed writes that sqlite3 doesn't see, so project rows appear missing or outdated.
+**Solution:** For cross-checks during an active session, call `invoke("list_projects_cmd")` (or another Tauri command) via `mcp__chrome-devtools__evaluate_script` — the app's own connection reads through the WAL and returns current data. Use sqlite3 directly only when the app is NOT running.
+**Context:** Any session that needs to verify DB content while the Tauri binary is open. Also note: the app DB is at `%APPDATA%\rushcut\rushcut.db` (from `dirs::data_dir()`) — NOT `%APPDATA%\com.rushcut.app` (that's Tauri's own managed dir, which the DB does not use).
+
+---
+
 ## React — imperative DOM updates for high-frequency media events
 
 **Problem:** React `setState` inside `onTimeUpdate` (fires 4–66 Hz) causes a re-render per tick. For a progress bar fill + elapsed label, this floods the React reconciler every 15–250ms, degrading playback smoothness.

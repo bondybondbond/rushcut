@@ -153,7 +153,7 @@ export default function Library() {
                     )}
                     <div className="flex items-center gap-3 mt-0.5">
                       <span className="text-[#a3a3a3] text-xs">{formatDate(p.created_at)}</span>
-                      <span className="text-[#a3a3a3] text-xs">{p.clip_count} clip{p.clip_count !== 1 ? "s" : ""}</span>
+                      <span className="text-[#a3a3a3] text-xs">{p.file_count} file{p.file_count !== 1 ? "s" : ""} &middot; {p.cut_count} cut{p.cut_count !== 1 ? "s" : ""}</span>
                       <StatusBadge status={p.last_job_status} />
                     </div>
                   </div>

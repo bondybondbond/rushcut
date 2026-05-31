@@ -82,7 +82,8 @@ export interface ProjectSummary {
   id: string;
   name: string;
   created_at: string;
-  clip_count: number;
+  file_count: number;
+  cut_count: number;
   last_job_id: string | null;
   last_job_status: "pending" | "processing" | "done" | "failed" | null;
   first_clip_thumbnail: string | null;

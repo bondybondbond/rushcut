@@ -25,7 +25,8 @@ pub struct ProjectSummary {
     pub id: String,
     pub name: String,
     pub created_at: String,
-    pub clip_count: i64,
+    pub file_count: i64,
+    pub cut_count: i64,
     pub last_job_id: Option<String>,
     pub last_job_status: Option<String>,
     pub first_clip_thumbnail: Option<String>,
@@ -682,7 +683,8 @@ pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT
             p.id, p.name, p.created_at,
-            (SELECT COUNT(*) FROM clips WHERE project_id = p.id) as clip_count,
+            (SELECT COUNT(DISTINCT local_path) FROM clips WHERE project_id = p.id) as file_count,
+            (SELECT COUNT(*) FROM clips WHERE project_id = p.id AND include = 1) as cut_count,
             (SELECT id FROM jobs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) as last_job_id,
             (SELECT status FROM jobs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) as last_job_status,
             (SELECT thumbnail_data FROM clips WHERE project_id = p.id ORDER BY sort_order ASC LIMIT 1) as first_clip_thumbnail
@@ -695,10 +697,11 @@ pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 created_at: row.get(2)?,
-                clip_count: row.get(3)?,
-                last_job_id: row.get(4)?,
-                last_job_status: row.get(5)?,
-                first_clip_thumbnail: row.get(6)?,
+                file_count: row.get(3)?,
+                cut_count: row.get(4)?,
+                last_job_id: row.get(5)?,
+                last_job_status: row.get(6)?,
+                first_clip_thumbnail: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

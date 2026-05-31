@@ -29,6 +29,7 @@
 - **Tailwind:** `src/globals.css` has `@import "tailwindcss"`, imported from `main.tsx`. Do NOT reference `src/app/globals.css` (deleted).
 - **gitignore:** `src-tauri/target/` and `src-tauri/gen/` must be in `.gitignore`. Missing = 668 MB of build artifacts blocking GitHub push.
 - **ASCII only** in console/UI output — no Unicode or emoji (breaks cp1252 encoding).
+- **Grep before claiming "exactly one place".** Before stating that a field, prop, or identifier is consumed in a single file, run `grep -r "field_name" src/` across all `.ts`/`.tsx` files. Claiming a single display site without checking causes missed updates (type errors at best, silent wrong display at worst).
 - **Design system:** Read `docs/DESIGN.md` before any UI work — canonical colour palette, typography, button patterns, and copy rules. Do not invent colours or patterns outside it.
 
 ---

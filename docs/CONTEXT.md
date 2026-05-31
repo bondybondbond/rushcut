@@ -15,15 +15,14 @@
 
 ## Current Phase
 
-**Phase 2 — Batch S (S1+S2+S3+S4 Proxy UX Polish + Cold 4K Gate Fix + Parallel GPU Proxy + Earlier Trigger) ALL PARTS COMPLETE (2026-05-25). Next: TBD — see PRD-DEV.md.**
+**Phase 2 — Batch T1 (Library clip count fix) COMPLETE (2026-05-31). Next: Batch T2 — proxy deduplication by source file.**
 
 ---
 
 ## Immediate Next Task
 
-See PRD-DEV.md for next batch candidates. Likely candidates:
-- **Batch T** — Library screen shows only E2E test projects (clips5/clips11 missing from Library UI — filter bug). Investigate why projects without a `jobs` entry don't appear.
-- **Long-clip proxy gate** — Sessions with >2min clips exceed the 120s gate target due to HEVC decode floor (~1x realtime). Partial-ready gate (advance when short clips done) is mitigation.
+- **Batch T2** — Proxy deduplication by source file. 8 cuts from 3 source files currently triggers 8 proxy encodes; should encode 3 sources once and fan-out to all cuts sharing each source. Start with the log-first step in BATCH-T-PLAN.md T2 spec before writing code.
+- **Long-clip proxy gate** — Sessions with >2min clips exceed the 120s gate target due to HEVC decode floor (~1x realtime). Partial-ready gate (advance when short clips done) is mitigation. Likely addressed by T2 (fewer encodes = shorter total wait).
 - **Render screen polish** — 1080p non-4K: confirm gate still bypasses correctly on cold start (accepted by design).
 
 ### Performance confirmed (2026-05-25, Batch S3 cold benchmark):
@@ -38,7 +37,11 @@ See PRD-DEV.md for next batch candidates. Likely candidates:
 
 ---
 
-## Recently shipped this session (2026-05-25)
+## Recently shipped this session (2026-05-31)
+
+- **Batch T1 — Library clip count fix COMPLETE:** `list_projects()` SQL replaced `COUNT(*)` with two subqueries: `COUNT(DISTINCT local_path) AS file_count` and `COUNT(*) WHERE include=1 AS cut_count`. `ProjectSummary` Rust struct + TS interface updated (two fields replace `clip_count`; `query_map` indices shifted to 3-7). `Library.tsx` + `Upload.tsx` both updated to display "N files · M cuts". Rules updated: `rust-tauri.md` gets cargo config.toml discovery rule + DB path/WAL stale read note; `CLAUDE.md` gets "grep before claiming single site" rule. 9/9 fast PASS.
+
+## Recently shipped previous session (2026-05-25)
 
 - **Batch S4 — Earlier proxy trigger COMPLETE:** `generate_proxies_cmd` gains `all_clips: Option<bool>` param. New `db.rs` `get_all_clips_for_bg_proxy()` omits `include=1` filter. `run_bg_proxy_batch` switches query based on `all_clips` flag. `Upload.tsx` updated from bare `invoke("generate_proxies_cmd", { projectId })` to `invoke("generate_proxies_cmd", { projectId, lowPriority: true, allClips: true })`. Bug fix bundled: `generate_proxy_file_low_priority` was passing libx264 args to AMF encoder (same bug fixed for normal-priority in Batch S) — all low-priority encodes on AMF hardware failed silently with elapsed=0.1s. Fixed by mirroring the AMF/libx264 arg branching from the normal-priority function. Confirmed: `batch-start all_clips=true encoder=h264_amf` in proxy-bg.log; clip 1 done in 4.1s, clip 2 done in 100.3s; no regressions (9/9 fast PASS).
 
