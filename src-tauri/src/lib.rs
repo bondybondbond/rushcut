@@ -4,11 +4,11 @@ mod splash;
 
 use base64::Engine as _;
 use db::{
-    add_clip_cut, delete_clip, delete_project, get_all_clip_ids, get_all_clips_for_bg_proxy, get_clips_needing_bg_proxy,
+    add_clip_cut, delete_clip, delete_project, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_project_output_paths, get_project_with_clips,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
-    update_clip_proxy, update_clip_review,
+    set_proxy_for_all_clips_with_path, update_clip_review,
     update_clip_thumbnail, update_clip_volume, update_clip_waveform, update_job_analysis,
     update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary,
     ProjectWithClips,
@@ -1275,6 +1275,17 @@ async fn generate_proxies_cmd(
     // Batch S2: a normal-priority (boost) call is allowed through even when a
     // low-priority batch is already running — the two batches share work safely via
     // the claim_clip_for_encoding DB lock (each clip is encoded by exactly one batch).
+    //
+    // Key used in the state set:
+    //   "{project_id}"         = any batch running (low or normal)
+    //   "{project_id}:normal"  = a normal-priority boost is already running
+    //
+    // A normal-priority boost may pierce the guard once (to run alongside a low-priority
+    // batch), but a SECOND concurrent boost is never useful — all unclaimed clips are
+    // already being taken by the first boost. Allowing two boosts simultaneously causes
+    // three concurrent AMF encodes (low + boost #1 + boost #2), oversubscribing the GPU
+    // and multiplying encode time by 3-5x.
+    let boost_key = format!("{}:normal", project_id);
     {
         let mut set = state.lock().unwrap();
         if set.contains(&project_id) {
@@ -1282,9 +1293,12 @@ async fn generate_proxies_cmd(
                 eprintln!("[proxy] batch already running for project {}, skipping low-priority duplicate", project_id);
                 return Ok(());
             }
-            // Normal-priority boost: allow through. Both batches will race for clips
-            // via claim_clip_for_encoding; the boost encodes unclaimed clips at full
-            // thread count while the in-flight low-priority encode finishes its clip.
+            // Normal-priority boost: only allow ONE concurrent boost per project.
+            if set.contains(&boost_key) {
+                eprintln!("[proxy] normal-priority boost already running for project {}, skipping duplicate boost", project_id);
+                return Ok(());
+            }
+            set.insert(boost_key.clone());
             eprintln!("[proxy] boosting project {} — normal-priority batch starting alongside in-flight low-priority batch", project_id);
         } else {
             // First batch for this project — reset stale 'encoding' claims from
@@ -1312,10 +1326,35 @@ async fn generate_proxies_cmd(
         // for the Render-screen boost). use_all_clips=true (Upload trigger) encodes
         // all scanned clips; false (Trimmer unmount / Render boost) encodes include=1 only.
         run_bg_proxy_batch(app, pid.clone(), low_priority, use_all_clips).await;
-        guard.lock().unwrap().remove(&pid);
+        let mut s = guard.lock().unwrap();
+        s.remove(&pid);
+        s.remove(&format!("{}:normal", pid));
     });
 
     Ok(())
+}
+
+/// Batch T2: FNV-1a 64-bit hash of a byte slice. Used to derive a stable proxy
+/// filename from a clip's source `local_path` so that (a) every cut from the same
+/// source maps to the same proxy file (dedup), and (b) a source keeps the same
+/// proxy filename across app/Rust-toolchain updates (cross-project warm cache).
+/// std `DefaultHasher` is explicitly NOT stability-guaranteed across versions, so
+/// we roll FNV-1a inline — its algorithm is a fixed contract.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001b3;
+    let mut hash = FNV_OFFSET;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Batch T2: stable proxy filename stem for a source file path (no extension).
+/// Lower-cased so case-only path differences on Windows map to the same proxy.
+fn proxy_name_for_path(local_path: &str) -> String {
+    format!("{:016x}", fnv1a64(local_path.to_lowercase().as_bytes()))
 }
 
 /// Per-clip encode logic, extracted so parallel workers can share it.
@@ -1325,9 +1364,10 @@ fn encode_one_clip(
     app: &AppHandle,
     project_id: &str,
     proxy_dir: &str,
-    clip_id: &str,
+    canonical_clip_id: &str,
     local_path: &str,
     codec_name: Option<String>,
+    sibling_clip_ids: &[String],
     low_priority: bool,
     threads_per_clip: u32,
 ) {
@@ -1335,20 +1375,37 @@ fn encode_one_clip(
     const NATIVE_CODECS: &[&str] = &["h264", "vp8", "vp9"];
     let codec = codec_name.unwrap_or_default().to_lowercase();
 
+    // Batch T2: fan-out a finished proxy to every cut sharing this source file.
+    // One UPDATE sets proxy_path + proxy_status='done' for all of them; one
+    // proxy-progress event per affected clip so each clip's UI (Trimmer source-failed
+    // clear, Render readiness) updates.
+    let fan_out = |proxy_win_path: &str| {
+        match set_proxy_for_all_clips_with_path(project_id, local_path, proxy_win_path) {
+            Ok(n) => proxy_bg_log(&format!(
+                "[PROXY_BG] fan-out local_path={} proxy_path={} clips_updated={}",
+                local_path, proxy_win_path, n
+            )),
+            Err(e) => proxy_bg_log(&format!("[PROXY_BG] fan-out-error local_path={} err={}", local_path, e)),
+        }
+        for cid in sibling_clip_ids {
+            let _ = app.emit("proxy-progress", json!({
+                "projectId": project_id,
+                "clipId": cid,
+                "winPath": proxy_win_path,
+            }));
+        }
+    };
+
     // Native codec: source IS the proxy. Mark done immediately, point proxy_path at source.
     if NATIVE_CODECS.contains(&codec.as_str()) {
-        proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=native-codec codec={}", clip_id, codec));
-        let _ = update_clip_proxy(clip_id, local_path);
-        let _ = set_clip_proxy_status(clip_id, "done");
-        let _ = app.emit("proxy-progress", json!({
-            "projectId": project_id,
-            "clipId": clip_id,
-            "winPath": local_path,
-        }));
+        proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=native-codec codec={}", canonical_clip_id, codec));
+        fan_out(local_path);
         return;
     }
 
-    let proxy_path = format!(r"{}\{}.mp4", proxy_dir, clip_id);
+    // Batch T2: proxy filename is a stable hash of the SOURCE path, not the clip id.
+    // All cuts from the same source share this one file.
+    let proxy_path = format!(r"{}\{}.mp4", proxy_dir, proxy_name_for_path(local_path));
 
     // Already a valid proxy on disk? Only skip re-encode if it is 2160p-compatible.
     // Legacy 1080p proxies (from earlier Batch N sessions before this fix) fall through
@@ -1356,59 +1413,56 @@ fn encode_one_clip(
     if std::path::Path::new(&proxy_path).exists() && is_valid_proxy_file(&proxy_path) {
         let h = proxy_height_native(&proxy_path);
         if h >= 2160 {
-            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=cached-2160p", clip_id));
-            let _ = update_clip_proxy(clip_id, &proxy_path);
-            let _ = set_clip_proxy_status(clip_id, "done");
-            let _ = app.emit("proxy-progress", json!({
-                "projectId": project_id,
-                "clipId": clip_id,
-                "winPath": proxy_path,
-            }));
+            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=cached-2160p", canonical_clip_id));
+            fan_out(&proxy_path);
             return;
         }
-        proxy_bg_log(&format!("[PROXY_BG] upgrade clip_id={} existing-height={}px re-encoding-at-2160p", clip_id, h));
+        proxy_bg_log(&format!("[PROXY_BG] upgrade clip_id={} existing-height={}px re-encoding-at-2160p", canonical_clip_id, h));
         // Fall through to re-encode at 2160p.
     }
 
     // Real encode path (HEVC / unknown).
     // Batch S2: atomic claim — prevents concurrent batches/workers from double-encoding
-    // the same clip. claim_clip_for_encoding sets proxy_status='encoding' only if
-    // no other claim is active (compare-and-set, minimal lock time).
-    match claim_clip_for_encoding(clip_id) {
+    // the same source. claim_clip_for_encoding sets proxy_status='encoding' only if
+    // no other claim is active (compare-and-set, minimal lock time). Batch T2: the
+    // claim is keyed on the canonical clip (MIN(clip_id) per path), which both batch
+    // triggers resolve identically — so two concurrent batches never encode one source twice.
+    match claim_clip_for_encoding(canonical_clip_id) {
         Ok(true) => {} // we own this encode slot — proceed
         Ok(false) => {
-            proxy_bg_log(&format!("[PROXY_BG] skip clip_id={} reason=encoding-in-progress", clip_id));
+            proxy_bg_log(&format!("[PROXY_BG] skip clip_id={} reason=encoding-in-progress", canonical_clip_id));
             return;
         }
         Err(e) => {
-            proxy_bg_log(&format!("[PROXY_BG] claim-error clip_id={} err={}", clip_id, e));
+            proxy_bg_log(&format!("[PROXY_BG] claim-error clip_id={} err={}", canonical_clip_id, e));
             return;
         }
     }
 
-    proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={} low_priority={}", clip_id, codec, low_priority));
+    // Batch T2: encode to a temp file, then atomically rename into place. If two
+    // batches ever race the same source despite the claim, distinct temp files +
+    // atomic rename guarantee the final {hash}.mp4 is never a half-written file.
+    let tmp_path = format!(r"{}\{}.tmp.mp4", proxy_dir, proxy_name_for_path(local_path));
+    let _ = std::fs::remove_file(&tmp_path); // clear any stale temp from a crashed run
+
+    proxy_bg_log(&format!("[PROXY_BG] started clip_id={} codec={} low_priority={}", canonical_clip_id, codec, low_priority));
     let t0 = std::time::Instant::now();
     let ok = if low_priority {
-        generate_proxy_file_low_priority(local_path, &proxy_path)
+        generate_proxy_file_low_priority(local_path, &tmp_path)
     } else {
-        generate_proxy_file_normal_priority(local_path, &proxy_path, threads_per_clip)
+        generate_proxy_file_normal_priority(local_path, &tmp_path, threads_per_clip)
     };
     let elapsed = t0.elapsed().as_secs_f64();
 
-    if ok && is_valid_proxy_file(&proxy_path) {
-        proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed={:.1}s", clip_id, elapsed));
-        let _ = update_clip_proxy(clip_id, &proxy_path);
-        let _ = set_clip_proxy_status(clip_id, "done");
+    if ok && is_valid_proxy_file(&tmp_path) && std::fs::rename(&tmp_path, &proxy_path).is_ok() {
+        proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed={:.1}s", canonical_clip_id, elapsed));
         record_proxy_timing(elapsed, 2160);
-        let _ = app.emit("proxy-progress", json!({
-            "projectId": project_id,
-            "clipId": clip_id,
-            "winPath": proxy_path,
-        }));
+        fan_out(&proxy_path);
     } else {
-        proxy_bg_log(&format!("[PROXY_BG] failed clip_id={} elapsed={:.1}s", clip_id, elapsed));
-        // Reset to NULL (not 'encoding') so the next batch can re-claim and retry.
-        let _ = set_clip_proxy_status(clip_id, "queued");
+        proxy_bg_log(&format!("[PROXY_BG] failed clip_id={} elapsed={:.1}s", canonical_clip_id, elapsed));
+        let _ = std::fs::remove_file(&tmp_path); // don't leave a corrupt temp behind
+        // Reset the canonical clip to 'queued' so the next batch can re-claim and retry.
+        let _ = set_clip_proxy_status(canonical_clip_id, "queued");
     }
 }
 
@@ -1439,6 +1493,41 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
         return;
     }
 
+    // Batch T2: deduplicate by source file. `clips_to_encode` decides WHICH source
+    // paths need a proxy (trigger-filtered: all clips vs include=1 only). We then
+    // group the project's FULL clip list by `local_path` so that:
+    //   - canonical = MIN(clip_id) per path (trigger-agnostic; both batch triggers
+    //     resolve the same clip to claim, so concurrent batches never double-encode),
+    //   - siblings = every clip sharing the path (fan-out target after the encode).
+    // The work queue holds exactly one item per unique source path.
+    let all_clips_full = match get_all_clips_for_bg_proxy(&project_id) {
+        Ok(v) => v,
+        Err(e) => {
+            proxy_bg_log(&format!("[PROXY_BG] error project_id={} get_all_clips failed: {}", project_id, e));
+            return;
+        }
+    };
+    let paths_to_encode: std::collections::HashSet<String> =
+        clips_to_encode.iter().map(|(_, path, _)| path.clone()).collect();
+    let mut by_path: std::collections::HashMap<String, Vec<(String, Option<String>)>> =
+        std::collections::HashMap::new();
+    for (cid, path, codec) in &all_clips_full {
+        by_path.entry(path.clone()).or_default().push((cid.clone(), codec.clone()));
+    }
+    // One work item per unique source path: (canonical_clip_id, local_path, codec, siblings).
+    let mut work: Vec<(String, String, Option<String>, Vec<String>)> = Vec::new();
+    for path in &paths_to_encode {
+        if let Some(clips) = by_path.get(path) {
+            let canonical = clips.iter().map(|(c, _)| c.clone()).min().unwrap_or_default();
+            let codec = clips.iter()
+                .find(|(c, _)| *c == canonical)
+                .and_then(|(_, k)| k.clone());
+            let siblings: Vec<String> = clips.iter().map(|(c, _)| c.clone()).collect();
+            work.push((canonical, path.clone(), codec, siblings));
+        }
+    }
+    let unique_paths = work.len();
+
     let appdata = match std::env::var("APPDATA") {
         Ok(v) => v,
         Err(_) => {
@@ -1467,12 +1556,13 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
     // GPU encoders: 2 workers max (AMD H.264 engine + NVENC/QSV all support 2
     // concurrent sessions in practice; >2 starts to fail on session init).
     // libx264: up to 4 workers based on cpu count.
+    // Batch T2: worker count sizes off unique source paths (== real encodes), not cut count.
     let n_workers: usize = if low_priority {
         1
     } else if is_gpu_encoder {
-        clips_to_encode.len().min(2)
+        unique_paths.min(2)
     } else {
-        clips_to_encode.len().min(4).min((cpu_count / 4).max(1))
+        unique_paths.min(4).min((cpu_count / 4).max(1))
     };
     let threads_per_clip: u32 = if low_priority || n_workers <= 1 {
         0 // -threads 0 = FFmpeg auto, all cores (only 1 worker so no contention)
@@ -1481,14 +1571,15 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
     };
 
     proxy_bg_log(&format!(
-        "[PROXY_BG] batch-start project_id={} clip_count={} low_priority={} all_clips={} encoder={} n_workers={} threads_per_clip={} cpu_count={}",
-        project_id, clips_to_encode.len(), low_priority, all_clips, encoder, n_workers, threads_per_clip, cpu_count
+        "[PROXY_BG] batch-start project_id={} clip_count={} unique_paths={} low_priority={} all_clips={} encoder={} n_workers={} threads_per_clip={} cpu_count={}",
+        project_id, clips_to_encode.len(), unique_paths, low_priority, all_clips, encoder, n_workers, threads_per_clip, cpu_count
     ));
 
-    // Shared queue. Workers pop until empty; the per-clip DB claim prevents
-    // double-encode if a low-priority batch is also running concurrently.
-    let queue: Arc<Mutex<Vec<(String, String, Option<String>)>>> =
-        Arc::new(Mutex::new(clips_to_encode));
+    // Shared queue, one item per unique source path. Workers pop until empty; the
+    // per-canonical-clip DB claim prevents double-encode if a low-priority batch is
+    // also running concurrently.
+    let queue: Arc<Mutex<Vec<(String, String, Option<String>, Vec<String>)>>> =
+        Arc::new(Mutex::new(work));
 
     let mut handles = Vec::with_capacity(n_workers);
     for worker_idx in 0..n_workers {
@@ -1504,14 +1595,15 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
                         proxy_bg_log(&format!("[PROXY_BG] worker-done idx={} project_id={}", worker_idx, project_id));
                         break;
                     }
-                    Some((clip_id, local_path, codec_name)) => {
+                    Some((canonical_clip_id, local_path, codec_name, siblings)) => {
                         encode_one_clip(
                             &app,
                             &project_id,
                             &proxy_dir,
-                            &clip_id,
+                            &canonical_clip_id,
                             &local_path,
                             codec_name,
+                            &siblings,
                             low_priority,
                             threads_per_clip,
                         );
@@ -1614,9 +1706,14 @@ async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
 
     let clip_id = &clip.id;
     let src = &clip.local_path;
-    let proxy_path = format!(r"{}\{}.mp4", proxy_dir, clip_id);
+    // Batch T2: proxy filename is a stable hash of the SOURCE path so this lazy
+    // on-demand encode shares one file with the dedup background batch and with
+    // every other cut of the same source. (NOTE: generate_proxy_file may emit a
+    // sub-2160p proxy here; if so the Render readiness gate re-encodes it at 2160p
+    // on the next bg pass — rework, not corruption.)
+    let proxy_path = format!(r"{}\{}.mp4", proxy_dir, proxy_name_for_path(src));
 
-    // Skip if a valid proxy already exists on disk
+    // Skip if a valid proxy already exists on disk (shared by all cuts of this source).
     let needs_encode = if std::path::Path::new(&proxy_path).exists() {
         !is_valid_proxy_file(&proxy_path)
     } else {
@@ -1624,9 +1721,8 @@ async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
     };
 
     if !needs_encode {
-        eprintln!("[proxy] valid proxy already on disk for {}, emitting path", clip_id);
-        let _ = update_clip_proxy(clip_id, &proxy_path);
-        let _ = set_clip_proxy_status(clip_id, "done");
+        eprintln!("[proxy] valid proxy already on disk for {}, fanning out", clip_id);
+        let _ = set_proxy_for_all_clips_with_path(&project_id, src, &proxy_path);
         let _ = app.emit("proxy-progress", json!({
             "projectId": project_id,
             "clipId": clip_id,
@@ -1635,21 +1731,33 @@ async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
         return;
     }
 
-    if generate_proxy_file(src, &proxy_path) {
-        let _ = update_clip_proxy(clip_id, &proxy_path);
-        let _ = set_clip_proxy_status(clip_id, "done");
+    // Batch T2: encode to temp then atomic rename (never expose a half-written file).
+    let tmp_path = format!(r"{}\{}.tmp.mp4", proxy_dir, proxy_name_for_path(src));
+    let _ = std::fs::remove_file(&tmp_path);
+    if generate_proxy_file(src, &tmp_path)
+        && is_valid_proxy_file(&tmp_path)
+        && std::fs::rename(&tmp_path, &proxy_path).is_ok()
+    {
+        let _ = set_proxy_for_all_clips_with_path(&project_id, src, &proxy_path);
         let _ = app.emit("proxy-progress", json!({
             "projectId": project_id,
             "clipId": clip_id,
             "winPath": proxy_path,
         }));
     } else {
+        let _ = std::fs::remove_file(&tmp_path);
         eprintln!("[proxy] encode failed for clip {}", clip_id);
     }
 }
 
-/// Delete proxy files that are orphaned (clip no longer in DB) or stale (>30 days old).
-/// Called fire-and-forget after each pipeline-done to keep proxy storage clean.
+/// Delete proxy files that are orphaned (not referenced by any clip's proxy_path)
+/// or stale (>30 days old). Called fire-and-forget after each pipeline-done to keep
+/// proxy storage clean.
+///
+/// Batch T2: proxies are now named `{hash(local_path)}.mp4`, shared across all cuts
+/// from the same source — NOT `{clip_id}.mp4`. Orphan detection therefore keys on the
+/// set of distinct `proxy_path` values in the DB (full path match), not clip-id stems.
+/// Keying on clip ids here would delete every dedup proxy on the next render.
 #[tauri::command]
 fn vacuum_proxies_cmd() -> String {
     use std::time::{Duration, SystemTime};
@@ -1665,9 +1773,13 @@ fn vacuum_proxies_cmd() -> String {
         return format!("error=cannot create proxy dir: {}", e);
     }
 
-    // Collect all clip IDs currently in the DB
-    let known_ids: std::collections::HashSet<String> =
-        get_all_clip_ids().unwrap_or_default().into_iter().collect();
+    // Collect every proxy_path currently referenced by a clip (lower-cased for a
+    // case-insensitive match against on-disk filenames on Windows).
+    let known_proxy_paths: std::collections::HashSet<String> =
+        get_all_proxy_paths().unwrap_or_default()
+            .into_iter()
+            .map(|p| p.to_lowercase())
+            .collect();
 
     let thirty_days = Duration::from_secs(30 * 24 * 3600);
     let cutoff = SystemTime::now()
@@ -1687,13 +1799,13 @@ fn vacuum_proxies_cmd() -> String {
         if path.extension().and_then(|e| e.to_str()) != Some("mp4") {
             continue;
         }
-        let clip_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
+        // Skip in-flight temp encodes (Batch T2 atomic-rename staging files).
+        if path.file_name().and_then(|s| s.to_str()).map(|n| n.ends_with(".tmp.mp4")).unwrap_or(false) {
+            continue;
+        }
 
-        let orphaned = !clip_id.is_empty() && !known_ids.contains(&clip_id);
+        let full = path.to_string_lossy().to_lowercase();
+        let orphaned = !full.is_empty() && !known_proxy_paths.contains(&full);
         let stale = !orphaned && entry.metadata()
             .and_then(|m| m.modified())
             .map(|mtime| mtime < cutoff)

@@ -15,29 +15,32 @@
 
 ## Current Phase
 
-**Phase 2 — Batch T1 (Library clip count fix) COMPLETE (2026-05-31). Next: Batch T2 — proxy deduplication by source file.**
+**Phase 2 — Batch T2 (Proxy deduplication) COMPLETE (2026-06-01). Next: Batch T3 — fold gate into render pipeline as a named stage.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch T2** — Proxy deduplication by source file. 8 cuts from 3 source files currently triggers 8 proxy encodes; should encode 3 sources once and fan-out to all cuts sharing each source. Start with the log-first step in BATCH-T-PLAN.md T2 spec before writing code.
-- **Long-clip proxy gate** — Sessions with >2min clips exceed the 120s gate target due to HEVC decode floor (~1x realtime). Partial-ready gate (advance when short clips done) is mitigation. Likely addressed by T2 (fewer encodes = shorter total wait).
+- **Batch T3** — Fold proxy gate into render pipeline as a named stage (Option A only — wait inline, show "Preparing clips X/N ready" in the existing progress bar). Do NOT start before confirming T2 is solid in the user's hands. See BATCH-T-PLAN.md T3 spec.
 - **Render screen polish** — 1080p non-4K: confirm gate still bypasses correctly on cold start (accepted by design).
 
-### Performance confirmed (2026-05-25, Batch S3 cold benchmark):
+### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 
 | Scenario | Gate (proxy gen) | t_normalise | t_total |
 |----------|-----------------|-------------|---------|
 | Cold 8-clip (≤31s clips), AMF | **121s** | 2s | **133s** |
-| Cold 4K 3-clip, AMF (S2 eval) | — | 1s | 17s |
-| Warm 4K 8-clip, AMF (S2 run) | ~0s | 2s | ~133s |
+| Warm 4K 8-clip/3-source, libx264 | ~0s | 9s | **~3 min** |
+| Cold 4K 3-source (27s+48s+90s), no bug | ~165s (est.) | — | ~5 min |
 
-**All S3 targets met.** AMF proxy: `n_workers=2`, `threads_per_clip=8`, `encoder=h264_amf` confirmed in `proxy-bg.log`.
+**WSL memory** raised to 12GB (`%USERPROFILE%\.wslconfig`) — required for 4K xfade encode on 16GB machines.
 
 ---
 
-## Recently shipped this session (2026-05-31)
+## Recently shipped this session (2026-06-01)
+
+- **Batch T2 — Proxy deduplication COMPLETE:** `encode_one_clip` renamed proxy files from `{clip_id}.mp4` to `proxy_name_for_path(local_path)` (FNV-1a 64-bit hash, stable across Rust versions). `run_bg_proxy_batch` groups full clip list by `local_path`, builds one queue item per unique source (canonical = `MIN(clip_id)` for trigger-agnostic claim), emits `unique_paths=N` in batch-start log. Fan-out via new `set_proxy_for_all_clips_with_path` DB helper — one UPDATE sets all cuts sharing a source. Atomic temp→rename encode. `vacuum_proxies_cmd` rekeyed to `get_all_proxy_paths()` (full path match) instead of clip-id stems. `run_single_proxy` (Trimmer onError) given same hash + fan-out treatment. **Bug fixed in same session:** duplicate normal-priority boost (`{project_id}:normal` key in concurrency guard) was causing 3 concurrent AMF sessions and 3-5× slowdown. **WSL memory fixed:** `.wslconfig memory=12GB` prevents 4K xfade SIGTERM on 16GB machines. Confirmed: 3-source/8-cut 4K film renders warm in ~3 min. 9/9 fast PASS.
+
+## Recently shipped previous session (2026-05-31)
 
 - **Batch T1 — Library clip count fix COMPLETE:** `list_projects()` SQL replaced `COUNT(*)` with two subqueries: `COUNT(DISTINCT local_path) AS file_count` and `COUNT(*) WHERE include=1 AS cut_count`. `ProjectSummary` Rust struct + TS interface updated (two fields replace `clip_count`; `query_map` indices shifted to 3-7). `Library.tsx` + `Upload.tsx` both updated to display "N files · M cuts". Rules updated: `rust-tauri.md` gets cargo config.toml discovery rule + DB path/WAL stale read note; `CLAUDE.md` gets "grep before claiming single site" rule. 9/9 fast PASS.
 

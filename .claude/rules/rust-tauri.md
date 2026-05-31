@@ -124,6 +124,25 @@ Fix: always run from inside `src-tauri/`, or pass `--config src-tauri\.cargo\con
 cargo build --manifest-path src-tauri\Cargo.toml --config src-tauri\.cargo\config.toml
 ```
 
+## Proxy batch concurrency guard — one normal-priority boost per project
+
+The `generate_proxies_cmd` concurrency guard uses a single `HashSet<String>` (state key = `project_id`). A normal-priority "boost" call is allowed through even when a low-priority batch is running — but only ONE boost should ever run at a time. React can fire the same invoke twice in rapid succession (strict-mode double-invoke, re-render during readiness poll); if two boosts both pierce the guard, three concurrent AMF sessions run and encode time inflates 3–5×.
+
+Pattern: use a secondary key `{project_id}:normal` to track whether a boost is already active:
+```rust
+let boost_key = format!("{}:normal", project_id);
+// inside the mutex lock:
+if !low_priority {
+    if set.contains(&boost_key) { return Ok(()); }  // already boosting — skip
+    set.insert(boost_key.clone());
+}
+// On batch complete, remove BOTH keys:
+s.remove(&pid);
+s.remove(&format!("{}:normal", pid));
+```
+
+Symptom of the bug: `proxy-bg.log` shows two identical `batch-start` lines with `low_priority=false` at the same timestamp.
+
 ## DB path — not Tauri's appDataDir
 
 The DB lives at `%APPDATA%\rushcut\rushcut.db` (set by `dirs::data_dir()` in db.rs). Tauri's own `appDataDir()` returns `%APPDATA%\com.rushcut.app` — a different directory that does NOT contain the DB. Do not confuse them.

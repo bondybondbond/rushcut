@@ -239,6 +239,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## WSL2 — Default 8GB memory limit kills 4K xfade encode
+
+**Problem:** WSL2 defaults to `min(50% RAM, 8GB)`. A 4K 8-clip xfade encode (FFmpeg buffers multiple 3840×2160 frames simultaneously) combined with a concurrent background proxy AMF encode on Windows can push WSL over the 8GB limit — the pipeline process receives SIGTERM (exit code 15) mid-encode with no FFmpeg error output.
+**Solution:** Create `%USERPROFILE%\.wslconfig` with `[wsl2]\nmemory=12GB\nprocessors=8` and run `wsl --shutdown` to apply. On a 16GB machine this leaves 4GB for Windows while giving WSL enough headroom for the pipeline. Confirmed fix: 4K 8-clip shuffle+xfade render completed in ~3 min on the same clips that previously crashed.
+**Context:** Any machine with ≤16GB RAM running 4K renders with xfade transitions. File lives at `C:\Users\Manasak\.wslconfig`. Only needed once per machine — survives app updates.
+
+---
+
+## Proxy — Duplicate normal-priority boost causes 3× slowdown on AMF
+
+**Problem:** The Render screen's `useEffect` can fire `generate_proxies_cmd` twice in rapid succession (React strict-mode double-invoke or re-render during readiness polling). Both calls find the concurrency guard already occupied by the low-priority Upload batch and both take the "boost is allowed" path. Result: 3 concurrent AMF encode sessions (low-prio + boost #1 + boost #2). AMD AMF supports 2 sessions before contention; the third causes all three to slow to 3–5× normal speed. A 165s expected proxy wait becomes 600s+ (e.g. 48-second clip takes 234s, 90-second clip takes 303s).
+**Solution:** Track a separate `{project_id}:normal` key in the concurrency state set. Before allowing a normal-priority boost, check `set.contains(&boost_key)` — if already present, skip the duplicate. Remove `boost_key` alongside `project_id` when the batch completes. Fixed in `generate_proxies_cmd` in `src-tauri/src/lib.rs`.
+**Context:** `generate_proxies_cmd` in Rust. Symptom: proxy-bg.log shows two identical `batch-start` lines at the same timestamp with `low_priority=false`. If you see this, confirm the boost_key guard is in the concurrency block.
+
+---
+
 ## Python / tooling
 
 - **`FFMPEG_BIN`/`FFPROBE_BIN` env vars** — hardcoding `/usr/local/bin/ffmpeg` blocks local testing without Docker. Read from env vars with Lambda-path as default; also makes CI flexible.

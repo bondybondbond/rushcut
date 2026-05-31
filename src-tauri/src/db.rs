@@ -316,14 +316,22 @@ pub fn update_clip_volume(clip_id: &str, clip_volume: f64) -> Result<(), rusqlit
     Ok(())
 }
 
-/// Update the proxy path for a clip (set by proxy generation pipeline).
-pub fn update_clip_proxy(clip_id: &str, proxy_path: &str) -> Result<(), rusqlite::Error> {
+/// Batch T2: fan-out a single source proxy to every clip in the project that
+/// shares the same `local_path`. With proxy dedup, one encode of a source file
+/// serves all cuts derived from it — this sets `proxy_path` + `proxy_status='done'`
+/// for all of them in one UPDATE. Returns the number of clip rows updated.
+pub fn set_proxy_for_all_clips_with_path(
+    project_id: &str,
+    local_path: &str,
+    proxy_path: &str,
+) -> Result<usize, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
-    conn.execute(
-        "UPDATE clips SET proxy_path = ?1 WHERE id = ?2",
-        params![proxy_path, clip_id],
+    let rows = conn.execute(
+        "UPDATE clips SET proxy_path = ?1, proxy_status = 'done'
+         WHERE project_id = ?2 AND local_path = ?3",
+        params![proxy_path, project_id, local_path],
     )?;
-    Ok(())
+    Ok(rows)
 }
 
 /// Set the background proxy status for a clip (Batch N).
@@ -487,13 +495,18 @@ pub fn delete_clip(clip_id: &str) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
-/// Returns all clip IDs across all projects. Used by vacuum_proxies_cmd to detect orphaned proxies.
-pub fn get_all_clip_ids() -> Result<Vec<String>, rusqlite::Error> {
+/// Batch T2: return every distinct non-null `proxy_path` referenced by any clip.
+/// Used by `vacuum_proxies_cmd` to decide which files in the proxy dir are still
+/// referenced — orphan detection now keys on full proxy_path (hash-named files),
+/// not clip-id stems (the old `{clip_id}.mp4` scheme).
+pub fn get_all_proxy_paths() -> Result<Vec<String>, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
-    let mut stmt = conn.prepare("SELECT id FROM clips")?;
-    let ids = stmt.query_map([], |row| row.get(0))?
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT proxy_path FROM clips WHERE proxy_path IS NOT NULL AND proxy_path != ''",
+    )?;
+    let paths = stmt.query_map([], |row| row.get(0))?
         .collect::<Result<Vec<String>, _>>()?;
-    Ok(ids)
+    Ok(paths)
 }
 
 /// Returns true if the project has any clip with width >= 3840 or height >= 2160.
