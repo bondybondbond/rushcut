@@ -15,14 +15,14 @@
 
 ## Current Phase
 
-**Phase 2 — Batch T2 (Proxy deduplication) COMPLETE (2026-06-01). Next: Batch T3 — fold gate into render pipeline as a named stage.**
+**Phase 2 — Batch T3 (Proxy gate UX) COMPLETE (2026-06-01). Next: Batch T4 — Live progress + smart Open routing.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch T3** — Fold proxy gate into render pipeline as a named stage (Option A only — wait inline, show "Preparing clips X/N ready" in the existing progress bar). Do NOT start before confirming T2 is solid in the user's hands. See BATCH-T-PLAN.md T3 spec.
-- **Render screen polish** — 1080p non-4K: confirm gate still bypasses correctly on cold start (accepted by design).
+- **Batch T4** — Library live render progress + smart Open routing. Define the state machine before coding (see BATCH-T-PLAN.md T4 spec — machine already defined there).
+- **Performance note (user concern):** 5 files / 6 clips = ~4 min warm render. 10-20 file / 3-min footage combos not yet tested. Worth a benchmark before T4 to validate the proxy-based fast path scales.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 
@@ -37,6 +37,10 @@
 ---
 
 ## Recently shipped this session (2026-06-01)
+
+- **Batch T3 — Proxy gate UX COMPLETE:** `awaiting-proxies` phase eliminated from `Render.tsx`. Proxy wait now hidden behind the existing "starting" spinner — phase stays `"starting"` while poll + boost run silently in background; render bar appears only when all proxies land and `startRenderNow()` fires. `btn-start-anyway` button removed. `preparing` boolean flag retained as poll trigger (not shown in JSX). Dead code cleaned: `setProgress` in poll removed, `ticker` interval removed, elapsed-clock effect simplified (`[phase]` dep, no `preparing` guard). `render.spec.ts` comment updated (try/catch block preserved for safe no-op). User confirmed: 3-source and 5-source renders both went straight to render bar with no visible prepare stage. 9/9 fast PASS.
+
+## Recently shipped previous session (2026-06-01)
 
 - **Batch T2 — Proxy deduplication COMPLETE:** `encode_one_clip` renamed proxy files from `{clip_id}.mp4` to `proxy_name_for_path(local_path)` (FNV-1a 64-bit hash, stable across Rust versions). `run_bg_proxy_batch` groups full clip list by `local_path`, builds one queue item per unique source (canonical = `MIN(clip_id)` for trigger-agnostic claim), emits `unique_paths=N` in batch-start log. Fan-out via new `set_proxy_for_all_clips_with_path` DB helper — one UPDATE sets all cuts sharing a source. Atomic temp→rename encode. `vacuum_proxies_cmd` rekeyed to `get_all_proxy_paths()` (full path match) instead of clip-id stems. `run_single_proxy` (Trimmer onError) given same hash + fan-out treatment. **Bug fixed in same session:** duplicate normal-priority boost (`{project_id}:normal` key in concurrency guard) was causing 3 concurrent AMF sessions and 3-5× slowdown. **WSL memory fixed:** `.wslconfig memory=12GB` prevents 4K xfade SIGTERM on 16GB machines. Confirmed: 3-source/8-cut 4K film renders warm in ~3 min. 9/9 fast PASS.
 

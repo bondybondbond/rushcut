@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { Check } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ProjectWithClips, JobConfig, PipelineProgressEvent, Clip } from "@/types/project";
+import type { ProjectWithClips, JobConfig, PipelineProgressEvent } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
@@ -24,7 +23,7 @@ function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage;
 }
 
-type Phase = "ready" | "awaiting-proxies" | "starting" | "rendering" | "done" | "error";
+type Phase = "ready" | "starting" | "rendering" | "done" | "error";
 
 type ProxyReadiness = {
   ready: number;
@@ -48,10 +47,6 @@ export default function Render() {
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string>(_cached?.name ?? "");
-
-  // Batch S: clip tiles for awaiting-proxies panel
-  const [includedClips, setIncludedClips] = useState<Clip[]>(_cachedIncluded);
-  const [blockingIds, setBlockingIds] = useState<Set<string>>(new Set());
 
   const [has4K, setHas4K] = useState(false);
   const [outputRes, setOutputRes] = useState<"1080p" | "4k">(() => {
@@ -86,6 +81,10 @@ export default function Render() {
   const [proxyElapsedLabel, setProxyElapsedLabel] = useState("0s");
   const waitStartRef = useRef<number>(0);
   const waitStartReadyRef = useRef<number>(0);
+  // T3: proxy wait is now the first sub-stage of the rendering progress bar
+  // (no separate "awaiting-proxies" screen). The synchronisation barrier is
+  // preserved -- the actual job still does not start until proxies are ready.
+  const [preparing, setPreparing] = useState(false);
 
   const configured = useConfiguredTabs(projectId ?? "");
 
@@ -162,7 +161,6 @@ export default function Render() {
       });
       setProxyReady(status.ready);
       setProxyTotal(status.total);
-      setBlockingIds(new Set(status.blocking_clip_ids));
       // Skip gate when all proxies ready.
       // Skip gate when cold AND non-4K (normalise is fast enough at 1080p).
       // For cold 4K renders, always gate: background proxies are in flight and
@@ -171,12 +169,13 @@ export default function Render() {
         await startRenderNow(pid);
         return;
       }
-      // Kick off normal-priority proxy gen and enter wait state.
+      // T3: proxies still building. Fire ONE normal-priority boost then poll
+      // in the background. Phase stays "starting" (spinner) — the render bar
+      // only appears once startRenderNow() is called when all proxies land.
       waitStartRef.current = Date.now();
       waitStartReadyRef.current = status.ready;
-      setProxyElapsedLabel("0s");
-      setPhase("awaiting-proxies");
       invoke("generate_proxies_cmd", { projectId: pid, lowPriority: false }).catch(console.error);
+      setPreparing(true);
     } catch (e) {
       console.error("[render] readiness check failed, proceeding without gate", e);
       await startRenderNow(pid);
@@ -195,7 +194,6 @@ export default function Render() {
 
       projectCache.set(projectId, { name: data.project.name, clips: data.clips });
       const included = data.clips.filter((c) => c.include !== 0);
-      setIncludedClips(included); // set before submitJob to avoid empty-tile flash
       const count = included.length;
       const ms = included.reduce((sum, c) => {
         const start = c.in_ms ?? 0;
@@ -304,7 +302,7 @@ export default function Render() {
   // Batch R+S: poll proxy readiness and listen to proxy-progress while in the
   // awaiting-proxies wait state. Elapsed timer ticks every second.
   useEffect(() => {
-    if (phase !== "awaiting-proxies" || !projectId) return;
+    if (!preparing || !projectId) return;
     let cancelled = false;
 
     async function check(): Promise<boolean> {
@@ -316,9 +314,11 @@ export default function Render() {
         if (cancelled) return true;
         setProxyReady(status.ready);
         setProxyTotal(status.total);
-        setBlockingIds(new Set(status.blocking_clip_ids));
 
         if (status.ready >= status.total && status.total > 0) {
+          // All proxies ready: start the render. Phase transitions from
+          // "starting" (spinner) to "rendering" (progress bar) inside startRenderNow.
+          setPreparing(false);
           startRenderNow(projectId!);
           return true;
         }
@@ -327,12 +327,6 @@ export default function Render() {
       }
       return false;
     }
-
-    // Batch S: elapsed count-up — mirrors the rendering elapsed timer pattern.
-    const ticker = setInterval(() => {
-      const sec = Math.floor((Date.now() - waitStartRef.current) / 1000);
-      setProxyElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
-    }, 1000);
 
     check();
     const interval = setInterval(check, 2000);
@@ -347,11 +341,10 @@ export default function Render() {
 
     return () => {
       cancelled = true;
-      clearInterval(ticker);
       clearInterval(interval);
       unlistenProxy.then((f) => f());
     };
-  }, [phase, projectId, outputRes]);
+  }, [preparing, projectId, outputRes]);
 
   async function handleRetry() {
     if (!projectId || inFilmCount === 0) return;
@@ -449,63 +442,6 @@ export default function Render() {
                 className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base"
               >
                 Render Film
-              </button>
-            </div>
-          )}
-
-          {/* Awaiting proxies — Batch R gate */}
-          {phase === "awaiting-proxies" && (
-            <div className="space-y-4" data-testid="awaiting-proxies">
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-[#e5e5e5]">
-                    Preparing proxies -- {proxyReady} / {proxyTotal} ready
-                  </span>
-                  <span className="text-[#a3a3a3] font-mono" data-testid="proxy-elapsed">
-                    {proxyElapsedLabel} elapsed
-                  </span>
-                </div>
-                <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-[#22c55e] rounded-full transition-all duration-500"
-                    style={{ width: `${proxyTotal > 0 ? Math.round((proxyReady / proxyTotal) * 100) : 0}%` }}
-                  />
-                </div>
-                <p className="text-xs text-[#a3a3a3]">
-                  Render starts automatically when proxies finish. Skipping makes this render much slower.
-                </p>
-              </div>
-              {/* Batch S: per-clip tile grid — pulsing ring on encoding, green check on done */}
-              {includedClips.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {includedClips.map((c) => {
-                    const encoding = blockingIds.has(c.id);
-                    return (
-                      <div
-                        key={c.id}
-                        data-testid={`proxy-tile-${c.id}`}
-                        data-encoding={encoding ? "true" : "false"}
-                        className={`relative w-16 aspect-video rounded border border-white/15 bg-black bg-cover bg-center flex-shrink-0 overflow-hidden${encoding ? " rc-proxy-pulse" : ""}`}
-                        style={c.thumbnail_data ? { backgroundImage: `url(${c.thumbnail_data})` } : {}}
-                      >
-                        {!encoding && (
-                          <div className="absolute top-0.5 right-0.5 w-4 h-4 rounded-sm bg-[#22c55e] flex items-center justify-center">
-                            <Check size={10} strokeWidth={3} className="text-[#0a0a0a]" />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              <button
-                type="button"
-                data-testid="btn-start-anyway"
-                onClick={() => projectId && startRenderNow(projectId)}
-                className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-sm rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
-              >
-                Start anyway (slower)
               </button>
             </div>
           )}
