@@ -163,6 +163,7 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         ("codec_name",   "TEXT"),
         ("clip_volume",  "REAL DEFAULT 1.0"),
         ("proxy_status", "TEXT"),
+        ("proxy_claimed_at", "INTEGER"),
     ];
     for (col_name, col_type) in &clip_cols {
         let exists: bool = conn.query_row(
@@ -393,7 +394,7 @@ pub fn get_all_clips_for_bg_proxy(project_id: &str) -> Result<Vec<(String, Strin
 pub fn claim_clip_for_encoding(clip_id: &str) -> Result<bool, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     let rows = conn.execute(
-        "UPDATE clips SET proxy_status = 'encoding'
+        "UPDATE clips SET proxy_status = 'encoding', proxy_claimed_at = CAST(strftime('%s','now') AS INTEGER)
          WHERE id = ?1 AND (proxy_status IS NULL OR proxy_status NOT IN ('encoding', 'done'))",
         params![clip_id],
     )?;
@@ -412,6 +413,23 @@ pub fn reset_stale_encoding_claims(project_id: &str) -> Result<(), rusqlite::Err
         params![project_id],
     )?;
     Ok(())
+}
+
+/// Batch T7: reset ALL stale 'encoding' claims across every project, time-guarded.
+/// Called once at process startup (setup()), where no proxy batch is running in-process.
+/// The `stale_secs` guard prevents clobbering a live encode owned by the *other* binary
+/// instance (the two-instances-share-one-DB model): a claim younger than `stale_secs`
+/// is left untouched. Legacy rows from crashed sessions have NULL/old timestamps and
+/// are cleared. Returns the number of rows reset.
+pub fn reset_all_encoding_claims(stale_secs: i64) -> Result<usize, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let rows = conn.execute(
+        "UPDATE clips SET proxy_status = NULL, proxy_claimed_at = NULL
+         WHERE proxy_status = 'encoding'
+           AND (proxy_claimed_at IS NULL OR proxy_claimed_at < CAST(strftime('%s','now') AS INTEGER) - ?1)",
+        params![stale_secs],
+    )?;
+    Ok(rows)
 }
 
 /// Batch R: return (id, local_path, proxy_path) for every include=1 clip in

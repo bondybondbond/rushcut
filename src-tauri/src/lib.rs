@@ -7,7 +7,7 @@ use db::{
     add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
-    claim_clip_for_encoding, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
+    claim_clip_for_encoding, reset_all_encoding_claims, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
     set_proxy_for_all_clips_with_path, update_clip_review,
     update_clip_thumbnail, update_clip_volume, update_clip_waveform, update_job_analysis,
     update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary,
@@ -1868,6 +1868,16 @@ async fn run_single_proxy(app: AppHandle, project_id: String, clip: Clip) {
 /// or stale (>30 days old). Called fire-and-forget after each pipeline-done to keep
 /// proxy storage clean.
 ///
+/// Batch T7: reset 'encoding' proxy claims for ONE project back to NULL.
+/// Used by the WDIO `after()` hook to clean up the test project before its binary is
+/// SIGTERM'd mid-encode — leaving the shared DB free of stuck claims immediately after a
+/// run. Scoped to a single project_id so it never touches the user's real projects in the
+/// shared DB. Reuses the existing per-project reset_stale_encoding_claims.
+#[tauri::command]
+fn reset_proxy_encoding_cmd(project_id: String) -> Result<(), String> {
+    reset_stale_encoding_claims(&project_id).map_err(|e| format!("DB error (reset claims): {}", e))
+}
+
 /// Batch T2: proxies are now named `{hash(local_path)}.mp4`, shared across all cuts
 /// from the same source — NOT `{clip_id}.mp4`. Orphan detection therefore keys on the
 /// set of distinct `proxy_path` values in the DB (full path match), not clip-id stems.
@@ -2021,6 +2031,16 @@ pub fn run() {
                 return Err(e);
             }
 
+            // Batch T7: reset stale 'encoding' proxy claims left by a crashed/killed binary
+            // (e.g. WDIO SIGTERMs its binary mid-encode). Safe at startup: no batch is running
+            // in-process yet, and the 900s time-guard never clears a live encode owned by the
+            // other binary instance (two-instances-share-one-DB model).
+            match reset_all_encoding_claims(900) {
+                Ok(n) if n > 0 => eprintln!("[proxy] startup: reset {} stale 'encoding' claim(s)", n),
+                Ok(_) => {}
+                Err(e) => eprintln!("[proxy] startup: reset_all_encoding_claims failed: {}", e),
+            }
+
             // Show the main window so WebView2 / E2E can interact with it.
             // The native splash (WS_EX_TOPMOST) covers it physically until confirm_app_loaded fires.
             if let Some(win) = app.get_webview_window("main") {
@@ -2087,6 +2107,7 @@ pub fn run() {
             get_proxy_avg_timing_cmd,
             generate_proxy_for_clip,
             vacuum_proxies_cmd,
+            reset_proxy_encoding_cmd,
             get_music_dir_cmd,
         ])
         .run(tauri::generate_context!())

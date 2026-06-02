@@ -6,6 +6,8 @@
  * two-workers-one-binary crash.
  */
 
+import { trackTestProject } from "./helpers/testProjects";
+
 // ---------------------------------------------------------------------------
 // Upload page
 // ---------------------------------------------------------------------------
@@ -109,6 +111,7 @@ describe("Editor page", () => {
     const url = await browser.getUrl();
     if (!url.includes("/trimmer/")) return;
     const projectId = url.split("/trimmer/")[1];
+    trackTestProject(projectId);
 
     await browser.execute(
       (pid: string) => window.history.pushState({}, "", `/arrange/${pid}`),

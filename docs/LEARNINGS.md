@@ -69,6 +69,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — In-session binary uses a Claude MSIX container DB, not the user's real Roaming file
+
+**Problem:** When the rushcut debug binary is launched *in-session* (via `Start-Process` from Claude Code's packaged context), Windows MSIX filesystem virtualisation redirects its `%APPDATA%` writes to `C:\Users\Manasak\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\rushcut\rushcut.db` — a separate physical file. `dirs::data_dir()` prints the *logical* Roaming path in logs, but that is a lie on this machine. WSL `/mnt/c/.../Roaming/rushcut/rushcut.db` is the user's real file; the Windows Store `python.exe` alias has its own container too. All three disagree.
+**Solution:** To verify DB state against the in-session binary: inject and read using WSL python pointed at the **container path** (`/mnt/c/Users/Manasak/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/rushcut/rushcut.db`), not the real Roaming path. Drop WSL caches before reading (`echo 1 > /proc/sys/vm/drop_caches`) — 9p reads are stale even after the container DB changes. Confirm the right file by temporarily adding `eprintln!("[dbpath] {}", db::db_path().display())` to `setup()` and reading binary stderr.
+**Context:** In-session DB verification when the binary is launched via `Start-Process` (i.e. from Claude Code). For the user's own launched binary (normal double-click outside any package), this does NOT apply — the real Roaming file is used and there is no virtualisation.
+
+---
+
+## Workflow — WSL `/mnt/c` SQLite reads are stale; writes land but reads need cache drop
+
+**Problem:** Reading `rushcut.db` via WSL2 `/mnt/c` 9p protocol returns a cached view that does not reflect recent Windows-side writes (or even recent WSL writes visible to Windows). Specifically, a WSL python commit that inserts rows can be immediately visible to the Windows binary but NOT visible to a subsequent WSL python read — leading to false "rows missing" conclusions.
+**Solution:** Before any WSL read of a DB that was recently written (by WSL or Windows), drop the 9p page cache: `wsl -u root -- sh -c "echo 1 > /proc/sys/vm/drop_caches"`. For authoritative reads, prefer writing a Python script and running it via `Start-Process` in the same OS context as the binary, rather than via WSL.
+**Context:** Any in-session DB verification using WSL python or WSL sqlite3 against a file that was recently opened or written by a Windows process.
+
+---
+
 ## React — imperative DOM updates for high-frequency media events
 
 **Problem:** React `setState` inside `onTimeUpdate` (fires 4–66 Hz) causes a re-render per tick. For a progress bar fill + elapsed label, this floods the React reconciler every 15–250ms, degrading playback smoothness.

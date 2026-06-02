@@ -68,6 +68,15 @@ Every spec `before()` hook must navigate via real UI clicks, not `history.pushSt
 
 None — all specs current as of 2026-06-02.
 
+## WDIO after() hook — proxy claim cleanup (Batch T7)
+
+`wdio.conf.ts` has an `after()` hook (fires per spec file, browser still alive) that resets `proxy_status='encoding'` claims for every test project before the binary is SIGTERM'd in `afterSession`. This prevents stuck claims accumulating in the shared DB across WDIO runs.
+
+- Each spec calls `trackTestProject(projectId)` from `e2e/helpers/testProjects.ts` right after capturing the project id
+- The `after()` hook iterates `trackedTestProjects()` and calls `reset_proxy_encoding_cmd` via `browser.execute` with `(window as any).__TAURI_INTERNALS__.invoke(...)` (the exact pattern all specs use — NOT `__TAURI__.core.invoke`)
+- **Do not remove the `after()` hook** — without it, `afterSession`'s SIGTERM leaves HEVC clip claims stuck at `'encoding'` for the life of any reused binary
+- **When adding a new spec** that calls `create_project`, add `trackTestProject(projectId)` immediately after the id is captured (one line + import only)
+
 ## Keep waitUntil polling conditions in sync with UI copy
 
 When any heading or label string changes in the UI, grep `e2e/` for that exact string and update every `waitUntil` / `expect(...).toBe(...)` that references it. A `waitUntil` that checks a stale string will time out (up to 9 min for the render done-condition) but the assertions that follow may still pass if the render completed during the timeout — masking the failure until the timeout fires. Symptom: one test shows `Pipeline did not reach 100% within N minutes` even though the video player and done-state assertions all passed.

@@ -9,6 +9,7 @@
 
 import path from "path";
 import fs from "fs";
+import { trackTestProject } from "./helpers/testProjects";
 
 const SCREENSHOTS = path.resolve(__dirname, "screenshots");
 
@@ -64,6 +65,7 @@ describe("Sound screen", () => {
     // Create project and navigate directly to /sound/ via permitted pushState shortcut.
     // Isolated from Transitions to avoid Sound failures appearing as Transitions regressions.
     projectId = await createSoundProject();
+    trackTestProject(projectId);
     if (!projectId) return;
 
     await browser.execute((id: string) => {

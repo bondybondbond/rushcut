@@ -15,15 +15,13 @@
 
 ## Current Phase
 
-**Phase 2 — Batch T6 (Library staleness fix + preparing-phase UX + spec work) COMPLETE (2026-06-02). Next: T7 — TBD.**
+**Phase 2 — Batch T7 (WDIO proxy claim cleanup) COMPLETE (2026-06-02). Next: T8 — TBD.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch T7** — candidates: Render multi-version pantry (browse clips-01/-02/... versions from Render screen); Library E2E for rendering/done/error card states (deferred from T6 — requires test-seed Rust command or real slow render in spec); WDIO `afterSuite` proxy cleanup (see below); any new founder priority.
-- **WDIO proxy cleanup gap (T7 candidate):** WDIO `afterSuite` kills the binary mid-encode, leaving `proxy_status='encoding'` in the DB for the test project's HEVC clips. On next launch `reset_stale_encoding_claims` clears this on the first batch — but only for the user's next fresh binary session. If the same binary that ran WDIO is reused (e.g. dev session continues), those clips stay stuck as "encoding-in-progress" for the life of that binary. Fix options: (a) add a WDIO `afterSuite` hook that calls `vacuum_proxies_cmd` or a dedicated reset invoke, or (b) extend `reset_stale_encoding_claims` to fire whenever the project is not in the concurrency set (currently limited to the `else`/first-batch path).
-- **render.spec.ts 14/14 confirmed** on a clean run (2026-06-02): was 13/14 (stale `waitUntil` assertion `"Your film is ready"` → `"Your film"`). Fixed in T6, confirmed 14/14 in 1m 24s.
+- **Batch T8** — candidates: Render multi-version pantry (browse clips-01/-02/... versions from Render screen); Library E2E for rendering/done/error card states (deferred from T6 — requires test-seed Rust command or real slow render in spec); any new founder priority.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 
@@ -38,6 +36,10 @@
 ---
 
 ## Recently shipped this session (2026-06-02)
+
+- **Batch T7 — WDIO proxy claim cleanup COMPLETE:** `proxy_claimed_at INTEGER` additive column (stamped by `claim_clip_for_encoding`). Startup self-heal: `reset_all_encoding_claims(900)` in `setup()` clears stale/NULL-ts rows globally; 900s time-guard never clobbers a live encode in the other binary. `reset_proxy_encoding_cmd` scoped Tauri command. `e2e/helpers/testProjects.ts` registry + `trackTestProject()` one-liner in all 7 specs + `after()` hook in `wdio.conf.ts` that calls `reset_proxy_encoding_cmd` for each test project before `afterSession` SIGTERM. Verification: startup reset confirmed (1 legacy cleared, 1 fresh preserved); 0 stuck encoding rows after WDIO run; 9/9 fast PASS. Check 4 (live claim path) verified indirectly — 0 stuck rows after WDIO run that exercised claim→encode→done. Key discovery: in-session binary uses a Claude MSIX container DB (`...\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\...`), NOT real Roaming — documented in LEARNINGS.md.
+
+## Recently shipped previous session (2026-06-02)
 
 - **Batch T6 — Library staleness fix + preparing-phase UX COMPLETE:** Library `job-started` listener: `start_job` Rust now emits `job-started` (`{ jobId, projectId }`) after `insert_job`; Library's mount-once `useEffect` listens and fetches the new job via `get_job_cmd`, inserting it into `jobs`/`progress` state. Live green bar now updates even when Library was already mounted before the render fired (verified via chrome-devtools screenshots A/B/C). **Preparing-phase UX:** "Preparing your film..." spinner now shows `Optimising clips... X/Y ready` + peach progress bar + elapsed timer (`proxyElapsedLabel` wired into the `preparing` effect; was dead code before). **render.spec.ts stale assertion fixed:** `waitUntil` was checking `"Your film is ready"` (T4 copy); corrected to `"Your film"` — was causing 9-min timeout and 13/14 failure on every run. **New E2E spec:** `e2e/library.spec.ts` (4 assertions: heading, card renders, idle "No renders" status, idle→/trimmer/ routing); `test:e2e:library` script added to `package.json`. **launch-cdp.bat** helper created for CDP sessions. 9/9 fast PASS, 4/4 library PASS.
 

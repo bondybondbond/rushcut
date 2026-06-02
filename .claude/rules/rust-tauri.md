@@ -12,6 +12,14 @@ Applies when working on `src-tauri/**`.
 
 `start_job` emits `"job-started"` (`{ jobId, projectId }`) immediately after `insert_job` succeeds and before `spawn`. This lets `Library.tsx` add the new job to its `jobsMap` without polling, so `pipeline-progress`/`done`/`error` events resolve correctly even if Library was already mounted before the render started. Emit point: after `.map_err(|e| ...)` on `insert_job`, before `let job_id_bg = job_id.clone()`. Both `job_id` and `project_id` are still owned at that point — neither is consumed until the `spawn` closure.
 
+## setup() startup reset for stale proxy claims (Batch T7)
+
+`setup()` calls `reset_all_encoding_claims(900)` (from `db.rs`) immediately after `db::init` succeeds. This resets `proxy_status='encoding'` rows whose `proxy_claimed_at` is older than 900s or NULL — covering crashes, kills, and WDIO SIGTERM. The 900s time-guard is **critical**: it prevents clobbering a live encode in the other binary (two-instances-share-one-DB). A row claimed within 15 min is never touched.
+
+The `proxy_claimed_at INTEGER` column is stamped at claim time by `claim_clip_for_encoding` (the existing per-clip atomic claim). The startup reset is unconditional and synchronous — runs before the window shows, so no batch is ever in-flight in-process at that point.
+
+`reset_proxy_encoding_cmd(project_id: String)` is the scoped per-project variant, called from the WDIO `after()` hook to clean up test projects.
+
 ## setup() must not block on slow system calls
 
 `setup()` runs synchronously on the main thread. Blocking calls (e.g. `std::process::Command::new("wsl").arg("--status").output()`) stall the splash/spinner for the duration of the call — confirmed 5–7s on this machine. Move slow checks to `tauri::async_runtime::spawn` and emit the result as an event, or deferred to after the first window renders. The `app-ready` event should fire as soon as DB init is done; WSL availability can be checked lazily.

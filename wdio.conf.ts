@@ -2,6 +2,7 @@ import { ChildProcess, spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import http from "http";
+import { trackedTestProjects, clearTrackedTestProjects } from "./e2e/helpers/testProjects";
 
 let appProcess: ChildProcess;
 let msEdge: ChildProcess;
@@ -202,6 +203,22 @@ export const config: WebdriverIO.Config = {
       } catch {}
       await new Promise<void>((r) => setTimeout(r, 300));
     }
+  },
+
+  // Batch T7: before the binary is SIGTERM'd in afterSession, reset any stale 'encoding'
+  // proxy claims for the test projects this spec touched. WDIO kills the binary mid-encode,
+  // which otherwise leaves proxy_status='encoding' stuck in the SHARED DB. Scoped per
+  // project_id (via reset_proxy_encoding_cmd) so the user's real projects are never touched.
+  // Mirrors the specs' invoke access pattern exactly: window.__TAURI_INTERNALS__.invoke.
+  after: async () => {
+    for (const id of trackedTestProjects()) {
+      try {
+        await browser.execute(async (pid: string) => {
+          await (window as any).__TAURI_INTERNALS__.invoke("reset_proxy_encoding_cmd", { projectId: pid });
+        }, id);
+      } catch {}
+    }
+    clearTrackedTestProjects();
   },
 
   afterTest: async (test, _ctx, result) => {

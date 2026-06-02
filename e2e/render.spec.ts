@@ -10,6 +10,7 @@
  */
 
 import { execFileSync } from "child_process";
+import { trackTestProject } from "./helpers/testProjects";
 
 describe("Full E2E render — /render/:projectId", () => {
   let videoSrc: string;
@@ -38,6 +39,7 @@ describe("Full E2E render — /render/:projectId", () => {
     });
     expect(result).toBeTruthy();
     projectId = result as string;
+    trackTestProject(projectId);
   });
 
   it("navigates to project in Library and opens to /trimmer/", async () => {

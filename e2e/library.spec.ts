@@ -13,6 +13,8 @@
  * - msedgedriver.exe in PATH matching Edge/WebView2 version
  */
 
+import { trackTestProject } from "./helpers/testProjects";
+
 describe("Library — project cards and routing", () => {
   let projectId: string | null = null;
 
@@ -38,6 +40,7 @@ describe("Library — project cards and routing", () => {
     });
     expect(result).toBeTruthy();
     projectId = result as string;
+    trackTestProject(projectId);
 
     // Navigate to Library via pushState (invoke bypasses React auto-nav).
     await browser.execute(() => {

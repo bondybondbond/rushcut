@@ -9,6 +9,7 @@
 
 import path from "path";
 import fs from "fs";
+import { trackTestProject } from "./helpers/testProjects";
 
 const SCREENSHOTS = path.resolve(__dirname, "screenshots");
 
@@ -61,6 +62,7 @@ describe("Trimmer screen", () => {
 
     // Create project and navigate to trimmer
     projectId = await createTrimmerProject();
+    trackTestProject(projectId);
     if (!projectId) return;
 
     // TODO: replace pushState with UI navigation once create_project triggers React routing

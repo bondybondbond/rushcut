@@ -6,6 +6,8 @@
  * Run: pnpm test:e2e:editor
  */
 
+import { trackTestProject } from "./helpers/testProjects";
+
 async function createEvalProject(): Promise<string | null> {
   return browser.execute(async () => {
     const { invoke } = (window as any).__TAURI_INTERNALS__;
@@ -50,6 +52,7 @@ describe("Trimmer via real navigation", () => {
     await browser.pause(500);
 
     const result = await createEvalProject();
+    trackTestProject(result);
     if (!result) { hasClips = false; return; }
 
     // create_project via invoke() bypasses Upload.tsx React state — no auto-nav fires.
