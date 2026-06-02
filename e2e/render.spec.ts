@@ -182,7 +182,8 @@ describe("Full E2E render — /render/:projectId", () => {
     await browser.waitUntil(
       async () => {
         const h1 = await $("h1");
-        if (await h1.isExisting() && (await h1.getText()) === "Your film is ready") return true;
+        // T5: heading is now "Your film" (not "Your film is ready")
+        if (await h1.isExisting() && (await h1.getText()) === "Your film") return true;
         const pct = await $('[data-testid="progress-pct"]');
         if (!(await pct.isExisting())) return false;
         const value = parseInt(await pct.getText(), 10);

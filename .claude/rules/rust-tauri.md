@@ -8,6 +8,10 @@ Applies when working on `src-tauri/**`.
 - JS `invoke("name")` must match Rust `fn name` exactly — mismatch is a runtime error, not a compile error.
 - JS invoke arg keys must match the `snake_case → camelCase` conversion of each Rust parameter name. Example: `fn update_clip_volume_cmd(clip_id: String, clip_volume: f64)` → `invoke("update_clip_volume_cmd", { clipId, clipVolume })`. Passing `{ volume }` instead of `{ clipVolume }` silently drops the call with "missing required key clipVolume" in the console — no compile-time error, easy to miss.
 
+## job-started event — emitted by start_job for Library live-update (T6)
+
+`start_job` emits `"job-started"` (`{ jobId, projectId }`) immediately after `insert_job` succeeds and before `spawn`. This lets `Library.tsx` add the new job to its `jobsMap` without polling, so `pipeline-progress`/`done`/`error` events resolve correctly even if Library was already mounted before the render started. Emit point: after `.map_err(|e| ...)` on `insert_job`, before `let job_id_bg = job_id.clone()`. Both `job_id` and `project_id` are still owned at that point — neither is consumed until the `spawn` closure.
+
 ## setup() must not block on slow system calls
 
 `setup()` runs synchronously on the main thread. Blocking calls (e.g. `std::process::Command::new("wsl").arg("--status").output()`) stall the splash/spinner for the duration of the call — confirmed 5–7s on this machine. Move slow checks to `tauri::async_runtime::spawn` and emit the result as an event, or deferred to after the first window renders. The `app-ready` event should fire as soon as DB init is done; WSL availability can be checked lazily.

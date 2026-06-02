@@ -425,6 +425,12 @@ export default function Render() {
     check();
     const interval = setInterval(check, 2000);
 
+    // Tick the elapsed label once per second so the user can see progress is happening.
+    const elapsedTick = setInterval(() => {
+      const sec = Math.floor((Date.now() - waitStartRef.current) / 1000);
+      setProxyElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
+    }, 1000);
+
     const unlistenProxy = listen<{ projectId: string; clipId: string; winPath: string }>(
       "proxy-progress",
       (event) => {
@@ -436,6 +442,7 @@ export default function Render() {
     return () => {
       cancelled = true;
       clearInterval(interval);
+      clearInterval(elapsedTick);
       unlistenProxy.then((f) => f());
     };
   }, [preparing, projectId, outputRes]);
@@ -530,9 +537,26 @@ export default function Render() {
 
           {/* Starting */}
           {phase === "starting" && (
-            <div className="flex items-center gap-3">
-              <span className="inline-block w-5 h-5 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm text-[#a3a3a3]">Preparing your film...</span>
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <span className="inline-block w-5 h-5 border-2 border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                <span className="text-sm text-[#a3a3a3]">
+                  {preparing && proxyTotal > 0
+                    ? `Optimising clips for playback... ${proxyReady}/${proxyTotal} ready`
+                    : "Preparing your film..."}
+                </span>
+              </div>
+              {preparing && proxyTotal > 0 && (
+                <div className="space-y-1 pl-8">
+                  <div className="h-1 bg-white/10 rounded-full overflow-hidden max-w-xs">
+                    <div
+                      className="h-full bg-[#FF8A65]/60 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.round((proxyReady / proxyTotal) * 100)}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-[#a3a3a3]">{proxyElapsedLabel} elapsed</p>
+                </div>
+              )}
             </div>
           )}
 

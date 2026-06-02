@@ -128,10 +128,25 @@ export default function Library() {
       });
     });
 
+    // Mid-session fix: a new render may start while Library is already mounted.
+    // The new job's id won't be in jobsMap yet, so progress events would be silently
+    // dropped. Fetch the new job on job-started and insert it keyed by projectId so
+    // all subsequent progress/done/error events resolve correctly via findProject().
+    const unlistenJobStarted = listen<{ jobId: string; projectId: string }>("job-started", (event) => {
+      const { jobId, projectId } = event.payload;
+      invoke<Job>("get_job_cmd", { jobId })
+        .then((j) => {
+          setJobs((prev) => ({ ...prev, [projectId]: j }));
+          setProgress((prev) => ({ ...prev, [projectId]: j.progress_pct }));
+        })
+        .catch(() => {});
+    });
+
     return () => {
       unlistenProgress.then((f) => f());
       unlistenDone.then((f) => f());
       unlistenError.then((f) => f());
+      unlistenJobStarted.then((f) => f());
     };
   }, []);
 

@@ -15,15 +15,14 @@
 
 ## Current Phase
 
-**Phase 2 — Batch T5 (Render screen done-state fixes) COMPLETE (2026-06-02). Next: T6 — TBD (see PRD-DEV.md).**
+**Phase 2 — Batch T6 (Library staleness fix + preparing-phase UX + spec work) COMPLETE (2026-06-02). Next: T7 — TBD.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch T6** — next priority to be defined. Candidates: Library mid-session jobsMap staleness fix (live green bar doesn't update if Library was mounted before the render started); Render multi-version pantry (browse clips-01/-02/... versions); Library E2E spec for card states in isolation.
-- **Library green bar (mid-session case) — known gap:** Library shows the correct live progress when it mounts AFTER a render starts (startup case). If Library is already mounted when a new render fires, the jobsMap has the old jobId → new job events are ignored. Documented in LEARNINGS.md. Fix deferred to T6.
-- **render.spec.ts — not fully green:** Three consecutive runs had WSL resource issues (3-hour session expiry). Core pipeline tests confirmed working via chrome-devtools. The `btn-render-new` assertion added; library-badge test removed. Run `pnpm test:e2e:render` first thing in T6 on a clean machine to confirm 14/14.
+- **Batch T7** — candidates: Render multi-version pantry (browse clips-01/-02/... versions from Render screen); Library E2E for rendering/done/error card states (deferred from T6 — requires a test-seed Rust command or a real slow render in spec); any new founder priority.
+- **render.spec.ts 14/14 confirmed** on a clean run (2026-06-02): 13 passing + 1 failing was a stale `waitUntil` assertion (`"Your film is ready"` → `"Your film"` fixed in T6). Fixed and confirmed clean.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 
@@ -38,6 +37,10 @@
 ---
 
 ## Recently shipped this session (2026-06-02)
+
+- **Batch T6 — Library staleness fix + preparing-phase UX COMPLETE:** Library `job-started` listener: `start_job` Rust now emits `job-started` (`{ jobId, projectId }`) after `insert_job`; Library's mount-once `useEffect` listens and fetches the new job via `get_job_cmd`, inserting it into `jobs`/`progress` state. Live green bar now updates even when Library was already mounted before the render fired (verified via chrome-devtools screenshots A/B/C). **Preparing-phase UX:** "Preparing your film..." spinner now shows `Optimising clips... X/Y ready` + peach progress bar + elapsed timer (`proxyElapsedLabel` wired into the `preparing` effect; was dead code before). **render.spec.ts stale assertion fixed:** `waitUntil` was checking `"Your film is ready"` (T4 copy); corrected to `"Your film"` — was causing 9-min timeout and 13/14 failure on every run. **New E2E spec:** `e2e/library.spec.ts` (4 assertions: heading, card renders, idle "No renders" status, idle→/trimmer/ routing); `test:e2e:library` script added to `package.json`. **launch-cdp.bat** helper created for CDP sessions. 9/9 fast PASS, 4/4 library PASS.
+
+## Recently shipped previous session (2026-06-02)
 
 - **Batch T5 — Render screen done-state fixes COMPLETE:** "Lost my film" problem fixed — Render screen now self-detects existing renders via `get_render_status_cmd` (new Rust command) and shows the done film view on every entry (editor flow + Library). New render is explicit via "Render new version". Filename from real path basename (not project name). Duration from `<video>` element (matches player). Timestamp absolute ("Rendered 1 Jun 2026, 23:54"). "My Projects" + "Render again" removed; "Open in Explorer" + "Render new version" (peach primary) remain. 404 fallback: player hidden, metadata preserved, "no longer on disk" note. Stuck-button fix: `setPhase("starting")` immediately in `submitJob`. `get_active_job` + `get_latest_render` DB helpers in `db.rs`. `absoluteDateTime()` formatter in `src/utils/timeAgo.ts`. `render.spec.ts` updated (`btn-render-new` assertion, heading copy). `e2e.md`: `browser.navigate()` does-not-exist rule added. Library `handleOpen` simplified (dropped T4 resume state). PRD-DEV.md: multi-version pantry added to backlog. 9/9 fast PASS.
 

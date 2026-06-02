@@ -1148,6 +1148,10 @@ async fn start_job(
     })
     .map_err(|e| format!("DB error (insert job): {}", e))?;
 
+    // Notify Library (and any other listeners) that a new job has started so they
+    // can add it to their jobsMap before the first pipeline-progress event arrives.
+    let _ = app.emit("job-started", json!({ "jobId": job_id, "projectId": project_id }));
+
     // Spawn pipeline in background — emit events as stdout lines arrive
     let job_id_bg = job_id.clone();
     tauri::async_runtime::spawn(async move {

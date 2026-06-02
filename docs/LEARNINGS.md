@@ -202,9 +202,25 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ## React — Library jobsMap staleness when render starts mid-session
 
-**Problem:** `Library.tsx` builds its `jobsMap` (projectId → Job) from `list_projects_cmd` on mount, subscribing to `pipeline-progress` events that match `last_job_id`. If a new render starts AFTER Library has mounted (e.g. user navigates Render → Library → fires a new render → back to Library without remounting), the new job's ID isn't in `jobsMap` and all its progress events are silently ignored — Library stays frozen on the previous "done" state.
-**Solution:** On `pipeline-progress`, if the incoming `jobId` doesn't match any key in the reverse-lookup, trigger a lightweight re-fetch of `list_projects_cmd` to update `last_job_id` in the projects list and add the new job to `jobsMap`. Alternatively, emit a "job-started" event from Rust's `start_job` to let Library proactively add the new job without polling. Deferred to a future batch — the startup case (Library mounts while render is already running) works correctly.
-**Context:** `src/pages/Library.tsx` event subscription logic (T4/T5). Affects only the mid-session case where Library is already mounted when a new render fires.
+**Problem:** `Library.tsx` builds its `jobsMap` (projectId → Job) from `list_projects_cmd` on mount; subsequent `pipeline-progress` events are resolved via `findProject(jobId)`. If a new render starts AFTER Library has already done its initial prefetch, the new job's ID isn't in `jobsMap` and all its progress events are silently ignored.
+**Solution (T6 — FIXED):** Emit a `job-started` event from Rust `start_job` immediately after `insert_job` succeeds (`app.emit("job-started", json!({ "jobId": job_id, "projectId": project_id }))`). Library's mount-once listener fetches the new job via `get_job_cmd` and inserts it keyed by `projectId`. `jobsRef` (the mirror effect) then resolves all subsequent progress events correctly.
+**Context:** `src-tauri/src/lib.rs` `start_job` (emit point: after `insert_job`, before `spawn`). `src/pages/Library.tsx` — `job-started` listener wired into the existing mount-once `useEffect` alongside `pipeline-progress/done/error` listeners.
+
+---
+
+## Proxy — proxy_status stuck at 'encoding' after binary kill
+
+**Problem:** `encode_one_clip` calls `claim_clip_for_encoding` which sets `proxy_status='encoding'` via an atomic DB CAS before starting FFmpeg. If the binary is killed mid-encode (WDIO `afterSession`, force-kill, Windows crash), the `proxy_status` stays `'encoding'` in the DB. On the next launch, `claim_clip_for_encoding` returns `false` (already claimed) → `reason=encoding-in-progress` skip → those clips never get proxies → the Render screen "preparing" spinner hangs forever.
+**Solution:** `reset_stale_encoding_claims(project_id)` in `db.rs` (line ~408) already clears all `proxy_status='encoding'` rows for a project. It is called in `generate_proxies_cmd` only on the FIRST batch for a project (when the concurrency `HashSet` is empty for the fresh binary). So after any clean restart the stale state is automatically cleared on the next proxy invocation. If clips appear permanently stuck in a running session (same binary), check for a concurrent low-priority batch that legitimately holds the claim — the boost guard should prevent duplicate claims but inspect `proxy-bg.log` for `batch-start/done` pairs first.
+**Context:** `src-tauri/src/lib.rs` `run_bg_proxy_batch` / `encode_one_clip`. Most commonly triggered by WDIO test runs that kill the binary mid-proxy-encode. Symptom: `proxy-bg.log` shows repeated `skip clip_id=X reason=encoding-in-progress` across multiple batches for the same project.
+
+---
+
+## E2E — waitUntil done-condition must match current UI copy, not old copy
+
+**Problem:** `render.spec.ts` "progress bar increments and pipeline completes" had a `waitUntil` that checked `h1.getText() === "Your film is ready"` (T4 copy). T5 changed the heading to `"Your film"`. The condition never triggered; the spec waited the full 9-minute timeout, then the subsequent done-state assertions passed anyway (because the render had long since completed). Result: 13/14 — all real pipeline tests green but the suite reported 1 failing.
+**Solution:** When a heading or copy string is changed in the UI, grep `e2e/` for that exact string and update every `waitUntil` / `expect(...).toBe(...)` that references it. The done-state `waitUntil` in render.spec.ts now checks `=== "Your film"`. Note: assertions that come *after* the `waitUntil` in the same test may still pass even when `waitUntil` times out — this masks the failure in the summary count until the timeout is hit.
+**Context:** `e2e/render.spec.ts` line ~185. Any spec that polls for a UI state change using `waitUntil` with a heading or label string.
 
 ---
 

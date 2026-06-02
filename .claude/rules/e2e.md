@@ -66,7 +66,17 @@ Every spec `before()` hook must navigate via real UI clicks, not `history.pushSt
 
 ## Known stale specs
 
-None — all specs current as of 2026-04-29.
+None — all specs current as of 2026-06-02.
+
+## Keep waitUntil polling conditions in sync with UI copy
+
+When any heading or label string changes in the UI, grep `e2e/` for that exact string and update every `waitUntil` / `expect(...).toBe(...)` that references it. A `waitUntil` that checks a stale string will time out (up to 9 min for the render done-condition) but the assertions that follow may still pass if the render completed during the timeout — masking the failure until the timeout fires. Symptom: one test shows `Pipeline did not reach 100% within N minutes` even though the video player and done-state assertions all passed.
+
+Example pattern from `render.spec.ts`:
+```typescript
+// waitUntil done-condition — must match the current h1 copy:
+if (await h1.isExisting() && (await h1.getText()) === "Your film") return true;
+```
 
 ## Cross-screen display consistency — required check for any displayed value
 
