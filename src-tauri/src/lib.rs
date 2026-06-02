@@ -2001,6 +2001,10 @@ pub fn run() {
     splash::show();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Second launch: focus the existing window instead of opening a new one.
+            let _ = app.get_webview_window("main").map(|w| w.set_focus());
+        }))
         .plugin(tauri_plugin_dialog::init())
         // Tracks which project IDs currently have a proxy generation in progress.
         // Prevents two concurrent WSL FFmpeg processes writing to the same proxy file
