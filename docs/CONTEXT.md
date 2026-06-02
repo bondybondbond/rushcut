@@ -21,8 +21,9 @@
 
 ## Immediate Next Task
 
-- **Batch T7** — candidates: Render multi-version pantry (browse clips-01/-02/... versions from Render screen); Library E2E for rendering/done/error card states (deferred from T6 — requires a test-seed Rust command or a real slow render in spec); any new founder priority.
-- **render.spec.ts 14/14 confirmed** on a clean run (2026-06-02): 13 passing + 1 failing was a stale `waitUntil` assertion (`"Your film is ready"` → `"Your film"` fixed in T6). Fixed and confirmed clean.
+- **Batch T7** — candidates: Render multi-version pantry (browse clips-01/-02/... versions from Render screen); Library E2E for rendering/done/error card states (deferred from T6 — requires test-seed Rust command or real slow render in spec); WDIO `afterSuite` proxy cleanup (see below); any new founder priority.
+- **WDIO proxy cleanup gap (T7 candidate):** WDIO `afterSuite` kills the binary mid-encode, leaving `proxy_status='encoding'` in the DB for the test project's HEVC clips. On next launch `reset_stale_encoding_claims` clears this on the first batch — but only for the user's next fresh binary session. If the same binary that ran WDIO is reused (e.g. dev session continues), those clips stay stuck as "encoding-in-progress" for the life of that binary. Fix options: (a) add a WDIO `afterSuite` hook that calls `vacuum_proxies_cmd` or a dedicated reset invoke, or (b) extend `reset_stale_encoding_claims` to fire whenever the project is not in the concurrency set (currently limited to the `else`/first-batch path).
+- **render.spec.ts 14/14 confirmed** on a clean run (2026-06-02): was 13/14 (stale `waitUntil` assertion `"Your film is ready"` → `"Your film"`). Fixed in T6, confirmed 14/14 in 1m 24s.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 
