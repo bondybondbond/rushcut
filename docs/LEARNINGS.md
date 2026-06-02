@@ -200,6 +200,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — Library jobsMap staleness when render starts mid-session
+
+**Problem:** `Library.tsx` builds its `jobsMap` (projectId → Job) from `list_projects_cmd` on mount, subscribing to `pipeline-progress` events that match `last_job_id`. If a new render starts AFTER Library has mounted (e.g. user navigates Render → Library → fires a new render → back to Library without remounting), the new job's ID isn't in `jobsMap` and all its progress events are silently ignored — Library stays frozen on the previous "done" state.
+**Solution:** On `pipeline-progress`, if the incoming `jobId` doesn't match any key in the reverse-lookup, trigger a lightweight re-fetch of `list_projects_cmd` to update `last_job_id` in the projects list and add the new job to `jobsMap`. Alternatively, emit a "job-started" event from Rust's `start_job` to let Library proactively add the new job without polling. Deferred to a future batch — the startup case (Library mounts while render is already running) works correctly.
+**Context:** `src/pages/Library.tsx` event subscription logic (T4/T5). Affects only the mid-session case where Library is already mounted when a new render fires.
+
+---
+
 ## React/CSS — Animate a wrapper div, not the video element itself (WebView2)
 
 **Problem:** Applying a CSS `transform: scale()` animation directly to a `<video>` element in WebView2 causes choppy playback — the video decoder and the CSS compositor compete for the same GPU layer, producing frame drops or stutter at 4K.

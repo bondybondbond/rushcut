@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import type { ProjectSummary } from "@/types/project";
+import { listen } from "@tauri-apps/api/event";
+import type { ProjectSummary, Job } from "@/types/project";
+import { timeAgo } from "@/utils/timeAgo";
+import { resLabel, renderStateFromStatus } from "@/utils/jobMeta";
 
 function formatDate(iso: string): string {
   try {
@@ -10,18 +13,6 @@ function formatDate(iso: string): string {
   } catch {
     return iso.slice(0, 10);
   }
-}
-
-function StatusBadge({ status }: { status: string | null }) {
-  if (!status) return <span data-testid="project-status" className="text-[#a3a3a3] text-xs">No renders</span>;
-  const map: Record<string, { label: string; color: string }> = {
-    done:       { label: "Done",       color: "text-[#22c55e]" },
-    processing: { label: "Processing", color: "text-[#C9A96E]" },
-    pending:    { label: "Pending",    color: "text-[#a3a3a3]" },
-    failed:     { label: "Failed",     color: "text-red-400"   },
-  };
-  const { label, color } = map[status] ?? { label: status, color: "text-[#a3a3a3]" };
-  return <span data-testid="project-status" className={`text-xs font-medium ${color}`}>{label}</span>;
 }
 
 interface PendingDelete {
@@ -38,6 +29,10 @@ interface RenamingState {
 export default function Library() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  // Latest job per project (keyed by projectId) -- drives the T4 state machine.
+  const [jobs, setJobs] = useState<Record<string, Job>>({});
+  // Live render progress per project (keyed by projectId), seeded from job.progress_pct.
+  const [progress, setProgress] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -46,16 +41,112 @@ export default function Library() {
   const [renaming, setRenaming] = useState<RenamingState | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
+  // Ref mirror of `jobs` so the (mount-once) event listeners can map an
+  // incoming jobId -> projectId without going stale.
+  const jobsRef = useRef<Record<string, Job>>({});
+  useEffect(() => { jobsRef.current = jobs; }, [jobs]);
+
   useEffect(() => {
+    let cancelled = false;
     invoke<ProjectSummary[]>("list_projects_cmd")
-      .then(setProjects)
-      .catch((e) => setError(`Failed to load projects: ${e}`))
-      .finally(() => setLoading(false));
+      .then(async (projs) => {
+        if (cancelled) return;
+        setProjects(projs);
+        setLoading(false);
+        // Prefetch the latest job for every project that has one. Small N
+        // (project count), no Rust change -- get_job_cmd already exists.
+        const withJobs = projs.filter((p) => p.last_job_id);
+        const results = await Promise.all(
+          withJobs.map((p) =>
+            invoke<Job>("get_job_cmd", { jobId: p.last_job_id })
+              .then((j) => [p.id, j] as const)
+              .catch(() => null),
+          ),
+        );
+        if (cancelled) return;
+        const map: Record<string, Job> = {};
+        const prog: Record<string, number> = {};
+        for (const r of results) {
+          if (!r) continue;
+          map[r[0]] = r[1];
+          prog[r[0]] = r[1].progress_pct;
+        }
+        setJobs(map);
+        setProgress(prog);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(`Failed to load projects: ${e}`);
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Live render feedback: map jobId -> projectId via the prefetched jobs map
+  // and update card state in place. On done we trust the event payload (which
+  // already carries outputPath + analysis) -- no re-fetch.
+  useEffect(() => {
+    const findProject = (jobId: string): string | undefined =>
+      Object.values(jobsRef.current).find((j) => j.id === jobId)?.project_id;
+
+    const unlistenProgress = listen<{ jobId: string; progress: number }>("pipeline-progress", (event) => {
+      const pid = findProject(event.payload.jobId);
+      if (!pid) return;
+      setProgress((prev) => ({ ...prev, [pid]: event.payload.progress }));
+    });
+
+    const unlistenDone = listen<{ jobId: string; outputPath: string | null; analysis?: string | null }>(
+      "pipeline-done",
+      (event) => {
+        const pid = findProject(event.payload.jobId);
+        if (!pid) return;
+        setJobs((prev) => {
+          const j = prev[pid];
+          if (!j) return prev;
+          return {
+            ...prev,
+            [pid]: {
+              ...j,
+              status: "done",
+              local_output_path: event.payload.outputPath ?? j.local_output_path,
+              analysis_summary: event.payload.analysis ?? j.analysis_summary,
+              updated_at: new Date().toISOString(),
+            },
+          };
+        });
+        setProgress((prev) => ({ ...prev, [pid]: 100 }));
+      },
+    );
+
+    const unlistenError = listen<{ jobId: string; message: string }>("pipeline-error", (event) => {
+      const pid = findProject(event.payload.jobId);
+      if (!pid) return;
+      setJobs((prev) => {
+        const j = prev[pid];
+        if (!j) return prev;
+        return { ...prev, [pid]: { ...j, status: "failed", error_message: event.payload.message || j.error_message } };
+      });
+    });
+
+    return () => {
+      unlistenProgress.then((f) => f());
+      unlistenDone.then((f) => f());
+      unlistenError.then((f) => f());
+    };
   }, []);
 
   useEffect(() => {
     if (renaming) renameInputRef.current?.focus();
   }, [renaming]);
+
+  // Smart Open routing: a project with an active/finished/failed job opens the
+  // Render screen (which self-detects what to show via get_render_status_cmd);
+  // everything else opens the Trimmer. No location state needed (T5).
+  function handleOpen(p: ProjectSummary) {
+    const job = jobs[p.id];
+    const state = renderStateFromStatus(job?.status ?? p.last_job_status);
+    navigate(state === "idle" ? `/trimmer/${p.id}` : `/render/${p.id}`);
+  }
 
   async function commitRename(projectId: string, newName: string) {
     const trimmed = newName.trim();
@@ -118,7 +209,12 @@ export default function Library() {
 
         {projects.length > 0 && (
           <div className="space-y-2">
-            {projects.map((p) => (
+            {projects.map((p) => {
+              const job = jobs[p.id];
+              const state = renderStateFromStatus(job?.status ?? p.last_job_status);
+              const pct = progress[p.id] ?? job?.progress_pct ?? 0;
+              const res = job ? resLabel(job) : null;
+              return (
               <div key={p.id} data-testid="project-card" className="group">
                 {/* Project row */}
                 <div className="flex items-center justify-between px-4 py-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/8 transition-colors">
@@ -154,20 +250,44 @@ export default function Library() {
                     <div className="flex items-center gap-3 mt-0.5">
                       <span className="text-[#a3a3a3] text-xs">{formatDate(p.created_at)}</span>
                       <span className="text-[#a3a3a3] text-xs">{p.file_count} file{p.file_count !== 1 ? "s" : ""} &middot; {p.cut_count} cut{p.cut_count !== 1 ? "s" : ""}</span>
-                      <StatusBadge status={p.last_job_status} />
+                      {/* T4 render-state line */}
+                      {state === "rendering" && (
+                        <span data-testid="project-status" className="text-[#C9A96E] text-xs font-medium">Rendering &mdash; {pct}%</span>
+                      )}
+                      {state === "done" && (
+                        <span data-testid="project-status" className="text-[#a3a3a3] text-xs">
+                          Last render: {timeAgo(job?.updated_at)}{res ? <> &middot; {res}</> : null}
+                        </span>
+                      )}
+                      {state === "error" && (
+                        <span data-testid="project-status" className="text-red-400 text-xs font-medium">Render failed</span>
+                      )}
+                      {state === "idle" && (
+                        <span data-testid="project-status" className="text-[#a3a3a3] text-xs">No renders</span>
+                      )}
                     </div>
+                    {/* Live progress bar (green), only while rendering */}
+                    {state === "rendering" && (
+                      <div className="h-1 bg-white/10 rounded-full overflow-hidden mt-1.5 max-w-xs">
+                        <div
+                          data-testid="project-progress-bar"
+                          className="h-full bg-[#22c55e] rounded-full transition-all duration-500"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 ml-4 flex-shrink-0">
                     <button
                       data-testid="btn-open-project"
-                      onClick={() => navigate(`/trimmer/${p.id}`)}
+                      onClick={() => handleOpen(p)}
                       className="px-3 py-1.5 text-xs text-[#a3a3a3] border border-white/20 rounded-md hover:text-[#e5e5e5] hover:border-white/40 transition-colors"
                     >
                       Open
                     </button>
                     <button
                       data-testid="btn-delete-project"
-                      onClick={() => setPendingDelete({ id: p.id, name: p.name, hasRenders: p.last_job_status === "done" })}
+                      onClick={() => setPendingDelete({ id: p.id, name: p.name, hasRenders: state === "done" })}
                       disabled={deletingId === p.id}
                       className="p-1.5 text-red-400/60 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
                       aria-label="Delete project"
@@ -208,7 +328,8 @@ export default function Library() {
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

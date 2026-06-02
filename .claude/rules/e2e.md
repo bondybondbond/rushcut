@@ -48,6 +48,10 @@ try {
 
 Hangs indefinitely — Vite HMR WebSocket blocks `readyState === "complete"`. Poll via `browser.waitUntil(() => browser.getUrl())`.
 
+## Never use `browser.navigate()`
+
+`browser.navigate()` does not exist in WebdriverIO v9 — calling it throws "browser.navigate is not a function". To navigate mid-spec, use `browser.execute(() => window.history.pushState({}, "", "/path"))` then `waitUntil(() => browser.getUrl().includes("/path"))`. This is the same `pushState` pattern used elsewhere in the specs; the permitted-shortcut caveat from e2e.md still applies (prefer real UI clicks; pushState is only for cases where a real click is impractical mid-spec).
+
 ## Never use `getHTML(false)` on the full body in any spec
 
 `$("body").getHTML(false)` fetches ~1.9MB of body HTML (MediaPantry thumbnails are base64-embedded as `src="data:image/jpeg;base64,..."` attributes) through WebDriver, causing >10 min transfers that exceed the 600s Mocha timeout. Replacement: `browser.execute(() => document.body.textContent ?? "")` — returns text nodes only, no attribute values, no base64. For targeted checks: `$('[data-testid="..."]').getText()` or `$$("button").find(b => b.getText() === "...")`.

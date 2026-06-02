@@ -4,8 +4,8 @@ mod splash;
 
 use base64::Engine as _;
 use db::{
-    add_clip_cut, delete_clip, delete_project, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
-    get_included_clips_with_proxy, get_job, get_project_output_paths, get_project_with_clips,
+    add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
+    get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
     set_proxy_for_all_clips_with_path, update_clip_review,
@@ -1163,6 +1163,22 @@ fn get_job_cmd(job_id: String) -> Result<Job, String> {
     get_job(&job_id).map_err(|e| format!("DB error (get job): {}", e))
 }
 
+/// Batch T5: render situation for a project, fetched once on Render-screen mount.
+/// `active_job` = an in-flight render to re-attach to; `latest_render` = the most
+/// recent completed render to show instead of auto-rendering a fresh one.
+#[derive(serde::Serialize)]
+struct RenderStatus {
+    active_job: Option<Job>,
+    latest_render: Option<Job>,
+}
+
+#[tauri::command]
+fn get_render_status_cmd(project_id: String) -> Result<RenderStatus, String> {
+    let active_job = get_active_job(&project_id).map_err(|e| format!("DB error (active job): {}", e))?;
+    let latest_render = get_latest_render(&project_id).map_err(|e| format!("DB error (latest render): {}", e))?;
+    Ok(RenderStatus { active_job, latest_render })
+}
+
 /// List all projects with clip count and last job status (for Library page).
 #[tauri::command]
 fn list_projects_cmd() -> Result<Vec<ProjectSummary>, String> {
@@ -2054,6 +2070,7 @@ pub fn run() {
             has_4k_clips_cmd,
             start_job,
             get_job_cmd,
+            get_render_status_cmd,
             list_projects_cmd,
             delete_project_cmd,
             open_output_path,

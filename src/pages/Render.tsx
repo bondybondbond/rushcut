@@ -3,11 +3,32 @@ import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ProjectWithClips, JobConfig, PipelineProgressEvent } from "@/types/project";
+import type { ProjectWithClips, JobConfig, PipelineProgressEvent, Job } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 import { buildJobConfig, readTransitionConfig } from "@/utils/buildJobConfig";
+import { absoluteDateTime } from "@/utils/timeAgo";
+import { resLabel, durationLabel } from "@/utils/jobMeta";
+
+// T5: metadata shown on the film/done view. `iso` is the render timestamp,
+// `analysisDuration` is the pipeline-reported duration used only as a fallback
+// when the real <video> element duration is unavailable (file missing).
+type DoneMeta = { iso: string | null; res: string | null; analysisDuration: string | null };
+
+// Basename of a Windows path, e.g. "C:\clips\processed\clips-01.mp4" -> "clips-01.mp4".
+function pathBasename(p: string): string {
+  return p.replace(/\\/g, "/").split("/").pop() ?? p;
+}
+
+// Seconds -> "m:ss" (floored to match the native video control's displayed total).
+function fmtDuration(sec: number): string {
+  const t = Math.floor(sec);
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+}
+
+// T5: render situation returned by get_render_status_cmd.
+type RenderStatusResult = { active_job: Job | null; latest_render: Job | null };
 
 const STAGE_LABELS: Record<string, string> = {
   normalise:    "Normalising clips...",
@@ -63,6 +84,11 @@ export default function Render() {
     } catch { return false; }
   });
   const [toast, setToast] = useState<string | null>(null);
+  const [doneMeta, setDoneMeta] = useState<DoneMeta | null>(null);
+  // T5: true once the output file fails to load (deleted from disk). Duration
+  // captured from the actual <video> element so it matches the player exactly.
+  const [videoMissing, setVideoMissing] = useState(false);
+  const [videoDuration, setVideoDuration] = useState<number | null>(null);
 
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -154,6 +180,11 @@ export default function Render() {
   // actual job submit. If clips are blocking, transitions to "awaiting-proxies"
   // and lets the polling effect drive the transition.
   async function submitJob(pid: string) {
+    // T5: show the spinner immediately on entry. The proxy-readiness round-trip
+    // (and, for a partial-proxy 4K render, the wait that follows) can take a few
+    // seconds; without this the 4K gate stayed on screen and the button looked
+    // stuck. The gate itself is only ever shown BEFORE submitJob is called.
+    setPhase("starting");
     try {
       const status = await invoke<ProxyReadiness>("get_proxy_readiness_cmd", {
         projectId: pid,
@@ -182,6 +213,40 @@ export default function Render() {
     }
   }
 
+  // T5: show an already-completed render (from get_render_status_cmd or a fresh
+  // pipeline-done). Duration comes from the <video> element on load; the
+  // analysis value is only a fallback for the missing-file case.
+  function applyLatestRender(job: Job) {
+    setOutputPath(job.local_output_path);
+    setDoneMeta({ iso: job.updated_at, res: resLabel(job), analysisDuration: durationLabel(job) });
+    setVideoMissing(false);
+    setVideoDuration(null);
+    setProgress(100);
+    setPhase("done");
+  }
+
+  // T5: explicit "Render new version" — clears the current film view and starts
+  // a brand-new render (respecting the 4K gate). Replaces the old auto-on-mount
+  // behaviour so a previous render is never silently clobbered.
+  async function startNewVersion() {
+    if (!projectId || inFilmCount === 0) return;
+    setOutputPath(null);
+    setDoneMeta(null);
+    setVideoMissing(false);
+    setVideoDuration(null);
+    setJobId(null);
+    setProgress(0);
+    setStage("Starting up the magic...");
+    setErrorMsg(null);
+    setElapsedLabel("0s");
+    completedRef.current = false;
+    if (has4K) {
+      setPhase("ready");
+      return;
+    }
+    await submitJob(projectId);
+  }
+
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
@@ -189,7 +254,10 @@ export default function Render() {
     Promise.all([
       invoke<ProjectWithClips>("get_project", { projectId }),
       invoke<boolean>("has_4k_clips_cmd", { projectId }).catch(() => false as boolean),
-    ]).then(async ([data, is4K]) => {
+      invoke<RenderStatusResult>("get_render_status_cmd", { projectId }).catch(
+        () => ({ active_job: null, latest_render: null }) as RenderStatusResult,
+      ),
+    ]).then(async ([data, is4K, status]) => {
       if (cancelled) return;
 
       projectCache.set(projectId, { name: data.project.name, clips: data.clips });
@@ -205,6 +273,23 @@ export default function Render() {
       setProjectName(data.project.name);
       setHas4K(is4K);
 
+      // T5: a render already in flight -> re-attach to its live progress.
+      if (status.active_job) {
+        setProgress(status.active_job.progress_pct);
+        setJobId(status.active_job.id);
+        setPhase("rendering");
+        return;
+      }
+
+      // T5: a completed render exists -> show it. Rendering a new version is an
+      // explicit action; we never silently re-render. Works from the editor flow
+      // AND Library, and survives navigating away and back.
+      if (status.latest_render) {
+        applyLatestRender(status.latest_render);
+        return;
+      }
+
+      // No renders yet -> first-render flow.
       if (count === 0) {
         setErrorMsg("No clips in film -- go back to Trimmer and add some.");
         setPhase("error");
@@ -263,6 +348,15 @@ export default function Render() {
       // Batch R Part C: surface silent AMF -> libx264 fallback as a toast so
       // a "Fast render" toggle that did nothing doesn't look like a no-op.
       const analysis = event.payload.analysis;
+      // T5: capture metadata for the freshly-finished render. Duration here is
+      // the analysis fallback; the <video> element overrides it on load.
+      setVideoMissing(false);
+      setVideoDuration(null);
+      setDoneMeta({
+        iso: new Date().toISOString(),
+        res: outputRes === "4k" ? "4K" : "1080p",
+        analysisDuration: durationLabel({ analysis_summary: analysis ?? null }),
+      });
       if (analysis && /(^|,)amf_fallback=1(,|$)/.test(analysis)) {
         setToast("Fast render unavailable -- rendered at standard quality");
         setTimeout(() => setToast(null), 6000);
@@ -346,25 +440,13 @@ export default function Render() {
     };
   }, [preparing, projectId, outputRes]);
 
-  async function handleRetry() {
-    if (!projectId || inFilmCount === 0) return;
-    setPhase("starting");
-    setJobId(null);
-    setProgress(0);
-    setStage("Starting up the magic...");
-    setOutputPath(null);
-    setErrorMsg(null);
-    setElapsedLabel("0s");
-    completedRef.current = false;
-    await submitJob(projectId);
-  }
-
   const assetUrl = outputPath ? convertFileSrc(outputPath) : null;
-  const displayName = projectName
-    ? `${projectName}.mp4`
-    : outputPath
-      ? (outputPath.replace(/\\/g, "/").split("/").pop() ?? outputPath)
-      : null;
+  // T5: always the REAL output file name (e.g. "clips-01.mp4"), never the
+  // project name -- the project "clips" renders to "clips-01.mp4".
+  const displayName = outputPath ? pathBasename(outputPath) : null;
+  // Duration prefers the live <video> element (matches the player); falls back
+  // to the pipeline-reported value when the file is missing.
+  const durationDisplay = videoDuration != null ? fmtDuration(videoDuration) : (doneMeta?.analysisDuration ?? null);
 
   return (
     <EditorShell
@@ -381,7 +463,7 @@ export default function Render() {
         <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
 
           <h1 className="text-3xl font-semibold text-[#FF8A65]">
-            {phase === "done" ? "Your film is ready" : "Render Your Film"}
+            {phase === "done" ? "Your film" : "Render Your Film"}
           </h1>
 
           {/* Ready — 4K gate */}
@@ -472,12 +554,13 @@ export default function Render() {
             </div>
           )}
 
-          {/* Done */}
+          {/* Done — film view */}
           {phase === "done" && assetUrl && (
             <div className="space-y-3">
+              {/* Player stays mounted (even when hidden) so onError can fire. */}
               <div
                 ref={videoContainerRef}
-                className="rounded-lg overflow-hidden bg-black border border-white/10"
+                className={`rounded-lg overflow-hidden bg-black border border-white/10 ${videoMissing ? "hidden" : ""}`}
                 style={videoHeight != null ? { height: videoHeight } : { maxHeight: "480px" }}
               >
                 <video
@@ -485,35 +568,55 @@ export default function Render() {
                   src={assetUrl}
                   controls
                   autoPlay={false}
+                  onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration)}
+                  onError={() => setVideoMissing(true)}
                   className="w-full h-full object-contain"
                 />
               </div>
 
-              <div
-                className="w-full h-2 flex items-center justify-center cursor-ns-resize border-t border-white/10"
-                onPointerDown={onResizePointerDown}
-                onPointerMove={onResizePointerMove}
-                onPointerUp={onResizePointerUp}
-              />
+              {!videoMissing && (
+                <div
+                  className="w-full h-2 flex items-center justify-center cursor-ns-resize border-t border-white/10"
+                  onPointerDown={onResizePointerDown}
+                  onPointerMove={onResizePointerMove}
+                  onPointerUp={onResizePointerUp}
+                />
+              )}
+
+              {/* Missing-file note — sits alongside the metadata, never replaces it. */}
+              {videoMissing && (
+                <div data-testid="render-missing" className="rounded-lg border border-white/10 bg-white/5 p-4">
+                  <p className="text-sm text-[#a3a3a3]">This render is no longer on disk. Render a new version to recreate it.</p>
+                </div>
+              )}
 
               <div className="flex items-center gap-3">
+                {!videoMissing && (
+                  <button
+                    data-testid="btn-open-in-explorer"
+                    onClick={() => outputPath && invoke("open_output_path", { path: outputPath })}
+                    className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
+                  >
+                    Open in Explorer
+                  </button>
+                )}
                 <button
-                  data-testid="btn-open-in-explorer"
-                  onClick={() => outputPath && invoke("open_output_path", { path: outputPath })}
-                  className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
+                  data-testid="btn-render-new"
+                  onClick={startNewVersion}
+                  className="px-6 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold text-base rounded-md hover:bg-[#ff9e7a] transition-all duration-200"
                 >
-                  Open in Explorer
-                </button>
-                <button
-                  data-testid="btn-my-projects"
-                  onClick={() => navigate("/library")}
-                  className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
-                >
-                  My Projects
+                  Render new version
                 </button>
               </div>
               {displayName && (
                 <p data-testid="output-filename" className="text-sm text-[#a3a3a3]">{displayName}</p>
+              )}
+              {doneMeta && (
+                <p data-testid="render-meta" className="text-sm text-[#a3a3a3]">
+                  Rendered {absoluteDateTime(doneMeta.iso)}
+                  {doneMeta.res ? <> &middot; {doneMeta.res}</> : null}
+                  {durationDisplay ? <> &middot; {durationDisplay}</> : null}
+                </p>
               )}
             </div>
           )}
@@ -525,7 +628,7 @@ export default function Render() {
               <div className="flex items-center gap-3">
                 {inFilmCount > 0 && (
                   <button
-                    onClick={handleRetry}
+                    onClick={startNewVersion}
                     className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
                   >
                     Try Again

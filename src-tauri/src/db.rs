@@ -1,5 +1,5 @@
 use dirs::data_dir;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
@@ -669,19 +669,52 @@ pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
         "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at
          FROM jobs WHERE id = ?1",
         params![job_id],
-        |row| Ok(Job {
-            id: row.get(0)?,
-            project_id: row.get(1)?,
-            status: row.get(2)?,
-            progress_pct: row.get(3)?,
-            local_output_path: row.get(4)?,
-            settings_json: row.get(5)?,
-            error_message: row.get(6)?,
-            analysis_summary: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
-        }),
+        map_job_row,
     )
+}
+
+/// Shared rusqlite row -> Job mapper (column order must match the SELECT lists below).
+fn map_job_row(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
+    Ok(Job {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        status: row.get(2)?,
+        progress_pct: row.get(3)?,
+        local_output_path: row.get(4)?,
+        settings_json: row.get(5)?,
+        error_message: row.get(6)?,
+        analysis_summary: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+/// Most recent in-flight job (pending or processing) for a project, if any.
+/// Batch T5: lets the Render screen re-attach to a render still in progress.
+pub fn get_active_job(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.query_row(
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at
+         FROM jobs WHERE project_id = ?1 AND status IN ('pending', 'processing')
+         ORDER BY created_at DESC LIMIT 1",
+        params![project_id],
+        map_job_row,
+    )
+    .optional()
+}
+
+/// Most recent completed render (status 'done' with an output path) for a project, if any.
+/// Batch T5: the Render screen shows this instead of auto-rendering a fresh job.
+pub fn get_latest_render(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.query_row(
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at
+         FROM jobs WHERE project_id = ?1 AND status = 'done' AND local_output_path IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1",
+        params![project_id],
+        map_job_row,
+    )
+    .optional()
 }
 
 pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {

@@ -15,14 +15,15 @@
 
 ## Current Phase
 
-**Phase 2 — Batch T3 (Proxy gate UX) COMPLETE (2026-06-01). Next: Batch T4 — Live progress + smart Open routing.**
+**Phase 2 — Batch T5 (Render screen done-state fixes) COMPLETE (2026-06-02). Next: T6 — TBD (see PRD-DEV.md).**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch T4** — Library live render progress + smart Open routing. Define the state machine before coding (see BATCH-T-PLAN.md T4 spec — machine already defined there).
-- **Performance note (user concern):** 5 files / 6 clips = ~4 min warm render. 10-20 file / 3-min footage combos not yet tested. Worth a benchmark before T4 to validate the proxy-based fast path scales.
+- **Batch T6** — next priority to be defined. Candidates: Library mid-session jobsMap staleness fix (live green bar doesn't update if Library was mounted before the render started); Render multi-version pantry (browse clips-01/-02/... versions); Library E2E spec for card states in isolation.
+- **Library green bar (mid-session case) — known gap:** Library shows the correct live progress when it mounts AFTER a render starts (startup case). If Library is already mounted when a new render fires, the jobsMap has the old jobId → new job events are ignored. Documented in LEARNINGS.md. Fix deferred to T6.
+- **render.spec.ts — not fully green:** Three consecutive runs had WSL resource issues (3-hour session expiry). Core pipeline tests confirmed working via chrome-devtools. The `btn-render-new` assertion added; library-badge test removed. Run `pnpm test:e2e:render` first thing in T6 on a clean machine to confirm 14/14.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 
@@ -36,9 +37,15 @@
 
 ---
 
-## Recently shipped this session (2026-06-01)
+## Recently shipped this session (2026-06-02)
 
-- **Batch T3 — Proxy gate UX COMPLETE:** `awaiting-proxies` phase eliminated from `Render.tsx`. Proxy wait now hidden behind the existing "starting" spinner — phase stays `"starting"` while poll + boost run silently in background; render bar appears only when all proxies land and `startRenderNow()` fires. `btn-start-anyway` button removed. `preparing` boolean flag retained as poll trigger (not shown in JSX). Dead code cleaned: `setProgress` in poll removed, `ticker` interval removed, elapsed-clock effect simplified (`[phase]` dep, no `preparing` guard). `render.spec.ts` comment updated (try/catch block preserved for safe no-op). User confirmed: 3-source and 5-source renders both went straight to render bar with no visible prepare stage. 9/9 fast PASS.
+- **Batch T5 — Render screen done-state fixes COMPLETE:** "Lost my film" problem fixed — Render screen now self-detects existing renders via `get_render_status_cmd` (new Rust command) and shows the done film view on every entry (editor flow + Library). New render is explicit via "Render new version". Filename from real path basename (not project name). Duration from `<video>` element (matches player). Timestamp absolute ("Rendered 1 Jun 2026, 23:54"). "My Projects" + "Render again" removed; "Open in Explorer" + "Render new version" (peach primary) remain. 404 fallback: player hidden, metadata preserved, "no longer on disk" note. Stuck-button fix: `setPhase("starting")` immediately in `submitJob`. `get_active_job` + `get_latest_render` DB helpers in `db.rs`. `absoluteDateTime()` formatter in `src/utils/timeAgo.ts`. `render.spec.ts` updated (`btn-render-new` assertion, heading copy). `e2e.md`: `browser.navigate()` does-not-exist rule added. Library `handleOpen` simplified (dropped T4 resume state). PRD-DEV.md: multi-version pantry added to backlog. 9/9 fast PASS.
+
+## Recently shipped previous session (2026-06-01/02)
+
+- **Batch T4 — Library live render progress + smart Open routing COMPLETE:** `get_job_cmd` prefetch for each project's `last_job_id` on mount; `Record<projectId, Job>` jobs map; four-state meta row (idle/rendering/done/error) with live green `#22c55e` mini progress bar for rendering state; relative-time "Last render: Xh ago · 1080p" for done state; "Render failed" red for error. `pipeline-progress` / `pipeline-done` / `pipeline-error` event listeners update map in place from payload (no re-fetch). Smart Open routing: done/processing/failed → `/render/:id`; idle → `/trimmer/:id`. `timeAgo()` util in `src/utils/timeAgo.ts`. `src/pages/Library.tsx` fully updated. 9/9 fast PASS.
+
+- **Batch T3 — Proxy gate UX COMPLETE:** `awaiting-proxies` phase eliminated. Proxy wait hidden behind "starting" spinner; render bar appears only when `startRenderNow()` fires. `btn-start-anyway` removed. 9/9 fast PASS.
 
 ## Recently shipped previous session (2026-06-01)
 

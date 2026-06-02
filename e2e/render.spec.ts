@@ -196,10 +196,12 @@ describe("Full E2E render — /render/:projectId", () => {
     );
   });
 
-  it("Your film is ready heading appears", async () => {
+  it("Your film heading appears on done state", async () => {
+    // T5: heading changed from "Your film is ready" -> "Your film" (always,
+    // revisit or fresh render -- no fresh-vs-revisit conditional).
     const h1 = await $("h1");
     await h1.waitForExist({ timeout: 10_000 });
-    expect(await h1.getText()).toBe("Your film is ready");
+    expect(await h1.getText()).toBe("Your film");
   });
 
   it("video player has src set after render completes", async () => {
@@ -257,19 +259,11 @@ describe("Full E2E render — /render/:projectId", () => {
     expect(audioStream.codec_name).toBe("aac");
   });
 
-  it("My Projects button navigates to library", async () => {
-    const myProjects = await $('[data-testid="btn-my-projects"]');
-    await myProjects.waitForExist({ timeout: 5_000 });
-    await myProjects.click();
-    await browser.waitUntil(
-      async () => (await browser.getUrl()).includes("/library"),
-      { timeout: 5_000, interval: 200 }
-    );
-  });
-
-  it("Eval Test Film project shows status Done in library", async () => {
-    const statusBadge = await $('[data-testid="project-status"]');
-    await statusBadge.waitForExist({ timeout: 5_000 });
-    expect(await statusBadge.getText()).toBe("Done");
+  it("Render new version button is present on done-state", async () => {
+    // T5: replaced "My Projects" + "Render again" with "Render new version".
+    // Lighter than a nav test -- avoids session expiry on long runs.
+    const btn = await $('[data-testid="btn-render-new"]');
+    await btn.waitForExist({ timeout: 5_000 });
+    expect(await btn.getText()).toBe("Render new version");
   });
 });
