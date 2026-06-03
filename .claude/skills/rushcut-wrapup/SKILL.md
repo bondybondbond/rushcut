@@ -58,7 +58,7 @@ Skip this step if the session was docs-only, config-only, or if all specs were a
 
 Scan the session for patterns that burned context needlessly or caused extra round trips. Look for:
 
-- **Unnecessary full-file reads** — was a large file (`lib.rs`, `db.rs`, `PRD-DEV.md`) read in full when Serena `get_symbols_overview` or `find_symbol` would have been enough?
+- **Unnecessary full-file reads** — was a large file (`lib.rs`, `db.rs`, `PRD-DEV.md`) read in full when scoped `Read` with line offset or `Grep` for a specific symbol would have been enough?
 - **Repeated reads of the same file** — was the same file read 2+ times without a write in between?
 - **Web searches that returned nothing useful** — query returned generic results; the answer was already in LEARNINGS.md or the rules files
 - **Debugging loops** — the same fix was tried 2+ times with minor variation before the root cause was identified

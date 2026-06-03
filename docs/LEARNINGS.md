@@ -5,14 +5,6 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
-## Workflow — Serena does not support TSX/JSX files
-
-**Problem:** `mcp__serena__get_symbols_overview` and `find_symbol` return "Cannot extract symbols — Active languages: []" on `.tsx`/`.jsx` files in this project. Calling them wastes a round trip.
-**Solution:** Skip Serena entirely for React component files. Use `Read` directly (small files) or `Grep` for targeted symbol searches. Serena is only useful for Rust files in this project (`lib.rs`, `db.rs`).
-**Context:** Any session touching `src/**/*.tsx` or `src/**/*.ts`.
-
----
-
 ## Workflow — preview_* and chrome-devtools MCP both conflict with WDIO on port 9222
 
 **Problem:** Calling any `mcp__chrome-devtools__*` tool OR any `preview_*` MCP tool (including `preview_start`, `preview_screenshot`) starts a Chrome/Edge browser process that squats port 9222 for the lifetime of the Claude Code session. WDIO's `waitForPort(9222)` resolves to this MCP browser instead of the Tauri WebView2 — msedgedriver attaches to the wrong target and `getUrl()` always returns `about:blank`.

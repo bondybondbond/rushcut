@@ -1,6 +1,6 @@
 ---
 name: rushcut-dev-plan
-description: "Kicks off a RushCut development session by activating Serena, researching the batch/request, and producing a concise implementation plan. Use when the user describes new development, a new batch, or continuing an existing plan. Triggers: user says 'new batch', 'lets start', 'i want to build', 'i want to fix', 'plan this', 'plan the next batch', or pastes a batch spec or feature request at the start of a session."
+description: "Kicks off a RushCut development session by researching the batch/request and producing a concise implementation plan. Use when the user describes new development, a new batch, or continuing an existing plan. Triggers: user says 'new batch', 'lets start', 'i want to build', 'i want to fix', 'plan this', 'plan the next batch', or pastes a batch spec or feature request at the start of a session."
 ---
 
 # RushCut Dev Session — Research & Plan
@@ -9,18 +9,7 @@ Work through each step in order. Output is **bullet-points only** — no prose p
 
 ---
 
-## Step 1 — Activate Serena
-
-```
-mcp__plugin_serena_serena__activate_project  path=C:\apps\rushcut
-```
-
-Confirm activation, then proceed.
-
----
-
-## Step 2 — Ingest the request
-
+## Step 1 — Ingest the request
 Read the user's `<context>` block carefully. Identify:
 - Is this a new feature, a bug fix, a performance issue, or continuing a deferred batch?
 - What specific components are involved (pipeline, Tauri/Rust, React UI, E2E)?
@@ -38,7 +27,7 @@ Run these in parallel:
 4. **Relevant rules file** — pick the matching file(s) from `.claude/rules/` (pipeline.md / rust-tauri.md / e2e.md) based on which layer is touched
 5. **Design system** — `docs/DESIGN.md` — **always read this when the request touches any UI component** (new screen, modified component, copy change, colour/layout decision)
 
-Only read additional source files if a specific function, config, or data structure is directly relevant to the plan. Use Serena's `get_symbols_overview` or `find_symbol` — do not read entire files unless unavoidable.
+Only read additional source files if a specific function, config, or data structure is directly relevant to the plan. Use scoped `Read` with line offsets or `Grep` for targeted symbol searches — do not read entire large files unless unavoidable.
 
 ---
 

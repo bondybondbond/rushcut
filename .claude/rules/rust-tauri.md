@@ -50,13 +50,6 @@ Current scope: `["$APPDATA\\rushcut\\**", "C:\\**", "D:\\**", "E:\\**"]`
 
 Changes to this config require rebuilding the binary (`pnpm tauri build --debug` or `pnpm dev`).
 
-## Serena MCP (symbol-level navigation)
-
-For large Rust files (`lib.rs`, `db.rs`), prefer Serena over full-file reads:
-- `mcp__serena__get_symbols_overview` — list all functions/structs without loading the file
-- `mcp__serena__find_symbol` with `include_body=true` — read one function only
-- `mcp__serena__find_referencing_symbols` — find all callers before refactoring
-
 ## Managed state + async spawn
 
 `tauri::State<'_, T>` is not `Send` and cannot be moved into `tauri::async_runtime::spawn(async move { ... })`. Pattern when `T = Arc<Mutex<...>>`:
