@@ -21,10 +21,10 @@
 
 ## Immediate Next Task
 
-- **Batch U1b** — Render quality investigation: the rendered 19-clip 4K film was missing music, transitions, cards, and per-clip muting. Read `pipeline-{job_id}.log` for job `d199eb54`, check manifest JSON, check `buildJobConfig.ts` + `start_job` manifest builder + `run.py` JobConfig for missing fields. Fix and verify with a film that has music, transitions, a start card, and one muted clip.
-- **Then U1c** — Startup self-heal for stuck jobs (setup() promotes done files, marks absent files as failed).
-- **Then U1d** — New render visibility + nav-guard (prevent silent invoke cancellation on navigation).
-- **Then U1e** — Stalled render detection (2-min no-progress warning).
+- **Batch U1b** — Render quality investigation: the rendered 19-clip 4K film was missing music, transitions, cards, and per-clip muting. **Log first — read `pipeline-{job_id}.log` for job `d199eb54` before writing a single line of fix code.** Trace manifest → run.py → render.py chain after reading.
+- **Then U1c** — Startup self-heal (~10-line Rust in `setup()`). Quick win; unblocks SQL trap forever. Ship immediately after U1b.
+- **Then U1d** — New render visibility + nav-guard. Diagnose Bug 1 (is the invoke truly cancelled, or does the job get created and the UI just misses it?) before coding. Do not let U1d block U1c.
+- **Then U1e** — Stalled render detection (2-min no-progress warning, UI-only).
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):

@@ -17,14 +17,22 @@ U1a (stage/timer persistence, single-job guard, crash diagnosis) was implemented
 
 **Problem:** The rendered film was missing music, transitions, opening/closing cards, and per-clip muting. Only trimming was applied. The render completed (pipeline said `Pipeline complete`, file exists), but settings were either not written to the manifest, not parsed by `run.py`, or not applied by `render.py`.
 
-**Diagnosis first — do not code before reading logs:**
-1. Read `pipeline-{job_id}.log` for job `d199eb54-46b4-447c-b76b-0cd1aebc373d` (the stuck render that completed). Look for:
-   - Were `music_mood`, `transition`, `intro_text`/`outro_text`, `clip_volume` present in the manifest (logged at pipeline start)?
-   - Did `render.py` reach Step 6 (music mix)? Step 5 (xfade)? Cards (`cards.py`)?
+**Rule: log first, do not write a single line of fix code until the pipeline log is read.** The temptation is to jump straight to patching `buildJobConfig.ts` — resist it. The log will tell you exactly where the chain broke.
+
+**Step 1 — Read the log (do this before anything else):**
+1. Read `pipeline-{job_id}.log` for job `d199eb54-46b4-447c-b76b-0cd1aebc373d`. Look for:
+   - Were `music_mood`, `transition`, `intro_text`/`outro_text`, `clip_volume` present in the manifest JSON logged at pipeline start?
+   - Did `render.py` reach Step 5 (xfade/transitions)? Step 6 (music mix)? Cards (`cards.py`)?
    - Did `run.py` apply cards config (`intro_on`, `outro_on`)?
-2. Read `%TEMP%\rushcut\<job_id>.json` (the manifest) if still present.
-3. Check `buildJobConfig.ts` in `src/` — are all settings (music, transition, cards, clip volumes) correctly serialised from sessionStorage into the manifest before `start_job` is called?
-4. Check `start_job` in `lib.rs` — are all config fields passed from the `JobConfig` struct into the manifest JSON?
+   - Any `KeyError`, missing field warning, or silent default fallback lines?
+2. Read `%TEMP%\rushcut\<job_id>.json` (the manifest) if still present — confirms what Rust actually wrote.
+
+**Step 2 — Only after reading logs, trace the chain:**
+3. Check `buildJobConfig.ts` — are all settings (music, transition, cards, clip volumes, intro_on, outro_on, music_fade_out) correctly serialised from sessionStorage?
+4. Check `start_job` in `lib.rs` — are all `JobConfig` fields forwarded into the manifest JSON?
+5. Check `run.py` `JobConfig` dataclass — any field added in a later batch but missing here silently defaults.
+
+**Also confirm (one log check closes it):** The "Optimising clips... 1/19 ready" counter visible during the U1a live test was UI initialisation noise, not re-encoding. 2160p proxies qualify for 1080p renders (height gate: 2160 >= 1080). Confirm via the pipeline log: look for `proxy_skip=N/N` in the `TIMING:normalise=` line — if N > 0 proxies were reused, no re-encoding happened.
 
 **Likely suspects (grep before assuming):**
 - `buildJobConfig.ts` missing fields added in later batches (cards, per-clip volume, muting, music_fade_out)
@@ -58,15 +66,19 @@ U1a (stage/timer persistence, single-job guard, crash diagnosis) was implemented
 
 **Two related bugs observed in one session:**
 
-### Bug 1 — `start_job` silently cancelled by navigation
-When the user clicks "Render Film" and navigates away before the async `invoke("start_job", ...)` resolves, the React component unmounts and the invoke is abandoned. No job is created. The pipeline never starts. The user has no idea.
+**Scope risk on Bug 1 — diagnose before coding.** The assumption is that navigating away mid-invoke cancels the invoke. Verify this first: add a `console.log` before and after the `invoke("start_job", ...)` call, navigate away, and check browser console to confirm whether the invoke resolves or throws. It is possible the invoke completes (Rust processes it) and the job IS created — but `Render.tsx` unmounts and never receives the resolved job ID. If that is the case, the fix is "re-attach to the new job on next mount" rather than "guard the invoke". Do not ship a navigation confirm dialog until you know whether the job was created at all.
 
-**Fix:** In `submitJob` / `startRenderNow` in `Render.tsx`, move the `invoke("start_job", ...)` call into a ref-guarded async that survives unmount, OR add a navigation guard (confirm dialog: "A render is starting — leaving now will cancel it. Continue?") before the `phase === "starting"` state is exited. The confirm dialog is simpler and safer.
+### Bug 1 — `start_job` possibly silently cancelled by navigation
+When the user clicks "Render Film" and navigates away before the async `invoke("start_job", ...)` resolves, the React component unmounts. The invoke may be abandoned (job never created) or may resolve after unmount (job created, not attached). The user has no idea which.
+
+**Diagnose first:** Check browser console for invoke errors. Check the DB (`invoke("list_projects_cmd")` via CDP) for a new job row after the scenario. Determine whether the job was created or not.
+
+**Fix (after diagnosis):** If job was NOT created — simplest fix is a navigation guard (confirm dialog: "A render is starting -- leaving now will cancel it. Continue?") while `phase === "starting"`. If job WAS created — the fix is re-attach logic on next mount that checks for a recently-started job (within ~30s) for this project, not just an active one.
 
 ### Bug 2 — Old done state hides new render in progress
-After a render completes (done state showing), clicking "Render new version" starts a new job. If the user navigates away and comes back, `get_render_status_cmd` returns the new processing job AND the previous done job. The UI re-attaches to the processing job (correct) but if the re-render completes very quickly (proxy-skip path), the user returns to see the old film's done state with the old timestamp and no indication the new render ran. They cannot tell if a new version was produced.
+After a render completes (done state showing), clicking "Render new version" starts a new job. If the user navigates away and comes back quickly, `get_render_status_cmd` returns the new processing job AND the previous done job. If the re-render completes very quickly (proxy-skip path), the user returns to see the old film's done state with the old timestamp and no indication the new render ran.
 
-**Fix:** `get_render_status_cmd` response should include both `active_job` and `latest_render` (it already does). In `Render.tsx`, when `latest_render` is shown, display its `created_at` timestamp prominently. If a new render has completed since the user started the "Render new version" flow, the timestamp will differ — making it visible that a new version exists. Also check: does the done-state filename update to `stagecoach-2025-02.mp4` (the new file), or does it show the old file? If the re-render produces a new sequential filename, the filename itself is the signal.
+**Fix:** `get_render_status_cmd` already returns both `active_job` and `latest_render`. Check: does the done-state filename update to `stagecoach-2025-02.mp4` (the new file)? If the re-render produces a new sequential filename, the filename is the natural signal. If not, display `created_at` prominently on the done state so a changed timestamp is visible.
 
 **Verify:** Start a render. While rendering, navigate away and back — confirm "in progress" state is shown, not old done state. Start a new version, navigate away before it completes, come back — confirm new done state (new filename, new timestamp) is shown.
 
@@ -90,13 +102,13 @@ After a render completes (done state showing), clicking "Render new version" sta
 
 ## Backlog (not in U1 sub-batches)
 
-- **Re-proxy efficiency for resolution downscale:** 2160p proxies already cover 1080p renders (height gate: `2160 >= 1080`). The "Optimising clips... 1/19 ready" display during the starting phase is the proxy-status UI initialising, not re-encoding. No re-proxy actually occurs on resolution downscale. The question of producing a dedicated 1080p proxy set is a separate large job — not worthwhile given 2160p proxies already work for 1080p output.
+- **Re-proxy efficiency for resolution downscale:** 2160p proxies already cover 1080p renders (height gate: `2160 >= 1080`). The "Optimising clips... 1/19 ready" display during the starting phase is the proxy-status UI initialising, not re-encoding. No re-proxy actually occurs on resolution downscale. Closed by the `proxy_skip=N/N` log check in U1b diagnosis. The question of producing a dedicated 1080p proxy set is a separate large job — not worthwhile given 2160p proxies already work for 1080p output.
 
 ---
 
 ## Priority order
 
-1. **U1b** — Render quality (pipeline output missing music/transitions/cards). Product value is broken if the film is wrong.
-2. **U1c** — Startup self-heal (stuck job → auto-promote on relaunch). No SQL for users.
-3. **U1d** — New render visibility + nav-guard (silent cancellation, old done state hiding new render).
+1. **U1b** — Render quality (pipeline output missing music/transitions/cards). Product value is broken if the film is wrong. **Log first — no code until the pipeline log is read.**
+2. **U1c** — Startup self-heal (~10-line Rust change, zero risk). No SQL for users ever again. Ship immediately after U1b.
+3. **U1d** — New render visibility + nav-guard. Design-complex; diagnose Bug 1 (invoke cancelled vs. orphaned) before coding. Do not let this block U1c.
 4. **U1e** — Stalled render detection (timer honesty when pipeline is dead).
