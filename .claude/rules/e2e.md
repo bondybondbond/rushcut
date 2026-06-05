@@ -19,6 +19,22 @@ Get-NetTCPConnection -LocalPort 9222 -State Listen | ForEach-Object { Stop-Proce
 ```
 Then re-launch the Tauri binary.
 
+## Never run WDIO while a user render is in progress (critical)
+
+`beforeSession` kills ALL `rushcut.exe` processes — including the user's live binary. The pipeline keeps running in WSL and may complete, but the new binary has no Rust stdout listener for that job. `DONE:` is never received; the job stays `processing` forever. Before running any E2E suite, confirm no pipeline is running:
+```powershell
+wsl -d Ubuntu-24.04 -u root -- tail -5 /mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log
+```
+If the last line is `DONE:` or `ERROR:`, the pipeline is idle — safe to run E2E. If the last line is `PROGRESS:` or `STAGE:`, wait for it to finish first.
+
+## wdio.conf.ts killStaleProcesses has backslash typo — fix before re-run
+
+`killStaleProcesses` uses `\F \IM` (backslash) instead of `/F /IM` in `taskkill`, so msedgedriver is never killed between runs. Before re-running WDIO in a fresh shell:
+```powershell
+taskkill /F /IM msedgedriver.exe; taskkill /F /IM rushcut.exe
+```
+Fix the typo in `wdio.conf.ts`: change `\F \IM` → `/F /IM` in both `taskkill` calls inside `killStaleProcesses`.
+
 ## Stale process cleanup (beforeSession)
 
 Kill `rushcut.exe`, `msedgedriver.exe`, and the process holding port 9222:

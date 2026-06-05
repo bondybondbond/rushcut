@@ -10,7 +10,7 @@ use db::{
     claim_clip_for_encoding, reset_all_encoding_claims, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
     set_proxy_for_all_clips_with_path, update_clip_review,
     update_clip_thumbnail, update_clip_volume, update_clip_waveform, update_job_analysis,
-    update_job_done, update_job_error, update_job_progress, Clip, ClipMeta, Job, ProjectSummary,
+    update_job_done, update_job_error, update_job_progress, update_job_stage, Clip, ClipMeta, Job, ProjectSummary,
     ProjectWithClips,
 };
 use serde_json::json;
@@ -1057,6 +1057,19 @@ async fn start_job(
     project_id: String,
     settings_json: String,
 ) -> Result<String, String> {
+    // Batch U1: single-in-flight-job guard. If a render is already active for
+    // this project, re-attach to it instead of spawning a duplicate pipeline.
+    // Two concurrent 4K pipelines competing for WSL memory is the prime
+    // SIGTERM (exit 15) suspect. Keying on project_id makes this safe across
+    // both the user binary and any WDIO process (two-instances-share-one-DB).
+    // A long-dead "processing" row can't permanently block: list_projects()
+    // auto-fails rows older than 60 min.
+    if let Some(active) = get_active_job(&project_id)
+        .map_err(|e| format!("DB error (active job guard): {}", e))?
+    {
+        return Ok(active.id);
+    }
+
     let job_id = Uuid::new_v4().to_string();
 
     // Get clips for this project
@@ -1145,6 +1158,7 @@ async fn start_job(
         analysis_summary: None,
         created_at: now.clone(),
         updated_at: now,
+        current_stage: None,
     })
     .map_err(|e| format!("DB error (insert job): {}", e))?;
 
@@ -1232,6 +1246,11 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
         };
 
         if let Some(stage_name) = line.strip_prefix("STAGE:") {
+            // Batch U1: persist the stage so the Render screen can restore the
+            // label when re-attaching to a render still in progress. Note this
+            // is the ONLY place stage is written; the pipeline-progress payload
+            // stays { jobId, progress } so it never clobbers the label.
+            let _ = update_job_stage(&job_id, stage_name.trim());
             let _ = app.emit(
                 "pipeline-stage",
                 json!({ "jobId": job_id, "stage": stage_name.trim() }),

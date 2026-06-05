@@ -168,6 +168,10 @@ export default function Render() {
       setJobId(newJobId);
       setStage("Starting up the magic...");
       setProgress(0);
+      // U1: seed the timer start for a brand-new render. The timer effect no
+      // longer resets startTimeRef on entering "rendering" (so re-attach can
+      // continue the original timer) -- fresh starts seed it here instead.
+      startTimeRef.current = Date.now();
       setElapsedLabel("0s");
       setPhase("rendering");
     } catch (e) {
@@ -274,9 +278,20 @@ export default function Render() {
       setHas4K(is4K);
 
       // T5: a render already in flight -> re-attach to its live progress.
+      // U1: also restore the stage label and continue the elapsed timer from
+      // the job's real start, instead of resetting to "Starting up..." + 0s.
       if (status.active_job) {
         setProgress(status.active_job.progress_pct);
         setJobId(status.active_job.id);
+        // stageLabel("") returns "" (raw-string fallthrough), so || keeps a
+        // human label only when stage is genuinely unknown (job started, no
+        // STAGE: line emitted yet).
+        setStage(stageLabel(status.active_job.current_stage ?? "") || "Starting up...");
+        const startedAt = Date.parse(status.active_job.created_at);
+        startTimeRef.current = Number.isNaN(startedAt) ? Date.now() : startedAt;
+        // Show the continued elapsed value immediately (avoid a 1s "0s" flash).
+        const sec = Math.max(0, Math.floor((Date.now() - startTimeRef.current) / 1000));
+        setElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
         setPhase("rendering");
         return;
       }
@@ -385,7 +400,9 @@ export default function Render() {
 
   useEffect(() => {
     if (phase !== "rendering") return;
-    startTimeRef.current = Date.now();
+    // U1: do NOT reset startTimeRef here. A fresh render seeds it in
+    // startRenderNow; a resume seeds it from the job's created_at on re-attach.
+    // Resetting here unconditionally restarted the timer at 0s on every resume.
     const interval = setInterval(() => {
       const sec = Math.floor((Date.now() - startTimeRef.current) / 1000);
       setElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
@@ -649,6 +666,11 @@ export default function Render() {
           {phase === "error" && (
             <div className="rounded-lg bg-red-900/20 border border-red-500/30 p-4 space-y-3">
               <p className="text-red-300 text-sm">{errorMsg}</p>
+              {inFilmCount > 0 && (
+                <p className="text-sm text-[#a3a3a3]">
+                  Your edits and optimised clips are safe -- Try Again just re-runs the render and reuses them.
+                </p>
+              )}
               <div className="flex items-center gap-3">
                 {inFilmCount > 0 && (
                   <button

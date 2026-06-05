@@ -607,6 +607,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Solution:** Auto-start render on mount: `get_project` → `start_job` immediately in `useEffect`. Show a "starting" spinner state while the project loads, then transition directly to the progress bar. No idle phase. "Try Again" in the error state is the only explicit re-trigger.
 **Context:** `src/pages/Render.tsx` — applies to any screen where the user has no further decisions to make before the action fires.
 
+## E2E — WDIO beforeSession kills active user renders; do not run E2E while a render is in progress
+
+**Problem:** `wdio.conf.ts` `beforeSession` runs `taskkill /F /IM rushcut.exe` to clear stale binaries before the test binary launches. This kills ALL `rushcut.exe` processes — including the user's live binary if it has a render in progress. The pipeline in WSL keeps running and may complete, but the new binary has no Rust stdout listener attached to that job. `DONE:` is never received; the job stays `processing` in the DB indefinitely. The user sees a stuck progress bar with no error.
+**Solution:** Never run `pnpm test:e2e*` while a render is active. Before running any E2E suite, confirm no pipeline is running (`wsl -d Ubuntu-24.04 -u root -- tail -5 /mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log`). If a job is stuck after this happens, it can be recovered via U1c startup self-heal (next launch auto-promotes done jobs) or a direct sqlite3 UPDATE.
+**Context:** Any session that runs WDIO specs concurrently with a user render. Symptom: job stuck at X% after E2E run; `pipeline-latest.log` shows `DONE:` but Render screen shows frozen progress bar.
+
+---
+
+## E2E — Stale msedgedriver blocks WDIO re-run; wdio.conf.ts killStaleProcesses has backslash typo
+
+**Problem:** `wdio.conf.ts` `killStaleProcesses` uses `\F \IM` (backslash) instead of `/F /IM` (forward slash) in the `taskkill` command. The command silently fails, leaving the prior msedgedriver process alive. On the next `pnpm test:e2e` run, `waitForPort(9222)` resolves to the stale msedgedriver rather than the new Tauri binary, so WDIO attaches to a dead session and all specs fail with "cannot connect to Microsoft Edge at 127.0.0.1:9222".
+**Solution:** Before re-running E2E: `taskkill /F /IM msedgedriver.exe` manually in PowerShell. Fix the typo in `wdio.conf.ts` `killStaleProcesses`: change `\F \IM` → `/F /IM` in both `taskkill` calls.
+**Context:** `wdio.conf.ts` `killStaleProcesses` function. Symptom: "cannot connect to microsoft edge" on first run attempt of a new session; `tasklist | findstr msedgedriver` shows it still running.
+
+---
+
 ## UX / timing feedback
 
 - **Rolling inactivity timeout beats wall-clock timeout for long pipelines** — a hard `setTimeout(10min)` fires even when the pipeline is making steady forward progress, producing a false "timed out" error. Instead: start the timer on mount and reset it on each `pipeline-stage` event. Do NOT reset on every `pipeline-progress` tick — a hung pipeline that emits noisy progress would never time out. The timer fires only when no stage change has arrived for the full timeout window.

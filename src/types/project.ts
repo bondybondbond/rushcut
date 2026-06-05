@@ -54,6 +54,7 @@ export interface Job {
   analysis_summary: string | null; // "clips_used=N,clips_total=M,clips_excluded=X" from Batch 13
   created_at: string;
   updated_at: string;
+  current_stage: string | null; // Batch U1: live pipeline stage key, for resume label restore
 }
 
 export type TransitionValue = "none" | "crossfade" | "dip_to_black" | "wipe" | "wipe_down" | "zoom" | "dissolve" | "barn_door" | "band_wipe";

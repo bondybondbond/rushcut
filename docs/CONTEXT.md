@@ -15,13 +15,17 @@
 
 ## Current Phase
 
-**Phase 2 — Batch T7 (WDIO proxy claim cleanup) COMPLETE (2026-06-02). Next: T8 — TBD.**
+**Phase 2 — Batch U1a (Render Resilience stage/timer/guard) COMPLETE (2026-06-05). Next: U1b (render quality investigation — HIGHEST PRIORITY).**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch T8** — candidates: Render multi-version pantry (browse clips-01/-02/... versions from Render screen); Library E2E for rendering/done/error card states (deferred from T6 — requires test-seed Rust command or real slow render in spec); any new founder priority.
+- **Batch U1b** — Render quality investigation: the rendered 19-clip 4K film was missing music, transitions, cards, and per-clip muting. Read `pipeline-{job_id}.log` for job `d199eb54`, check manifest JSON, check `buildJobConfig.ts` + `start_job` manifest builder + `run.py` JobConfig for missing fields. Fix and verify with a film that has music, transitions, a start card, and one muted clip.
+- **Then U1c** — Startup self-heal for stuck jobs (setup() promotes done files, marks absent files as failed).
+- **Then U1d** — New render visibility + nav-guard (prevent silent invoke cancellation on navigation).
+- **Then U1e** — Stalled render detection (2-min no-progress warning).
+- Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 
@@ -33,9 +37,33 @@
 
 **WSL memory** raised to 12GB (`%USERPROFILE%\.wslconfig`) — required for 4K xfade encode on 16GB machines.
 
+### Batch U1 crash diagnosis (item 6 — LOG FINDINGS ONLY, 2026-06-05)
+
+Examined the 3 failed renders from the founder's first-edit session (`%TEMP%\rushcut\pipeline-{job_id}.log`):
+
+| Job (8-char) | Start (manifest) | Log ends | Ran for | Outcome |
+|--------------|------------------|----------|---------|---------|
+| 036b3c99 | 23:47:57 | 23:53:16 | ~5m19s | cut off mid-`render`, no DONE/ERROR |
+| 540b3118 | 23:58:43 | 23:59:25 | ~42s | cut off mid-`render`, no DONE/ERROR |
+| abb161d6 | 00:01:43 | 00:02:22 | ~39s | cut off mid-`render`, no DONE/ERROR |
+
+Findings:
+- All three are **4K** (`scale=3840:2160`) **~14–22-clip xfade** renders of the ~2:46 film. Each log terminates in the middle of the render-stage `filter_complex` with **no ERROR/Traceback and no DONE marker** → the SIGTERM (exit 15) signature per LEARNINGS ("half-complete run ending mid-stage, numeric signal exit"). The exit-1 attempt's FFmpeg stderr is **not** in these python logs (Rust captures process stderr separately), so exit-1 root cause can't be confirmed from available logs.
+- Job **start times are strictly sequential** (5.5 min then 2 min apart) → **no evidence of two concurrent pipelines for a single attempt** in the logs; these read as deliberate sequential retries, not a same-attempt duplicate spawn.
+- `render-timing-log.jsonl` has no entry after 2026-06-02 → confirms none of the three wrote a success record.
+- Background proxy gen was active in the window (`proxy-bg.log` 23:54) → memory contention between a **20-clip 4K xfade** encode and concurrent proxy AMF remains the most plausible SIGTERM contributor (heavier than the 8-clip case that motivated the 12GB `.wslconfig` bump).
+
+Mitigation status:
+- **U1 single-job guard (step 4)** eliminates the navigate-in/out duplicate-spawn class regardless of what the logs show — the standing mitigation.
+- The **20-clip 4K xfade memory-pressure** angle is a SEPARATE potential cause and is **out of U1 scope** → logged here as a candidate backlog item (e.g. cap concurrent proxy gen during an active 4K render, or chunk very-large xfade chains). No code change made for it in U1.
+
 ---
 
-## Recently shipped this session (2026-06-02)
+## Recently shipped this session (2026-06-05)
+
+- **Batch U1a — Render Resilience COMPLETE:** `current_stage TEXT` additive migration on `jobs` table (migration guard via `pragma_table_info`). `update_job_stage()` Rust helper called on every `STAGE:` stdout line from `run_pipeline`. Single-in-flight-job guard in `start_job` — returns existing active job id if one exists for the same project_id (prevents duplicate WSL spawns). `Render.tsx` re-attach block now restores stage label (`stageLabel(active_job.current_stage)`) and seeds elapsed timer from `created_at` instead of `Date.now()` (so timer continues across navigations). Reassurance copy on error block. 9/9 fast + 14/14 render E2E PASS. **Live test observations:** timer correctly continued across 5+ navigations on real 19-clip 4K render; `current_stage='Rendering'` confirmed in DB. **Gaps found and documented as U1b–U1e:** render quality (music/transitions/cards/muting absent from output), startup self-heal for stuck jobs, new render visibility + nav-guard, stalled render detection.
+
+## Recently shipped previous session (2026-06-02)
 
 - **Batch T7 — WDIO proxy claim cleanup COMPLETE:** `proxy_claimed_at INTEGER` additive column (stamped by `claim_clip_for_encoding`). Startup self-heal: `reset_all_encoding_claims(900)` in `setup()` clears stale/NULL-ts rows globally; 900s time-guard never clobbers a live encode in the other binary. `reset_proxy_encoding_cmd` scoped Tauri command. `e2e/helpers/testProjects.ts` registry + `trackTestProject()` one-liner in all 7 specs + `after()` hook in `wdio.conf.ts` that calls `reset_proxy_encoding_cmd` for each test project before `afterSession` SIGTERM. Verification: startup reset confirmed (1 legacy cleared, 1 fresh preserved); 0 stuck encoding rows after WDIO run; 9/9 fast PASS. Check 4 (live claim path) verified indirectly — 0 stuck rows after WDIO run that exercised claim→encode→done. Key discovery: in-session binary uses a Claude MSIX container DB (`...\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\...`), NOT real Roaming — documented in LEARNINGS.md.
 

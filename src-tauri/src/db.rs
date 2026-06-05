@@ -84,6 +84,9 @@ pub struct Job {
     pub analysis_summary: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    // Batch U1: live pipeline stage (e.g. "render", "zoom"), persisted on each
+    // STAGE: line so the Render screen can restore the label on re-attach.
+    pub current_stage: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +151,18 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     )? > 0;
     if !col_exists {
         conn.execute("ALTER TABLE jobs ADD COLUMN analysis_summary TEXT", [])?;
+    }
+
+    // Additive migration: current_stage column (Batch U1).
+    // Persists the live pipeline stage so the Render screen can restore the
+    // human-readable label when re-attaching to a render still in progress.
+    let stage_col_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name='current_stage'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !stage_col_exists {
+        conn.execute("ALTER TABLE jobs ADD COLUMN current_stage TEXT", [])?;
     }
 
     // Additive migrations: per-clip review fields (Batch 14c) + waveform (Batch 15c) + codec (Batch 16) + clip_volume (Batch J).
@@ -560,8 +575,8 @@ pub fn reorder_clips(clip_ids: &[String]) -> Result<(), rusqlite::Error> {
 pub fn insert_job(job: &Job) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.execute(
-        "INSERT INTO jobs (id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO jobs (id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             job.id,
             job.project_id,
@@ -573,6 +588,7 @@ pub fn insert_job(job: &Job) -> Result<(), rusqlite::Error> {
             job.analysis_summary,
             job.created_at,
             job.updated_at,
+            job.current_stage,
         ],
     )?;
     Ok(())
@@ -594,6 +610,18 @@ pub fn update_job_progress(job_id: &str, progress_pct: i64, status: &str) -> Res
     conn.execute(
         "UPDATE jobs SET progress_pct = ?1, status = ?2, updated_at = ?3 WHERE id = ?4",
         params![progress_pct, status, ts, job_id],
+    )?;
+    Ok(())
+}
+
+/// Batch U1: persist the live pipeline stage so the Render screen can restore
+/// the human-readable label when re-attaching to an in-flight render.
+pub fn update_job_stage(job_id: &str, stage: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let ts = now();
+    conn.execute(
+        "UPDATE jobs SET current_stage = ?1, updated_at = ?2 WHERE id = ?3",
+        params![stage, ts, job_id],
     )?;
     Ok(())
 }
@@ -684,7 +712,7 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
 pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
          FROM jobs WHERE id = ?1",
         params![job_id],
         map_job_row,
@@ -704,6 +732,7 @@ fn map_job_row(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         analysis_summary: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
+        current_stage: row.get(10)?,
     })
 }
 
@@ -712,7 +741,7 @@ fn map_job_row(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
 pub fn get_active_job(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
          FROM jobs WHERE project_id = ?1 AND status IN ('pending', 'processing')
          ORDER BY created_at DESC LIMIT 1",
         params![project_id],
@@ -726,7 +755,7 @@ pub fn get_active_job(project_id: &str) -> Result<Option<Job>, rusqlite::Error> 
 pub fn get_latest_render(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
          FROM jobs WHERE project_id = ?1 AND status = 'done' AND local_output_path IS NOT NULL
          ORDER BY created_at DESC LIMIT 1",
         params![project_id],
