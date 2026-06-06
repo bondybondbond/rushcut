@@ -779,6 +779,24 @@ pub fn get_active_job(project_id: &str) -> Result<Option<Job>, rusqlite::Error> 
     .optional()
 }
 
+/// Batch U1c: every job still marked 'processing' that is older than `min_age_secs`.
+/// Used by the startup self-heal in setup() to reconcile jobs whose binary was killed
+/// mid-render while the WSL pipeline kept running. ONE param, called twice by the caller:
+/// 60s for the file-exists->done scan (a finished file is proof at any age) and 900s for
+/// the file-missing->failed scan (matches reset_all_encoding_claims; never clobbers a
+/// live render in the other binary on the two-instances-share-one-DB model).
+pub fn get_stuck_processing_jobs(min_age_secs: i64) -> Result<Vec<Job>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
+         FROM jobs WHERE status = 'processing' AND datetime(created_at) < datetime('now', ?1)
+         ORDER BY created_at ASC",
+    )?;
+    let age_clause = format!("-{} seconds", min_age_secs);
+    let rows = stmt.query_map(params![age_clause], map_job_row)?;
+    rows.collect()
+}
+
 /// Most recent completed render (status 'done' with an output path) for a project, if any.
 /// Batch T5: the Render screen shows this instead of auto-rendering a fresh job.
 pub fn get_latest_render(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
@@ -799,7 +817,7 @@ pub fn list_projects() -> Result<Vec<ProjectSummary>, rusqlite::Error> {
     // Catches pipelines that crashed without emitting an error event.
     conn.execute(
         "UPDATE jobs SET status = 'failed', error_message = 'Pipeline timed out (no response for 60 min)'
-         WHERE status = 'processing' AND created_at < datetime('now', '-60 minutes')",
+         WHERE status = 'processing' AND datetime(created_at) < datetime('now', '-60 minutes')",
         [],
     )?;
     let mut stmt = conn.prepare(

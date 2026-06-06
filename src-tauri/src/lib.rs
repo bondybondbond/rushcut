@@ -6,6 +6,7 @@ use base64::Engine as _;
 use db::{
     add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
+    get_stuck_processing_jobs,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_all_encoding_claims, reset_done_with_missing_proxy, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
     set_proxy_for_all_clips_with_path, update_clip_review,
@@ -607,7 +608,8 @@ fn round_fps_to_standard(s: &str) -> u32 {
 }
 
 /// Low-priority background proxy encode — 2160p so proxies qualify for both 1080p and 4K renders.
-/// Windows BELOW_NORMAL_PRIORITY_CLASS + -threads 1 ensures foreground stays responsive.
+/// Windows BELOW_NORMAL_PRIORITY_CLASS keeps foreground responsive; -threads 0 lets FFmpeg
+/// use all cores on the software HEVC decode, which is the real bottleneck (~7x faster than -threads 1).
 /// NOTE: proxy.py was dead code since Batch 16; this native Rust path is the live one.
 ///
 /// [TRAP / Batch S4]: AMF and libx264 need DIFFERENT args. `-preset` / `-crf` are libx264-only;
@@ -651,7 +653,7 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
         "-c:a", "aac",
         "-b:a", "128k",
         "-ar", "48000",
-        "-threads", "1",
+        "-threads", "0",
         "-y",
         dst,
     ]);
@@ -1627,8 +1629,8 @@ fn encode_one_clip(
 }
 
 /// Batch N: background pre-encode of proxies for clips with include=1 AND
-/// proxy_status != 'done'. Low-priority runs serial (-threads 1, BELOW_NORMAL)
-/// to preserve user responsiveness. Normal-priority (Render gate boost) runs
+/// proxy_status != 'done'. Low-priority runs serial (1 worker, BELOW_NORMAL_PRIORITY_CLASS,
+/// -threads 0 = FFmpeg auto) to preserve user responsiveness. Normal-priority (Render gate boost) runs
 /// parallel workers — `claim_clip_for_encoding` provides per-clip mutex so
 /// workers can race safely on a shared queue. Native-codec sources (H.264 /
 /// VP8 / VP9) skip encode and mark done with the source path as proxy_path.
@@ -1699,7 +1701,8 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
     let _ = std::fs::create_dir_all(&proxy_dir);
 
     // [S3] Parallel workers for normal-priority (gate-critical) batch only.
-    // Low-priority bg gen keeps 1 worker / -threads 1 so it stays out of the way.
+    // Low-priority bg gen keeps 1 worker / -threads 0 (FFmpeg auto); BELOW_NORMAL_PRIORITY_CLASS
+    // keeps it out of the way — not single-threading (U1f).
     //
     // GPU-encoder caveat: AMD AMF, Intel QSV, and Nvidia NVENC each expose a
     // limited number of concurrent encode sessions per GPU (typically 1–2 on
@@ -2085,6 +2088,58 @@ pub fn run() {
                 Ok(n) if n > 0 => eprintln!("[proxy] startup: reset {} stale 'encoding' claim(s)", n),
                 Ok(_) => {}
                 Err(e) => eprintln!("[proxy] startup: reset_all_encoding_claims failed: {}", e),
+            }
+
+            // Batch U1c: self-heal jobs left stuck in 'processing' when the binary was
+            // killed mid-render (SIGTERM/crash/WDIO/reboot) while the WSL pipeline kept
+            // running. Reconcile each stuck job against the output file on disk.
+            // Two scans with asymmetric age guards (done-scan FIRST so a completed
+            // >900s job is promoted to done, not failed):
+            //   - done: file exists is proof at any age -> 60s guard (avoid racing a row
+            //     inserted seconds ago).
+            //   - failed: a real render takes 3-12 min, so only fail with no file once the
+            //     job is >900s old -- never clobbers a live render in the other binary
+            //     (two-instances-share-one-DB), mirroring reset_all_encoding_claims(900).
+            // Cheap (a couple of SQLite queries + Path::exists per stuck row); never blocks.
+            match get_stuck_processing_jobs(60) {
+                Ok(jobs) => {
+                    for job in jobs {
+                        if let Some(path) = &job.local_output_path {
+                            if std::path::Path::new(path).exists() {
+                                if let Err(e) = update_job_done(&job.id, path) {
+                                    eprintln!("[heal] failed to mark job {} done: {}", job.id, e);
+                                } else {
+                                    eprintln!("[heal] job {} -> done (output file present on disk)", job.id);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[heal] startup: get_stuck_processing_jobs(60) failed: {}", e),
+            }
+            match get_stuck_processing_jobs(900) {
+                Ok(jobs) => {
+                    for job in jobs {
+                        match &job.local_output_path {
+                            // Output path was set but no file exists after 15 min -> the
+                            // pipeline died. Fail it so the single-job guard frees for retry.
+                            Some(path) if !std::path::Path::new(path).exists() => {
+                                if let Err(e) = update_job_error(
+                                    &job.id,
+                                    "Pipeline did not complete -- please try again",
+                                ) {
+                                    eprintln!("[heal] failed to mark job {} failed: {}", job.id, e);
+                                } else {
+                                    eprintln!("[heal] job {} -> failed (no output file after 15 min)", job.id);
+                                }
+                            }
+                            // No output path was ever set: leave it for the 60-min backstop
+                            // in list_projects() (job was killed before path was determined).
+                            _ => {}
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[heal] startup: get_stuck_processing_jobs(900) failed: {}", e),
             }
 
             // Show the main window so WebView2 / E2E can interact with it.
