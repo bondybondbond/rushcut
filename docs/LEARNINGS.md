@@ -193,6 +193,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **ffprobe `r_frame_rate`** returns a fraction string (`"30000/1001"`) — must split on `/` and divide; never a decimal float.
 - **Silence detection**: DJI clips have lots of near-silent sections (camera handling noise). Threshold `-30dB` with `d=0.5` works; may need tuning per footage type.
 
+## SQLite — ISO 8601 T-separator breaks datetime() comparisons
+
+**Problem:** `created_at` timestamps stored via Rust `chrono::Utc::now().to_rfc3339()` are ISO 8601 format (`"2026-06-06T20:12:11Z"`, T separator and Z suffix). SQLite's `datetime('now', ...)` function returns space-separated format (`"2026-06-06 20:12:11"`, no Z). A raw `created_at < datetime('now', '-900 seconds')` string comparison always fails for ISO 8601 values because ASCII `T` (84) > ` ` (32) — so every stored timestamp appears "greater than" the threshold regardless of age.
+**Solution:** Wrap the column in `datetime()` to normalise before comparison: `datetime(created_at) < datetime('now', '-900 seconds')`. SQLite's `datetime()` accepts ISO 8601 input (formats 5–7 in the spec, including T separator and Z/UTC suffix) and normalises to space-separated output, making both sides comparable. This applies to every SQL query that compares a chrono-written timestamp against a SQLite `datetime()` expression — audit any `WHERE created_at <` / `>` clause that was written before this was discovered.
+**Context:** `src-tauri/src/db.rs` — confirmed in `get_stuck_processing_jobs()` (U1c) and the 60-min backstop `UPDATE` in `list_projects()`. Both were silently non-functional; the self-heal never fired until the fix. Detectable only via live test — `cargo check` and WDIO fast suite cannot catch this.
+
+---
+
 ## Pipeline Python — manifest numeric field falsiness trap
 
 **Problem:** `float(d.get("clip_volume", 1.0) or 1.0)` coerces Python's falsy `0.0` (muted clip) to `1.0` (full volume) because `0.0 or 1.0 == 1.0`. The mute feature appeared non-functional despite DB, manifest, and Rust all being correct — the bug was purely in how `render.py` consumed the manifest value.

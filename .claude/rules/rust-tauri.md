@@ -2,6 +2,12 @@
 
 Applies when working on `src-tauri/**`.
 
+## DB — SQLite datetime comparisons with chrono timestamps
+
+Rust stores timestamps via `chrono::Utc::now().to_rfc3339()` as ISO 8601 (`"2026-06-06T20:12:11Z"`, T separator). SQLite `datetime('now', ...)` returns space-separated format (`"2026-06-06 20:12:11"`). Raw string comparison `created_at < datetime('now', '-N seconds')` **always fails** because `T` (ASCII 84) > ` ` (ASCII 32).
+
+**Rule:** Always wrap the column: `datetime(created_at) < datetime('now', '-N seconds')`. SQLite `datetime()` normalises ISO 8601 input to its own format. This applies to every `WHERE created_at <` / `>` clause in `db.rs`. Detected only at runtime — `cargo check` and WDIO cannot catch it.
+
 ## Commands
 
 - All Tauri commands in a **single** `generate_handler![]`. A second `invoke_handler()` silently drops the first.

@@ -15,15 +15,15 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U1b (render quality + mute fix + localStorage migration) COMPLETE (2026-06-06). Next: U1c (startup self-heal for stuck jobs).**
+**Phase 2 — Batch U1c+U1f (startup self-heal + fast bg proxy) COMPLETE (2026-06-06). Next: U1d or U2.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U1c** — Startup self-heal for stuck `processing` jobs (~10-line Rust in `setup()`). Clears jobs stuck in processing state on every binary start; prevents Library "rendering" indicator getting stuck permanently after a crash.
-- **Then U1d** — New render visibility + nav-guard. Diagnose Bug 1 (is the invoke truly cancelled, or does the job get created and the UI just misses it?) before coding.
-- **Then U1e** — Stalled render detection (2-min no-progress warning, UI-only).
+- **Batch U1d** — Single-job guard re-enable post-heal (was disabled in U1a). Confirm the guard is safe now that U1c clears stuck jobs on startup.
+- **Or U2** — Timeline clip reorder (drag-to-reorder in Arrange). Depends on founder priority.
+- U1c known gap: "file exists → done" branch (the intended happy path) was not tested this session due to WSL memory pressure killing FFmpeg mid-render. Low risk — verify on next real crash where WSL finishes cleanly.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
