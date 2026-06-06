@@ -11,6 +11,7 @@ import { projectCache } from "@/utils/projectCache";
 import { fmtMs } from "@/utils/fmtMs";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
+import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import {
   parseZoom, buildZoomMode, zoomLabel, FIXED_AMOUNTS, KB_AMOUNTS,
 } from "@/utils/zoom";
@@ -141,7 +142,10 @@ export default function Arrange() {
   // Sound tab — per-clip volume custom input + explicit Custom-chip visibility flag
   const [customVolInput, setCustomVolInput] = useState<number>(100);
   const [showCustomInput, setShowCustomInput] = useState(false);
-  const volumeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-clip debounce map — keyed by clip id so rapid multi-clip muting does not
+  // cancel a previous clip's pending DB write (bug: shared single timer would only
+  // persist the last-clicked clip when muting several clips in quick succession).
+  const volumeDebounceRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const storageKey = `rc_transition_${projectId}`;
   const [transConfig, setTransConfig] = useState<TransitionConfig>(
@@ -150,7 +154,7 @@ export default function Arrange() {
 
   const [cardsState, setCardsState] = useState<CardsState>(() => {
     try {
-      const raw = projectId ? sessionStorage.getItem(CARDS_STORAGE_KEY(projectId)) : null;
+      const raw = projectId ? getRenderPref(CARDS_STORAGE_KEY(projectId)) : null;
       if (raw) return JSON.parse(raw) as CardsState;
     } catch { /* ignore */ }
     return { start: { enabled: false, title: "", subtitle: "", color: "peach" }, end: { enabled: false, title: "The End", color: "black" } };
@@ -172,7 +176,7 @@ export default function Arrange() {
 
   const soundMoodVal = (() => {
     try {
-      const raw = sessionStorage.getItem(`rc_sound_${projectId}`);
+      const raw = getRenderPref(`rc_sound_${projectId}`);
       return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null;
     } catch { return null; }
   })();
@@ -185,7 +189,7 @@ export default function Arrange() {
         setProjectName(data.project.name);
         setClips(data.clips);
         // Seed start title from project name only if no cards state was stored yet
-        const stored = sessionStorage.getItem(CARDS_STORAGE_KEY(projectId));
+        const stored = getRenderPref(CARDS_STORAGE_KEY(projectId));
         if (!stored) {
           setCardsState((prev) => ({
             ...prev,
@@ -196,11 +200,11 @@ export default function Arrange() {
       .catch(() => {});
   }, [projectId]);
 
-  // Persist cardsState to sessionStorage (debounced for text changes, but we call this
+  // Persist cardsState to the render-pref store (debounced for text changes, but we call this
   // from both instant (toggle/swatch) and debounced (text input) paths).
   const saveCardsState = useCallback((next: CardsState) => {
     if (!projectId) return;
-    try { sessionStorage.setItem(CARDS_STORAGE_KEY(projectId), JSON.stringify(next)); } catch { /* ignore */ }
+    setRenderPref(CARDS_STORAGE_KEY(projectId), JSON.stringify(next));
   }, [projectId]);
 
   // Pause the outgoing tab's video immediately on tab switch.
@@ -310,7 +314,7 @@ export default function Arrange() {
 
   function saveTransConfig(next: TransitionConfig) {
     setTransConfig(next);
-    sessionStorage.setItem(storageKey, JSON.stringify(next));
+    setRenderPref(storageKey, JSON.stringify(next));
   }
 
   function handleSelectBetween(val: TransitionValue) {
@@ -377,15 +381,17 @@ export default function Arrange() {
     const volume = Math.max(0, Math.min(200, Math.round(percent))) / 100;
     patchClip(clip.id, { clip_volume: volume });
     if (soundVideoRef.current) soundVideoRef.current.volume = Math.min(1.0, volume);
-    if (volumeDebounceRef.current !== null) clearTimeout(volumeDebounceRef.current);
-    volumeDebounceRef.current = setTimeout(async () => {
+    const existing = volumeDebounceRef.current.get(clip.id);
+    if (existing !== undefined) clearTimeout(existing);
+    const timer = setTimeout(async () => {
       try {
         await invoke("update_clip_volume_cmd", { clipId: clip.id, clipVolume: volume });
       } catch (err) {
         console.error("[arrange] update_clip_volume_cmd failed", err);
       }
-      volumeDebounceRef.current = null;
+      volumeDebounceRef.current.delete(clip.id);
     }, 300);
+    volumeDebounceRef.current.set(clip.id, timer);
   }
 
   function handleFocalClick(clip: Clip, e: React.MouseEvent<HTMLDivElement>) {

@@ -51,6 +51,218 @@ _SHUFFLE_POOL = ["fade", "fadeblack", "wipeleft", "wipedown", "dissolve", "squee
 XFADE_DUR = 1.5  # seconds
 
 
+def resolve_cut_names(
+    n: int, transition: str, shuffle_between: bool, seed: "str | None"
+) -> list[str]:
+    """Return n-1 FFmpeg xfade transition names, one per cut.
+
+    Deterministic: the shuffle RNG is drawn ONCE over the global cut sequence, so
+    the segmented (batched) renderer picks IDENTICAL transition names to the
+    monolithic path. Slicing this list per batch keeps every cut consistent.
+    """
+    if shuffle_between and n > 1:
+        rng = random.Random(seed)
+        return [rng.choice(_SHUFFLE_POOL) for _ in range(n - 1)]
+    name = _TRANSITION_MAP.get(transition, "fade")
+    return [name] * max(n - 1, 0)
+
+
+def clamp_xfade_dur(durations: list[float], xfade_dur: float = XFADE_DUR) -> float:
+    """Clamp xfade_dur to half the shortest clip (matches build_filter_complex)."""
+    if not durations:
+        return xfade_dur
+    return min(xfade_dur, min(durations) / 2.0)
+
+
+def plan_video_batches(
+    durations: list[float], batch_size: int = 4, xfade_dur: float = XFADE_DUR
+) -> "tuple[list[dict], float]":
+    """Plan overlap-by-one video batches for a memory-bounded segmented xfade render.
+
+    Each consecutive batch SHARES one boundary clip; the join between segments is a
+    lossless hard concat placed in the SOLO region (no active xfade) of that shared
+    clip -- invisible because both sides are the same continuous footage.
+
+    `xfade_dur` MUST already be clamped (pass clamp_xfade_dur(durations)).
+
+    Returns (batches, total_duration). Each batch dict:
+        clip_indices      [global clip indices in this batch]
+        local_durations   [their durations]
+        seg_start_local   batch-LOCAL time to START using this segment (0.0 for first)
+        seg_end_local     batch-LOCAL time to STOP (None = encode to end, last batch)
+        seg_start_global  GLOBAL output time this segment begins (for sync assertion)
+        seg_end_global    GLOBAL output time this segment ends
+
+    Raises ValueError if any shared boundary clip has no solo region (too short) --
+    caller must fall back to the monolithic path and log loudly.
+    """
+    n = len(durations)
+    prefix = [0.0]
+    for d in durations:
+        prefix.append(prefix[-1] + d)
+    # offset[i] = output-timeline start of xfade i = prefix[i] - i*xfade_dur ; offset[0]=0
+    offset = [prefix[i] - i * xfade_dur for i in range(n)]
+    total = prefix[n] - (n - 1) * xfade_dur
+
+    def solo(k: int) -> "tuple[float, float]":
+        lo = (offset[k] + xfade_dur) if k > 0 else 0.0
+        hi = offset[k + 1] if k < n - 1 else total
+        return lo, hi
+
+    step = batch_size - 1  # overlap-by-one
+    batches_idx: list[tuple[int, int]] = []
+    for s in range(0, n, step):
+        e = min(s + batch_size - 1, n - 1)
+        batches_idx.append((s, e))
+        if e == n - 1:
+            break
+
+    plan: list[dict] = []
+    for j, (s, e) in enumerate(batches_idx):
+        is_first = j == 0
+        is_last = e == n - 1
+
+        # --- start boundary: shared clip s (with previous batch) ---
+        if is_first:
+            seg_start_global = 0.0
+        else:
+            lo, hi = solo(s)
+            if not (lo < hi):
+                raise ValueError(
+                    f"boundary clip {s} has no solo region ({lo:.3f} >= {hi:.3f}) "
+                    f"-- cannot place batch cut; fall back to monolithic"
+                )
+            seg_start_global = (lo + hi) / 2.0
+            log.info(
+                "[U1g] boundary cut @ clip %d solo=[%.3f,%.3f] -> cut=%.4fs (global)",
+                s, lo, hi, seg_start_global,
+            )
+
+        # --- end boundary: shared clip e (with next batch) ---
+        if is_last:
+            seg_end_global = total
+        else:
+            lo, hi = solo(e)
+            if not (lo < hi):
+                raise ValueError(
+                    f"boundary clip {e} has no solo region ({lo:.3f} >= {hi:.3f}) "
+                    f"-- cannot place batch cut; fall back to monolithic"
+                )
+            seg_end_global = (lo + hi) / 2.0
+
+        # Map global cut times to batch-LOCAL times.
+        local_durs = durations[s : e + 1]
+        lprefix = [0.0]
+        for d in local_durs:
+            lprefix.append(lprefix[-1] + d)
+
+        def local_offset(k: int) -> float:
+            li = k - s
+            return lprefix[li] - li * xfade_dur
+
+        # clip k frame f: global=offset[k]+f, local=local_offset(k)+f
+        #   => local = global - offset[k] + local_offset(k)
+        seg_start_local = seg_start_global - offset[s] + local_offset(s)
+        seg_end_local = None if is_last else (seg_end_global - offset[e] + local_offset(e))
+
+        plan.append({
+            "clip_indices": list(range(s, e + 1)),
+            "local_durations": local_durs,
+            "seg_start_local": seg_start_local,
+            "seg_end_local": seg_end_local,
+            "seg_start_global": seg_start_global,
+            "seg_end_global": seg_end_global,
+        })
+    return plan, total
+
+
+def _canvas_dims(mode: str, output_resolution: str) -> "tuple[str, str]":
+    scale_h = "360" if mode == "draft" else ("2160" if output_resolution == "4k" else "1080")
+    scale_w = "640" if mode == "draft" else ("3840" if output_resolution == "4k" else "1920")
+    return scale_w, scale_h
+
+
+def build_batch_video_fc(
+    durations: list[float],
+    per_cut_names: list[str],
+    mode: str,
+    output_resolution: str,
+    xfade_dur: float = XFADE_DUR,
+) -> "tuple[str, str]":
+    """Video-only filter_complex for ONE batch of clips (U1g segmented render).
+
+    No audio, no opening/closing black frames. `durations` are batch-LOCAL; offsets
+    use the same formula as build_filter_complex so a batch reproduces the exact
+    transitions it would have in the monolithic graph. `per_cut_names` is the GLOBAL
+    transition-name list sliced to this batch's cuts (len == len(durations)-1).
+
+    Returns (fc, v_out_label).
+    """
+    n = len(durations)
+    scale_w, scale_h = _canvas_dims(mode, output_resolution)
+    canvas = (
+        f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,"
+        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2"
+    )
+    v_out = "[vout]"
+    parts = [f"[{i}:v]{canvas}[sv{i}]" for i in range(n)]
+    if n == 1:
+        parts.append(f"[sv0]null{v_out}")
+        return "; ".join(parts), v_out
+    prev = "[sv0]"
+    cumulative = 0.0
+    for i in range(1, n):
+        offset = cumulative + durations[i - 1] - xfade_dur * i
+        out_label = v_out if i == n - 1 else f"[v{i:02d}]"
+        parts.append(
+            f"{prev}[sv{i}]"
+            f"xfade=transition={per_cut_names[i - 1]}:duration={xfade_dur}:offset={offset:.4f}"
+            f"{out_label}"
+        )
+        prev = out_label
+        cumulative += durations[i - 1]
+    return "; ".join(parts), v_out
+
+
+def build_audio_only_fc(
+    durations: list[float],
+    audio_flags: list[bool],
+    clip_volumes: "list[float] | None",
+    xfade_dur: float = XFADE_DUR,
+    loudnorm_str: "str | None" = None,
+) -> "tuple[str, str]":
+    """Audio-only filter_complex over ALL clips (U1g single-pass audio).
+
+    per-clip volume -> apad=whole_dur -> chained acrossfade, identical to the audio
+    branch of build_filter_complex (no opening/closing -- the batched path is only
+    used when there is no open/close transition). Optional loudnorm fused on the tail.
+
+    Returns (fc, a_out_label) or ("", "") when no clip has audio.
+    """
+    n = len(durations)
+    if not any(audio_flags):
+        return "", ""
+    pre_vol = _build_pre_volume(clip_volumes, durations, n)
+    pre_pad = "; ".join(
+        f"[pv{i}]apad=whole_dur={durations[i]:.4f}[pa{i}]" for i in range(n)
+    )
+    if n == 1:
+        body = f"{pre_vol}; {pre_pad}; [pa0]anull[aout]"
+    else:
+        chain: list[str] = []
+        prev_a = "[pa0]"
+        for i in range(1, n):
+            a_lbl = "[aout]" if i == n - 1 else f"[ac{i}]"
+            chain.append(f"{prev_a}[pa{i}]acrossfade=d={xfade_dur:.4f}{a_lbl}")
+            prev_a = a_lbl
+        body = f"{pre_vol}; {pre_pad}; " + "; ".join(chain)
+    a_out = "[aout]"
+    if loudnorm_str:
+        body += f"; [aout]{loudnorm_str}[aloud]"
+        a_out = "[aloud]"
+    return body, a_out
+
+
 def _build_pre_volume(
     clip_volumes: list[float] | None,
     durations: list[float],
@@ -70,7 +282,7 @@ def _build_pre_volume(
     for i in range(n):
         vol = clip_volumes[i] if clip_volumes else 1.0
         if vol <= 0.0:
-            parts.append(f"aevalsrc=0:c=stereo:d={durations[i]:.4f}:r=48000[pv{i}]")
+            parts.append(f"aevalsrc=0:c=stereo:d={durations[i]:.4f}:s=48000[pv{i}]")
         else:
             parts.append(f"[{i}:a]volume={vol:.4f}[pv{i}]")
     return "; ".join(parts)
@@ -276,7 +488,7 @@ def build_filter_complex(
             # Inline silence for opening black frame audio
             a_after_open = "[awrap]" if has_close else "[aout]"
             all_parts.append(
-                f"aevalsrc=0:c=stereo:d={black_dur:.4f}:r=48000[abo]"
+                f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abo]"
             )
             all_parts.append(
                 f"[abo]{a_inner}acrossfade=d={xfade_dur:.4f}{a_after_open}"
@@ -302,7 +514,7 @@ def build_filter_complex(
         )
         if any_audio:
             all_parts.append(
-                f"aevalsrc=0:c=stereo:d={black_dur:.4f}:r=48000[abc]"
+                f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abc]"
             )
             all_parts.append(
                 f"{a_after_open}[abc]acrossfade=d={xfade_dur:.4f}[aout]"

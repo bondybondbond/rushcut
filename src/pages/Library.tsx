@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { ProjectSummary, Job } from "@/types/project";
 import { timeAgo } from "@/utils/timeAgo";
 import { resLabel, renderStateFromStatus } from "@/utils/jobMeta";
+import { clearRenderPrefs } from "@/utils/renderStore";
 
 function formatDate(iso: string): string {
   try {
@@ -182,6 +183,7 @@ export default function Library() {
     setPendingDelete(null);
     try {
       await invoke("delete_project_cmd", { projectId });
+      clearRenderPrefs(projectId);
       setProjects((prev) => prev.filter((p) => p.id !== projectId));
     } catch (e) {
       setError(`Failed to delete project: ${e}`);

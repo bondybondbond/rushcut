@@ -1,4 +1,5 @@
 import type { JobConfig, TransitionValue } from "@/types/project";
+import { getRenderPref } from "@/utils/renderStore";
 
 export const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 export const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
@@ -14,7 +15,7 @@ export interface TransitionConfig {
 }
 
 /**
- * Read transition config from sessionStorage.
+ * Read transition config from the render-pref store (localStorage; U1b).
  * Handles both the legacy plain-string format (pre-M2) and the new JSON format (M2+).
  */
 export function readTransitionConfig(projectId: string): TransitionConfig {
@@ -25,7 +26,7 @@ export function readTransitionConfig(projectId: string): TransitionConfig {
     shuffleBetween: false,
   };
   try {
-    const raw = sessionStorage.getItem(`rc_transition_${projectId}`);
+    const raw = getRenderPref(`rc_transition_${projectId}`);
     if (!raw) return defaults;
     // Compat: pre-M2 stored a plain transition string (e.g. "crossfade")
     if (!raw.startsWith("{")) {
@@ -79,7 +80,7 @@ export function buildJobConfig(projectId: string): JobConfig {
     config.shuffle_between = tc.shuffleBetween;
   } catch { /* ignore */ }
   try {
-    const raw = sessionStorage.getItem(`rc_sound_${projectId}`);
+    const raw = getRenderPref(`rc_sound_${projectId}`);
     if (raw) {
       const s = JSON.parse(raw) as { mood?: string; volume?: string; customPath?: string; musicFadeOut?: string };
       if (s.mood && (VALID_MOODS as readonly string[]).includes(s.mood)) {
@@ -97,16 +98,16 @@ export function buildJobConfig(projectId: string): JobConfig {
     }
   } catch { /* ignore */ }
   try {
-    const res = sessionStorage.getItem(`rc_render_res_${projectId}`);
+    const res = getRenderPref(`rc_render_res_${projectId}`);
     if (res === "1080p" || res === "4k") {
       config.output_resolution = res;
     }
   } catch { /* ignore */ }
   try {
-    config.use_amf = sessionStorage.getItem(`rc_fast_render_${projectId}`) === "1";
+    config.use_amf = getRenderPref(`rc_fast_render_${projectId}`) === "1";
   } catch { /* ignore */ }
   try {
-    const raw = sessionStorage.getItem(`rc_cards_${projectId}`);
+    const raw = getRenderPref(`rc_cards_${projectId}`);
     if (raw) {
       const COLOR_MAP: Record<string, string> = { peach: "#FF8A65", black: "#0a0a0a", white: "#ffffff" };
       const c = JSON.parse(raw) as {

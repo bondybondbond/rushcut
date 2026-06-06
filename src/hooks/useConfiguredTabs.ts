@@ -1,4 +1,5 @@
 import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { getRenderPref } from "@/utils/renderStore";
 
 export type ConfigurableTab = "arrange" | "sound" | "render";
 
@@ -12,7 +13,7 @@ export function useConfiguredTabs(projectId: string): Set<ConfigurableTab> {
     configured.add("arrange");
   }
 
-  const soundRaw = sessionStorage.getItem(`rc_sound_${projectId}`);
+  const soundRaw = getRenderPref(`rc_sound_${projectId}`);
   if (soundRaw) {
     try {
       const parsed = JSON.parse(soundRaw) as { mood?: string };

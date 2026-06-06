@@ -17,14 +17,41 @@ FFPROBE = os.environ.get("FFPROBE_BIN", "/usr/bin/ffprobe")
 
 
 def ffmpeg_run(cmd: list[str]) -> None:
-    """Run an FFmpeg command, raising RuntimeError with stderr on failure."""
+    """Run an FFmpeg command, raising RuntimeError with stderr on failure.
+
+    FFmpeg stderr is redirected to a Windows-path file so it survives WSL
+    restarts (critical for diagnosing crashes) and avoids the 64KB pipe-buffer
+    deadlock that can occur when capture_output=True is used with commands that
+    produce large startup output (21-input xfade generates ~200KB of stream
+    analysis before the first frame is encoded).
+    """
     log.info("[ffmpeg] %s", " ".join(str(c) for c in cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    stderr_path = "/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/ffmpeg-stderr-last.log"
+    try:
+        Path(stderr_path).parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        stderr_path = None  # fallback: don't redirect
+
+    if stderr_path:
+        with open(stderr_path, "w") as stderr_file:
+            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=stderr_file)
+    else:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
     if result.returncode != 0:
+        stderr_tail = ""
+        if stderr_path:
+            try:
+                with open(stderr_path) as f:
+                    stderr_tail = f.read()[-4000:]
+            except Exception:
+                stderr_tail = "(could not read stderr log)"
+        else:
+            stderr_tail = getattr(result, "stderr", "")[-4000:] if result else ""
         raise RuntimeError(
             f"FFmpeg failed (exit {result.returncode}):\n"
             f"CMD: {' '.join(str(c) for c in cmd)}\n"
-            f"STDERR: {result.stderr[-4000:]}"
+            f"STDERR: {stderr_tail}"
         )
 
 

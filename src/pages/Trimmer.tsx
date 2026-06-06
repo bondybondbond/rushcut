@@ -11,6 +11,7 @@ import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
 
 export default function Trimmer() {
@@ -627,7 +628,7 @@ export default function Trimmer() {
     : undefined;
   const configured = useConfiguredTabs(projectId ?? "");
   const transitionVal = (() => { try { const tc = readTransitionConfig(projectId ?? ""); return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null); } catch { return null; } })();
-  const soundMoodVal = (() => { try { const raw = sessionStorage.getItem(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })();
+  const soundMoodVal = (() => { try { const raw = getRenderPref(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })();
 
   const cutPaths = new Set(clips.filter(c => c.include === 1).map(c => c.local_path));
   const alreadyCutRegions = selectedClip

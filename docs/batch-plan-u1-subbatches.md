@@ -106,9 +106,85 @@ After a render completes (done state showing), clicking "Render new version" sta
 
 ---
 
+---
+
+## Batch U1f — Fast background proxy build
+
+**Context from U1b debugging session (2026-06-06):**
+
+During the "Stagecoach 2025" proxy rebuild, DJI_0005 took 688s (11.5 min) to encode via the normal-priority boost (2 workers, 8 threads each). The low-priority background function uses `-threads 1` — a hard single-thread throttle. With `-threads 1`, that same clip would take an estimated 4000–5500s (70–90 min). This is why bg proxy builds appear stuck for long-clip projects: one long 4K HEVC clip serialised to a single thread.
+
+**What the code currently does (corrected from brief):**
+- Both `generate_proxy_file_low_priority` AND `generate_proxy_file_normal_priority` use `-vf scale=-2:2160,format=yuv420p`. The scale IS already set to 2160p (not "no scale"). This must stay — proxy IS the normalise substitute. A 1080p proxy used for a 4K render upscales from 1080p (softness); the render-py height gate already rejects sub-2160p proxies for 4K output.
+- `generate_proxy_file_low_priority` hardcodes `-threads 1` (explicit throttle). This is the only difference from the normal-priority variant's threading behaviour.
+- `generate_proxy_file_normal_priority` uses `threads_per_clip` (0 = FFmpeg auto, 8 = 8 threads when 2 workers share 16 cores).
+- The FFmpeg HEVC software decode (not the AMF encode) is the real bottleneck. For a 10-min 4K HEVC clip, going from 1 thread to 8 threads reduces encode time from ~5000s to ~700s — a 7x improvement.
+
+**Fix — 1-line Rust change in `src-tauri/src/lib.rs`:**
+In `generate_proxy_file_low_priority`, change the hardcoded `-threads 1` argument to `-threads 0` (FFmpeg auto = use all available cores). No scale change. No worker-count change (`n_workers=1` stays — adding a 2nd low-priority worker alongside the normal-priority boost's 2 workers risks exceeding AMD AMF's ~2 concurrent session limit).
+
+**Why not use `iw/2:ih/2` (half-res, as originally suggested):**
+The proxy is the normalise substitute. `render.py` injects proxy files directly into the final concat/xfade chain. A 1080p proxy in a 4K render produces upscaled output. `render.py` height gate already enforces `required_proxy_h = 2160 if 4k else 1080` — a 1080p proxy would be rejected and fall through to a fresh slow normalise (negating the proxy entirely for 4K renders). The 2160p scale is correct and non-negotiable.
+
+**Expected improvement:**
+- Before: DJI_0005 (10-min 4K HEVC, bg build) = ~5000s (83 min), 1 thread
+- After: DJI_0005 (bg build) = ~700s (12 min), FFmpeg auto threads (~16 cores)
+- Full 19-clip bg build: before ~3h (serially, mixed clip lengths), after ~30 min (still serial, but feasible in a typical editing session)
+
+**Verify:** After applying fix and rebuilding binary, open a project with long 4K clips (> 5 min each), navigate to Trimmer then immediately to Arrange (triggering Trimmer unmount → bg proxy gen). Watch `proxy-bg.log` — long clips should show `elapsed=600-900s` (not `elapsed=4000s+`). A 10-min clip should complete in under 15 min.
+
+---
+
+## Batch U1g — Segmented xfade render (memory-bounded) — fixes exit-15 crash class
+
+**Context (diagnosed 2026-06-06):** The 21-clip 4K "Stagecoach 2025" render dies with `exit code 15` (WSL VM balloon-killed). Root cause confirmed via FFmpeg stderr (`ffmpeg-stderr-last.log`): the **monolithic 21-input 4K `filter_complex`** hits a hard memory ceiling. Peak RAM is driven by **chain depth (clip count in one graph)**, NOT clip size — all clips are uniform 3840×2160 (~12.4 MB/decoded frame). FFmpeg buffers decoded 4K frames at each of the 20 chained xfade stages; ~25 frames × 20 stages × 12.4 MB ≈ 6 GB, overflowing the ~11 GB usable WSL on this 13.8 GB-total machine. Stalls escalate by position (xfade #7→#10) and die at #10. **Machine RAM cannot be raised** — the only fix is to stop building one giant graph.
+
+**Ruled out (all symptom knobs, all proven ineffective this session):** `-max_interleave_delta 0` (no effect — identical stall), `-max_muxing_queue_size` (would worsen), localise-to-tmpfs (helped 9P but not memory), raising WSL memory (no headroom). The "Too many packets buffered for output stream 0:0" warning is a *symptom* of the upstream filter-graph stall, not the cause.
+
+### Architecture
+- **Video pass (batched):** render the xfade chain in groups of **4 clips, overlap-by-one**, concat segments → `video_full.mp4` (no audio). Chain depth 3 → est. ~2–2.5 GB peak.
+- **Audio pass (single):** the `apad → acrossfade` chain runs once over all clips → `audio_full.m4a`. Audio decode is KB-cheap; no batching needed. This removes 21 audio decoders + the acrossfade chain from the concurrent video graph.
+- **Mux:** `ffmpeg -i video_full.mp4 -i audio_full.m4a -c copy output.mp4` — two complete linear streams, zero muxing queue. Removes the `-max_interleave_delta 0` stopgap.
+
+### Boundary decision — overlap-by-one (chosen)
+Re-xfade-at-join re-encodes already-encoded chunk outputs at every boundary (generation loss + a second full 4K decode pass); overlap-by-one computes every transition once from the original 2160p sources and joins chunks with a **lossless hard concat placed in the transition-free middle (solo region) of a shared clip** — invisible because both sides are the same continuous footage. Chosen for quality; the only cost is offset bookkeeping.
+
+### Solo-region math
+- `offset[i] = prefix[i] - i*xfade_dur` (output-timeline start of xfade i), `offset[0]=0`.
+- Clip k solo region = `[offset[k]+xfade_dur, offset[k+1]]`. Batch boundaries (shared clips 3,6,9,…) must cut inside this region.
+- **Logged assertion before any encode:** every boundary cut timestamp falls outside all xfade overlap windows (i.e. `offset[k]+xfade_dur < cut < offset[k+1]`). If a shared clip has no solo region (too short), shift the boundary ±1 clip or fall back to monolithic — logged loudly.
+
+### Implementation steps
+1. **Threshold guard** — `n <= BATCH_SIZE` (4) or open/close transition present → keep existing monolithic path (unchanged; small renders never crashed, keeps `render.spec.ts` 1080p path intact).
+2. **Planner** (`transitions.py`) — compute global `per_cut_names` (shuffle RNG once, globally — deterministic), global offsets, batch groups (overlap-by-one), per-batch local durations + cut window, and the solo-region assertion.
+3. **Per-batch video render** — video-only xfade over ≤4 clips, `-force_key_frames` at the batch's cut points, `-an` → `batch_k.mp4`. Keep AMF/libx264 fallback.
+4. **Video concat** — `-ss/-to -c copy` trim each batch to its solo-region window (keyframe-aligned), concat demuxer `-c copy` → `video_full.mp4`. Filter-concat fallback (one re-encode) only if copy fails.
+5. **Audio single pass** — dedicated audio-only filter_complex (acrossfade + volumes + loudnorm fusion) → `audio_full.m4a` (`-vn`).
+6. **Final mux** — `-c copy`. Delete `-max_interleave_delta 0` + TODO comments.
+7. **Cards** — intro/outro silent clips are clips `0`/`N`; fold into first/last batch + audio pass. Verify count.
+8. **Keep per-clip machinery** — `_localise_inputs`, B-0 pre-trim, proxy-skip, per-clip volume unchanged.
+
+### Acceptance checks (run in order, stop + report after each)
+- `[ ]` **Planner** — boundary cuts fall in clip solo regions only (outside every xfade overlap window); each planned cut timestamp logged + asserted. **(validate first, before any encode)**
+- `[ ]` 21-clip 4K "Stagecoach" render completes — **no exit 15**.
+- `[ ]` Transition visible at every cut, *including* batch-boundary cuts (no hard cut leaking through).
+- `[ ]` Audio in sync end-to-end; music ducking, per-clip volumes, mutes intact.
+- `[ ]` Start/end cards present.
+- `[ ]` `free -m` spot-check during render stays < ~4 GB peak.
+- `[ ]` `render.spec.ts` (1080p, small project) still passes — monolithic ≤4-clip path untouched.
+
+### Risks / flags
+- **Sync arithmetic (main risk)** — concatenated video total must equal audio total within one frame; log per-batch `start_cut/end_cut/duration` and assert.
+- **Keyframe alignment** — `-force_key_frames` at exact cut points makes `-c copy` frame-accurate; filter-concat fallback if it ever misaligns.
+- **`transition="none"` path** — 21-input `concat` also opens 21 decoders (lighter, no overlap buffers); out of scope here, flagged for a follow-up check on very large no-transition projects.
+
+---
+
 ## Priority order
 
 1. **U1b** — Render quality (pipeline output missing music/transitions/cards). Product value is broken if the film is wrong. **Log first — no code until the pipeline log is read.**
 2. **U1c** — Startup self-heal (~10-line Rust change, zero risk). No SQL for users ever again. Ship immediately after U1b.
 3. **U1d** — New render visibility + nav-guard. Design-complex; diagnose Bug 1 (invoke cancelled vs. orphaned) before coding. Do not let this block U1c.
 4. **U1e** — Stalled render detection (timer honesty when pipeline is dead).
+5. **U1f** — Fast bg proxy build (remove `-threads 1` throttle from low-priority path). 1-line Rust fix + rebuild.
+6. **U1g** — Segmented xfade render (memory-bounded). Fixes the exit-15 crash class on large 4K projects. Video-batched (overlap-by-one) + audio-single-pass + lossless mux. **HIGHEST PRIORITY — blocks all large 4K renders.**

@@ -63,9 +63,11 @@ Written to `C:\clips\processed\<slug>-01.mp4`, `<slug>-02.mp4` etc. Slug = `slug
 - **PowerShell `Out-File` writes UTF-8 BOM:** Python `json.loads()` raises `JSONDecodeError`. Write manifests via WSL or Python only.
 - **Windows path to WSL:** `C:\clips\DJI_01.MP4` → `/mnt/c/clips/DJI_01.MP4`.
 - **`run.py` config completeness:** Every `JobConfig` field needs `settings.get(key, safe_default)`. Missing fields silently use wrong defaults.
+- **`or default` idiom silently promotes `0` / `0.0` to `default`** — `float(d.get("clip_volume", 1.0) or 1.0)` coerces Python's falsy `0.0` (muted clip) to `1.0` (full volume) because `0.0 or 1.0 == 1.0`. Rule: whenever the valid value range includes `0` or `0.0`, use an explicit None check: `float(v) if v is not None else default`. This applies to any numeric manifest field where zero is a valid non-default (volume, start offset, card opacity, etc.).
 
 ## FFmpeg rules
 
+- **`aevalsrc` sample-rate param is `s=` not `r=` in FFmpeg 6.1.1** — `aevalsrc=0:c=stereo:d=5.0:r=48000` raises exit 8 "Option not found" under FFmpeg 6.1.1 (Ubuntu 24.04 apt). Use `s=48000`. All 3 occurrences in `transitions.py` `build_audio_only_fc()` must use `s=`.
 - **DJI Osmo Pocket 3:** Two video streams — use `-map 0:v:0` (HEVC real clip). Stream 1 is an embedded MJPEG thumbnail.
 - **Portrait clips:** 1728×3072 normalises to 608×1080 via `scale=-2:1080`. Correct — do not "fix" orientation.
 - **Encoding:** Always `-c:v libx264 -pix_fmt yuv420p -profile:v main`. Omitting allows silent HEVC fallback (Windows Media Player rejects HEVC).

@@ -430,6 +430,35 @@ pub fn reset_stale_encoding_claims(project_id: &str) -> Result<(), rusqlite::Err
     Ok(())
 }
 
+/// U1b: reset 'done' clips whose proxy file no longer exists on disk (deleted externally,
+/// e.g. by Windows Storage Sense, disk cleanup, or app data wipe between sessions).
+/// Without this, encode_one_clip's claim_clip_for_encoding silently skips 'done' clips
+/// even when the file is gone, leaving the Render gate stuck at N/total forever.
+/// Returns the number of clips reset. Safe to call when no batch is running (called
+/// from the same 'else' branch as reset_stale_encoding_claims in generate_proxies_cmd).
+pub fn reset_done_with_missing_proxy(project_id: &str) -> Result<usize, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, proxy_path FROM clips
+         WHERE project_id = ?1 AND proxy_status = 'done' AND proxy_path IS NOT NULL",
+    )?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let mut count = 0usize;
+    for (id, proxy_path) in rows {
+        if !std::path::Path::new(&proxy_path).exists() {
+            conn.execute(
+                "UPDATE clips SET proxy_status = NULL, proxy_path = NULL WHERE id = ?1",
+                params![id],
+            )?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 /// Batch T7: reset ALL stale 'encoding' claims across every project, time-guarded.
 /// Called once at process startup (setup()), where no proxy batch is running in-process.
 /// The `stale_secs` guard prevents clobbering a live encode owned by the *other* binary

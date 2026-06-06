@@ -15,15 +15,14 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U1a (Render Resilience stage/timer/guard) COMPLETE (2026-06-05). Next: U1b (render quality investigation — HIGHEST PRIORITY).**
+**Phase 2 — Batch U1b (render quality + mute fix + localStorage migration) COMPLETE (2026-06-06). Next: U1c (startup self-heal for stuck jobs).**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U1b** — Render quality investigation: the rendered 19-clip 4K film was missing music, transitions, cards, and per-clip muting. **Log first — read `pipeline-{job_id}.log` for job `d199eb54` before writing a single line of fix code.** Trace manifest → run.py → render.py chain after reading.
-- **Then U1c** — Startup self-heal (~10-line Rust in `setup()`). Quick win; unblocks SQL trap forever. Ship immediately after U1b.
-- **Then U1d** — New render visibility + nav-guard. Diagnose Bug 1 (is the invoke truly cancelled, or does the job get created and the UI just misses it?) before coding. Do not let U1d block U1c.
+- **Batch U1c** — Startup self-heal for stuck `processing` jobs (~10-line Rust in `setup()`). Clears jobs stuck in processing state on every binary start; prevents Library "rendering" indicator getting stuck permanently after a crash.
+- **Then U1d** — New render visibility + nav-guard. Diagnose Bug 1 (is the invoke truly cancelled, or does the job get created and the UI just misses it?) before coding.
 - **Then U1e** — Stalled render detection (2-min no-progress warning, UI-only).
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
@@ -59,7 +58,11 @@ Mitigation status:
 
 ---
 
-## Recently shipped this session (2026-06-05)
+## Recently shipped this session (2026-06-06)
+
+- **Batch U1b — Render Quality + Mute Fix + localStorage COMPLETE:** Root cause identified: `sessionStorage` is cleared when the binary is relaunched, wiping transition/music/cards/resolution settings so they fell back to defaults on every new render started from a fresh binary. Fix: migrated all `rc_*` render-setting keys to `localStorage` via new `src/utils/renderStore.ts` (thin `getRenderPref`/`setRenderPref` wrappers). Six files updated: `buildJobConfig.ts`, `useConfiguredTabs.ts`, `Render.tsx`, `Trimmer.tsx`, `Arrange.tsx`, `Sound.tsx`. Bundled pipeline fixes: (1) Python falsiness trap in `render.py` — `0.0 or 1.0 = 1.0` silenced muted clips (volume=0.0) to full volume; fixed with explicit None check. (2) FFmpeg 6.1.1 renamed `aevalsrc` sample-rate param `r=` → `s=`; fixed in 3 occurrences in `transitions.py` `build_audio_only_fc()`. (3) `encoder.py` final master path: 40Mbps target bitrate + medium preset (was ultrafast for both draft and final). 9/9 fast PASS. 19-clip 4K observed render times: 3.6 min (medium/simple), 6.4 min (fast/comparison), 11.7 min (slow/comparison), 8.2 min (medium/final).
+
+## Recently shipped previous session (2026-06-05)
 
 - **Batch U1a — Render Resilience COMPLETE:** `current_stage TEXT` additive migration on `jobs` table (migration guard via `pragma_table_info`). `update_job_stage()` Rust helper called on every `STAGE:` stdout line from `run_pipeline`. Single-in-flight-job guard in `start_job` — returns existing active job id if one exists for the same project_id (prevents duplicate WSL spawns). `Render.tsx` re-attach block now restores stage label (`stageLabel(active_job.current_stage)`) and seeds elapsed timer from `created_at` instead of `Date.now()` (so timer continues across navigations). Reassurance copy on error block. 9/9 fast + 14/14 render E2E PASS. **Live test observations:** timer correctly continued across 5+ navigations on real 19-clip 4K render; `current_stage='Rendering'` confirmed in DB. **Gaps found and documented as U1b–U1e:** render quality (music/transitions/cards/muting absent from output), startup self-heal for stuck jobs, new render visibility + nav-guard, stalled render detection.
 

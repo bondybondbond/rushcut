@@ -7,7 +7,7 @@ use db::{
     add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
-    claim_clip_for_encoding, reset_all_encoding_claims, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
+    claim_clip_for_encoding, reset_all_encoding_claims, reset_done_with_missing_proxy, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
     set_proxy_for_all_clips_with_path, update_clip_review,
     update_clip_thumbnail, update_clip_volume, update_clip_waveform, update_job_analysis,
     update_job_done, update_job_error, update_job_progress, update_job_stage, Clip, ClipMeta, Job, ProjectSummary,
@@ -1419,6 +1419,12 @@ async fn generate_proxies_cmd(
     // three concurrent AMF encodes (low + boost #1 + boost #2), oversubscribing the GPU
     // and multiplying encode time by 3-5x.
     let boost_key = format!("{}:normal", project_id);
+    // U1b: track whether this call is a boost (running alongside an in-flight low-priority
+    // batch) so cleanup only removes the project_id slot when the MAIN batch finishes.
+    // A boost completing early must not remove project_id — that would expose the next
+    // Render poll to the 'else' branch, which calls reset_stale_encoding_claims and
+    // kills the active claims owned by the still-running main batch.
+    let is_boost: bool;
     {
         let mut set = state.lock().unwrap();
         if set.contains(&project_id) {
@@ -1433,10 +1439,20 @@ async fn generate_proxies_cmd(
             }
             set.insert(boost_key.clone());
             eprintln!("[proxy] boosting project {} — normal-priority batch starting alongside in-flight low-priority batch", project_id);
+            is_boost = true;
         } else {
             // First batch for this project — reset stale 'encoding' claims from
             // a prior crashed session (safe only when no concurrent batch is running).
             let _ = reset_stale_encoding_claims(&project_id);
+            // U1b: also reset 'done' clips whose proxy file was deleted externally.
+            // Without this, encode_one_clip silently skips them (claim returns false for
+            // 'done' status) and the Render gate stays stuck at N/total indefinitely.
+            if let Ok(n) = reset_done_with_missing_proxy(&project_id) {
+                if n > 0 {
+                    eprintln!("[proxy] reset {} done-but-missing proxy claims for project {}", n, project_id);
+                }
+            }
+            is_boost = false;
         }
         set.insert(project_id.clone());
     }
@@ -1446,7 +1462,9 @@ async fn generate_proxies_cmd(
 
     let clips_for_media = project_data.clips;
     if clips_for_media.is_empty() {
-        state.lock().unwrap().remove(&project_id);
+        let mut s = state.lock().unwrap();
+        if !is_boost { s.remove(&project_id); }
+        s.remove(&boost_key);
         return Ok(());
     }
 
@@ -1460,7 +1478,12 @@ async fn generate_proxies_cmd(
         // all scanned clips; false (Trimmer unmount / Render boost) encodes include=1 only.
         run_bg_proxy_batch(app, pid.clone(), low_priority, use_all_clips).await;
         let mut s = guard.lock().unwrap();
-        s.remove(&pid);
+        // U1b: only the main batch (is_boost=false) removes the project_id slot.
+        // A boost completing early must NOT remove it — that would expose the next
+        // caller to the 'else' branch and reset the main batch's active claims.
+        if !is_boost {
+            s.remove(&pid);
+        }
         s.remove(&format!("{}:normal", pid));
     });
 
@@ -1560,10 +1583,14 @@ fn encode_one_clip(
     // no other claim is active (compare-and-set, minimal lock time). Batch T2: the
     // claim is keyed on the canonical clip (MIN(clip_id) per path), which both batch
     // triggers resolve identically — so two concurrent batches never encode one source twice.
+    // U1b: if claim returns false and this is the FIRST encode attempt (file missing),
+    // the clip's proxy_status is 'done' but the file was deleted — this case is now
+    // resolved upstream in generate_proxies_cmd via reset_done_with_missing_proxy.
+    // If claim still returns false here, a concurrent batch already owns it — truly skip.
     match claim_clip_for_encoding(canonical_clip_id) {
         Ok(true) => {} // we own this encode slot — proceed
         Ok(false) => {
-            proxy_bg_log(&format!("[PROXY_BG] skip clip_id={} reason=encoding-in-progress", canonical_clip_id));
+            proxy_bg_log(&format!("[PROXY_BG] skip clip_id={} reason=already-claimed", canonical_clip_id));
             return;
         }
         Err(e) => {

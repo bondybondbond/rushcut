@@ -34,7 +34,14 @@ from .loudnorm import loudnorm_filter
 from .music import mix_music
 from .normalise import normalise
 from .proxy import is_valid_proxy
-from .transitions import build_filter_complex
+from .transitions import (
+    build_filter_complex,
+    build_batch_video_fc,
+    build_audio_only_fc,
+    plan_video_batches,
+    resolve_cut_names,
+    clamp_xfade_dur,
+)
 from .trim import trim
 from .utils import FFMPEG, ffmpeg_run, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import apply_zoom
@@ -578,7 +585,13 @@ def run_pipeline(
     # Per-clip audio volume multipliers (Batch J) — aligned 1:1 with current_paths.
     # pipeline_clips is still 1:1 with current_paths here (trim/zoom preserve length+order).
     # Cards prepended/appended below get volume 1.0 (they carry no audio anyway).
-    clip_volumes = [float(cm.get("clip_volume", 1.0) or 1.0) for cm in pipeline_clips]
+    # Use explicit None-check — `or 1.0` would silently coerce 0.0 (mute) to 1.0 because
+    # 0.0 is falsy in Python. A muted clip (volume=0.0) must stay 0.0, not become 1.0.
+    clip_volumes = [
+        float(v) if v is not None else 1.0
+        for cm in pipeline_clips
+        for v in (cm.get("clip_volume"),)
+    ]
 
     # 4. Cards (pre-render as video segments, prepend/append).
     report_stage("cards")
@@ -708,57 +721,243 @@ def run_pipeline(
         _run_with_amf_fallback(cmd, _fallback_single)
     else:
         log.info("[J] clip_volumes=%s", clip_volumes)
-        fc, v_out, a_out = build_filter_complex(
-            current_paths, durations, audio_flags,
-            transition=config.get("transition", "none"),
-            mode=mode,
-            output_resolution=output_resolution,
-            clip_volumes=clip_volumes,
-            shuffle_between=config.get("shuffle_between", False),
-            seed=job.get("id"),
-            opening_transition=config.get("opening_transition", "none"),
-            closing_transition=config.get("closing_transition", "none"),
-        )
-        # Fuse single-pass loudnorm into the audio tail when final mode + music
-        # off (with music it fuses into the step 6 encode). Draft skips loudnorm.
-        a_map = a_out
-        if a_out and mode != "draft" and not music_on:
-            fc += f"; {a_out}{loudnorm_filter()}[aloud]"
-            a_map = "[aloud]"
-        log.info("[render] filter_complex:\n  %s", fc)
+        transition = config.get("transition", "none")
+        shuffle_between = config.get("shuffle_between", False)
+        opening_transition = config.get("opening_transition", "none")
+        closing_transition = config.get("closing_transition", "none")
+        has_open = opening_transition != "none"
+        has_close = closing_transition != "none"
+        has_xfade = (transition != "none") or shuffle_between
 
-        def _build_multi(b_argv, c_args, paths, out_path):
-            if is_amf:
-                in_args = [arg for p in paths for arg in ("-i", to_win_path(p))]
-                o = to_win_path(out_path)
+        # Localise all /mnt/* inputs to WSL tmpfs before any FFmpeg encode.
+        # Opening 17+ Windows-filesystem files concurrently via the 9P driver
+        # floods the WSL kernel page-cache allocator and restarts the VM (exit 15).
+        # Sequential copy to tmpfs takes ~2s for ~400 MB; FFmpeg then reads from
+        # RAM-backed tmpfs with no 9P pressure.
+        def _localise_inputs(paths: list, dest: Path) -> list:
+            out = []
+            for i, p in enumerate(paths):
+                ps = str(p)
+                if ps.startswith("/mnt/"):
+                    local = dest / f"render_in_{i}.mp4"
+                    if not local.exists():
+                        log.info("[render] localise input %d: %s", i, Path(ps).name)
+                        shutil.copyfile(ps, str(local))
+                    out.append(local)
+                else:
+                    out.append(p)
+            return out
+
+        current_paths = _localise_inputs(current_paths, tmp)
+        log.info("[render] all inputs localised to tmpfs")
+
+        # ---------------------------------------------------------------
+        # U1g: segmented (memory-bounded) xfade render.
+        # A monolithic N-input 4K xfade graph buffers decoded 12.4 MB frames
+        # at every chained stage; on big projects peak RAM overflows the WSL
+        # VM and it is balloon-killed (exit 15). Fix: render the video xfade
+        # in overlap-by-one batches of BATCH_SIZE (chain depth stays small),
+        # join the segments with a lossless concat in each shared clip's solo
+        # region, render the (cheap) audio acrossfade in a single pass, and
+        # mux. See docs/batch-plan-u1-subbatches.md "Batch U1g".
+        # ---------------------------------------------------------------
+        BATCH_SIZE = 4
+
+        def _render_segmented() -> None:
+            xf = clamp_xfade_dur(durations)
+            per_cut_names = resolve_cut_names(
+                len(current_paths), transition, shuffle_between, job.get("id")
+            )
+            # May raise ValueError if a boundary clip has no solo region.
+            plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
+            log.info(
+                "[U1g] segmented render: %d batches total=%.3fs xfade_dur=%.3f",
+                len(plan), total, xf,
+            )
+
+            # FPS for exact frame-count segmentation. Using -frames:v with counts
+            # derived from the GLOBAL frame grid makes the per-segment counts
+            # telescope to exactly round(total*fps) -- so boundary rounding cannot
+            # accumulate into progressive A/V drift across batches.
+            def _fps_float(raw: str) -> float:
+                if "/" in raw:
+                    a, c = raw.split("/")
+                    return float(a) / float(c)
+                return float(raw)
+            fps_f = _fps_float(target_fps_raw)
+            total_frames_expected = round(total * fps_f)
+
+            seg_files: list[Path] = []
+            covered_frames = 0
+            for bi, b in enumerate(plan):
+                idxs = b["clip_indices"]
+                bdurs = b["local_durations"]
+                bpaths = [current_paths[k] for k in idxs]
+                # Global cut between clip k and k+1 == per_cut_names[k]; this
+                # batch's cuts are the global cuts idxs[0]..idxs[-2].
+                bnames = [per_cut_names[k] for k in idxs[:-1]]
+                vfc, v_out_b = build_batch_video_fc(bdurs, bnames, mode, output_resolution, xf)
+
+                # Drop the leading (pre-window) part INSIDE the filter graph -- a
+                # "-c copy" trim snaps to GOP keyframes and drifts whole seconds
+                # (caught in U1g smoke test). setpts=0 resets each segment to PTS 0
+                # so the final concat -c copy joins cleanly.
+                start = b["seg_start_local"]
+                if start > 0.01:
+                    vfc = (
+                        vfc.replace(v_out_b, "[vpre]")
+                        + f"; [vpre]trim=start={start:.4f},setpts=PTS-STARTPTS{v_out_b}"
+                    )
+
+                # Exact end via integer frame count from the GLOBAL grid (telescopes).
+                g_start = b["seg_start_global"]
+                g_end = total if b["seg_end_local"] is None else b["seg_end_global"]
+                n_frames = round(g_end * fps_f) - round(g_start * fps_f)
+                covered_frames += n_frames
+
+                seg = tmp / f"u1g_seg_{bi}.mp4"
+
+                def _build_batch(b_argv, c_args, paths, out_path, graph, vmap, nfr):
+                    if is_amf:
+                        in_args = [a for p in paths for a in ("-i", to_win_path(p))]
+                        o = to_win_path(out_path)
+                    else:
+                        in_args = [a for p in paths for a in ("-i", str(p))]
+                        o = str(out_path)
+                    return (
+                        b_argv + ["-y"] + in_args
+                        + ["-filter_complex", graph, "-map", vmap, "-an"]
+                        + ["-r", target_fps_raw, "-frames:v", str(nfr)]
+                        + c_args + [o]
+                    )
+
+                cmd = _build_batch(bin_argv, codec_args, bpaths, seg, vfc, v_out_b, n_frames)
+
+                def _fb_batch(_paths=bpaths, _graph=vfc, _vmap=v_out_b, _seg=seg, _nfr=n_frames):
+                    fb_argv, fb_codec, _ = video_encoder_args(
+                        mode, output_resolution, win_ffmpeg, force_libx264=True
+                    )
+                    in_args = [a for p in _paths for a in ("-i", str(p))]
+                    return (
+                        fb_argv + ["-y"] + in_args
+                        + ["-filter_complex", _graph, "-map", _vmap, "-an"]
+                        + ["-r", target_fps_raw, "-frames:v", str(_nfr)]
+                        + fb_codec + [str(_seg)]
+                    )
+
+                log.info(
+                    "[U1g] batch %d/%d clips %s start=%.3f frames=%d (global [%.3f,%.3f])",
+                    bi + 1, len(plan), idxs, start, n_frames, g_start, g_end,
+                )
+                _run_with_amf_fallback(cmd, _fb_batch)
+                seg_files.append(seg)
+
+            # Sync assertion: total frames must telescope to round(total*fps).
+            drift_frames = abs(covered_frames - total_frames_expected)
+            log.info(
+                "[U1g] segment frames=%d expected=%d drift=%d frame(s) (%.1fms)",
+                covered_frames, total_frames_expected, drift_frames,
+                drift_frames / fps_f * 1000.0,
+            )
+            if drift_frames > 1:
+                raise RuntimeError(
+                    f"[U1g] frame-count drift {drift_frames} frames -- sync risk"
+                )
+
+            # Concat the segments (all identical codec/params) -> video_full.
+            concat_list = tmp / "u1g_concat.txt"
+            concat_list.write_text("".join(f"file '{s}'\n" for s in seg_files))
+            video_full = tmp / "u1g_video_full.mp4"
+            ffmpeg_run([
+                FFMPEG, "-y", "-f", "concat", "-safe", "0",
+                "-i", str(concat_list), "-c", "copy", str(video_full),
+            ])
+
+            # Single-pass audio over ALL clips (cheap; no 4K frame buffers).
+            # Loudnorm fuses here only when music is off (mirrors monolithic).
+            ln = loudnorm_filter() if (mode != "draft" and not music_on) else None
+            afc, a_out_lbl = build_audio_only_fc(durations, audio_flags, clip_volumes, xf, ln)
+
+            if a_out_lbl:
+                audio_full = tmp / "u1g_audio_full.m4a"
+                in_args = [a for p in current_paths for a in ("-i", str(p))]
+                ffmpeg_run(
+                    [FFMPEG, "-y"] + in_args
+                    + ["-filter_complex", afc, "-map", a_out_lbl, "-vn",
+                       "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(audio_full)]
+                )
+                # Mux video + audio -> render.mp4 (output). Two linear streams,
+                # zero muxing queue. Step 6 (music) consumes this exactly as before.
+                ffmpeg_run([
+                    FFMPEG, "-y", "-i", str(video_full), "-i", str(audio_full),
+                    "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(output),
+                ])
             else:
-                in_args = [arg for p in paths for arg in ("-i", str(p))]
-                o = str(out_path)
-            return (
-                b_argv + ["-y"] + in_args
-                + ["-filter_complex", fc, "-map", v_out]
-                + (["-map", a_map] if a_map else [])
-                + c_args
-                + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
-                + [o]
+                ffmpeg_run([FFMPEG, "-y", "-i", str(video_full), "-c", "copy", str(output)])
+
+        use_batched = (
+            len(current_paths) > BATCH_SIZE and has_xfade and not has_open and not has_close
+        )
+        did_batched = False
+        if use_batched:
+            try:
+                _render_segmented()
+                did_batched = True
+            except Exception as e:  # noqa: BLE001 -- fall back to monolithic on any planner/encode failure
+                log.warning("[U1g] segmented render failed (%s) -- falling back to monolithic", e)
+                did_batched = False
+
+        if not did_batched:
+            # Monolithic single-graph path: small projects (<= BATCH_SIZE), the
+            # "none"/concat path, open/close transitions, or a segmented fallback.
+            fc, v_out, a_out = build_filter_complex(
+                current_paths, durations, audio_flags,
+                transition=transition,
+                mode=mode,
+                output_resolution=output_resolution,
+                clip_volumes=clip_volumes,
+                shuffle_between=shuffle_between,
+                seed=job.get("id"),
+                opening_transition=opening_transition,
+                closing_transition=closing_transition,
             )
+            a_map = a_out
+            if a_out and mode != "draft" and not music_on:
+                fc += f"; {a_out}{loudnorm_filter()}[aloud]"
+                a_map = "[aloud]"
+            log.info("[render] filter_complex:\n  %s", fc)
 
-        cmd = _build_multi(bin_argv, codec_args, current_paths, output)
+            def _build_multi(b_argv, c_args, paths, out_path):
+                if is_amf:
+                    in_args = [arg for p in paths for arg in ("-i", to_win_path(p))]
+                    o = to_win_path(out_path)
+                else:
+                    in_args = [arg for p in paths for arg in ("-i", str(p))]
+                    o = str(out_path)
+                return (
+                    b_argv + ["-y"] + in_args
+                    + ["-filter_complex", fc, "-map", v_out]
+                    + (["-map", a_map] if a_map else [])
+                    + c_args
+                    + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
+                    + [o]
+                )
 
-        def _fallback_multi():
-            fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
-            # Rebuild without is_amf path translation for WSL paths
-            in_args = [arg for p in current_paths for arg in ("-i", str(p))]
-            return (
-                fb_argv + ["-y"] + in_args
-                + ["-filter_complex", fc, "-map", v_out]
-                + (["-map", a_map] if a_map else [])
-                + fb_codec
-                + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
-                + [str(output)]
-            )
+            cmd = _build_multi(bin_argv, codec_args, current_paths, output)
 
-        _run_with_amf_fallback(cmd, _fallback_multi)
+            def _fallback_multi():
+                fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
+                in_args = [arg for p in current_paths for arg in ("-i", str(p))]
+                return (
+                    fb_argv + ["-y"] + in_args
+                    + ["-filter_complex", fc, "-map", v_out]
+                    + (["-map", a_map] if a_map else [])
+                    + fb_codec
+                    + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
+                    + [str(output)]
+                )
+
+            _run_with_amf_fallback(cmd, _fallback_multi)
 
     encoder_name = codec_args[1] if len(codec_args) > 1 else "libx264"
     render_s = time.time() - t0
@@ -824,8 +1023,9 @@ def run_pipeline(
         transition    = config.get("transition", "none")
 
         volume_custom = int(any(
-            abs(float(cm.get("clip_volume", 1.0) or 1.0) - 1.0) > 1e-6
+            abs((float(v) if v is not None else 1.0) - 1.0) > 1e-6
             for cm in pipeline_clips
+            for v in (cm.get("clip_volume"),)
         ))
         report_analysis(
             f"clips_used={clips_used}"

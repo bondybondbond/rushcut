@@ -135,13 +135,25 @@ def video_encoder_args(
 
     # libx264 fallback (WSL ffmpeg)
     from .utils import FFMPEG
-    crf    = 35 if is_draft else 22
-    preset = "ultrafast" if is_draft else "fast"
-    codec_args = [
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-profile:v", "main",
-        "-crf", str(crf),
-        "-preset", preset,
-    ]
+    if is_draft:
+        # Draft: speed over quality (CRF 35, ultrafast).
+        codec_args = [
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "main",
+            "-crf", "35",
+            "-preset", "ultrafast",
+        ]
+    else:
+        # Final master: 40 Mbps target bitrate at preset slow for
+        # DaVinci-comparable sharpness. Bitrate-targeted (not CRF) so the master
+        # holds a consistent high bitrate; slow preset spends CPU on better motion
+        # estimation. Closes the perceived-softness gap vs a direct source render.
+        codec_args = [
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "main",
+            "-b:v", "40M",
+            "-preset", "medium",
+        ]
     return [FFMPEG], codec_args, False

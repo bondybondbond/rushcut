@@ -9,6 +9,7 @@ import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
 type LibraryMood = "cinematic" | "upbeat" | "chill" | "electronic";
@@ -63,7 +64,7 @@ function deriveLibraryMood(mood: MusicMood): LibraryMood | null {
 
 function readStorage(key: string): SoundState {
   try {
-    const raw = sessionStorage.getItem(key);
+    const raw = getRenderPref(key);
     if (!raw) return DEFAULT_SOUND;
     const parsed = JSON.parse(raw) as Partial<SoundState>;
     const VALID_MOODS: MusicMood[] = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"];
@@ -630,7 +631,7 @@ export default function Sound() {
 
   function persist(next: SoundState) {
     setSound(next);
-    sessionStorage.setItem(storageKey, JSON.stringify(next));
+    setRenderPref(storageKey, JSON.stringify(next));
   }
 
   function handleSourceClick(newSource: MusicSource) {

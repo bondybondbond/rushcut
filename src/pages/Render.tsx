@@ -8,6 +8,7 @@ import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 import { buildJobConfig, readTransitionConfig } from "@/utils/buildJobConfig";
+import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import { absoluteDateTime } from "@/utils/timeAgo";
 import { resLabel, durationLabel } from "@/utils/jobMeta";
 
@@ -72,7 +73,7 @@ export default function Render() {
   const [has4K, setHas4K] = useState(false);
   const [outputRes, setOutputRes] = useState<"1080p" | "4k">(() => {
     try {
-      const stored = sessionStorage.getItem(`rc_render_res_${projectId}`);
+      const stored = getRenderPref(`rc_render_res_${projectId}`);
       return stored === "4k" ? "4k" : "1080p";
     } catch {
       return "1080p";
@@ -80,7 +81,7 @@ export default function Render() {
   });
   const [fastRender, setFastRender] = useState(() => {
     try {
-      return sessionStorage.getItem(`rc_fast_render_${projectId}`) === "1";
+      return getRenderPref(`rc_fast_render_${projectId}`) === "1";
     } catch { return false; }
   });
   const [toast, setToast] = useState<string | null>(null);
@@ -107,6 +108,9 @@ export default function Render() {
   const [proxyElapsedLabel, setProxyElapsedLabel] = useState("0s");
   const waitStartRef = useRef<number>(0);
   const waitStartReadyRef = useRef<number>(0);
+  // U1b: stall detector — tracks last time proxyReady advanced; used to force-unblock
+  // if no progress for >45s (handles 'encoding' stuck claims that survive the Rust reset).
+  const stallRef = useRef<{ lastReady: number; lastAdvanceMs: number }>({ lastReady: -1, lastAdvanceMs: 0 });
   // T3: proxy wait is now the first sub-stage of the rendering progress bar
   // (no separate "awaiting-proxies" screen). The synchronisation barrier is
   // preserved -- the actual job still does not start until proxies are ready.
@@ -122,20 +126,20 @@ export default function Render() {
   })();
   const soundMoodVal = (() => {
     try {
-      const raw = sessionStorage.getItem(`rc_sound_${projectId}`);
+      const raw = getRenderPref(`rc_sound_${projectId}`);
       return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null;
     } catch { return null; }
   })();
 
   function handleResSelect(res: "1080p" | "4k") {
     setOutputRes(res);
-    try { sessionStorage.setItem(`rc_render_res_${projectId}`, res); } catch { /* ignore */ }
+    setRenderPref(`rc_render_res_${projectId}`, res);
   }
 
   function handleFastRenderToggle() {
     const next = !fastRender;
     setFastRender(next);
-    try { sessionStorage.setItem(`rc_fast_render_${projectId}`, next ? "1" : "0"); } catch { /* ignore */ }
+    setRenderPref(`rc_fast_render_${projectId}`, next ? "1" : "0");
   }
 
   function onResizePointerDown(e: React.PointerEvent) {
@@ -209,6 +213,7 @@ export default function Render() {
       // only appears once startRenderNow() is called when all proxies land.
       waitStartRef.current = Date.now();
       waitStartReadyRef.current = status.ready;
+      stallRef.current = { lastReady: -1, lastAdvanceMs: 0 }; // U1b: reset stall tracker
       invoke("generate_proxies_cmd", { projectId: pid, lowPriority: false }).catch(console.error);
       setPreparing(true);
     } catch (e) {
@@ -432,6 +437,22 @@ export default function Render() {
           setPreparing(false);
           startRenderNow(projectId!);
           return true;
+        }
+
+        // U1b stall detector: if proxyReady hasn't advanced in 45s, force-reset
+        // stuck encoding claims and re-fire the boost. Covers the case where
+        // a dead FFmpeg process left claims in 'encoding' that the Rust startup
+        // reset didn't catch (claims were < 900s old at restart time).
+        const now = Date.now();
+        if (status.ready !== stallRef.current.lastReady) {
+          stallRef.current = { lastReady: status.ready, lastAdvanceMs: now };
+        } else if (stallRef.current.lastAdvanceMs > 0 && now - stallRef.current.lastAdvanceMs > 300_000) {
+          console.warn("[render] proxy stall detected — resetting encoding claims and retrying");
+          stallRef.current = { lastReady: -1, lastAdvanceMs: 0 };
+          await invoke("reset_proxy_encoding_cmd", { projectId: projectId! }).catch(console.error);
+          await invoke("generate_proxies_cmd", { projectId: projectId!, lowPriority: false }).catch(console.error);
+        } else if (stallRef.current.lastAdvanceMs === 0) {
+          stallRef.current = { lastReady: status.ready, lastAdvanceMs: now };
         }
       } catch (e) {
         console.error("[render] readiness poll failed", e);

@@ -64,8 +64,9 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 ## Workflow — In-session binary uses a Claude MSIX container DB, not the user's real Roaming file
 
 **Problem:** When the rushcut debug binary is launched *in-session* (via `Start-Process` from Claude Code's packaged context), Windows MSIX filesystem virtualisation redirects its `%APPDATA%` writes to `C:\Users\Manasak\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\rushcut\rushcut.db` — a separate physical file. `dirs::data_dir()` prints the *logical* Roaming path in logs, but that is a lie on this machine. WSL `/mnt/c/.../Roaming/rushcut/rushcut.db` is the user's real file; the Windows Store `python.exe` alias has its own container too. All three disagree.
-**Solution:** To verify DB state against the in-session binary: inject and read using WSL python pointed at the **container path** (`/mnt/c/Users/Manasak/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/rushcut/rushcut.db`), not the real Roaming path. Drop WSL caches before reading (`echo 1 > /proc/sys/vm/drop_caches`) — 9p reads are stale even after the container DB changes. Confirm the right file by temporarily adding `eprintln!("[dbpath] {}", db::db_path().display())` to `setup()` and reading binary stderr.
-**Context:** In-session DB verification when the binary is launched via `Start-Process` (i.e. from Claude Code). For the user's own launched binary (normal double-click outside any package), this does NOT apply — the real Roaming file is used and there is no virtualisation.
+**Solution:** To verify DB state against the in-session binary: inject and read using WSL python pointed at the **container path** (`/mnt/c/Users/Manasak/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache\Roaming\rushcut\rushcut.db`), not the real Roaming path. Drop WSL caches before reading (`echo 1 > /proc/sys/vm/drop_caches`) — 9p reads are stale even after the container DB changes. Confirm the right file by temporarily adding `eprintln!("[dbpath] {}", db::db_path().display())` to `setup()` and reading binary stderr.
+**Critical addendum — PowerShell `$env:APPDATA` is ALSO virtualised:** Claude's own PowerShell tool runs inside the MSIX container, so `$env:APPDATA` in any PowerShell command resolves to the container's virtual Roaming path (yesterday's timestamp, stale file). It does NOT point to the user's real binary's DB. To cross-check the DB used by the user's own double-clicked binary, always use WSL with the absolute Roaming path: `wsl -- stat /mnt/c/Users/Manasak/AppData/Roaming/rushcut/rushcut.db`. A stat showing today's timestamp confirms the real file; `$env:APPDATA` will show yesterday's.
+**Context:** In-session DB verification when the binary is launched via `Start-Process` (i.e. from Claude Code). For the user's own launched binary (normal double-click outside any package), this does NOT apply — the real Roaming file is used, but PowerShell reads are still virtualised and stale.
 
 ---
 
@@ -191,6 +192,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **Source format**: HEVC Main 10 (`yuv420p10le`), portrait (1728×3072), 29.97fps. Normalise to H.264 `yuv420p` 25fps CFR before any filter operations.
 - **ffprobe `r_frame_rate`** returns a fraction string (`"30000/1001"`) — must split on `/` and divide; never a decimal float.
 - **Silence detection**: DJI clips have lots of near-silent sections (camera handling noise). Threshold `-30dB` with `d=0.5` works; may need tuning per footage type.
+
+## Pipeline Python — manifest numeric field falsiness trap
+
+**Problem:** `float(d.get("clip_volume", 1.0) or 1.0)` coerces Python's falsy `0.0` (muted clip) to `1.0` (full volume) because `0.0 or 1.0 == 1.0`. The mute feature appeared non-functional despite DB, manifest, and Rust all being correct — the bug was purely in how `render.py` consumed the manifest value.
+**Solution:** For any numeric manifest field where `0` / `0.0` is a valid non-default, use an explicit None check: `float(v) if v is not None else default`. One pattern that avoids the trap in a list comprehension: `for cm in clips for v in (cm.get("clip_volume"),)`. The outer loop captures the lookup once; `if v is not None` correctly distinguishes "absent key (use default)" from "present but zero (use zero)".
+**Context:** `pipeline/render.py` `clip_volumes` list (line ~588) and `volume_custom` ANALYSIS flag. Applies to any pipeline manifest read where zero is semantically meaningful: volume, start offsets, crop ratios, card opacity.
+
+---
+
+## FFmpeg — `aevalsrc` sample-rate option renamed `r=` → `s=` in FFmpeg 6.1.1
+
+**Problem:** `aevalsrc=0:c=stereo:d=5.0:r=48000` raises `Error applying option 'r' to filter 'aevalsrc': Option not found` (exit 8) under FFmpeg 6.1.1 (the version installed via `apt-get` on Ubuntu 24.04). Earlier FFmpeg versions accepted `r=` as the sample-rate param; 6.1.1 renamed it to `s=`.
+**Solution:** Use `s=48000` (not `r=48000`) in all `aevalsrc` filter strings. Grep `pipeline/` for `aevalsrc` before any mute/silence-injection work — there are 3 occurrences in `transitions.py` `build_audio_only_fc()`. The `inject_silence` commands elsewhere already used `s=` correctly; only `build_audio_only_fc` had the old name.
+**Context:** `pipeline/transitions.py` — any `aevalsrc` filter used to generate silence for muted clips or boundary segments in the U1g segmented audio pass. Also affects the monolithic fallback path if silence generation is ever triggered there.
+
+---
 
 ## FFmpeg — music looping
 
