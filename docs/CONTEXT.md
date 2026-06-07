@@ -15,14 +15,14 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U1e (stalled render detection) COMPLETE (2026-06-07). Next: U1g (segmented xfade render) or U2.**
+**Phase 2 — Batch U1g (segmented xfade render) COMPLETE (2026-06-07). Next: U2 or remaining U1 items.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U1g** — Segmented xfade render (memory-bounded): fixes exit-15 crash on large 4K renders. Batches of 4 clips (overlap-by-one), audio in a single pass, lossless mux. Highest risk/reward of remaining U1 items — blocks all large 4K projects. Full spec: `docs/batch-plan-u1-subbatches.md`.
-- **Or U2** — Timeline clip reorder (drag-to-reorder in Arrange filmstrip). Depends on founder priority.
+- **Batch U2** — Timeline clip reorder (drag-to-reorder in Arrange filmstrip). Founder priority call.
+- **Or U1g extension** — open/close-to-black projects (`has_open`/`has_close`) still use monolithic path; exit-15 risk on very large 4K projects. Add segmented path for those cases.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
@@ -58,6 +58,10 @@ Mitigation status:
 ---
 
 ## Recently shipped this session (2026-06-07)
+
+- **Batch U1g — Segmented xfade render COMPLETE (verification):** Already implemented in U1b commit (`ff0e527`). Session verified against real 21-clip 4K Stagecoach project. Result: exit code 0, `drift=0 frame(s) (0.0ms)`, 7 batches [0-3][3-6]...[18-20], all 6 boundary cuts inside solo regions, cards present (silent_0.mp4/silent_20.mp4), music mixed (cinematic.mp3 balanced 0.4/0.4), peak WSL memory ~9.7 GB (12 GB limit safe). Output: `u1g-verify.mp4` 751.9 MB 3840×2160 140.6s. `t_render_s=531s, proxy_used=9`. Open/close-to-black still uses monolithic path (documented gap). 9/9 fast PASS, 14/14 render PASS.
+
+## Recently shipped previous session (2026-06-07)
 
 - **Batch U1e — Stalled Render Detection COMPLETE:** UI-only change in `Render.tsx`. Added `lastProgressAtRef` (timestamp of last `pipeline-progress` OR `pipeline-stage` event) and a `stalled` boolean. A 30s interval checks: if `Date.now() - lastProgressAtRef.current > 120_000`, `setStalled(true)`. Both event types reset the ref (stage transitions count as liveness, preventing false positives during long xfade stages). Re-attach seed comes from `active_job.updated_at` inside the load `useEffect` — not `Date.now()` — so a stall that began before the user navigated away surfaces immediately on return (proven live: warning reappeared 2.48s after remount with 54s stale `updated_at`). Warning panel: `border-l-2 border-l-[#FF8A65]` peach accent, `text-sm text-[#e5e5e5]` body, "Try Again" peach text button → `startNewVersion()`. `data-testid="render-stall-warning"` + `data-testid="btn-stall-retry"`. Verified via CDP: Screenshot A (normal render, no warning), Screenshot B (SIGSTOP frozen pipeline, warning at 120s), Screenshot C (SIGCONT resume, render completed, warning cleared). DESIGN.md extended with inline warning panel variant.
 

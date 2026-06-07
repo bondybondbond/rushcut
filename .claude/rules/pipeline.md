@@ -38,6 +38,14 @@ Before writing any A/V sync fix or normalise speed fix, run a real render and re
 
 **Music volume ducking (post-Batch B):** `music.py` `_build_filter()` now applies `[0:a]volume={movie_vol}[movaudio]` to the movie audio stream before amix. `movie_vol` is preset-driven: `{subtle: 1.0, balanced: 0.7, prominent: 0.3}`. The `mix_music()` signature takes `movie_vol: float = 1.0`. Callers in `render.py` pass `movie_vol = _MOVIE_VOL.get(round(music_volume, 1), 0.7)`.
 
+## Segmented xfade render (U1g)
+
+- **`_render_segmented()` activates when `len(current_paths) > BATCH_SIZE and has_xfade and not has_open and not has_close`** — batches of ≤4 clips (overlap-by-one), single audio pass, lossless `-c copy` concat + mux. The `has_open`/`has_close` gap: projects with open/close-to-black transitions still use the monolithic path and remain exit-15 candidates on very large projects.
+- **`BATCH_SIZE = 4` is the safe ceiling for 4K at 12 GB WSL** — actual peak for one 4K batch: ~6–9.7 GB (4 decoders + xfade buffers + libx264 medium). Do NOT raise to 5 or more without measuring peak RSS first.
+- **Frame-count telescoping prevents drift** — batch frame count = `round(g_end * fps_f) - round(g_start * fps_f)` using the global frame grid. Using `round(batch_duration * fps_f)` instead causes progressive drift: each batch adds one sub-frame rounding error that accumulates across boundaries. Confirmed: `drift=0 frame(s)` on a 21-clip 4K render.
+- **In-filter trim, not `-c copy` segment trim** — clips are trimmed inside `filter_complex` using `trim=start={t:.4f},setpts=PTS-STARTPTS`. Segment trimming with `-c copy` snaps to the nearest keyframe and can drift by whole seconds.
+- **Boundary cut placement: inside the shared clip's solo region** — the clip that bridges two batches (overlap clip) appears in both. The concat cut point must land inside the solo region: `[offset[k]+xfade_dur, offset[k+1]]`. A cut outside this region overlaps two simultaneous xfades and corrupts the transition.
+
 ## Invocation
 
 ```
