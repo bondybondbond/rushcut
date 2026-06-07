@@ -15,13 +15,13 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U1d (new render visibility + nav-guard) COMPLETE (2026-06-07). Next: U1e or U2.**
+**Phase 2 — Batch U1e (stalled render detection) COMPLETE (2026-06-07). Next: U1g (segmented xfade render) or U2.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U1e** — Stalled render detection: if a job stays `processing` with no `pipeline-progress` event for >N minutes, surface a "still running?" UI with an option to check status or abandon.
+- **Batch U1g** — Segmented xfade render (memory-bounded): fixes exit-15 crash on large 4K renders. Batches of 4 clips (overlap-by-one), audio in a single pass, lossless mux. Highest risk/reward of remaining U1 items — blocks all large 4K projects. Full spec: `docs/batch-plan-u1-subbatches.md`.
 - **Or U2** — Timeline clip reorder (drag-to-reorder in Arrange filmstrip). Depends on founder priority.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
@@ -58,6 +58,10 @@ Mitigation status:
 ---
 
 ## Recently shipped this session (2026-06-07)
+
+- **Batch U1e — Stalled Render Detection COMPLETE:** UI-only change in `Render.tsx`. Added `lastProgressAtRef` (timestamp of last `pipeline-progress` OR `pipeline-stage` event) and a `stalled` boolean. A 30s interval checks: if `Date.now() - lastProgressAtRef.current > 120_000`, `setStalled(true)`. Both event types reset the ref (stage transitions count as liveness, preventing false positives during long xfade stages). Re-attach seed comes from `active_job.updated_at` inside the load `useEffect` — not `Date.now()` — so a stall that began before the user navigated away surfaces immediately on return (proven live: warning reappeared 2.48s after remount with 54s stale `updated_at`). Warning panel: `border-l-2 border-l-[#FF8A65]` peach accent, `text-sm text-[#e5e5e5]` body, "Try Again" peach text button → `startNewVersion()`. `data-testid="render-stall-warning"` + `data-testid="btn-stall-retry"`. Verified via CDP: Screenshot A (normal render, no warning), Screenshot B (SIGSTOP frozen pipeline, warning at 120s), Screenshot C (SIGCONT resume, render completed, warning cleared). DESIGN.md extended with inline warning panel variant.
+
+## Recently shipped previous session (2026-06-07)
 
 - **Batch U1d — New Render Visibility + Nav-Guard COMPLETE:** Two bugs fixed. Bug 1: cold-path renders (proxy gate still building) were silently lost on navigate-away — `start_job` was only called from the polling effect, which tears down on unmount. Fix: persist intent via `rc_render_pending_<projectId>` in localStorage (via `renderStore.ts`); on mount, if flag is set + no active job, re-enter `submitJob()` to resume from where it left off. Double-submit guard: `removeRenderPref()` called before `await invoke("start_job")` so a job created on the warm path cannot be re-submitted on return. Bug 2: new render visibility — `get_latest_render` already orders by `created_at DESC`, so the newest done job with its correct filename + timestamp always loads. Verified via `eval-test-film-01.mp4` / "5 Jun 2026, 22:03" in the done-state view. [TRAP] discovered: `window.confirm` was silently broken in Tauri WebView2 (no `dialog:allow-confirm` capability in `default.json`). Pre-existing render-gate confirm in `BottomTabBar` never blocked and was logging unhandled rejections. Fixed by replacing `window.confirm` with async `import { confirm } from "@tauri-apps/plugin-dialog"` + adding `dialog:allow-confirm` to capabilities + binary rebuild. Dialog proof is indirect (CDP cannot hook Win32 modals) but strong: Win32 modal blocked desktop for duration of `request_access` timeout (300s), URL stayed on /trimmer/ after "No" click, zero console rejection errors. `src/utils/renderInFlight.ts` created then deleted (module-level nav-guard flag; nav-guard approach dropped because persist-intent makes it redundant). 9/9 fast + 14/14 render PASS.
 

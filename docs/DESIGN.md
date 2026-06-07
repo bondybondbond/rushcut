@@ -749,6 +749,28 @@ Used for transient feedback (e.g. duplicate-cut guard). Not a modal — no block
 )}
 ```
 
+### Inline Warning Panel (non-toast variant)
+
+When a warning has an interactive action (e.g. "Try Again") or persists until a condition clears, use an inline panel in the page flow instead of the floating toast. Same colour tokens, but interactive and position-relative.
+
+- **Position:** inline (not fixed), below its anchor element in the normal flow
+- **Container:** `bg-white/5 border border-white/10 border-l-2 border-l-[#FF8A65] rounded-md p-3 flex items-center justify-between gap-4`
+- **Text:** `text-sm text-[#e5e5e5]` — same as toast
+- **Action:** inline `text-sm text-[#FF8A65] font-medium hover:underline` button (NOT `pointer-events-none`)
+- **No auto-dismiss:** persists until the underlying condition clears (clear via state reset)
+- **No red:** `#FF8A65` peach is the warning signal; red (`text-red-*`) is reserved for the hard error phase
+
+```tsx
+{stalled && (
+  <div className="mt-3 flex items-center justify-between gap-4 rounded-md border border-white/10 border-l-2 border-l-[#FF8A65] bg-white/5 p-3">
+    <p className="text-sm text-[#e5e5e5]">Warning message here.</p>
+    <button className="flex-shrink-0 text-sm text-[#FF8A65] font-medium hover:underline">
+      Action
+    </button>
+  </div>
+)}
+```
+
 ---
 
 ## TrimBar — Already-Included Region Overlay

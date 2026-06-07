@@ -100,6 +100,17 @@ export default function Render() {
   const completedRef = useRef(false);
   const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // U1e: stalled-render detection. lastProgressAtRef tracks the wall-clock time of
+  // the last pipeline-progress OR pipeline-stage event while rendering. A separate
+  // interval flips `stalled` true when no liveness signal has arrived for 120s, so
+  // the user isn't left staring at a running timer against a frozen bar.
+  // NOTE: useRef re-initialises on REMOUNT (route transition back to /render/:id),
+  // not just re-render -- this Date.now() default is only a safe seed; the real
+  // value is corrected inside the load effect's re-attach branch (from updated_at).
+  // Do not move that seed into render-body / useState init.
+  const lastProgressAtRef = useRef<number>(Date.now());
+  const [stalled, setStalled] = useState(false);
+
   // Batch R: proxy-readiness gate state. Render only auto-starts once every
   // include=1 clip has a proxy that matches render.py's reuse gate; otherwise
   // we fall into the 504s full-normalise path documented in the timing log.
@@ -182,6 +193,9 @@ export default function Render() {
       // continue the original timer) -- fresh starts seed it here instead.
       startTimeRef.current = Date.now();
       setElapsedLabel("0s");
+      // U1e: brand-new render has no prior activity -- seed the stall clock now.
+      lastProgressAtRef.current = Date.now();
+      setStalled(false);
       setPhase("rendering");
     } catch (e) {
       removeRenderPref(`rc_render_pending_${pid}`);
@@ -315,6 +329,15 @@ export default function Render() {
         // Show the continued elapsed value immediately (avoid a 1s "0s" flash).
         const sec = Math.max(0, Math.floor((Date.now() - startTimeRef.current) / 1000));
         setElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
+        // U1e: seed the stall clock from the job's LAST activity, not Date.now().
+        // update_job_progress + update_job_stage both bump updated_at, so this is a
+        // true "last pipeline activity" timestamp -- a render that stalled before the
+        // user returned then surfaces the warning on the next 30s check instead of
+        // being masked for a fresh 120s. This runs inside the load effect (post-mount),
+        // so it overwrites the useRef Date.now() default before the interval fires.
+        const lastActivity = Date.parse(status.active_job.updated_at);
+        lastProgressAtRef.current = Number.isNaN(lastActivity) ? Date.now() : lastActivity;
+        setStalled(false);
         setPhase("rendering");
         return;
       }
@@ -380,12 +403,19 @@ export default function Render() {
     const unlistenProgress = listen<PipelineProgressEvent>("pipeline-progress", (event) => {
       if (event.payload.jobId !== jobId) return;
       setProgress(event.payload.progress);
+      // U1e: liveness signal -- refresh the stall clock and clear any warning.
+      lastProgressAtRef.current = Date.now();
+      setStalled(false);
     });
 
     const unlistenStage = listen<{ jobId: string; stage: string }>("pipeline-stage", (event) => {
       if (event.payload.jobId !== jobId) return;
       setStage(stageLabel(event.payload.stage));
       resetActivityTimer();
+      // U1e: a stage transition is also liveness -- long xfade stages emit no
+      // progress for 2-3 min, so counting stage events here prevents false stalls.
+      lastProgressAtRef.current = Date.now();
+      setStalled(false);
     });
 
     const unlistenDone = listen<PipelineProgressEvent & { analysis?: string | null }>("pipeline-done", (event) => {
@@ -442,7 +472,18 @@ export default function Render() {
       const sec = Math.floor((Date.now() - startTimeRef.current) / 1000);
       setElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
     }, 1000);
-    return () => clearInterval(interval);
+    // U1e: every 30s, flag a stall if no progress/stage event for >120s. This does
+    // NOT change phase (the render may still be alive) -- it only surfaces a soft
+    // warning. The 120s window is reset by both pipeline-progress and pipeline-stage.
+    const stallCheck = setInterval(() => {
+      if (Date.now() - lastProgressAtRef.current > 120_000) setStalled(true);
+    }, 30_000);
+    return () => {
+      clearInterval(interval);
+      clearInterval(stallCheck);
+      // U1e: leaving "rendering" (done/error) clears any standing stall warning.
+      setStalled(false);
+    };
   }, [phase]);
 
   // Batch R+S: poll proxy readiness and listen to proxy-progress while in the
@@ -643,6 +684,28 @@ export default function Render() {
                 />
               </div>
               <p data-testid="elapsed-timer" className="text-xs text-[#a3a3a3]">{elapsedLabel} elapsed</p>
+
+              {/* U1e: soft stall warning -- shown when no liveness signal for >120s.
+                  Non-blocking; the render may still be running. "Try Again" reuses
+                  proxies via startNewVersion. Peach left-accent per DESIGN.md (the
+                  project's warning token) -- never red (red is the error phase). */}
+              {stalled && (
+                <div
+                  data-testid="render-stall-warning"
+                  className="mt-3 flex items-center justify-between gap-4 rounded-md border border-white/10 border-l-2 border-l-[#FF8A65] bg-white/5 p-3"
+                >
+                  <p className="text-sm text-[#e5e5e5]">
+                    This is taking longer than expected -- the render may have stalled. You can wait, or try again.
+                  </p>
+                  <button
+                    data-testid="btn-stall-retry"
+                    onClick={startNewVersion}
+                    className="flex-shrink-0 text-sm text-[#FF8A65] font-medium hover:underline"
+                  >
+                    Try Again
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

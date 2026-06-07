@@ -78,6 +78,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — `useRef` initial value is reset on every component remount
+
+**Problem:** `useRef(initialValue)` is only called once per *component instance*. A route transition that unmounts and remounts a component creates a fresh instance — every `useRef` reverts to its initial value. This silently resets any ref that was updated by effects or event listeners in the previous mount, including timestamps, flags, and accumulated state.
+**Solution:** For any ref that represents "last known state of something that continues across navigations" (e.g. last-pipeline-activity timestamp, accumulated scroll offset), seed the correct value inside a `useEffect` that runs shortly after mount — not as the `useRef` initial value. The effect fires after mount and before any polling interval can read the ref, so it always overwrites the stale default before it matters. Do NOT hoist the seed into the `useRef(...)` call or `useState` init, where it captures only the value at mount time (which may itself be stale).
+**Context:** `Render.tsx` `lastProgressAtRef` stall detection (U1e). Any component with a ref that tracks "ongoing external state" across navigations — the typical case is a timestamp or index seeded from DB/API data loaded by a `useEffect`.
+
+---
+
 ## React — imperative DOM updates for high-frequency media events
 
 **Problem:** React `setState` inside `onTimeUpdate` (fires 4–66 Hz) causes a re-render per tick. For a progress bar fill + elapsed label, this floods the React reconciler every 15–250ms, degrading playback smoothness.
