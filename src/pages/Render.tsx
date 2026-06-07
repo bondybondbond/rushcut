@@ -8,7 +8,7 @@ import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 import { buildJobConfig, readTransitionConfig } from "@/utils/buildJobConfig";
-import { getRenderPref, setRenderPref } from "@/utils/renderStore";
+import { getRenderPref, setRenderPref, removeRenderPref } from "@/utils/renderStore";
 import { absoluteDateTime } from "@/utils/timeAgo";
 import { resLabel, durationLabel } from "@/utils/jobMeta";
 
@@ -164,6 +164,11 @@ export default function Render() {
   async function startRenderNow(pid: string) {
     const config = buildJobConfig(pid);
     setPhase("starting");
+    // U1d: the moment we commit to handing the job to the pipeline, drop the
+    // "pending render" intent flag. start_job runs in Rust regardless of an
+    // unmount, so once we're past this point the job WILL be created -- a resume
+    // on the next mount must NOT submit a second one (double-submit guard).
+    removeRenderPref(`rc_render_pending_${pid}`);
     try {
       const newJobId = await invoke<string>("start_job", {
         projectId: pid,
@@ -179,6 +184,7 @@ export default function Render() {
       setElapsedLabel("0s");
       setPhase("rendering");
     } catch (e) {
+      removeRenderPref(`rc_render_pending_${pid}`);
       setErrorMsg(`Failed to start render: ${e}`);
       setPhase("error");
     }
@@ -187,7 +193,11 @@ export default function Render() {
   // Batch R: gate render on proxy readiness. Returns true once proceeding to
   // actual job submit. If clips are blocking, transitions to "awaiting-proxies"
   // and lets the polling effect drive the transition.
-  async function submitJob(pid: string) {
+  async function submitJob(pid: string, is4kOverride?: boolean) {
+    // U1d: the mount-effect resume path calls this before the has4K state has
+    // settled, so it passes the freshly-loaded value. All other callers fire
+    // after has4K is set and can rely on the closure.
+    const is4k = is4kOverride ?? has4K;
     // T5: show the spinner immediately on entry. The proxy-readiness round-trip
     // (and, for a partial-proxy 4K render, the wait that follows) can take a few
     // seconds; without this the 4K gate stayed on screen and the button looked
@@ -204,7 +214,7 @@ export default function Render() {
       // Skip gate when cold AND non-4K (normalise is fast enough at 1080p).
       // For cold 4K renders, always gate: background proxies are in flight and
       // the normalise penalty (169s) dwarfs the wait time. Batch S2.
-      if (status.ready >= status.total || (status.ready === 0 && !has4K)) {
+      if (status.ready >= status.total || (status.ready === 0 && !is4k)) {
         await startRenderNow(pid);
         return;
       }
@@ -214,6 +224,11 @@ export default function Render() {
       waitStartRef.current = Date.now();
       waitStartReadyRef.current = status.ready;
       stallRef.current = { lastReady: -1, lastAdvanceMs: 0 }; // U1b: reset stall tracker
+      // U1d: we are about to wait for proxies before start_job is ever called.
+      // If the user navigates away now, the polling effect (the only caller of
+      // start_job on this path) is torn down and the render is silently lost.
+      // Persist the intent so the next mount resumes it -- diagnosed cold-path bug.
+      setRenderPref(`rc_render_pending_${pid}`, "1");
       invoke("generate_proxies_cmd", { projectId: pid, lowPriority: false }).catch(console.error);
       setPreparing(true);
     } catch (e) {
@@ -286,6 +301,9 @@ export default function Render() {
       // U1: also restore the stage label and continue the elapsed timer from
       // the job's real start, instead of resetting to "Starting up..." + 0s.
       if (status.active_job) {
+        // U1d: a live job exists -> the intent is fulfilled; drop any pending flag
+        // so the resume branch below never double-submits.
+        removeRenderPref(`rc_render_pending_${projectId}`);
         setProgress(status.active_job.progress_pct);
         setJobId(status.active_job.id);
         // stageLabel("") returns "" (raw-string fallthrough), so || keeps a
@@ -298,6 +316,18 @@ export default function Render() {
         const sec = Math.max(0, Math.floor((Date.now() - startTimeRef.current) / 1000));
         setElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
         setPhase("rendering");
+        return;
+      }
+
+      // U1d: the user committed to a render but navigated away during the
+      // proxy-gate wait, before start_job was ever called -> no job exists
+      // (diagnosed cold-path bug). Resume it instead of showing the stale done
+      // state. submitJob re-checks proxy readiness + the persisted resolution,
+      // so it either starts immediately (warm) or re-enters the wait (cold).
+      // Checked AFTER active_job (no double-submit) but BEFORE latest_render
+      // (the new render takes precedence over the previous film).
+      if (getRenderPref(`rc_render_pending_${projectId}`) === "1" && count > 0) {
+        await submitJob(projectId, is4K);
         return;
       }
 

@@ -68,6 +68,14 @@ Hangs indefinitely — Vite HMR WebSocket blocks `readyState === "complete"`. Po
 
 `browser.navigate()` does not exist in WebdriverIO v9 — calling it throws "browser.navigate is not a function". To navigate mid-spec, use `browser.execute(() => window.history.pushState({}, "", "/path"))` then `waitUntil(() => browser.getUrl().includes("/path"))`. This is the same `pushState` pattern used elsewhere in the specs; the permitted-shortcut caveat from e2e.md still applies (prefer real UI clicks; pushState is only for cases where a real click is impractical mid-spec).
 
+## CDP `pushState` alone does not trigger React Router — must also dispatch `popstate`
+
+`window.history.pushState({}, "", "/path")` updates the URL but does NOT cause BrowserRouter to re-render. The component tree stays on the old route. Always follow with: `window.dispatchEvent(new PopStateEvent("popstate", { state: null }))`. Combined form used in eval sessions: `window.history.pushState({}, "", target); window.dispatchEvent(new PopStateEvent("popstate", { state: null }))`.
+
+## CDP `evaluate_script` `dialogAction` has no effect on Tauri plugin (Win32) dialogs
+
+`dialogAction: "accept"` / `"dismiss"` on `evaluate_script` only intercepts JS dialogs (`window.alert/confirm/prompt`). The `confirm()` from `@tauri-apps/plugin-dialog` shows a native Win32 `MessageBox` — outside WebView2, CDP has no hook into it. To verify a Tauri plugin dialog worked: (1) JS promise suspends but renderer stays responsive; (2) computer-use `request_access` times out if the modal is blocking the desktop; (3) after user dismisses, check URL and console for correct branch + no rejection errors. Do NOT rely on `dialogAction` for plugin dialogs.
+
 ## Never use `getHTML(false)` on the full body in any spec
 
 `$("body").getHTML(false)` fetches ~1.9MB of body HTML (MediaPantry thumbnails are base64-embedded as `src="data:image/jpeg;base64,..."` attributes) through WebDriver, causing >10 min transfers that exceed the 600s Mocha timeout. Replacement: `browser.execute(() => document.body.textContent ?? "")` — returns text nodes only, no attribute values, no base64. For targeted checks: `$('[data-testid="..."]').getText()` or `$$("button").find(b => b.getText() === "...")`.

@@ -15,15 +15,14 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U1c+U1f (startup self-heal + fast bg proxy) COMPLETE (2026-06-06). Next: U1d or U2.**
+**Phase 2 — Batch U1d (new render visibility + nav-guard) COMPLETE (2026-06-07). Next: U1e or U2.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U1d** — Single-job guard re-enable post-heal (was disabled in U1a). Confirm the guard is safe now that U1c clears stuck jobs on startup.
-- **Or U2** — Timeline clip reorder (drag-to-reorder in Arrange). Depends on founder priority.
-- U1c known gap: "file exists → done" branch (the intended happy path) was not tested this session due to WSL memory pressure killing FFmpeg mid-render. Low risk — verify on next real crash where WSL finishes cleanly.
+- **Batch U1e** — Stalled render detection: if a job stays `processing` with no `pipeline-progress` event for >N minutes, surface a "still running?" UI with an option to check status or abandon.
+- **Or U2** — Timeline clip reorder (drag-to-reorder in Arrange filmstrip). Depends on founder priority.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
@@ -58,7 +57,11 @@ Mitigation status:
 
 ---
 
-## Recently shipped this session (2026-06-06)
+## Recently shipped this session (2026-06-07)
+
+- **Batch U1d — New Render Visibility + Nav-Guard COMPLETE:** Two bugs fixed. Bug 1: cold-path renders (proxy gate still building) were silently lost on navigate-away — `start_job` was only called from the polling effect, which tears down on unmount. Fix: persist intent via `rc_render_pending_<projectId>` in localStorage (via `renderStore.ts`); on mount, if flag is set + no active job, re-enter `submitJob()` to resume from where it left off. Double-submit guard: `removeRenderPref()` called before `await invoke("start_job")` so a job created on the warm path cannot be re-submitted on return. Bug 2: new render visibility — `get_latest_render` already orders by `created_at DESC`, so the newest done job with its correct filename + timestamp always loads. Verified via `eval-test-film-01.mp4` / "5 Jun 2026, 22:03" in the done-state view. [TRAP] discovered: `window.confirm` was silently broken in Tauri WebView2 (no `dialog:allow-confirm` capability in `default.json`). Pre-existing render-gate confirm in `BottomTabBar` never blocked and was logging unhandled rejections. Fixed by replacing `window.confirm` with async `import { confirm } from "@tauri-apps/plugin-dialog"` + adding `dialog:allow-confirm` to capabilities + binary rebuild. Dialog proof is indirect (CDP cannot hook Win32 modals) but strong: Win32 modal blocked desktop for duration of `request_access` timeout (300s), URL stayed on /trimmer/ after "No" click, zero console rejection errors. `src/utils/renderInFlight.ts` created then deleted (module-level nav-guard flag; nav-guard approach dropped because persist-intent makes it redundant). 9/9 fast + 14/14 render PASS.
+
+## Recently shipped previous session (2026-06-06)
 
 - **Batch U1b — Render Quality + Mute Fix + localStorage COMPLETE:** Root cause identified: `sessionStorage` is cleared when the binary is relaunched, wiping transition/music/cards/resolution settings so they fell back to defaults on every new render started from a fresh binary. Fix: migrated all `rc_*` render-setting keys to `localStorage` via new `src/utils/renderStore.ts` (thin `getRenderPref`/`setRenderPref` wrappers). Six files updated: `buildJobConfig.ts`, `useConfiguredTabs.ts`, `Render.tsx`, `Trimmer.tsx`, `Arrange.tsx`, `Sound.tsx`. Bundled pipeline fixes: (1) Python falsiness trap in `render.py` — `0.0 or 1.0 = 1.0` silenced muted clips (volume=0.0) to full volume; fixed with explicit None check. (2) FFmpeg 6.1.1 renamed `aevalsrc` sample-rate param `r=` → `s=`; fixed in 3 occurrences in `transitions.py` `build_audio_only_fc()`. (3) `encoder.py` final master path: 40Mbps target bitrate + medium preset (was ultrafast for both draft and final). 9/9 fast PASS. 19-clip 4K observed render times: 3.6 min (medium/simple), 6.4 min (fast/comparison), 11.7 min (slow/comparison), 8.2 min (medium/final).
 

@@ -35,6 +35,8 @@ The `proxy_claimed_at INTEGER` column is stamped at claim time by `claim_clip_fo
 - Plugin commands must be declared in `src-tauri/capabilities/default.json`. Missing = `not allowed` at runtime (silent at compile/check time).
 - Plugin config in `tauri.conf.json`: use `null` for no-option plugins. Using `{}` causes a deserialization panic at startup.
 - **Check for existing plugin before adding a crate** — before adding `rfd` or similar, confirm `tauri-plugin-dialog` isn't already wired (`Cargo.toml` dep + `lib.rs` `.plugin(tauri_plugin_dialog::init())`). Already wired in this project with `dialog:allow-open` capability. Use `invoke("plugin:dialog|open", ...)` from TypeScript.
+- **`window.confirm` is silently broken in Tauri WebView2** — every call is rejected unless `"dialog:allow-confirm"` is in `capabilities/default.json`. No throw, no visible error (unless DevTools is open) — the gate just silently passes (`undefined` is falsy, so `if (!window.confirm(...)) return` never blocks). Fix: use `import { confirm } from "@tauri-apps/plugin-dialog"` (async) + add `"dialog:allow-confirm"` to capabilities + rebuild binary. The plugin is already wired; only the capability entry was missing.
+- **Capability changes require a binary rebuild** — editing `capabilities/default.json` has no effect until `cargo build` completes. Hot-reload (HMR) does NOT apply to Tauri capability manifests.
 
 ## DB
 

@@ -126,6 +126,30 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Tauri — `window.confirm` silently fails without `dialog:allow-confirm`
+
+**Problem:** In a Tauri WebView2, `window.confirm(...)` is internally routed to the `dialog` plugin. Without `"dialog:allow-confirm"` in `capabilities/default.json`, every call is rejected with a console error `"dialog.confirm not allowed"` and the dialog never appears. The confirm call returns `undefined` (falsy), so any gate of the form `if (!window.confirm(...)) return` will silently allow navigation rather than blocking it — the bug is invisible unless you specifically watch the console.
+**Solution:** Replace `window.confirm` with `import { confirm } from "@tauri-apps/plugin-dialog"` (async), and add `"dialog:allow-confirm"` to `capabilities/default.json`. Requires a binary rebuild — capability changes in JSON have no effect until the binary is recompiled.
+**Context:** `src/components/BottomTabBar.tsx` render-gate confirm. Any component that needs a blocking user choice. The `tauri-plugin-dialog` crate is already a dependency; only the capability entry was missing.
+
+---
+
+## Tauri plugin dialog — CDP cannot verify Win32 modal dialogs
+
+**Problem:** The native `confirm()` from `@tauri-apps/plugin-dialog` shows a Win32 `MessageBox` — a native OS modal outside the WebView2 renderer. CDP tools (`evaluate_script` with `dialogAction`, `handle_dialog`) only intercept JavaScript dialogs (`window.alert/confirm/prompt`). They have no hook into Win32 modals. Additionally, computer-use `request_access` approval dialogs also appear in the same desktop space — if a Win32 modal is already blocking the screen, the `request_access` dialog cannot appear, causing it to time out.
+**Solution:** Proof of a working Tauri plugin dialog is necessarily indirect: (1) the JS promise suspends → subsequent evaluate_script executions still run (renderer is alive) but the promise chain is blocked; (2) desktop interaction is blocked (computer-use `request_access` times out while the modal is open); (3) after the user dismisses it, the promise resolves and the correct branch executes (confirm=No → stays on Trimmer; confirm=Yes → navigate fires); (4) no console rejection errors. Together this constitutes strong but indirect proof. Do NOT expect a screenshot of the dialog itself from CDP.
+**Context:** Any session verifying dialog-gated navigation in Tauri. The `dialogAction: "accept"` parameter on `evaluate_script` only handles JS dialogs — it has no effect on Win32 modals.
+
+---
+
+## React — localStorage.setItem does not trigger re-render; stale closure captures old value
+
+**Problem:** Setting `localStorage.setItem(key, val)` in `evaluate_script` and then immediately clicking a button uses the React component's *last-rendered* closure over the `useConfiguredTabs` result — the hook re-reads localStorage only on the next render, which hasn't happened yet. Any inline condition in the `onClick` handler that reads from that hook sees the old value.
+**Solution:** After setting localStorage from outside React (e.g. CDP `evaluate_script`), trigger a re-render before clicking: either dispatch a `storage` event (`window.dispatchEvent(new StorageEvent("storage", {key}))`) or navigate to the same route to force a remount. For in-session test setups, prefer using `popstate` navigation to force a full remount cycle.
+**Context:** Any CDP-driven test that sets localStorage to change displayed state before clicking. Confirmed in `BottomTabBar` `useConfiguredTabs` during U1d verification.
+
+---
+
 ## Workflow — Visual eval bail-out when user is absent
 
 **Problem:** `request_access` for computer-use shows a dialog that the user must approve within 5 minutes. If the user isn't at their desk, two consecutive 5-minute timeouts (10 min total) are burned before giving up.

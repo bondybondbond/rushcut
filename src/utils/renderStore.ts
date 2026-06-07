@@ -30,6 +30,15 @@ export function setRenderPref(key: string, val: string): void {
   }
 }
 
+/** Remove a single rc_* pref. Never throws. */
+export function removeRenderPref(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Remove all rc_* prefs for a project (call on project delete to avoid orphaned keys). */
 export function clearRenderPrefs(projectId: string): void {
   const keys = [
@@ -38,6 +47,7 @@ export function clearRenderPrefs(projectId: string): void {
     `rc_cards_${projectId}`,
     `rc_render_res_${projectId}`,
     `rc_fast_render_${projectId}`,
+    `rc_render_pending_${projectId}`,
   ];
   try {
     keys.forEach((k) => localStorage.removeItem(k));

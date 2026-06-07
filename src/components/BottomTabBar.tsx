@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { Home, Scissors, Layers, Music, Clapperboard } from "lucide-react";
 import type { ConfigurableTab } from "@/hooks/useConfiguredTabs";
 
@@ -17,13 +18,19 @@ export function BottomTabBar({ projectId, activeTab, configured }: BottomTabBarP
     navigate("/upload");
   }
 
-  function goTab(tab: ActiveTab) {
+  // U1d: in a Tauri webview, native `window.confirm` is routed to the dialog
+  // plugin and REJECTED unless `dialog:allow-confirm` is granted -- it never
+  // blocks and logs an unhandled rejection. Use the plugin's async `confirm`
+  // (capability added in capabilities/default.json) so the render-readiness
+  // gate actually works.
+  async function goTab(tab: ActiveTab) {
     if (tab === "render") {
       const arrangeOk = configured.has("arrange");
       const soundOk = configured.has("sound");
       if (!arrangeOk && !soundOk) {
-        const ok = window.confirm(
-          "You haven't set transitions or music yet. Render anyway?"
+        const ok = await confirm(
+          "You haven't set transitions or music yet. Render anyway?",
+          { title: "Render", kind: "warning" }
         );
         if (!ok) return;
       }
