@@ -106,6 +106,25 @@ const VOLUME_PRESETS = [0, 50, 100] as const;
 
 const ZOOM_SCALE: Record<string, number> = { gentle: 1.3, medium: 1.5, tight: 2.0 };
 
+// Gradual-zoom speed -> fraction of the trimmed clip the zoom animates over before
+// holding. NEW TS const mirroring pipeline/zoom.py `_KB_SPEED_FRAC` so the preview
+// animation finishes at the same time the rendered zoom does. (Unrelated to the
+// KB_SPEEDS chip-label array above.)
+const KB_SPEED_FRAC: Record<string, number> = { slow: 1.0, med: 0.75, fast: 0.5 };
+
+// Preview duration (seconds) for the gradual-zoom CSS animation on a clip:
+// trimmed-duration x speed-fraction, matching the render. Returns 0 for non-gradual
+// clips (no preview animation). Min 0.1s so a near-zero trim never yields an invalid
+// (and silently non-running) 0s animation.
+function kbPreviewDurationSec(clip: Clip | null): number {
+  if (!clip) return 0;
+  const z = parseZoom(clip.zoom_mode);
+  if (z.style !== "gradual") return 0;
+  const trimmedMs = Math.max(0, (clip.out_ms ?? clip.duration_ms) - (clip.in_ms ?? 0));
+  const frac = KB_SPEED_FRAC[z.kbSpeed] ?? 1.0;
+  return Math.max(0.1, (trimmedMs / 1000) * frac);
+}
+
 export default function Arrange() {
   const { projectId } = useParams<{ projectId: string }>();
 
@@ -266,7 +285,8 @@ export default function Arrange() {
       wrap.style.animation = "";
       wrap.style.removeProperty("--kb-from");
       wrap.style.removeProperty("--kb-to");
-      wrap.style.transformOrigin = "";
+      // transformOrigin for fixed zoom is set by the JSX style prop (React-managed),
+      // so do NOT clear it here — clearing it after React's commit wipes the focal point.
       return;
     }
     const scale = parseFloat(z.kbRatio) || 1.5;
@@ -279,10 +299,14 @@ export default function Arrange() {
     // playing, leave the running animation untouched — restartZoomAnim()
     // handles reset + replay when the user presses play.
     if (isPlayingRef.current) return;
+    // Drive the preview length from trimmed-duration x speed (matches the render);
+    // keep the shorthand constant and override only animationDuration.
+    const dur = kbPreviewDurationSec(selectedClip ?? null);
     wrap.style.animation = "none";
     void wrap.offsetHeight;
-    wrap.style.animation = `rc-kenburns 4s ease-in-out 1 both`;
-  }, [selectedClipId, selectedClip?.zoom_mode, selectedClip?.focal_x, selectedClip?.focal_y, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+    wrap.style.animation = "rc-kenburns ease-in-out 1 both";
+    wrap.style.animationDuration = `${dur}s`;
+  }, [selectedClipId, selectedClip?.zoom_mode, selectedClip?.focal_x, selectedClip?.focal_y, selectedClip?.in_ms, selectedClip?.out_ms, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sound tab — independent video reload (mirrors zoom tab pattern, separate state)
   useEffect(() => {
@@ -495,9 +519,12 @@ export default function Arrange() {
     // Only act when a gradual zoom is configured.
     const z = parseZoom(selectedClipRef.current?.zoom_mode ?? null);
     if (z.style !== "gradual") return;
+    // Match the render timing: trimmed-duration x speed-fraction.
+    const dur = kbPreviewDurationSec(selectedClipRef.current);
     wrap.style.animation = "none";
     void wrap.offsetHeight;               // flush so the reset takes effect
-    wrap.style.animation = "rc-kenburns 4s ease-in-out 1 both";
+    wrap.style.animation = "rc-kenburns ease-in-out 1 both";
+    wrap.style.animationDuration = `${dur}s`;
   }
 
   // Playback controls

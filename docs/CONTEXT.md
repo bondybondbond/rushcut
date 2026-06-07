@@ -15,13 +15,13 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U2 (drag-to-reorder + filmPlayIdx bugfix) COMPLETE (2026-06-07). Next: U3, U5, or remaining backlog.**
+**Phase 2 — Batch U3a (zoom-tab focal correctness + SAR fix) COMPLETE (2026-06-07). Next: U3b, U5, or remaining backlog.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U3** — Zoom-tab correctness (per-clip zoom & focal point written through to render).
+- **Batch U3b** — Zoom-tab playback UX (items 4-6 from U3 spec): focal indicator enlargement, gradual-zoom preview playback, zoom queue scrubber.
 - **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
 - **Or U1g extension** — open/close-to-black projects (`has_open`/`has_close`) still use monolithic path; exit-15 risk on very large 4K projects.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted — it silently shifts to the next clip. Fix: clamp `filmPlayIdx` to `min(filmPlayIdx, newInFilm.length - 1)` after the filter.
@@ -60,6 +60,8 @@ Mitigation status:
 ---
 
 ## Recently shipped this session (2026-06-07)
+
+- **Batch U3a — Zoom-tab focal correctness + SAR fix COMPLETE:** Three changes across two files. (1) `Arrange.tsx` item 2a: removed `wrap.style.transformOrigin = ""` from the non-gradual branch of the paused-preview useEffect — it was wiping React-managed transformOrigin after JSX committed the focal point, reverting the preview back to center. (2) `Arrange.tsx` item 3: new `kbPreviewDurationSec()` helper reads `parseZoom()` and computes preview duration from `trimmedMs / 1000 * KB_SPEED_FRAC[speed]`; both `restartZoomAnim()` and the paused-preview effect now set `wrap.style.animationDuration` from this value instead of hardcoded `4s`; deps extended with `selectedClip?.in_ms`/`out_ms` so retrim/speed changes recompute. (3) `pipeline/transitions.py`: `,setsar=1` added to the canvas `pad=...` string in both `build_batch_video_fc` (segmented U1g path, line ~205) and `build_filter_complex` (monolithic path, line ~351) — fixes FFmpeg exit 234 `Parsed_concat SAR mismatch` when DJI proxy clips (SAR 3321:3320) and zoom-reencoded clips (SAR 1:1) enter the same concat filter. Item 1 (phantom clips) not reproducible — pre-existing sort_order dedup from U2 likely resolved it. Render verified: off-center focal log lines `focal=(0.60,0.40)`, `(0.80,0.70)`, `(0.20,0.30)` with correct crop math confirmed; render completed, visual frame check passed. E2E to run in separate session (chrome-devtools MCP was active in this session).
 
 - **Batch U2 — Drag-to-reorder + filmPlayIdx bugfix COMPLETE:** `StickyFilmStrip.tsx` rewritten with dnd-kit drag-to-reorder (`DndContext` + `SortableContext` + `SortableFilmTile` component, `PointerSensor` with `{ distance: 5 }`, `CSS.Translate.toString` for variable-width tiles). Swipe-delete replaced with hover-reveal `Trash2` bin icon (aligns with DESIGN.md). `onReorder` prop wired in both `Trimmer.tsx` and `Arrange.tsx` — merge reordered film IDs back into full clips array (sort_order pantry-collision safe), optimistic update + rollback, `invoke("reorder_clips_cmd")`. DESIGN.md extended with drag-to-reorder subsection. Bundled bugfix: `handleReorder` in `Trimmer.tsx` now corrects `filmPlayIdx` after reorder by finding the playing clip by ID in the new order (was: integer index stayed fixed causing playhead to show wrong clip). Pre-existing E2E fixes: `arrange.spec.ts` + `sound.spec.ts` `rc_*` key reads migrated from sessionStorage to localStorage (U1b debt). Known gap: `handleDeleteCut` does not correct `filmPlayIdx` on clip delete — pre-existing, not introduced here. 9/9 fast PASS, 26/26 arrange PASS.
 

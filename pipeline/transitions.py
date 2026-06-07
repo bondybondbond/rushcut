@@ -202,7 +202,7 @@ def build_batch_video_fc(
     scale_w, scale_h = _canvas_dims(mode, output_resolution)
     canvas = (
         f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,"
-        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2"
+        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
     )
     v_out = "[vout]"
     parts = [f"[{i}:v]{canvas}[sv{i}]" for i in range(n)]
@@ -348,7 +348,7 @@ def build_filter_complex(
     # are mixed in the same project (e.g. 540x1080 vs 1920x1080).
     canvas = (
         f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,"
-        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2"
+        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
     )
 
     v_out = "[vout]"
