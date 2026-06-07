@@ -1,7 +1,8 @@
 # 📸 Feature Spec: Photo Inclusion
 
 **Status:** Draft  
-**Date:** 2026-06-07
+**Date:** 2026-06-07  
+**Delivery Model:** Sequential batches — complete and test each before starting the next
 
 ---
 
@@ -13,111 +14,186 @@ Allow users to insert a photo montage sequence as a video clip into the RushCut 
 
 ## Entry Point
 
-- New optional button in the **bottom nav bar** (e.g. 📷 icon, labeled "Photos")
-- Tapping opens the Photo Inclusion flow (separate from the main video import)
+- New optional button in the **bottom nav bar** (📷 icon, labeled "Photos")
+- Tapping opens the Photo Inclusion flow (separate from main video import)
 
 ---
 
-## Flow
+## Batch Delivery Plan
 
-### Step 1 — Folder Selection
-- User selects a **local folder** of photos (use native file picker, folder-level selection)
-- Thumbnails of all images shown in a grid
-- User **taps to select** which photos to include (multi-select)
-- Confirm selection → proceeds to style picker
+Each batch is independently shippable and testable. Do not start the next batch until the current one passes all success criteria.
 
-### Step 2 — Style Picker
-User chooses how the photos will be animated/arranged. Start with 3 styles:
+---
 
-| Style | Description | Notes |
+## Batch A — Ken Burns Photo Sequence (Core)
+
+**Goal:** User can select photos, apply Ken Burns animation, preview it, and add it to the timeline as a draggable clip.
+
+### Scope
+
+**Step 1 — Folder / Photo Selection**
+- Bottom nav "Photos" button opens native file picker (folder or multi-file)
+- Thumbnails shown in a grid; tap to select/deselect (multi-select)
+- Confirm button proceeds to Step 2
+
+**Step 2 — Ken Burns Style Applied (auto, no style picker yet)**
+- Each photo fills full screen canvas
+- Alternating zoom direction: photo 1 = zoom in, photo 2 = zoom out, photo 3 = pan left→right, photo 4 = pan right→left, repeat
+- Ease in/out on all keyframes (no linear zoom)
+- Default: 3 sec per photo, adjustable total duration slider (5–30 sec range)
+- Minimum enforced: 2 sec per photo — warn user if they add too many photos for the duration set
+
+**Step 3 — Portrait Photo Handling**
+- Landscape canvas (16:9): portrait photos render with **blurred background fill** (same photo, blurred + scaled to fill, sharp photo centred on top)
+- This is the default — no option needed in v1
+
+**Step 4 — Preview**
+- Inline preview plays before confirming
+- Preview rendered at reduced resolution for speed (not export quality)
+
+**Step 5 — Timeline Integration**
+- Sequence added as a single `TimelineClip` block, `type: 'photo-sequence'`
+- Clip is draggable, re-orderable, deletable — same as any video clip
+- Thumbnail strip on the clip shows first photo + 🎞️ label
+- Music continues uninterrupted through the clip
+
+**Transitions at clip boundaries:**
+- Default: cross-dissolve 0.4 sec on both ends
+- No user-configurable transition type in Batch A
+
+### Data Model
+
+```
+PhotoSequenceClip {
+  type: 'photo-sequence',
+  photos: File[],
+  style: 'ken-burns',
+  durationTotal: number,        // seconds
+  durationPerPhoto: number,     // auto-calculated
+  portraitMode: 'blur-fill',    // locked in v1
+}
+```
+
+### Resolution Warning
+- If any photo is below 1280×720px, show a warning: "One or more photos may appear blurry when zoomed. Tap to continue anyway."
+
+### Success Criteria — Batch A
+
+| # | Test | Pass Condition |
+|---|------|----------------|
+| A1 | Tap Photos nav button | File picker opens |
+| A2 | Select 4 photos, tap Confirm | Thumbnail grid shows all 4 selected |
+| A3 | Preview plays | Ken Burns animates; zoom direction alternates per photo; no linear/jarring motion |
+| A4 | Portrait photo in selection | Renders with blurred background fill, sharp photo centred |
+| A5 | Set duration to 8 sec with 4 photos | Each photo runs exactly 2 sec |
+| A6 | Set duration to 5 sec with 6 photos | Warning shown: "too many photos for this duration" |
+| A7 | Confirm and add to timeline | Clip block appears on timeline, draggable |
+| A8 | Drag clip to different timeline position | Clip moves, other clips shift correctly |
+| A9 | Play through clip in editor | Music continues uninterrupted |
+| A10 | Cross-dissolve at clip boundary | Smooth dissolve in and out of photo sequence |
+| A11 | Low-res photo (<1280×720) in selection | Warning shown before confirming |
+| A12 | Delete clip from timeline | Clip removed, timeline reflows correctly |
+
+---
+
+## Batch B — Frame Styles (Visual Borders on Photos)
+
+**Goal:** User can apply a decorative frame to their photo sequence, choosing from 3 frame types.
+
+> **Dependency:** Batch A complete and passing.
+
+### Scope
+
+Frame is applied to each photo **within** the Ken Burns animation — i.e. the frame sits on top of the photo as an overlay layer.
+
+**3 Frame Types:**
+
+| Frame | Description | Visual Style |
 |---|---|---|
-| **Ken Burns** | Each photo fills full screen, slow zoom-in or zoom-out with subtle pan | Industry standard for still-to-video. Vary zoom direction per photo for flow. Ease in/out on keyframes. |
-| **Fan Stack** | Photos appear stacked, fanning out one by one like playing cards | Overlapping reveal, rotate ~5–15° per card. Good for 3–6 photos. |
-| **Collage Grid** | All selected photos arranged in a grid layout that appears as a single frame | Static or with staggered fade-in per photo. |
+| **Classic White** | Clean white border, ~2–3% of canvas width, slight drop shadow on inner edge | Timeless, wedding/print feel |
+| **Polaroid** | White border, thicker at bottom (~6%), very slight rotation (~1–2°) per photo, subtle drop shadow | Nostalgic, casual |
+| **Filmstrip** | Thin black border with sprocket holes on top and bottom edges | Cinematic, retro |
 
-> **Later additions could include:** filmstrip scroll, polaroid drop, mosaic build-up.
+**UX addition in Batch B:**
+- After photo selection, show a **Style row** with 3 frame thumbnails (tap to select, none selected = no frame)
+- Frame selection is optional — default is no frame
+- Frame preview updates in the existing inline preview
 
-### Step 3 — Duration & Timing
-- User sets **total sequence duration** (default: 5–10 sec, adjustable)
-- Per-photo time is calculated automatically: `total_duration / num_photos`
-- For Ken Burns: minimum ~2 sec per photo recommended (keep it slow and steady)
-- Preview of the sequence plays inline before confirming
+### Success Criteria — Batch B
 
-### Step 4 — Timeline Integration
-- Confirmed sequence is **added as a single clip block** to the universal film timeline
-- Behaves like any video clip: draggable, re-orderable, deletable
-- User can **drag it left/right** to position when in the edit it appears
-- Clip block shows a thumbnail preview strip (first photo + style icon label)
-
----
-
-## Music Continuity
-
-- Background music **continues uninterrupted** through the photo sequence
-- No ducking or fade needed — photo sequence is a visual-only overlay on the audio track
-- The audio layer is separate and unaffected by inserting photo clips
+| # | Test | Pass Condition |
+|---|------|----------------|
+| B1 | Style row shows 3 frame options | All 3 visible with thumbnail preview |
+| B2 | Select Classic White, play preview | Clean white border visible on all photos |
+| B3 | Select Polaroid, play preview | Thick bottom border + subtle tilt visible; tilt varies slightly per photo |
+| B4 | Select Filmstrip, play preview | Black border with sprocket holes visible |
+| B5 | Select no frame (default) | Photos render without any frame |
+| B6 | Frame renders on portrait (blur-fill) photo | Frame sits on sharp photo, not on the blurred background layer |
+| B7 | Frame persists in timeline clip thumbnail | Clip thumbnail strip reflects frame choice |
+| B8 | All Batch A criteria still pass | No regression |
 
 ---
 
-## Transitions
+## Batch C — Fan Stack Style
 
-This is the trickiest part. Two scenarios:
+**Goal:** Add a second animation style — photos reveal as a fan/card stack.
 
-### Scenario A: Photo sequence between two video clips
-- The **outgoing video clip's transition** plays normally into the photo sequence
-- Outgoing: use existing video transition (e.g. fade, cut, wipe) — transition from video → first photo
-- Incoming: transition from last photo → next video clip
-- Recommendation: **cross-dissolve** as the safest default for photo boundaries, since there's no natural "action" to match-cut on
-- Allow user to set the transition type at each boundary independently
+> **Dependency:** Batches A + B complete and passing.
 
-### Scenario B: Photo sequence at start or end
-- At start: sequence fades in from black (or from splash screen)
-- At end: sequence fades out to black (or to outro)
+### Scope
 
-### Known UX Gap ⚠️
-- There is **no "photo side" of a video transition** — the photo has no motion vector or scene context to anchor a directional transition
-- Mitigation: Ken Burns effect gives the photo movement, so a dissolve/fade feels natural as a blend
-- Do NOT attempt to apply a motion-match or J-cut to photos — treat them like a static clip with internal animation
+**Style Picker added to flow:**
+- After photo selection, user now sees a **Style Picker** row with 2 options: Ken Burns | Fan Stack
+- Frame selection row still appears below (Batch B)
+
+**Fan Stack behaviour:**
+- Photos stack on top of each other, centred on canvas
+- Each photo fans out in sequence: rotates ~5–15° (alternating left/right) and slides slightly off-centre
+- Reveal: one card fans out per beat, previous cards remain visible beneath
+- Cap: **maximum 6 photos** — if user selects more, show message "Fan Stack works best with up to 6 photos. Only the first 6 will be used."
+- Timing: each fan-out animation ~0.5 sec, then holds for remaining per-photo duration
+
+### Success Criteria — Batch C
+
+| # | Test | Pass Condition |
+|---|------|----------------|
+| C1 | Style Picker row shows Ken Burns + Fan Stack | Both options tappable |
+| C2 | Select Fan Stack with 4 photos, preview | Cards fan out sequentially; rotation alternates left/right |
+| C3 | Select Fan Stack with 8 photos | Warning shown; only 6 used |
+| C4 | Fan + Classic White frame | Frame visible on each card in the fan |
+| C5 | Fan + Polaroid frame | Polaroid tilt stacks naturally with fan rotation |
+| C6 | Timeline clip from Fan Stack | Clip draggable and plays correctly |
+| C7 | All Batch A + B criteria still pass | No regression |
 
 ---
 
-## Best Practices (from Premiere Pro / Lightworks / Ken Burns research)
+## What's NOT in Scope (any batch)
 
-1. **Ken Burns: vary zoom direction per photo** — if photo 1 zooms in, photo 2 should zoom out or pan. Prevents monotony. [Adobe Premiere best practice]
-2. **Ease keyframes** — use Ease In / Ease Out on zoom keyframes. Hard linear zoom looks cheap.
-3. **High-res photos only** — zooming into a low-res image exposes compression. Consider warning user if image resolution is too low for the chosen style.
-4. **Minimum 2 sec per photo** — faster than 2 sec feels jerky. If user adds 10 photos into a 5-sec clip, warn them.
-5. **Cross-dissolve at photo boundaries** — 0.3–0.5 sec overlap. Shorter = cut, longer = dreamy.
-6. **Fan style: cap at 6 photos** — more than 6 fans become visually cluttered. Enforce or warn.
-7. **Collage: aspect ratio consistency** — if photos have mixed orientations (portrait vs landscape), the collage grid should handle cropping gracefully (object-fit: cover, not stretch).
-
----
-
-## What's NOT in Scope (v1)
-
-- Per-photo duration manual override (auto-divide only in v1)
-- Custom pan/zoom keyframe editing (preset styles only)
+- Per-photo duration manual override (auto-divide only)
+- Custom pan/zoom keyframe editing
 - Text overlays on photos
 - Video clips mixed into the photo sequence
 - Photo reordering within the sequence after creation (delete and re-create)
+- Collage Grid style (post-Batch C consideration)
+- Configurable transition type at clip boundaries
 
 ---
 
-## Open Questions
+## Open Questions (resolve before Batch A build starts)
 
-1. Should the photo sequence be **editable after placement** (tap to re-open style picker) or is it immutable once dropped?
-2. How do we handle **portrait photos in Ken Burns** full-screen mode — letterbox, blur background fill (like Instagram), or crop to fill?
-3. Do we expose **per-photo duration** as an advanced option in v1, or keep it auto-only?
-4. What is the minimum viable **resolution threshold** before we warn the user a photo may look blurry when zoomed?
+1. **Portrait photo default confirmed?** → Blur-fill (spec'd above). Confirm or override.
+2. **Tap-to-edit after placement?** — Should tapping the photo clip on the timeline re-open the style/selection flow, or is it immutable until deleted?
+3. **Resolution threshold** — 1280×720 as the warning floor: too strict, or right?
 
 ---
 
 ## Implementation Notes for Claude Code
 
 - Photo sequence renders as a **virtual video clip** (array of images + animation metadata)
-- At export time, each photo + its style gets rendered frame-by-frame into the output video
-- Reuse the existing `TimelineClip` model — photo sequence is just another clip type with `type: 'photo-sequence'`
-- Store: `{ photos: File[], style: 'ken-burns'|'fan'|'collage', duration: number }`
-- Do NOT build a separate renderer — hook into the existing canvas/frame renderer and add a `renderPhotoFrame(photo, style, t)` function
-- Ken Burns: CSS `transform: scale() translate()` with keyframe interpolation at render time
-- Fan: CSS `transform: rotate() translateX()` stacked with z-index per photo
+- Export: each photo + style rendered frame-by-frame into output video
+- Reuse existing `TimelineClip` model — `type: 'photo-sequence'`
+- Do NOT build a separate renderer — add `renderPhotoFrame(photo, style, frameOpts, t)` into existing canvas/frame renderer
+- Ken Burns: CSS `transform: scale() translate()` with keyframe interpolation at render time; alternate zoom params per photo index
+- Blur fill: render photo scaled to fill canvas, apply CSS blur filter, then render sharp photo centred on top at natural aspect ratio
+- Fan: CSS `transform: rotate() translateX()` stacked with z-index per photo; animate on a per-card timeline
+- Frames: rendered as a canvas overlay layer (not baked into the photo); keeps frames crisp at any resolution
