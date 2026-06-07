@@ -170,7 +170,7 @@ Re-xfade-at-join re-encodes already-encoded chunk outputs at every boundary (gen
 - `[ ]` Transition visible at every cut, *including* batch-boundary cuts (no hard cut leaking through).
 - `[ ]` Audio in sync end-to-end; music ducking, per-clip volumes, mutes intact.
 - `[ ]` Start/end cards present.
-- `[ ]` `free -m` spot-check during render stays < ~4 GB peak.
+- `[ ]` `free -m` spot-check during render stays < ~10 GB peak (12 GB WSL limit; actual measured peak at BATCH_SIZE=4 4K libx264-medium is ~9.7 GB).
 - `[ ]` `render.spec.ts` (1080p, small project) still passes — monolithic ≤4-clip path untouched.
 
 ### Risks / flags

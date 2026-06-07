@@ -31,6 +31,8 @@
 - **ASCII only** in console/UI output — no Unicode or emoji (breaks cp1252 encoding).
 - **Grep before claiming "exactly one place".** Before stating that a field, prop, or identifier is consumed in a single file, run `grep -r "field_name" src/` across all `.ts`/`.tsx` files. Claiming a single display site without checking causes missed updates (type errors at best, silent wrong display at worst).
 - **Design system:** Read `docs/DESIGN.md` before any UI work — canonical colour palette, typography, button patterns, and copy rules. Do not invent colours or patterns outside it.
+- **`APPROVED` gate — no execution without explicit user approval.** After presenting a dev plan or pre-execution summary, wait for the user to type the word "APPROVED" before running any pipeline, build step, or E2E suite. Selecting an option or describing what to do does NOT count as approval. This prevents running on stale or wrong assumptions.
+- **Pre-flight check before any render-verification batch.** Before executing a render or E2E verification, log three things (read-only, no fixes): (1) `wsl -- free -m` available memory, (2) proxy warm status for the test project (`proxy_status='done'` count vs total `include=1` clips), (3) zoom cache entries in `%TEMP%\rushcut\zoom-cache\`. If proxies are cold or available memory is under 4 GB, report it — let the user decide whether to proceed or use a warmer project.
 
 ---
 
