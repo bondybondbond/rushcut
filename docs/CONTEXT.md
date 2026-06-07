@@ -23,7 +23,7 @@
 
 - **Batch U3b** — Zoom-tab playback UX (items 4-6 from U3 spec): focal indicator enlargement, gradual-zoom preview playback, zoom queue scrubber.
 - **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
-- **Or U1g extension** — open/close-to-black projects (`has_open`/`has_close`) still use monolithic path; exit-15 risk on very large 4K projects.
+- **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions. U1g itself is complete; this is a separate future item.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted — it silently shifts to the next clip. Fix: clamp `filmPlayIdx` to `min(filmPlayIdx, newInFilm.length - 1)` after the filter.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 

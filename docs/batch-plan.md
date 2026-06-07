@@ -14,7 +14,11 @@ All progress (proxies, zoom cache) already survives crashes — they live in `%A
 
 ---
 
-## Batch U1 — Render resilience & resume (UNBLOCK) — HIGHEST PRIORITY
+## Batch U1 — Render resilience & resume — COMPLETE (all sub-batches U1a–U1g done, 2026-06-07)
+
+Sub-batch status: U1a (stage/timer/single-job guard) ✓ · U1b (render quality/localStorage/mute) ✓ · U1c (startup self-heal / SQLite datetime fix) ✓ · U1d (nav-guard/new render visibility) ✓ · U1e (stall detection) ✓ · U1f (fast bg proxy) ✓ · U1g (segmented xfade / exit-15 fix) ✓. Known remaining gap: `has_open`/`has_close` projects still use monolithic path — backlog item, not U1.
+
+**Original spec:**
 
 **Problem:** Leaving the render screen mid-render (e.g. at 55% zoom) and resuming resets the status to "Starting up the magic..." and the timer to 0s, even though the pipeline is still running. Three renders also died with SIGTERM (15) / generic (1) — most likely concurrent/duplicate pipeline spawns competing for WSL memory on a 4K zoom-heavy render.
 
@@ -43,7 +47,7 @@ All progress (proxies, zoom cache) already survives crashes — they live in `%A
 
 ---
 
-## Batch U2 — Clip reorder on the film timeline (TOP-PRIO FEATURE)
+## Batch U2 — Clip reorder on the film timeline — COMPLETE (2026-06-07)
 
 **Problem:** Clips can only be reordered on the separate `Review.tsx` page, not on the `StickyFilmStrip` shown across Trimmer/Arrange. The founder wants press-hold-drag reordering directly on the film timeline.
 
@@ -60,7 +64,7 @@ All progress (proxies, zoom cache) already survives crashes — they live in `%A
 
 ---
 
-## Batch U3 — Arrange zoom-tab correctness
+## Batch U3 — Arrange zoom-tab correctness (U3a COMPLETE 2026-06-07; U3b pending)
 
 Several distinct issues on the zoom tab; group as one correctness batch. **This is the heaviest single batch (6 items). Bail-out option if execution loses coherence mid-batch:** split at the natural seam — **U3a = data correctness** (items 1–3: phantom clips, focal-on-fixed-zoom, zoom timing) vs **U3b = playback UX** (items 4–6: seek/pause-play state, click-to-play, focal-indicator visibility). Not required up front; only split if it starts dragging.
 

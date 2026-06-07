@@ -135,7 +135,11 @@ The proxy is the normalise substitute. `render.py` injects proxy files directly 
 
 ---
 
-## Batch U1g — Segmented xfade render (memory-bounded) — fixes exit-15 crash class
+## Batch U1g — Segmented xfade render (memory-bounded) — COMPLETE (2026-06-07)
+
+**Result:** Exit code 0, `drift=0 frame(s) (0.0ms)`, 7 batches, music + cards correct, peak WSL ~9.7 GB (12 GB safe). 9/9 fast + 14/14 render PASS. Known remaining gap: `has_open`/`has_close` projects (open/close-to-black transitions) still use the monolithic path — backlog, not U1g.
+
+**Original spec:**
 
 **Context (diagnosed 2026-06-06):** The 21-clip 4K "Stagecoach 2025" render dies with `exit code 15` (WSL VM balloon-killed). Root cause confirmed via FFmpeg stderr (`ffmpeg-stderr-last.log`): the **monolithic 21-input 4K `filter_complex`** hits a hard memory ceiling. Peak RAM is driven by **chain depth (clip count in one graph)**, NOT clip size — all clips are uniform 3840×2160 (~12.4 MB/decoded frame). FFmpeg buffers decoded 4K frames at each of the 20 chained xfade stages; ~25 frames × 20 stages × 12.4 MB ≈ 6 GB, overflowing the ~11 GB usable WSL on this 13.8 GB-total machine. Stalls escalate by position (xfade #7→#10) and die at #10. **Machine RAM cannot be raised** — the only fix is to stop building one giant graph.
 
