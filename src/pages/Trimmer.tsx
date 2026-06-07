@@ -289,6 +289,44 @@ export default function Trimmer() {
     }
   }
 
+  // Reorder film clips (drag-to-reorder on StickyFilmStrip). The arg is the new order of the
+  // in-film clip ids. Merge it back into the full clips array (film clips keep their slots,
+  // reordered among themselves) and renumber every sort_order = its full-array index — matching
+  // reorder_clips_cmd. The local renumber is required because StickyFilmStrip sorts by sort_order,
+  // not array order.
+  async function handleReorder(orderedInFilmIds: string[]) {
+    const previous = clips;
+    const orderSet = new Set(orderedInFilmIds);
+    const byId = new Map(clips.map((c) => [c.id, c]));
+    const reorderedFilm = orderedInFilmIds.map((id) => byId.get(id)!);
+    let k = 0;
+    const merged = clips.map((c) => (orderSet.has(c.id) ? reorderedFilm[k++] : c));
+    const next = merged.map((c, i) => ({ ...c, sort_order: i }));
+
+    // filmPlayIdx is an integer index into inFilm. After reorder, inFilm changes order but
+    // the integer stays fixed, so inFilm[filmPlayIdx] points to the wrong clip. Correct it
+    // by finding the currently-playing clip by ID in the new order.
+    const currentlyPlayingId = inFilm[filmPlayIdx]?.id;
+    if (currentlyPlayingId) {
+      const newInFilm = next.filter(c => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
+      const newIdx = newInFilm.findIndex(c => c.id === currentlyPlayingId);
+      if (newIdx >= 0 && newIdx !== filmPlayIdx) {
+        setFilmPlayIdx(newIdx);
+        filmPlayIdxRef.current = newIdx;
+      }
+    }
+
+    setClips(next);
+    if (projectId) projectCache.set(projectId, { name: projectName, clips: next });
+    try {
+      await invoke("reorder_clips_cmd", { clipIds: next.map((c) => c.id) });
+    } catch (err) {
+      console.error("[trimmer] reorder failed, rolling back", err);
+      setClips(previous);
+      if (projectId) projectCache.set(projectId, { name: projectName, clips: previous });
+    }
+  }
+
   function handleInChange(ms: number) {
     setInMs(ms);
     if (videoRef.current) videoRef.current.currentTime = ms / 1000;
@@ -750,6 +788,7 @@ export default function Trimmer() {
             const cut = clips.find(c => c.id === clipId);
             if (cut) { handleDeleteCut(cut); if (filmActiveId === clipId) setFilmActiveId(null); }
           }}
+          onReorder={handleReorder}
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
         />

@@ -182,6 +182,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## React — Playback index vs clip ID (filmPlayIdx class of bugs)
+
+**Problem:** Using an integer index (`filmPlayIdx`) into a reorderable array to track the currently-playing clip causes the playhead to shift to a different clip after any reorder — the index stays fixed while the array positions change.
+**Solution:** After any mutation that reorders the inFilm array, update the index by finding the playing clip by ID in the new order: capture `currentlyPlayingId = inFilm[filmPlayIdx]?.id` before the mutation, compute `newIdx = newInFilm.findIndex(c => c.id === currentlyPlayingId)`, then set both `setFilmPlayIdx(newIdx)` AND `filmPlayIdxRef.current = newIdx` (the ref is read by real-time callbacks). Long-term: replace the integer with a `filmPlayClipId: string` (derive index via `findIndex` at render time, like Arrange uses `selectedClipId`). The delete-while-playing path has the same gap: after removing a clip, clamp `filmPlayIdx` to `min(filmPlayIdx, newInFilm.length - 1)`.
+**Context:** `Trimmer.tsx` `filmPlayIdx` + `filmPlayIdxRef.current`. Fixed in `handleReorder` (Batch U2). `handleDeleteCut` still has the pre-existing gap.
+
+---
+
+## Workflow — CDP synthetic drag unreliable in film mode
+
+**Problem:** Simulating a dnd-kit drag via CDP `pointerdown/pointermove/pointerup` on a StickyFilmStrip tile in film mode also triggers `crossSeekToClip` (the tile click handler fires during the drag sequence), which advances the film playhead mid-drag. The film then auto-advances, making the drag result indeterminate.
+**Solution:** For dnd-kit drag verification on the filmstrip, use a programmatic Tauri invoke (`reorder_clips_cmd`) followed by a `get_project` assertion to confirm `sort_order` changed — not synthetic pointer events. CDP synthetic drag is reliable only when no competing pointer-event handlers exist on the draggable element.
+**Context:** `StickyFilmStrip.tsx` tiles in Trimmer film mode. Applies to any E2E or CDP test of drag-to-reorder on that component.
+
+---
+
 ## Workflow — Worktree sessions
 
 - **Edits in a worktree are NOT visible to the running app** — `pnpm dev` launched from `C:\apps\rushcut` reads the main branch, not the worktree at `C:\apps\rushcut\.claude\worktrees\<name>`. Any fix applied only in the worktree appears to have no effect when the user tests. Always apply fixes to the main-branch files (`C:\apps\rushcut\src\...`) when the goal is immediate user-visible verification, or merge the worktree branch first.

@@ -15,14 +15,16 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U1g (segmented xfade render) COMPLETE (2026-06-07). Next: U2 or remaining U1 items.**
+**Phase 2 — Batch U2 (drag-to-reorder + filmPlayIdx bugfix) COMPLETE (2026-06-07). Next: U3, U5, or remaining backlog.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U2** — Timeline clip reorder (drag-to-reorder in Arrange filmstrip). Founder priority call.
-- **Or U1g extension** — open/close-to-black projects (`has_open`/`has_close`) still use monolithic path; exit-15 risk on very large 4K projects. Add segmented path for those cases.
+- **Batch U3** — Zoom-tab correctness (per-clip zoom & focal point written through to render).
+- **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
+- **Or U1g extension** — open/close-to-black projects (`has_open`/`has_close`) still use monolithic path; exit-15 risk on very large 4K projects.
+- **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted — it silently shifts to the next clip. Fix: clamp `filmPlayIdx` to `min(filmPlayIdx, newInFilm.length - 1)` after the filter.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
@@ -59,7 +61,11 @@ Mitigation status:
 
 ## Recently shipped this session (2026-06-07)
 
-- **Batch U1g — Segmented xfade render COMPLETE (verification):** Already implemented in U1b commit (`ff0e527`). Session verified against real 21-clip 4K Stagecoach project. Result: exit code 0, `drift=0 frame(s) (0.0ms)`, 7 batches [0-3][3-6]...[18-20], all 6 boundary cuts inside solo regions, cards present (silent_0.mp4/silent_20.mp4), music mixed (cinematic.mp3 balanced 0.4/0.4), peak WSL memory ~9.7 GB (12 GB limit safe). Output: `u1g-verify.mp4` 751.9 MB 3840×2160 140.6s. `t_render_s=531s, proxy_used=9`. Open/close-to-black still uses monolithic path (documented gap). 9/9 fast PASS, 14/14 render PASS.
+- **Batch U2 — Drag-to-reorder + filmPlayIdx bugfix COMPLETE:** `StickyFilmStrip.tsx` rewritten with dnd-kit drag-to-reorder (`DndContext` + `SortableContext` + `SortableFilmTile` component, `PointerSensor` with `{ distance: 5 }`, `CSS.Translate.toString` for variable-width tiles). Swipe-delete replaced with hover-reveal `Trash2` bin icon (aligns with DESIGN.md). `onReorder` prop wired in both `Trimmer.tsx` and `Arrange.tsx` — merge reordered film IDs back into full clips array (sort_order pantry-collision safe), optimistic update + rollback, `invoke("reorder_clips_cmd")`. DESIGN.md extended with drag-to-reorder subsection. Bundled bugfix: `handleReorder` in `Trimmer.tsx` now corrects `filmPlayIdx` after reorder by finding the playing clip by ID in the new order (was: integer index stayed fixed causing playhead to show wrong clip). Pre-existing E2E fixes: `arrange.spec.ts` + `sound.spec.ts` `rc_*` key reads migrated from sessionStorage to localStorage (U1b debt). Known gap: `handleDeleteCut` does not correct `filmPlayIdx` on clip delete — pre-existing, not introduced here. 9/9 fast PASS, 26/26 arrange PASS.
+
+## Recently shipped previous session (2026-06-07)
+
+- **Batch U1g — Segmented xfade render COMPLETE (verification):** Already implemented in U1b commit (`ff0e527`). Session verified against real 21-clip 4K Stagecoach project. Result: exit code 0, `drift=0 frame(s) (0.0ms)`, 7 batches, music + cards correct, peak WSL ~9.7 GB (12 GB limit safe). Open/close-to-black still uses monolithic path (documented gap). 9/9 fast PASS, 14/14 render PASS.
 
 ## Recently shipped previous session (2026-06-07)
 

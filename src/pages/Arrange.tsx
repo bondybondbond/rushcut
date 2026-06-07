@@ -350,6 +350,28 @@ export default function Arrange() {
     });
   }
 
+  // Reorder film clips (drag-to-reorder on StickyFilmStrip). Merge the new in-film id order back
+  // into the full clips array and renumber sort_order = full-array index (matches reorder_clips_cmd).
+  // The local renumber is required because StickyFilmStrip sorts by sort_order, not array order.
+  async function handleReorder(orderedInFilmIds: string[]) {
+    const previous = clips;
+    const orderSet = new Set(orderedInFilmIds);
+    const byId = new Map(clips.map((c) => [c.id, c]));
+    const reorderedFilm = orderedInFilmIds.map((id) => byId.get(id)!);
+    let k = 0;
+    const merged = clips.map((c) => (orderSet.has(c.id) ? reorderedFilm[k++] : c));
+    const next = merged.map((c, i) => ({ ...c, sort_order: i }));
+    setClips(next);
+    if (projectId) projectCache.set(projectId, { name: projectName, clips: next });
+    try {
+      await invoke("reorder_clips_cmd", { clipIds: next.map((c) => c.id) });
+    } catch (err) {
+      console.error("[arrange] reorder failed, rolling back", err);
+      setClips(previous);
+      if (projectId) projectCache.set(projectId, { name: projectName, clips: previous });
+    }
+  }
+
   async function saveReview(clip: Clip, patch: Partial<Pick<Clip, "focal_x" | "focal_y" | "zoom_mode">>) {
     const merged = { ...clip, ...patch };
     patchClip(clip.id, patch);
@@ -606,6 +628,7 @@ export default function Arrange() {
           projectId={projectId!}
           activeId={tab === "zoom" || tab === "sound" ? selectedClipId : null}
           onSelectClip={tab === "zoom" || tab === "sound" ? setSelectedClipId : undefined}
+          onReorder={handleReorder}
           playheadMs={tab === "zoom" ? filmPlayheadMs : undefined}
         />
       }

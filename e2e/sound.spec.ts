@@ -190,10 +190,11 @@ describe("Sound screen", () => {
     expect(text.toLowerCase()).toContain("cinematic");
   });
 
-  it("sessionStorage persists the selected mood", async () => {
+  it("localStorage persists the selected mood", async () => {
     if (!projectId) return;
+    // Batch U1b migrated all rc_* render-setting keys from sessionStorage to localStorage.
     const stored = await browser.execute((id: string) => {
-      return sessionStorage.getItem(`rc_sound_${id}`);
+      return localStorage.getItem(`rc_sound_${id}`);
     }, projectId);
     expect(stored).not.toBeNull();
     const parsed = JSON.parse(stored as string);

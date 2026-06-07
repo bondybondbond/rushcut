@@ -323,10 +323,12 @@ describe("Arrange screen", () => {
     expect(text.toLowerCase()).toContain("crossfade");
   });
 
-  it("sessionStorage persists transition config as JSON with between=crossfade", async () => {
+  it("localStorage persists transition config as JSON with between=crossfade", async () => {
     if (!projectId) return;
+    // Batch U1b migrated all rc_* render-setting keys from sessionStorage to localStorage
+    // (renderStore.ts) so they survive a binary relaunch.
     const stored = await browser.execute((id: string) => {
-      return sessionStorage.getItem(`rc_transition_${id}`);
+      return localStorage.getItem(`rc_transition_${id}`);
     }, projectId);
     // M2: stored as JSON {between, opening, closing, shuffleBetween}
     expect(stored).not.toBeNull();

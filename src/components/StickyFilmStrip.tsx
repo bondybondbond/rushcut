@@ -1,5 +1,20 @@
 import { useState, useEffect, useRef } from "react";
-import { VolumeX, Volume1 } from "lucide-react";
+import { VolumeX, Volume1, Trash2 } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  horizontalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
 import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
@@ -12,6 +27,11 @@ interface StickyFilmStripProps {
   onDeleteClip?: (clipId: string) => void;
   /** If provided, clicking a clip tile selects it. Only Arrange (Clips tab) passes this. */
   onSelectClip?: (clipId: string) => void;
+  /**
+   * If provided, enables press-drag-to-reorder on the film tiles. The arg is the full ordered
+   * list of in-film clip ids after the move. Trimmer + Arrange pass this; Sound does not.
+   */
+  onReorder?: (orderedInFilmIds: string[]) => void;
   /** Film playback position in film-time ms — renders a playhead cursor when set. */
   playheadMs?: number;
   /** Called when user clicks a position in the timeline; arg is film-time ms. */
@@ -28,12 +48,146 @@ const CLIP_HEIGHT = 56;     // px
 const GAP_PX = 2;           // px between clips
 const TRAIL_PAD_MS = 5000;  // 5 s of blank scroll space after the last clip
 
+interface SortableFilmTileProps {
+  clip: Clip;
+  index: number;
+  width: number;
+  isActive: boolean;
+  reorderable: boolean;
+  onSelectClip?: (clipId: string) => void;
+  onDeleteClip?: (clipId: string) => void;
+}
+
+/**
+ * One reorderable film tile. Extracted so `useSortable` can be called per tile.
+ * Drag is enabled only when `reorderable` (i.e. the parent passed `onReorder`).
+ */
+function SortableFilmTile({
+  clip,
+  index,
+  width,
+  isActive,
+  reorderable,
+  onSelectClip,
+  onDeleteClip,
+}: SortableFilmTileProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: clip.id,
+    disabled: !reorderable,
+  });
+
+  const trimmedMs = Math.max(0, (clip.out_ms ?? clip.duration_ms) - (clip.in_ms ?? 0));
+
+  // Use Translate (not Transform) — Transform adds a scale component that would stretch our
+  // variable-width tiles during drag.
+  const style: React.CSSProperties = {
+    width,
+    height: CLIP_HEIGHT,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 50 : undefined,
+  };
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (!onDeleteClip) return;
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      onDeleteClip(clip.id);
+    }
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid="filmstrip-clip"
+      className={`group relative flex-shrink-0 overflow-hidden border-2 transition-colors outline-none ${
+        isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/25"
+      } ${onSelectClip ? "cursor-pointer" : ""} ${reorderable ? "cursor-grab active:cursor-grabbing" : ""}`}
+      style={style}
+      {...attributes}
+      {...listeners}
+      tabIndex={onDeleteClip ? 0 : -1}
+      onKeyDown={onDeleteClip ? handleKeyDown : undefined}
+      onClick={
+        onSelectClip
+          ? (e) => { e.stopPropagation(); onSelectClip(clip.id); }
+          : undefined
+      }
+    >
+      {/* Thumbnail: CSS background tiling */}
+      {clip.thumbnail_data ? (
+        <div
+          className="w-full h-full"
+          style={{
+            backgroundImage: `url('${clip.thumbnail_data}')`,
+            backgroundSize: "auto 100%",
+            backgroundRepeat: "repeat-x",
+            backgroundPosition: "left center",
+          }}
+        />
+      ) : (
+        <div className="w-full h-full bg-white/5 flex items-center justify-center">
+          <svg
+            className="w-4 h-4 text-[#e5e5e5]/20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path d="M15 10l4.553-2.069A1 1 0 0121 8.94V15.06a1 1 0 01-1.447.908L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
+          </svg>
+        </div>
+      )}
+      {/* Sequence number badge */}
+      <div className="absolute top-0.5 left-0.5 min-w-[16px] h-4 px-0.5 rounded bg-[#99B3FF] flex items-center justify-center z-10 pointer-events-none">
+        <span className="text-[9px] text-[#0a0a0a] font-bold leading-none">{index + 1}</span>
+      </div>
+      {/* Hover-reveal delete bin — only when onDeleteClip provided (Trimmer) */}
+      {onDeleteClip && (
+        <button
+          className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/60 text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-20"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
+          title="Remove from film"
+          tabIndex={-1}
+        >
+          <Trash2 size={12} strokeWidth={2.5} />
+        </button>
+      )}
+      {/* Duration label */}
+      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 px-1 pb-0.5 pointer-events-none">
+        <span className="text-[10px] text-white font-mono drop-shadow-sm">{fmtMs(trimmedMs)}</span>
+      </div>
+      {/* State badge icons — bottom-right */}
+      <div className="absolute bottom-1 right-1 flex gap-0.5 z-10 pointer-events-none">
+        {clip.zoom_mode != null && (
+          <div className="w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center" title={zoomLabel(clip.zoom_mode)}>
+            <span className="text-[8px] font-bold text-[#0a0a0a] leading-none select-none">Z</span>
+          </div>
+        )}
+        {clip.clip_volume === 0 && (
+          <div className="w-3.5 h-3.5 rounded-sm bg-red-500 flex items-center justify-center" title="Muted">
+            <VolumeX size={9} strokeWidth={2.5} className="text-[#0a0a0a]" />
+          </div>
+        )}
+        {clip.clip_volume !== undefined && clip.clip_volume > 0 && clip.clip_volume < 1.0 && (
+          <div className="w-3.5 h-3.5 rounded-sm bg-[#B794F4] flex items-center justify-center" title="Volume reduced">
+            <Volume1 size={9} strokeWidth={2.5} className="text-[#0a0a0a]" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function StickyFilmStrip({
   clips,
   projectId: _projectId,
   activeId,
   onDeleteClip,
   onSelectClip,
+  onReorder,
   playheadMs,
   onSeek,
 }: StickyFilmStripProps) {
@@ -48,8 +202,11 @@ export function StickyFilmStrip({
   const isAutoFitRef = useRef(true);              // imperative: breaks on manual zoom
   const [isAutoFit, setIsAutoFit] = useState(true); // reactive: drives button visibility
 
-  // Drag-left-to-delete state
-  const [tileSwipe, setTileSwipe] = useState<{ clipId: string; deltaX: number } | null>(null);
+  // Reorder drag: distance:5 matches the proven activation in ClipNavStrip + ClipList.
+  // A no-move click never crosses 5px, so click-to-select still works.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+  );
 
   const inFilm = clips
     .filter((c) => c.include === 1)
@@ -255,6 +412,18 @@ export function StickyFilmStrip({
     onSeek(pxToFilmMs(px));
   }
 
+  function handleDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const ids = inFilm.map((c) => c.id);
+    const oldIndex = ids.indexOf(active.id as string);
+    const newIndex = ids.indexOf(over.id as string);
+    if (oldIndex < 0 || newIndex < 0) return;
+    onReorder?.(arrayMove(ids, oldIndex, newIndex));
+  }
+
+  const reorderable = !!onReorder;
+
   return (
     <div
       data-testid="sticky-filmstrip"
@@ -340,129 +509,22 @@ export function StickyFilmStrip({
                 <span className="text-[#e5e5e5]/30 text-sm whitespace-nowrap">No clips yet</span>
               </div>
             ) : (
-              inFilm.map((clip, idx) => {
-                const w = clipWidths[idx];
-                const isActive = clip.id === activeId;
-                const trimmedMs = Math.max(
-                  0,
-                  (clip.out_ms ?? clip.duration_ms) - (clip.in_ms ?? 0)
-                );
-                const swipe = tileSwipe?.clipId === clip.id ? tileSwipe.deltaX : 0;
-                const isPastThreshold = swipe < -40;
-
-                function handleTileMouseDown(e: React.MouseEvent) {
-                  if (!onDeleteClip) return;
-                  // Don't start a swipe if the pan-drag is active
-                  e.stopPropagation();
-                  const startX = e.clientX;
-                  const id = clip.id;
-
-                  function onMove(me: MouseEvent) {
-                    const dx = Math.min(0, me.clientX - startX);
-                    setTileSwipe({ clipId: id, deltaX: dx });
-                  }
-                  function onUp() {
-                    setTileSwipe((prev) => {
-                      if (prev && prev.clipId === id && prev.deltaX < -40) {
-                        onDeleteClip(id);
-                      }
-                      return null;
-                    });
-                    window.removeEventListener("mousemove", onMove);
-                    window.removeEventListener("mouseup", onUp);
-                  }
-                  window.addEventListener("mousemove", onMove);
-                  window.addEventListener("mouseup", onUp);
-                }
-
-                function handleTileKeyDown(e: React.KeyboardEvent) {
-                  if (!onDeleteClip) return;
-                  if (e.key === "Delete" || e.key === "Backspace") {
-                    e.preventDefault();
-                    onDeleteClip(clip.id);
-                  }
-                }
-
-                return (
-                  <div
-                    key={clip.id}
-                    data-testid="filmstrip-clip"
-                    tabIndex={onDeleteClip ? 0 : -1}
-                    className={`group relative flex-shrink-0 overflow-hidden border-2 transition-colors outline-none ${
-                      isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/25"
-                    } ${onSelectClip ? "cursor-pointer" : ""}`}
-                    style={{
-                      width: w,
-                      height: CLIP_HEIGHT,
-                      transform: swipe !== 0 ? `translateX(${swipe}px)` : undefined,
-                      transition: swipe !== 0 ? "none" : "transform 0.15s ease, border-color 0.2s",
-                    }}
-                    draggable={false}
-                    onMouseDown={onDeleteClip ? handleTileMouseDown : undefined}
-                    onKeyDown={onDeleteClip ? handleTileKeyDown : undefined}
-                    onClick={
-                      onSelectClip
-                        ? (e) => { e.stopPropagation(); onSelectClip(clip.id); }
-                        : undefined
-                    }
-                  >
-                    {/* Thumbnail: CSS background tiling */}
-                    {clip.thumbnail_data ? (
-                      <div
-                        className="w-full h-full"
-                        style={{
-                          backgroundImage: `url('${clip.thumbnail_data}')`,
-                          backgroundSize: "auto 100%",
-                          backgroundRepeat: "repeat-x",
-                          backgroundPosition: "left center",
-                        }}
-                      />
-                    ) : (
-                      <div className="w-full h-full bg-white/5 flex items-center justify-center">
-                        <svg
-                          className="w-4 h-4 text-[#e5e5e5]/20"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth={1.5}
-                        >
-                          <path d="M15 10l4.553-2.069A1 1 0 0121 8.94V15.06a1 1 0 01-1.447.908L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
-                        </svg>
-                      </div>
-                    )}
-                    {/* Sequence number badge */}
-                    <div className="absolute top-0.5 left-0.5 min-w-[16px] h-4 px-0.5 rounded bg-[#99B3FF] flex items-center justify-center z-10 pointer-events-none">
-                      <span className="text-[9px] text-[#0a0a0a] font-bold leading-none">{idx + 1}</span>
-                    </div>
-                    {/* Duration label */}
-                    <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 px-1 pb-0.5 pointer-events-none">
-                      <span className="text-[10px] text-white font-mono drop-shadow-sm">{fmtMs(trimmedMs)}</span>
-                    </div>
-                    {/* State badge icons — bottom-right */}
-                    <div className="absolute bottom-1 right-1 flex gap-0.5 z-10 pointer-events-none">
-                      {clip.zoom_mode != null && (
-                        <div className="w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center" title={zoomLabel(clip.zoom_mode)}>
-                          <span className="text-[8px] font-bold text-[#0a0a0a] leading-none select-none">Z</span>
-                        </div>
-                      )}
-                      {clip.clip_volume === 0 && (
-                        <div className="w-3.5 h-3.5 rounded-sm bg-red-500 flex items-center justify-center" title="Muted">
-                          <VolumeX size={9} strokeWidth={2.5} className="text-[#0a0a0a]" />
-                        </div>
-                      )}
-                      {clip.clip_volume !== undefined && clip.clip_volume > 0 && clip.clip_volume < 1.0 && (
-                        <div className="w-3.5 h-3.5 rounded-sm bg-[#B794F4] flex items-center justify-center" title="Volume reduced">
-                          <Volume1 size={9} strokeWidth={2.5} className="text-[#0a0a0a]" />
-                        </div>
-                      )}
-                    </div>
-                    {/* Delete threshold overlay — shows red tint when dragged past -40px */}
-                    {isPastThreshold && (
-                      <div className="absolute inset-0 bg-red-400/30 pointer-events-none z-20" />
-                    )}
-                  </div>
-                );
-              })
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <SortableContext items={inFilm.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
+                  {inFilm.map((clip, idx) => (
+                    <SortableFilmTile
+                      key={clip.id}
+                      clip={clip}
+                      index={idx}
+                      width={clipWidths[idx]}
+                      isActive={clip.id === activeId}
+                      reorderable={reorderable}
+                      onSelectClip={onSelectClip}
+                      onDeleteClip={onDeleteClip}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
             )}
           </div>
         </div>

@@ -840,26 +840,38 @@ A read-only proportional timeline rendered inside EditorShell's timeline row (Tr
 
 ### Bin icon (hover-reveal delete)
 
-Only rendered when `onDeleteClip?: (clipId: string) => void` is provided. Trimmer passes this; Arrange/Sound/Render do not — bin never shows on those screens.
+Only rendered when `onDeleteClip?: (clipId: string) => void` is provided. Trimmer passes this; Arrange/Sound/Render do not — bin never shows on those screens. **This is the sole delete affordance on the filmstrip** (the old swipe-left-to-delete gesture was removed in Batch U2 so the horizontal drag could be used for reorder).
 
 ```tsx
 {onDeleteClip && (
   <button
-    className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/60 text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
+    className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/60 text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-20"
+    onPointerDown={(e) => e.stopPropagation()}
     onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
     title="Remove from film"
     tabIndex={-1}
   >
-    {/* trash SVG w-3 h-3, stroke currentColor strokeWidth 2.5 */}
+    <Trash2 size={12} strokeWidth={2.5} />   {/* lucide-react */}
   </button>
 )}
 ```
 
-Requires `group` class on the tile's root div. `e.stopPropagation()` prevents the click from bubbling to any tile-level click handler.
+Requires `group` class on the tile's root div. `e.stopPropagation()` on click prevents bubbling to any tile-level click handler; `onPointerDown` stopPropagation stops a tile drag from starting when the bin is pressed.
+
+### Drag-to-reorder (Batch U2)
+
+Press-drag a film tile to reorder it; sibling tiles shift live to show the drop target. Enabled only when `onReorder?: (orderedInFilmIds: string[]) => void` is provided (Trimmer + Arrange pass it; Sound does not).
+
+- **Library:** `@dnd-kit` (already a dep, same as `ClipNavStrip`/`ClipList`). `DndContext` + `SortableContext` with `horizontalListSortingStrategy`; each tile is a `SortableFilmTile` calling `useSortable({ id, disabled: !reorderable })`.
+- **Activation:** `PointerSensor` with `activationConstraint: { distance: 5 }` — the proven codebase value. A no-move click never crosses 5px, so click-to-select (Arrange) still works; a real drag suppresses the trailing click.
+- **Transform:** apply `CSS.Translate.toString(transform)` — **NOT** `CSS.Transform.toString` (the latter adds a scale component that stretches our variable-width tiles).
+- **Dragged tile:** `opacity: 0.4`, raised `zIndex`. Active border `#FF8A65`, inactive `#99B3FF/25` (unchanged).
+- **Gesture separation:** dnd listeners live only on tiles; the track-background pan (middle-mouse / left-drag on background) and click-to-seek are untouched.
+- **Persistence gotcha:** the parent `onReorder` handler must renumber `sort_order` locally (= full-array index) in its optimistic `setClips`, because StickyFilmStrip sorts `inFilm` by `sort_order`, not array order. It also passes the **full** clip id list to `reorder_clips_cmd` (not just film ids) to avoid pantry/film `sort_order` collisions.
 
 ### Data flow
 
-- Props: `clips: Clip[]`, `projectId`, `activeId?`, `onDeleteClip?`
+- Props: `clips: Clip[]`, `projectId`, `activeId?`, `onDeleteClip?`, `onSelectClip?`, `onReorder?`, `playheadMs?`, `onSeek?`
 - **No sessionStorage reads inside StickyFilmStrip** — all values come via props.
 - `transitionValue` and `soundMood` props REMOVED in Batch H — those live in `ChosenEffects` (EditorShell timeline row aside).
 
