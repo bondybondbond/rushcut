@@ -131,11 +131,21 @@ def _kenburns_vf(iw: int, ih: int, clip_dur: float,
     out_h = ih - (ih % 2)
 
     # scale up by ZF (re-evaluated per frame), then crop a constant window
-    # anchored at the focal point. `eval=frame` is valid on `scale` only --
-    # `crop` has no `eval` option but re-evaluates x/y per frame natively.
+    # anchored at the focal point.
+    #
+    # CRITICAL: crop's `iw` variable is latched at the FIRST FRAME -- it does
+    # NOT update from variable-size scale output. For dir=in the first frame
+    # has zf=1 so iw_latched=src_w=out_w, making x=0 for the entire clip
+    # (always top-left). For dir=out zf_0=ratio so iw_latched=src_w*ratio,
+    # but as zoom shrinks the valid range narrows until clamping causes
+    # rightward drift then a hard left snap.
+    #
+    # Fix: express the crop origin using the SAME zf expression applied to the
+    # known Python-constant source dimensions so FFmpeg evaluates it per-frame
+    # via the `t` variable already embedded in zf.
     vf = (
         f"scale=w='2*trunc(iw*{zf}/2)':h='2*trunc(ih*{zf}/2)':eval=frame,"
-        f"crop={out_w}:{out_h}:'(iw-ow)*{fx:.4f}':'(ih-oh)*{fy:.4f}'"
+        f"crop={out_w}:{out_h}:'(2*trunc({iw}*{zf}/2)-{out_w})*{fx:.4f}':'(2*trunc({ih}*{zf}/2)-{out_h})*{fy:.4f}'"
     )
     return vf, m
 

@@ -75,6 +75,7 @@ Written to `C:\clips\processed\<slug>-01.mp4`, `<slug>-02.mp4` etc. Slug = `slug
 
 ## FFmpeg rules
 
+- **`crop` filter latches `iw`/`ih` at the first frame when upstream `scale=eval=frame` produces variable-size output** — `iw` in the crop expression is frozen at init. For gradual zoom-in this means `(iw-ow)*fx = 0` always (top-left lock). For zoom-out it means x overflows the valid range as zoom shrinks → rightward drift then hard left snap. Fix in `_kenburns_vf` (`zoom.py`): substitute Python-constant source dimensions with the same `zf(t)` expression directly in the crop origin: `crop=out_w:out_h:'(2*trunc(SRC_W*ZF/2)-out_w)*fx':'(2*trunc(SRC_H*ZF/2)-out_h)*fy'`. Bump `_KENBURNS_CACHE_VER` in `render.py` whenever the formula changes — the cache key does not auto-invalidate on code changes.
 - **`aevalsrc` sample-rate param is `s=` not `r=` in FFmpeg 6.1.1** — `aevalsrc=0:c=stereo:d=5.0:r=48000` raises exit 8 "Option not found" under FFmpeg 6.1.1 (Ubuntu 24.04 apt). Use `s=48000`. All 3 occurrences in `transitions.py` `build_audio_only_fc()` must use `s=`.
 - **DJI Osmo Pocket 3:** Two video streams — use `-map 0:v:0` (HEVC real clip). Stream 1 is an embedded MJPEG thumbnail.
 - **Portrait clips:** 1728×3072 normalises to 608×1080 via `scale=-2:1080`. Correct — do not "fix" orientation.

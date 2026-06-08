@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U3c (post-U3 render regression verify) COMPLETE (2026-06-08, no code). Next: U3b, U4, U5.**
+**Phase 2 — Batch U3c COMPLETE (2026-06-08, Ken Burns zoom fix). Next: U3b, U4, U5.**
 
 ---
 

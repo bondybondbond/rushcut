@@ -175,6 +175,10 @@ def _prune_zoom_cache(cache_dir: Path) -> None:
         pass
 
 
+# Bump when the Ken Burns formula changes to invalidate stale cache entries.
+_KENBURNS_CACHE_VER = "2"
+
+
 def _zoom_cache_key(
     src_path: Path,
     in_ms,
@@ -196,7 +200,7 @@ def _zoom_cache_key(
     except OSError:
         size = 0
     raw = "|".join(str(x) for x in (
-        src_path, size, in_ms, out_ms, zoom_mode, focal_x, focal_y, output_resolution
+        _KENBURNS_CACHE_VER, src_path, size, in_ms, out_ms, zoom_mode, focal_x, focal_y, output_resolution
     ))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 

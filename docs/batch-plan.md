@@ -92,16 +92,13 @@ Several distinct issues on the zoom tab; group as one correctness batch. **This 
 
 ---
 
-## Batch U3c — Post-U3 render regressions — COMPLETE (2026-06-08, NO CODE)
-
-**Outcome: all three live bugs closed with no code changes.**
+## Batch U3c — Post-U3 render regressions — COMPLETE (2026-06-08, zoom fix shipped)
 
 - **U3c-2 (card eats clips) — CLOSED, fixed-by-U1b.** Fresh 1080p cold render: card xfade at offset=1.5030s → clip 1 begins at t≈3s. No swallowed clips. Confirmed `aevalsrc=...:s=48000`, segmented path, `drift=0`.
 - **U3c-4 (GPU TDR freeze) — CLOSED, fixed-by-U1b.** Was a consequence of playing the corrupt 06-06 monolithic-fallback file. All 08-06 renders are clean H.264; no playback anomalies.
-- **U3c-1 (dir=out focal drift) — CLOSED, render already correct.** Verified with a dedicated `dir=out focal=(0.25,0.70)` clip at 1080p and 4K. Visual frame check (t=10.2s/13.5s/zoom-out-end): focal holds at lower-left throughout, NO top-left snap. 4K log confirms `crop=3840:2160:'(iw-ow)*0.2500':'(ih-oh)*0.7000'` — formula is direction-agnostic. The `_kenburns_vf` crop math is proven correct for both `dir=in` and `dir=out`; no preview-origin fix was needed either (the gradual branch already sets `transform-origin` inline at [Arrange.tsx:297](src/pages/Arrange.tsx:297)).
-- **U3c-3 (8-min render) — remains U4 scope.** Not re-tested here; owned by Batch U4 (bg zoom pre-cache).
-
-**4 renders run (2026-06-08):** 1080p cold (74s) · 1080p re-render (62s, zoom_cache_hits=2) · 4K cold (144s) · 4K re-render (126s, zoom_cache_hits=2). All `drift=0`, `proxy_used=4`, `amf_fallback=0`. E2E deferred to separate session (chrome-devtools MCP squatted port 9222 in this session).
+- **U3c-1 (Ken Burns focal drift) — CLOSED, fixed in `pipeline/zoom.py` + `render.py`.** Root cause: FFmpeg `crop` filter latches `iw`/`ih` at the first frame from `scale=eval=frame` output, never updating it as zoom changes. `dir=in` (zf=1 at t=0) → `iw_latched=src_w=out_w` → x=0 for entire clip (always top-left). `dir=out` (zf=ratio at t=0) → x overflows valid range as zoom shrinks → rightward drift then hard-left snap. Fix: substitute Python-constant source dimensions with the same `zf(t)` expression in the crop origin; bump `_KENBURNS_CACHE_VER = "2"` to invalidate stale cached zoom files. User confirmed fix: zoom-in now holds focal, zoom-out starts at focal and reveals full frame. 9/9 E2E fast PASS.
+- **U3c-3 (8-min render) — remains U4 scope.** Owned by Batch U4 (bg zoom pre-cache).
+- **Backlog — wipeleft/shuffle transition grain artifact:** xfade blends both clips at the wipe edge; DJI source noise doubles up at the 50/50 blend midpoint, creating a "snowy" appearance. Future batch on transition quality (separate from U3b).
 
 **Next after U3c:** U3b (zoom-tab playback UX, items 4-6), then U4 (bg zoom pre-cache / 8-min render), then U5a/b.
 
