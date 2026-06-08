@@ -92,6 +92,80 @@ Several distinct issues on the zoom tab; group as one correctness batch. **This 
 
 ---
 
+## Batch U3c — Post-U3 render regressions — COMPLETE (2026-06-08, NO CODE)
+
+**Outcome: all three live bugs closed with no code changes.**
+
+- **U3c-2 (card eats clips) — CLOSED, fixed-by-U1b.** Fresh 1080p cold render: card xfade at offset=1.5030s → clip 1 begins at t≈3s. No swallowed clips. Confirmed `aevalsrc=...:s=48000`, segmented path, `drift=0`.
+- **U3c-4 (GPU TDR freeze) — CLOSED, fixed-by-U1b.** Was a consequence of playing the corrupt 06-06 monolithic-fallback file. All 08-06 renders are clean H.264; no playback anomalies.
+- **U3c-1 (dir=out focal drift) — CLOSED, render already correct.** Verified with a dedicated `dir=out focal=(0.25,0.70)` clip at 1080p and 4K. Visual frame check (t=10.2s/13.5s/zoom-out-end): focal holds at lower-left throughout, NO top-left snap. 4K log confirms `crop=3840:2160:'(iw-ow)*0.2500':'(ih-oh)*0.7000'` — formula is direction-agnostic. The `_kenburns_vf` crop math is proven correct for both `dir=in` and `dir=out`; no preview-origin fix was needed either (the gradual branch already sets `transform-origin` inline at [Arrange.tsx:297](src/pages/Arrange.tsx:297)).
+- **U3c-3 (8-min render) — remains U4 scope.** Not re-tested here; owned by Batch U4 (bg zoom pre-cache).
+
+**4 renders run (2026-06-08):** 1080p cold (74s) · 1080p re-render (62s, zoom_cache_hits=2) · 4K cold (144s) · 4K re-render (126s, zoom_cache_hits=2). All `drift=0`, `proxy_used=4`, `amf_fallback=0`. E2E deferred to separate session (chrome-devtools MCP squatted port 9222 in this session).
+
+**Next after U3c:** U3b (zoom-tab playback UX, items 4-6), then U4 (bg zoom pre-cache / 8-min render), then U5a/b.
+
+Four issues logged after the first U3a render. They split cleanly: **U3c-1 + U3c-2 are render-correctness bugs** (new, not covered anywhere); **U3c-3 maps to existing U4** (zoom pre-cache); **U3c-4 is a downstream consequence** of U3c-1, not an independent code fix. All four are **LOGS-FIRST** — the pipeline already emits the exact lines needed to confirm root cause before touching code. Do **not** write fixes until the relevant log line from the *corrupt first render* is read.
+
+**Priority order (confirmed 2026-06-07): U3c → U3b → U4.** U3c fixes broken render *output* (correctness); U3b is zoom-preview *UX* polish; U4 is render-time perf. Do not polish the preview interaction (U3b) while the render output is still wrong. U4 absorbs bug U3c-3 and rises in priority now that the 8-min render is a confirmed live pain point.
+
+**Diagnose ≠ fix (process guard):** The diagnostic pass (reading the logs below) must end with **root cause pinned + a one-line fix spec per item** — NOT a code change in the same session. The actual fix is a separate, APPROVED-gated session. This matters most for U3c-1: the Ken Burns math is non-trivial and a rushed fix bundled with the diagnosis is a regression risk.
+
+**Pinned logs (pulled 2026-06-07) — see `## U3c pinned log evidence` at the bottom of this file** so the fix session starts cold-free.
+
+### U3c-1 — Gradual (Ken Burns) zoom drifts to top-left + distorts proportions [render-correctness, HIGH]
+
+**Symptom:** Gradual zoom clips anchor the zoom at the top-left corner and the frame looks stretched/letterboxed — survives a re-render, so it is in the render output, not just the CSS preview.
+
+**Findings (code read):**
+- The Ken Burns math in [`_kenburns_vf` (pipeline/zoom.py:105)](pipeline/zoom.py:105) is **algebraically focal-correct**: focal point lands at fractional `fx`/`fy` for every frame (scale-up-by-`zf` then constant-crop telescopes the focal to a fixed screen position). `zf = 1+(z-1)*P` is constructed to stay `>= 1` so the scaled frame is never smaller than the crop window.
+- Therefore the two realistic root causes are: **(a)** focal reaches `apply_zoom` as `(0,0)` for the gradual path (would pin top-left exactly), or **(b)** the "scaled smaller than crop window" guard is being violated in practice (FFmpeg clamps the crop origin to 0,0 and stretches — the docstring at [zoom.py:116](pipeline/zoom.py:116) names this exact failure mode).
+- Focal persistence in [`saveReview` (Arrange.tsx:399)](src/pages/Arrange.tsx:399) writes `focal_x/focal_y` via `update_clip_review_cmd` independent of zoom mode, and DB columns default NULL → `0.5` (centre) in zoom.py. So a *clean* path should NOT produce `(0,0)`. The leak is most likely a `0.0` default injected in the manifest build (`run.py`) or a focal not saved when only `zoom_mode` is changed (focal stays NULL but some default coerces to 0).
+
+**Logs-first step (mandatory, do before any code):**
+- Read `[zoom] kenburns ... focal=(%.2f,%.2f)` from the corrupt render's `pipeline-{job_id}.log`. This line already prints the exact focal value the gradual path received.
+  - If it shows `focal=(0.00,0.00)` → it is cause (a): trace `focal_x/focal_y` back through `render.py` `_zoom_worker` ([render.py:521](pipeline/render.py:521)) → manifest → `run.py` and fix the `0.0` default / save gap so NULL → 0.5.
+  - If it shows the correct focal (e.g. `0.50,0.50` or the user's value) → it is cause (b): the FFmpeg crop is clamping. Add a one-frame `iw/ih` vs `ow/oh` assert/log inside the gradual encode and confirm `2*trunc(iw*zf/2) >= out_w` holds at `t=0` for both `in` and `out` directions; fix the rounding so the scaled frame is always `>=` the crop window.
+
+**Verify:** One real gradual-zoom render (slow + a zoom-out clip), off-centre focal, at BOTH 1080p and 4K (per `.claude/rules/` 4K rule). Visual frame check at t=0/mid/end shows the focal point held stationary, no top-left snap, no stretch. Confirm `[zoom] kenburns focal=` matches the user's set focal.
+
+### U3c-2 — Intro card "eats" the first 1-2 clips (~10-11s before real film) [render-correctness, HIGH]
+
+**Symptom:** With an intro card enabled, the card frame stays on screen ~10-11s and the first 1-2 clips are swallowed. **Only on the first render** — a re-render of the same project starts normally (slight clip-1→2 stagger aside).
+
+**Findings (code read):**
+- The intro card is prepended to `current_paths` at [render.py:620](pipeline/render.py:620) as clip 0 (`make_card`, fixed `duration_s=3.0`, [render.py:611](pipeline/render.py:611)) **before** the segmented-xfade decision. So with an xfade transition the card enters the U1g segmented path as clip index 0.
+- The segmented path [`_render_segmented` (render.py:766)](pipeline/render.py:766) plans batches and frame counts from `durations = [get_duration(p) for p in current_paths]` over the **global frame grid**. If `durations[0]` (card) or the early clip durations are misread on the first render, the batch plan / `-frames:v` counts shift and early clips get overrun by the card segment.
+- **First-vs-re-render differentiator = the proxy/zoom cache.** First render: clips with no warm proxy go through normalise and clips with zoom are encoded fresh; re-render: everything is cached. The plausible mechanisms are (i) the segmented planner raised and **fell back to monolithic** on the first render (the monolithic prepended-card + xfade path is the older, less-tested one), or (ii) a duration probe on a freshly-encoded (not yet flushed/cached) early clip returned a wrong value feeding `plan_video_batches`.
+
+**Logs-first step (mandatory, do before any code):**
+- Read the first render's `pipeline-{job_id}.log` and check for:
+  - `[U1g] segmented render failed (...) -- falling back to monolithic` ([render.py:907](pipeline/render.py:907)) → confirms mechanism (i); fix the monolithic prepended-card path or make the card exempt from the planner.
+  - The `[U1g] batch i/N clips [...] start=.. frames=.. (global [..,..])` lines ([render.py:848](pipeline/render.py:848)) and the per-clip `durations` → compare card duration and clip-0/1 frame counts against the re-render's log (which works). The drift is in whichever value differs.
+- Do not assume — the two logs (broken first render vs clean re-render) side-by-side will name the exact stage.
+
+**Verify:** Enable an intro card on a fresh project (cold proxies), render; card shows ~3s then clip 1 begins on time, no swallowed clips. Re-render confirms parity. Check both the segmented (>4 clips, xfade) and monolithic (<=4 clips or `none`) paths.
+
+### U3c-3 — 8+ min render triggers the stall warning despite warm proxies [perf → already U4]
+
+**Symptom:** Render runs 8+ min — long enough to trip the U1e stall warning (120s no-progress) — even though proxy generation already ran. Waiting it out completes successfully.
+
+**Findings:** This is the **zoom stage computed at render time** on a zoom-heavy film. Proxies skip normalise, but per-clip zoom is still encoded during the render unless the zoom cache is warm. **This is exactly what [Batch U4 — Background zoom pre-cache](#batch-u4--background-zoom-pre-cache-frontload-the-long-render) targets** — no new batch needed; U4 is the fix. Bump U4 priority given this is now a confirmed live pain point.
+- **Bundled U1e tuning (small):** the 120s stall threshold is too aggressive for a legitimately long zoom-stage render. Consider raising the threshold or suppressing the warning while `STAGE:zoom`/`STAGE:Rendering` is actively advancing (progress moved within the window) so a slow-but-healthy render doesn't false-alarm. Scope this into U4 or a tiny U1e patch.
+
+**Verify:** (Covered by U4) After warming the zoom cache in the background, a re-render shows `zoom_cache_hits=N/N` in `ANALYSIS:` and zoom-stage time drops to near-zero; no stall warning fires.
+
+### U3c-4 — Playback freezes the PC / black screen / nightlight resets [downstream of U3c-1/2]
+
+**Symptom:** Playing the specific corrupt first-render file freezes the machine for several seconds, the whole screen goes black (twice), and Windows night-light resets to daylight.
+
+**Findings:** Black-screen + night-light reset is a **GPU driver TDR (Timeout Detection & Recovery) event** — the display driver restarting — triggered by WebView2/Media Foundation trying to decode a malformed/odd-dimensioned render. It is a **consequence of the corrupt output from U3c-1/U3c-2**, not an independent RushCut code bug. Fixing U3c-1 and U3c-2 should make it disappear.
+- **Optional hardening (defensive, low priority):** validate the final render with `ffprobe` (reuse the `is_valid_proxy` pattern) before the Render screen presents it, so a future malformed output surfaces as an error toast instead of a driver crash. Park as backlog unless it recurs after U3c-1/2 land.
+
+**Action:** No standalone fix. Discard the corrupt render file. Re-verify after U3c-1 + U3c-2 ship.
+
+---
+
 ## Batch U4 — Background zoom pre-cache (frontload the long render)
 
 **Problem:** The 4K render was slow largely because zoom was applied to most clips and computed at render time. Zoom is the natural next frontloading target after proxies.
@@ -165,3 +239,51 @@ The founder's largest UX friction cluster, on the screen they spend the most tim
 - Follow `.claude/rules/e2e.md`: run WDIO from PowerShell, never mix `preview_*`/chrome-devtools MCP in a session that runs E2E (port 9222 conflict).
 - Per `.claude/rules/`: any pipeline change must be checked at **both** 1080p and 4K, and any displayed value (stage labels, zoom names, loop state) checked across all cross-screen display sites.
 - DB migrations (U1 `current_stage`) are additive; the running app holds the DB in WAL mode — verify via `invoke` commands, not an external sqlite3 process.
+
+---
+
+## U3c pinned log evidence (pulled 2026-06-07)
+
+Logs read from `%TEMP%\rushcut\pipeline-{job_id}.log`. Project in all of them: **Stagecoach 2025** (21 clips, 4K, intro card "Stagecoach 2025" + outro "The End", music=cinematic).
+
+| job_id | when | result | aevalsrc | path |
+|--------|------|--------|----------|------|
+| `75ec577a` | 06-06 19:40 | **FAILED → monolithic fallback** | `r=48000` (broken) | segmented errored, fell back |
+| `7fcf4862` | 06-06 18:32 | fallback | `r=` (broken) | same |
+| `e54ef29d` | 07-06 11:52 | clean, completed | `s=48000` (fixed) | segmented, drift=0 |
+| `b31c27c5` | 07-06 22:25 | clean, completed | `s=48000` | segmented, drift=0 |
+| `578af14d` | 07-06 23:20 | clean, completed | `s=48000` | segmented, drift=0 |
+
+### U3c-2 / U3c-1 / U3c-4 — REASSESSED: bugs 1, 2 (and possibly 4) trace to the now-FIXED `aevalsrc r=` bug
+
+- **Smoking gun (job `75ec577a`, line 239):** `Error applying option 'r' to filter 'aevalsrc': Option not found` → `Error parsing global options` → `) -- falling back to monolithic`. The segmented audio builder (`build_audio_only_fc` in `transitions.py`) emitted `aevalsrc=...:r=48000`; FFmpeg 6.1.1 only accepts `s=` (this is a documented rule in CLAUDE.md/pipeline.md).
+- **The fix already landed (U1b "aevalsrc r=→s="):** every 07-06 log shows `aevalsrc=...:s=48000` and a clean segmented render (`drift=0`, `Pipeline complete`). The `r=` occurrences in `build_audio_only_fc` were the segmented path's copy that U1b's earlier pass missed; they are now `s=`.
+- **This explains "first render corrupt, re-render clean" exactly:** the corrupt render was a **06-06 monolithic fallback** (triggered by the `r=` failure); the clean re-render was a **07-06 segmented** render after the `s=` fix. The card "eating clips for 10-11s" + the **GPU-TDR freeze on playback (bug 2)** are most consistent with playing that one malformed monolithic-fallback file — the decoder choked at the start and the player froze on the card frame during driver recovery, not a 10s card.
+- **Action:** Before any code, the founder should **re-test on a fresh 07-06+ render** of a card+zoom project. Strong prior: bugs 1, 2 no longer reproduce. If they DON'T reproduce → close U3c-2 and U3c-4 as fixed-by-U1b; keep only the optional `ffprobe`-validate-output hardening as backlog. If they DO still reproduce on a fresh segmented render → real residual bug, capture that new job_id's log and diagnose the monolithic prepended-card path (still used for ≤4-clip / `none` / open-close projects).
+
+### U3c-1 — gradual zoom focal LEAK ELIMINATED; render filter proven correct; suspect shifts to PREVIEW
+
+- **Focal reaches the gradual path correctly (job `e54ef29d`, lines 213–216):** `kenburns dir=in ratio=1.5x ... focal=(0.23,0.65)` → generated filter `crop=3840:2160:'(iw-ow)*0.2251':'(ih-oh)*0.6515'`. Focal values are the user's off-centre coords, **not (0,0)**. Cause (a) (focal defaulting to 0,0 → top-left) is **eliminated**.
+- **Filter math is correct for `dir=in`:** at t=0 `zf=1` → `scale=3840x2160`, `crop` offset `(3840-3840)*fx = 0` (whole frame, no zoom); as `zf` grows the focal telescopes to a fixed fractional position. No top-left snap in the render for zoom-in. All kenburns clips in the logs are `dir=in`.
+- **Preview is the prime remaining suspect:** `@keyframes rc-kenburns` ([globals.css:107](src/globals.css:107)) animates **only** `transform: scale()` and sets **no `transform-origin`** — it relies on the inline `wrap.style.transformOrigin = "fx% fy%"` from [Arrange.tsx:297](src/pages/Arrange.tsx:297). If that inline origin isn't reliably applied to the gradual wrapper (U3a item 2a fixed this for the *non-gradual* branch only), CSS falls back to `50% 50%` — and any object-fit / wrapper-size mismatch under `scale()` can read as "drifts off + distorts." This is a **preview-only** defect; the render is fine.
+- **Decisive fix-session test (not now):** one fresh single-clip gradual render — `dir=in` AND a `dir=out` clip — with an off-centre focal, at 1080p and 4K. Visual frame check at t=0/mid/end: render should hold focal stationary. Then inspect the Arrange preview transform-origin live. Fix whichever (almost certainly the preview). Do NOT touch the comma-free Ken Burns math unless a `dir=out` render visibly fails.
+
+### Fix-spec summary (one line each, for the APPROVED-gated fix session)
+- **U3c-1:** Set `transform-origin: var(--kb-fx) var(--kb-fy)` on the gradual preview wrapper reliably (or in the keyframe); verify render with a `dir=out` clip. (Render likely already correct.)
+- **U3c-2:** Likely already fixed by U1b `aevalsrc s=`; confirm via fresh render, else fix monolithic prepended-card offsets.
+- **U3c-3:** Build U4 (background zoom pre-cache) + soften U1e 120s stall threshold while a stage is actively progressing.
+- **U3c-4:** No code; discard the corrupt 06-06 file. Optional: `ffprobe`-validate render output before the Render screen presents it.
+
+### U3c fix-session structure — MANDATORY: verify-first, code-second (the next session starts here)
+
+**Step 1 is a render, not code.** Do not write a line until the fresh render is inspected.
+
+1. **Run one fresh render** of a card + gradual-zoom project. **Must include at least one `dir=out` (zoom-out) gradual clip** — the pinned logs only exercised `dir=in`, so zoom-out is untested in the render path. Card (intro) on, music on, 4K. Pre-flight per CLAUDE.md (memory ≥4 GB, proxies warm). After it completes, read the new `pipeline-{job_id}.log`.
+2. **Check bugs 1 + 2** on that fresh segmented render: card shows ~3s then clip 1 on time (no swallowed clips); the file plays without freezing the desktop. If both are clean → **close U3c-2 and U3c-4, no code.** (Expected outcome — the `aevalsrc s=` fix is already in.)
+3. **Check bug 4 — render output vs preview, separately:**
+   - If the **render output** holds the focal point stationary for BOTH `dir=in` and `dir=out` (visual frame check at t=0 / mid / end) → render is correct, do NOT touch the Ken Burns math.
+   - If the **Arrange preview** still drifts top-left while the render is correct → apply the one-line U3c-1 fix: give the gradual wrapper a reliable `transform-origin` at the focal point (the `rc-kenburns` keyframe sets only `scale()`).
+   - If the **render output itself** drifts on `dir=out` → real residual; capture that job_id's `[zoom] kenburns` line + generated `crop` filter and diagnose the `dir=out` branch before coding.
+4. **APPROVED gate → commit.** Run fast E2E (`pnpm test:e2e`) + `pnpm test:e2e:editor` per `.claude/rules/e2e.md`. Expected total scope: 0–1 small frontend changes. Should be a sub-hour session.
+
+**If U3c closes with no/one change:** next priority is **U3b** (zoom-preview playback UX: click-to-play, playhead-synced zoom, larger focal indicator), then **U4** (background zoom pre-cache — absorbs the 8-min render pain, U3c-3).

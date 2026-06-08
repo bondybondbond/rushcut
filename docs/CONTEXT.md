@@ -15,16 +15,18 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U3a (zoom-tab focal correctness + SAR fix) COMPLETE (2026-06-07). Next: U3b, U5, or remaining backlog.**
+**Phase 2 — Batch U3c (post-U3 render regression verify) COMPLETE (2026-06-08, no code). Next: U3b, U4, U5.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U3b** — Zoom-tab playback UX (items 4-6 from U3 spec): focal indicator enlargement, gradual-zoom preview playback, zoom queue scrubber.
+- **Batch U3b** — Zoom-tab playback UX (items 4-6 from U3 spec): seek/pause-play sync, click-to-play, focal indicator enlargement.
+- **Batch U4** — Background zoom pre-cache (frontload the 8-min zoom stage).
 - **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
-- **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions. U1g itself is complete; this is a separate future item.
-- **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted — it silently shifts to the next clip. Fix: clamp `filmPlayIdx` to `min(filmPlayIdx, newInFilm.length - 1)` after the filter.
+- **E2E (pending, separate session):** fast + editor suites — port 9222 was squatted by chrome-devtools MCP in U3c session; must run in a fresh session. Expected: no regressions.
+- **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.
+- **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
