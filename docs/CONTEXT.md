@@ -15,16 +15,16 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U3c COMPLETE (2026-06-08, Ken Burns zoom fix). Next: U3b, U4, U5.**
+**Phase 2 — Batch U3b + U3e COMPLETE (2026-06-09, zoom playback UX + destination crop box). Next: U3d, U4, U5.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U3b** — Zoom-tab playback UX (items 4-6 from U3 spec): seek/pause-play sync, click-to-play, focal indicator enlargement.
+- **Batch U3d** — Choppy zoom playback fix. Root cause: `rc-kenburns` CSS `@keyframes` reads `var(--kb-from/--kb-to)` custom properties, which block Chromium/WebView2 compositor acceleration. Fix: replace CSS animation with WAAPI (`element.animate([...], {...})`) — compositor-accelerated, precise `currentTime` seek, eliminates reflow-restart hack. Update `approxKenBurnsProgress()` crop box math to read from `anim.currentTime` (single source of truth, no approximation needed). See LEARNINGS.md "CSS animation — @keyframes with var() custom properties".
 - **Batch U4** — Background zoom pre-cache (frontload the 8-min zoom stage).
 - **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
-- **E2E (pending, separate session):** fast + editor suites — port 9222 was squatted by chrome-devtools MCP in U3c session; must run in a fresh session. Expected: no regressions.
+- **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-09).
 - **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
@@ -61,7 +61,13 @@ Mitigation status:
 
 ---
 
-## Recently shipped this session (2026-06-07)
+## Recently shipped this session (2026-06-09)
+
+- **Batch U3b — Zoom-tab playback UX COMPLETE:** `Arrange.tsx` only. (1) `syncZoomToPlayhead(elapsedSec, playing)` replaces `restartZoomAnim()` — positions the `rc-kenburns` CSS animation via negative `animation-delay` + `animation-play-state`, with `animation=none` + `offsetHeight` reflow to force restart on each call. Syncs on play/pause/seek/clip-end; never on `timeupdate` ticks (TRAP comment in code). (2) Gesture split on big preview: click=play, drag=focal (4px `DRAG_THRESHOLD_PX`). Sound tab video box: `onClick={soundTogglePlay}`. (3) Focal indicators: `rc-focal-pulse` removed from both big preview and small picker; big preview indicator removed entirely (pointer cursor + hint text only); small picker reverted to `w-4 h-4` static orange ring. Hint text `"Drag preview to set focal point"` in `text-xs italic text-[#a3a3a3] text-right` below scrubber, zoom-active only. DESIGN.md updated.
+
+- **Batch U3e — Zoom-in destination crop box COMPLETE:** `Arrange.tsx` only. `approxKenBurnsProgress(t)` helper (smoothstep, named to distinguish from CSS curve). Destination box drawn at `videoBox` level (outside CSS-animated `videoWrapRef`) using projected screen coordinates: `screenW = cropPct * sCur`, `screenLeft = focalX + (srcLeft - focalX) * sCur`. `t_raw` normalized against `kbPreviewDurationSec` (animation window, not full clip), so box disappears at correct point for Med (75%) and Fast (50%) speeds. Style: `border-2 border-[#FF8A65] rounded-sm`, `boxShadow: "0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(0,0,0,0.6)"` dark halo for visibility on bright footage. Conditions: gradual zoom-in + paused + `t_raw < 1`. 9/9 fast + 5/5 editor PASS.
+
+## Recently shipped previous session (2026-06-07)
 
 - **Batch U3a — Zoom-tab focal correctness + SAR fix COMPLETE:** Three changes across two files. (1) `Arrange.tsx` item 2a: removed `wrap.style.transformOrigin = ""` from the non-gradual branch of the paused-preview useEffect — it was wiping React-managed transformOrigin after JSX committed the focal point, reverting the preview back to center. (2) `Arrange.tsx` item 3: new `kbPreviewDurationSec()` helper reads `parseZoom()` and computes preview duration from `trimmedMs / 1000 * KB_SPEED_FRAC[speed]`; both `restartZoomAnim()` and the paused-preview effect now set `wrap.style.animationDuration` from this value instead of hardcoded `4s`; deps extended with `selectedClip?.in_ms`/`out_ms` so retrim/speed changes recompute. (3) `pipeline/transitions.py`: `,setsar=1` added to the canvas `pad=...` string in both `build_batch_video_fc` (segmented U1g path, line ~205) and `build_filter_complex` (monolithic path, line ~351) — fixes FFmpeg exit 234 `Parsed_concat SAR mismatch` when DJI proxy clips (SAR 3321:3320) and zoom-reencoded clips (SAR 1:1) enter the same concat filter. Item 1 (phantom clips) not reproducible — pre-existing sort_order dedup from U2 likely resolved it. Render verified: off-center focal log lines `focal=(0.60,0.40)`, `(0.80,0.70)`, `(0.20,0.30)` with correct crop math confirmed; render completed, visual frame check passed. E2E to run in separate session (chrome-devtools MCP was active in this session).
 

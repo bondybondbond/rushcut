@@ -259,6 +259,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## CSS animation — `@keyframes` with `var()` custom properties blocks compositor acceleration
+
+**Problem:** A CSS `@keyframes` rule that reads a custom property (e.g. `transform: scale(var(--kb-from))`) cannot be promoted to the GPU compositor in Chromium/WebView2. The compositor evaluates keyframe values at rasterisation time; custom properties are resolved on the main thread per-frame, so the animation runs on the main thread (~60Hz JS timer) rather than the compositor (~120Hz rAF). Result: visibly choppy CSS scale animations, even with `will-change: transform` on the element.
+**Solution:** Use the Web Animations API (`element.animate([{transform:"scale(1)"},{transform:"scale(1.5)"}], {duration, easing, fill, iterations})`) with literal values — WAAPI `transform` animations ARE compositor-accelerated. `anim.currentTime = elapsedMs` provides precise seek without the `animation:none` / `offsetHeight` reflow-restart workaround. Deferred to U3d for `rc-kenburns` in `Arrange.tsx`.
+**Context:** `src/pages/Arrange.tsx` `videoWrapRef` gradual Ken Burns zoom animation. `rc-kenburns` keyframe currently uses `var(--kb-from)` / `var(--kb-to)` — this is why the zoom preview is choppy during playback. Applies to any CSS keyframe that reads a custom property in a `transform` or `opacity` value.
+
+---
+
 ## FFmpeg — `aevalsrc` sample-rate option renamed `r=` → `s=` in FFmpeg 6.1.1
 
 **Problem:** `aevalsrc=0:c=stereo:d=5.0:r=48000` raises `Error applying option 'r' to filter 'aevalsrc': Option not found` (exit 8) under FFmpeg 6.1.1 (the version installed via `apt-get` on Ubuntu 24.04). Earlier FFmpeg versions accepted `r=` as the sample-rate param; 6.1.1 renamed it to `s=`.

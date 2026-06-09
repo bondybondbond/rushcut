@@ -138,9 +138,17 @@ Stacked in `flex gap-0.5`, `absolute bottom-1 right-1 z-10 pointer-events-none`:
 - **Zoom "Z" badge** — `w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center` with inner `<span className="text-[8px] font-bold text-[#0a0a0a] leading-none">Z</span>`. Shown when `clip.zoom_mode != null`.
 - **Volume dot** — `w-1.5 h-1.5 rounded-full bg-[#B794F4]` (`--rc-purple`). Shown when `clip.clip_volume !== 1.0`.
 
-### Drag-to-set focal point (Arrange video preview)
+### Focal-point interaction (Arrange zoom tab video preview)
 
-When `zoom_mode` is active, the centre video box gets `cursor: crosshair`. A peach ring indicator (`w-5 h-5 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/20`) is positioned absolutely at `left: focalX% top: focalY%`. Mousedown on the video box starts a drag; window-level `mousemove` calls `patchClip` (instant local update to move the CSS `transformOrigin` + indicator in real time); `mouseup` calls `saveReview` to persist. Uses refs (`isDraggingFocalRef`, `selectedClipRef`, `videoBoxRef`) so the `useEffect` can be mounted once without stale closure risk.
+**Cursor:** `pointer` on all interactive states. No `crosshair` — the hint text explains the drag gesture.
+
+**Gesture split (4px threshold):** Mousedown records start position. Window `mousemove` past 4px movement (`Math.hypot(dx,dy) < DRAG_THRESHOLD_PX`) promotes to focal drag; window `mouseup` with no movement fires `togglePlay()` instead. This means: click = play/pause, drag = set focal point.
+
+**No overlay indicator on the big preview.** The pointer cursor + hint text (`"Drag preview to set focal point"`, `text-xs text-[#a3a3a3] italic text-right`, below the scrubber) are the affordance. The right-panel picker shows the actual focal point position.
+
+**Right-panel focal picker:** Static neutral background `bg-[#1a1a1a]` with faint centre crosshairs (`bg-white/10` 1px lines). Indicator: `w-4 h-4 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/30 -translate-x-1/2 -translate-y-1/2`, no pulse animation. Click anywhere in the picker to set exact focal coordinate.
+
+**Destination crop box (zoom-in only, paused only):** When `kbDir === "in"` and not playing, a thin peach rectangle shows the final crop destination. Drawn at `videoBox` level (outside the CSS-animated `videoWrapRef`) so it is NOT scaled by the zoom animation. Box math uses current paused progress (`approxKenBurnsProgress(t_raw)`) to project the source-frame crop into screen coordinates — box grows toward full-screen as zoom completes, then disappears when `t_raw >= 1` (animation done). Style: `border-2 border-[#FF8A65] rounded-sm pointer-events-none`, `boxShadow: "0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(0,0,0,0.6)"` (dark halo for visibility on bright footage).
 
 ### Drag-left delete + DEL key
 

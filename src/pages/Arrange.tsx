@@ -112,6 +112,17 @@ const ZOOM_SCALE: Record<string, number> = { gentle: 1.3, medium: 1.5, tight: 2.
 // KB_SPEEDS chip-label array above.)
 const KB_SPEED_FRAC: Record<string, number> = { slow: 1.0, med: 0.75, fast: 0.5 };
 
+// Smoothstep approximation of CSS ease-in-out (cubic-bezier 0.42, 0, 0.58, 1).
+// Used to derive the current CSS animation scale from normalised clip progress so
+// the destination crop box reads from the same progress model as the animation.
+// NOTE — this is an approximation, not the exact Bezier curve. Name reflects that.
+// U3d: if WAAPI replaces the CSS animation, replace this with anim.currentTime read
+// from the Animation object — single source of truth, no approximation needed.
+function approxKenBurnsProgress(t: number): number {
+  const tc = Math.max(0, Math.min(t, 1));
+  return tc * tc * (3 - 2 * tc);
+}
+
 // Preview duration (seconds) for the gradual-zoom CSS animation on a clip:
 // trimmed-duration x speed-fraction, matching the render. Returns 0 for non-gradual
 // clips (no preview animation). Min 0.1s so a near-zero trim never yields an invalid
@@ -147,6 +158,10 @@ export default function Arrange() {
   // cause choppy playback in WebView2.
   const videoWrapRef = useRef<HTMLDivElement>(null);
   const isDraggingFocalRef = useRef(false);
+  // Gesture split on the big preview: a press that moves < DRAG_THRESHOLD_PX is a
+  // click (toggle play); past the threshold it becomes a focal-point drag.
+  const focalDownRef = useRef<{ x: number; y: number } | null>(null);
+  const focalMovedRef = useRef(false);
   const selectedClipRef = useRef<Clip | null>(null);
   const loadedClipIdRef = useRef<string>("");
   const isPlayingRef    = useRef(false);   // mirror of isPlaying for use in effects
@@ -272,40 +287,21 @@ export default function Arrange() {
   // re-trigger the animation on every play/pause toggle).
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
 
-  // Gradual zoom preview animation — applied to a wrapper <div> (not the
-  // <video> itself) so the video decoder and the CSS compositor run on separate
-  // layers, eliminating WebView2 choppy-playback when scaling is active.
-  // Fires once on clip select / chip change ONLY while paused, then holds at
-  // the end frame. While playing, restartZoomAnim() owns the animation instead.
+  // Gradual zoom preview — applied to a wrapper <div> (not the <video> itself)
+  // so the video decoder and the CSS compositor run on separate layers,
+  // eliminating WebView2 choppy-playback when scaling is active.
+  // The zoom is PLAYHEAD-DRIVEN: on clip select / chip / focal change we
+  // re-establish the animation params and position its clock to the current
+  // playhead (paused = held at the start/seek frame, no auto-preview). Playback
+  // events (play/pause/seek/clip-end) re-sync via syncZoomToPlayhead directly.
   useEffect(() => {
-    const wrap = videoWrapRef.current;
-    if (!wrap) return;
-    const z = parseZoom(selectedClip?.zoom_mode ?? null);
-    if (tab !== "zoom" || z.style !== "gradual") {
-      wrap.style.animation = "";
-      wrap.style.removeProperty("--kb-from");
-      wrap.style.removeProperty("--kb-to");
-      // transformOrigin for fixed zoom is set by the JSX style prop (React-managed),
-      // so do NOT clear it here — clearing it after React's commit wipes the focal point.
-      return;
-    }
-    const scale = parseFloat(z.kbRatio) || 1.5;
-    const focalX = (selectedClip?.focal_x ?? 0.5) * 100;
-    const focalY = (selectedClip?.focal_y ?? 0.5) * 100;
-    wrap.style.setProperty("--kb-from", z.kbDir === "in" ? "1" : String(scale));
-    wrap.style.setProperty("--kb-to",   z.kbDir === "in" ? String(scale) : "1");
-    wrap.style.transformOrigin = `${focalX}% ${focalY}%`;
-    // Only play the preview animation while paused. If the clip is already
-    // playing, leave the running animation untouched — restartZoomAnim()
-    // handles reset + replay when the user presses play.
-    if (isPlayingRef.current) return;
-    // Drive the preview length from trimmed-duration x speed (matches the render);
-    // keep the shorthand constant and override only animationDuration.
-    const dur = kbPreviewDurationSec(selectedClip ?? null);
-    wrap.style.animation = "none";
-    void wrap.offsetHeight;
-    wrap.style.animation = "rc-kenburns ease-in-out 1 both";
-    wrap.style.animationDuration = `${dur}s`;
+    if (tab !== "zoom") return; // other tabs own their own video; leave untouched
+    // Read the live playhead off the element (not currentMs state) so this effect
+    // need not depend on currentMs — depending on it would re-fire ~4Hz.
+    const inMs = selectedClip?.in_ms ?? 0;
+    const v = videoRef.current;
+    const elapsedSec = v ? Math.max(0, v.currentTime - inMs / 1000) : 0;
+    syncZoomToPlayhead(elapsedSec, isPlayingRef.current);
   }, [selectedClipId, selectedClip?.zoom_mode, selectedClip?.focal_x, selectedClip?.focal_y, selectedClip?.in_ms, selectedClip?.out_ms, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sound tab — independent video reload (mirrors zoom tab pattern, separate state)
@@ -459,30 +455,52 @@ export default function Arrange() {
     };
   }
 
+  const DRAG_THRESHOLD_PX = 4;
+
   function handleVideoMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     const clip = selectedClipRef.current;
-    if (!clip || !clip.zoom_mode) return;
+    if (!clip) return;
+    // Arm a pending gesture. Don't move the focal point yet — wait to see whether
+    // this is a click (toggle play) or a drag (set focal) past the threshold.
+    // A click always toggles play; a drag only sets focal when zoom is active.
     e.preventDefault();
-    isDraggingFocalRef.current = true;
-    const pos = getFocalFromMouse(e.nativeEvent);
-    if (pos) patchClip(clip.id, { focal_x: pos.x, focal_y: pos.y });
+    focalDownRef.current = { x: e.clientX, y: e.clientY };
+    focalMovedRef.current = false;
+    isDraggingFocalRef.current = false;
   }
 
-  // Window-level drag tracking for focal point — runs once, reads from refs
+  // Window-level gesture tracking for the big preview — runs once, reads from refs.
   useEffect(() => {
     function onMove(e: MouseEvent) {
-      if (!isDraggingFocalRef.current) return;
+      const start = focalDownRef.current;
+      if (!start) return;
       const clip = selectedClipRef.current;
+      if (!clip || !clip.zoom_mode) return; // no focal to drag when zoom is off
+      // Promote to a focal drag only once movement exceeds the threshold.
+      if (!focalMovedRef.current) {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        focalMovedRef.current = true;
+        isDraggingFocalRef.current = true;
+      }
       const pos = getFocalFromMouse(e);
-      if (!clip || !pos) return;
-      patchClip(clip.id, { focal_x: pos.x, focal_y: pos.y });
+      if (pos) patchClip(clip.id, { focal_x: pos.x, focal_y: pos.y });
     }
     function onUp(e: MouseEvent) {
-      if (!isDraggingFocalRef.current) return;
-      isDraggingFocalRef.current = false;
+      const start = focalDownRef.current;
+      if (!start) return;
+      focalDownRef.current = null;
       const clip = selectedClipRef.current;
-      const pos = getFocalFromMouse(e);
-      if (clip && pos) saveReview(clip, { focal_x: pos.x, focal_y: pos.y });
+      if (focalMovedRef.current) {
+        // It was a drag — persist the focal point.
+        isDraggingFocalRef.current = false;
+        const pos = getFocalFromMouse(e);
+        if (clip && pos) saveReview(clip, { focal_x: pos.x, focal_y: pos.y });
+      } else {
+        // No movement — treat as a click on the preview: toggle play/pause.
+        togglePlay();
+      }
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -511,20 +529,46 @@ export default function Arrange() {
     if (selectedIndex < inFilm.length - 1) setSelectedClipId(inFilm[selectedIndex + 1].id);
   }, [selectedIndex, inFilm]);
 
-  // Reset the gradual zoom wrapper to its start frame and fire the animation
-  // once. Called on play so the zoom runs in sync with the video from frame 0.
-  function restartZoomAnim() {
+  // Sync the gradual-zoom CSS animation to the current playhead. The animation
+  // runs on the compositor (smooth 60fps); here we only POSITION its clock via a
+  // negative animation-delay and freeze/continue it via animation-play-state.
+  // Called on discrete events ONLY (play / pause / seek / clip-end / select) —
+  // never per timeupdate tick (that would re-fire the animation ~4Hz = steppy).
+  // Note: setting a new animationDelay re-positions the animation from scratch;
+  // while paused this just re-renders the held frame (no visible re-fire).
+  function syncZoomToPlayhead(elapsedSec: number, playing: boolean) {
     const wrap = videoWrapRef.current;
     if (!wrap) return;
-    // Only act when a gradual zoom is configured.
-    const z = parseZoom(selectedClipRef.current?.zoom_mode ?? null);
-    if (z.style !== "gradual") return;
+    const clip = selectedClipRef.current;
+    const z = parseZoom(clip?.zoom_mode ?? null);
+    if (z.style !== "gradual") {
+      // Clear any leftover Ken Burns animation. Do NOT touch transformOrigin —
+      // fixed-zoom origin is React-managed via the JSX style prop.
+      wrap.style.animation = "";
+      wrap.style.removeProperty("--kb-from");
+      wrap.style.removeProperty("--kb-to");
+      return;
+    }
+    const scale = parseFloat(z.kbRatio) || 1.5;
+    const focalX = (clip?.focal_x ?? 0.5) * 100;
+    const focalY = (clip?.focal_y ?? 0.5) * 100;
+    wrap.style.setProperty("--kb-from", z.kbDir === "in" ? "1" : String(scale));
+    wrap.style.setProperty("--kb-to",   z.kbDir === "in" ? String(scale) : "1");
+    wrap.style.transformOrigin = `${focalX}% ${focalY}%`;
     // Match the render timing: trimmed-duration x speed-fraction.
-    const dur = kbPreviewDurationSec(selectedClipRef.current);
+    const dur = kbPreviewDurationSec(clip);
+    const delay = Math.min(Math.max(elapsedSec, 0), dur);
+    // Force a fresh animation instance (none -> reflow -> re-apply) so the new
+    // negative animation-delay is actually honored. Changing animation-delay on
+    // an already-instantiated animation does NOT re-seek it; only a restart does.
+    // The negative delay lands the restart exactly on the target frame, so there
+    // is no visible jump. This runs on discrete events only (never per tick).
     wrap.style.animation = "none";
-    void wrap.offsetHeight;               // flush so the reset takes effect
+    void wrap.offsetHeight; // reflow
     wrap.style.animation = "rc-kenburns ease-in-out 1 both";
     wrap.style.animationDuration = `${dur}s`;
+    wrap.style.animationDelay = `${-delay}s`;
+    wrap.style.animationPlayState = playing ? "running" : "paused";
   }
 
   // Playback controls
@@ -540,11 +584,15 @@ export default function Arrange() {
       }
       video.play().catch(() => {});
       setIsPlaying(true);
-      // Reset zoom animation so it plays from the start alongside the clip.
-      restartZoomAnim();
+      // Run the zoom from the current playhead alongside the clip.
+      const inMs2 = selectedClipRef.current?.in_ms ?? 0;
+      syncZoomToPlayhead(video.currentTime - inMs2 / 1000, true);
     } else {
       video.pause();
       setIsPlaying(false);
+      // Hold the zoom at the current scale.
+      const inMs2 = selectedClipRef.current?.in_ms ?? 0;
+      syncZoomToPlayhead(video.currentTime - inMs2 / 1000, false);
     }
   }
 
@@ -558,8 +606,15 @@ export default function Arrange() {
       video.currentTime = outMs / 1000;
       setIsPlaying(false);
       setCurrentMs(outMs);
+      // Park the zoom at its end frame: stop FIRST (above), THEN sync with
+      // playing=false explicitly — never pass isPlayingRef here (it may still
+      // read true at clip-end and would re-arm the animation as "running").
+      const inMs = selectedClipRef.current?.in_ms ?? 0;
+      syncZoomToPlayhead((outMs - inMs) / 1000, false);
       return;
     }
+    // TRAP: do NOT call syncZoomToPlayhead here — per-tick (~4Hz) re-sync causes
+    // steppy zoom; sync only on play/pause/seek/clip-end.
     setCurrentMs(ms);
   }
 
@@ -580,6 +635,9 @@ export default function Arrange() {
     const ms = parseFloat(e.target.value);
     setCurrentMs(ms);
     if (videoRef.current) videoRef.current.currentTime = ms / 1000;
+    // Jump the zoom to this playhead position.
+    const inMs = selectedClipRef.current?.in_ms ?? 0;
+    syncZoomToPlayhead((ms - inMs) / 1000, isPlayingRef.current);
   }
 
   // Sound tab playback handlers (parallel to zoom tab handlers above)
@@ -769,7 +827,9 @@ export default function Arrange() {
                           height: "100%",
                           aspectRatio: "16/9",
                           maxWidth: "100%",
-                          cursor: zoomState.style !== "off" ? "crosshair" : "default",
+                          // pointer (finger) for all interactive states — hint text below
+                          // the scrubber tells the user about drag-to-set-focal.
+                          cursor: selectedClip ? "pointer" : "default",
                         }}
                         onMouseDown={handleVideoMouseDown}
                       >
@@ -804,17 +864,50 @@ export default function Arrange() {
                             }}
                           />
                         </div>
-                        {/* Focal point crosshair indicator — only when zoom active */}
-                        {selectedClip?.zoom_mode && (
-                          <div
-                            className="absolute w-5 h-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/20 pointer-events-none z-10"
-                            style={{
-                              left: `${focalX}%`,
-                              top: `${focalY}%`,
-                              transition: isDraggingFocalRef.current ? "none" : "left 0.1s ease, top 0.1s ease",
-                            }}
-                          />
-                        )}
+                        {/* Destination crop box — zoom-in only, paused only.
+                            Drawn at videoBox level (outside the animated videoWrapRef)
+                            so the CSS transform does not affect its position.
+                            Always shows the absolute final crop (end-state scale),
+                            not the remaining crop from current playhead progress.
+                            Box math: visible crop = 1/scale of the source frame,
+                            centred on the focal point and clamped to [0, 100-size]. */}
+                        {selectedClip && zoomState.style === "gradual" && zoomState.kbDir === "in" && !isPlaying && (() => {
+                          const kbScale    = parseFloat(zoomState.kbRatio) || 1.5;
+                          // Normalise against zoom animation duration (not full clip duration)
+                          // so the box disappears once the Ken Burns animation completes.
+                          // kbPreviewDurationSec already bakes in the speed fraction
+                          // (slow=1.0, med=0.75, fast=0.5), matching the CSS animation exactly.
+                          const inMs       = selectedClip.in_ms ?? 0;
+                          const animDurSec = kbPreviewDurationSec(selectedClip);
+                          if (animDurSec <= 0) return null;          // guard divide-by-zero
+                          const elapsedSec = (currentMs - inMs) / 1000;
+                          const t_raw      = elapsedSec / animDurSec;
+                          if (t_raw >= 1) return null;               // zoom complete — box gone
+                          const sCur    = 1 + (kbScale - 1) * approxKenBurnsProgress(t_raw);
+                          // Destination box in source-frame space (what the final crop covers)
+                          const cropPct  = 100 / kbScale;
+                          const srcLeft  = Math.max(0, Math.min(focalX - cropPct / 2, 100 - cropPct));
+                          const srcTop   = Math.max(0, Math.min(focalY - cropPct / 2, 100 - cropPct));
+                          // Project to screen space via the same CSS transform the animation uses.
+                          // At t=0: sCur=1, screen coords = source coords (full destination box).
+                          // At t=1: sCur=kbScale, box fills the screen (zoom complete).
+                          const screenW    = cropPct * sCur;
+                          const screenH    = cropPct * sCur;
+                          const screenLeft = focalX + (srcLeft - focalX) * sCur;
+                          const screenTop  = focalY + (srcTop  - focalY) * sCur;
+                          return (
+                            <div
+                              className="absolute border-2 border-[#FF8A65] rounded-sm pointer-events-none"
+                              style={{
+                                left:      `${screenLeft}%`,
+                                top:       `${screenTop}%`,
+                                width:     `${screenW}%`,
+                                height:    `${screenH}%`,
+                                boxShadow: "0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(0,0,0,0.6)",
+                              }}
+                            />
+                          );
+                        })()}
                         {!selectedClip && (
                           <div className="absolute inset-0 flex items-center justify-center">
                             <p className="text-sm text-[#a3a3a3] italic">Select a clip from the left to adjust</p>
@@ -887,6 +980,12 @@ export default function Arrange() {
                     );
                   })()}
                 </div>
+              )}
+              {/* Hint — only when zoom is active; tells users about drag-to-focal */}
+              {selectedClip && parseZoom(selectedClip.zoom_mode).style !== "off" && (
+                <p className="text-xs text-[#a3a3a3] italic text-right pr-1 -mt-1">
+                  Drag preview to set focal point
+                </p>
               )}
             </div>
 
@@ -1003,21 +1102,19 @@ export default function Arrange() {
                             <div
                               ref={focalImgRef}
                               onClick={(e) => handleFocalClick(selectedClip, e)}
-                              className="relative rounded-md overflow-hidden bg-black border border-white/15 cursor-crosshair"
+                              className="relative rounded-md overflow-hidden bg-[#1a1a1a] border border-white/15 cursor-crosshair"
                               style={{ aspectRatio: "16/9" }}
                             >
-                              {selectedClip.thumbnail_data ? (
-                                <img
-                                  src={selectedClip.thumbnail_data}
-                                  alt="focal target"
-                                  className="w-full h-full object-cover pointer-events-none"
-                                />
-                              ) : (
-                                <div className="w-full h-full bg-white/5" />
-                              )}
+                              {/* Static neutral target — the coordinate is what matters,
+                                  not the frame (the big preview shows the real frame).
+                                  Faint centre guides give a positional reference. */}
+                              <div className="absolute inset-0 pointer-events-none">
+                                <div className="absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 bg-white/10" />
+                                <div className="absolute top-1/2 left-0 right-0 h-px -translate-y-1/2 bg-white/10" />
+                              </div>
                               {selectedClip.focal_x !== null && selectedClip.focal_y !== null && (
                                 <div
-                                  className="absolute w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/30 pointer-events-none"
+                                  className="absolute w-4 h-4 rounded-full border-2 border-[#FF8A65] bg-[#FF8A65]/30 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
                                   style={{
                                     left: `${selectedClip.focal_x * 100}%`,
                                     top: `${selectedClip.focal_y * 100}%`,
@@ -1465,7 +1562,8 @@ export default function Arrange() {
               <div className="flex-1 min-w-0 self-stretch flex items-center justify-center overflow-hidden">
                 <div
                   className="relative bg-black border border-white/10 rounded-lg overflow-hidden"
-                  style={{ height: "100%", aspectRatio: "16/9", maxWidth: "100%" }}
+                  style={{ height: "100%", aspectRatio: "16/9", maxWidth: "100%", cursor: selectedClip ? "pointer" : "default" }}
+                  onClick={soundTogglePlay}
                 >
                   <video
                     ref={soundVideoRef}
