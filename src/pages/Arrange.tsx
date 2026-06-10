@@ -116,8 +116,10 @@ const KB_SPEED_FRAC: Record<string, number> = { slow: 1.0, med: 0.75, fast: 0.5 
 // Used to derive the current CSS animation scale from normalised clip progress so
 // the destination crop box reads from the same progress model as the animation.
 // NOTE — this is an approximation, not the exact Bezier curve. Name reflects that.
-// U3d: if WAAPI replaces the CSS animation, replace this with anim.currentTime read
-// from the Animation object — single source of truth, no approximation needed.
+// TODO (U3d, deferred): the crop box keeps this smoothstep approximation of the
+// WAAPI animation's cubic-bezier(0.42,0,0.58,1) ("ease-in-out") curve. They differ
+// only at intermediate paused positions and the drift is not user-perceptible.
+// Revisit (exact bezier evaluator) only if the drift ever becomes visible.
 function approxKenBurnsProgress(t: number): number {
   const tc = Math.max(0, Math.min(t, 1));
   return tc * tc * (3 - 2 * tc);
@@ -157,6 +159,11 @@ export default function Arrange() {
   // element itself is never transformed — avoids compositor conflicts that
   // cause choppy playback in WebView2.
   const videoWrapRef = useRef<HTMLDivElement>(null);
+  // Web Animations API handle for the gradual Ken Burns zoom (U3d). Replaces the
+  // old rc-kenburns CSS keyframe, which read var(--kb-*) and so could not be
+  // promoted to the GPU compositor in WebView2 (choppy playback). WAAPI transform
+  // animations with literal values ARE compositor-accelerated.
+  const kbAnimRef = useRef<Animation | null>(null);
   const isDraggingFocalRef = useRef(false);
   // Gesture split on the big preview: a press that moves < DRAG_THRESHOLD_PX is a
   // click (toggle play); past the threshold it becomes a focal-point drag.
@@ -302,6 +309,10 @@ export default function Arrange() {
     const v = videoRef.current;
     const elapsedSec = v ? Math.max(0, v.currentTime - inMs / 1000) : 0;
     syncZoomToPlayhead(elapsedSec, isPlayingRef.current);
+    // Sync React currentMs to the element's position so the crop box and the WAAPI
+    // animation always agree — prevents any divergence after zoom-mode or focal
+    // changes where currentMs state might be slightly behind v.currentTime (U3d).
+    if (v) setCurrentMs(v.currentTime * 1000);
   }, [selectedClipId, selectedClip?.zoom_mode, selectedClip?.focal_x, selectedClip?.focal_y, selectedClip?.in_ms, selectedClip?.out_ms, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sound tab — independent video reload (mirrors zoom tab pattern, separate state)
@@ -529,46 +540,55 @@ export default function Arrange() {
     if (selectedIndex < inFilm.length - 1) setSelectedClipId(inFilm[selectedIndex + 1].id);
   }, [selectedIndex, inFilm]);
 
-  // Sync the gradual-zoom CSS animation to the current playhead. The animation
-  // runs on the compositor (smooth 60fps); here we only POSITION its clock via a
-  // negative animation-delay and freeze/continue it via animation-play-state.
+  // Sync the gradual-zoom preview to the current playhead via the Web Animations
+  // API (U3d). The WAAPI transform animation runs on the GPU compositor (smooth
+  // 60fps) — unlike the old rc-kenburns CSS keyframe, which read var(--kb-*) and
+  // was therefore stuck on the main thread (choppy). We position the clock with
+  // anim.currentTime (precise seek, no reflow-restart hack) and freeze/continue
+  // it with anim.pause() / anim.play().
   // Called on discrete events ONLY (play / pause / seek / clip-end / select) —
   // never per timeupdate tick (that would re-fire the animation ~4Hz = steppy).
-  // Note: setting a new animationDelay re-positions the animation from scratch;
-  // while paused this just re-renders the held frame (no visible re-fire).
   function syncZoomToPlayhead(elapsedSec: number, playing: boolean) {
     const wrap = videoWrapRef.current;
     if (!wrap) return;
     const clip = selectedClipRef.current;
     const z = parseZoom(clip?.zoom_mode ?? null);
     if (z.style !== "gradual") {
-      // Clear any leftover Ken Burns animation. Do NOT touch transformOrigin —
-      // fixed-zoom origin is React-managed via the JSX style prop.
-      wrap.style.animation = "";
-      wrap.style.removeProperty("--kb-from");
-      wrap.style.removeProperty("--kb-to");
+      // Cancel any leftover Ken Burns animation, then null the ref BEFORE React's
+      // fixed/off inline transform takes effect — cancel() clears the fill:both
+      // frozen end-state so the inline style is not fighting a held animation.
+      // Do NOT touch transformOrigin — fixed-zoom origin is React-managed via the
+      // JSX style prop.
+      kbAnimRef.current?.cancel();
+      kbAnimRef.current = null;
       return;
     }
     const scale = parseFloat(z.kbRatio) || 1.5;
+    const from = z.kbDir === "in" ? 1 : scale;
+    const to   = z.kbDir === "in" ? scale : 1;
     const focalX = (clip?.focal_x ?? 0.5) * 100;
     const focalY = (clip?.focal_y ?? 0.5) * 100;
-    wrap.style.setProperty("--kb-from", z.kbDir === "in" ? "1" : String(scale));
-    wrap.style.setProperty("--kb-to",   z.kbDir === "in" ? String(scale) : "1");
+    // transformOrigin is not animated; set it on the element (works alongside a
+    // WAAPI transform animation).
     wrap.style.transformOrigin = `${focalX}% ${focalY}%`;
     // Match the render timing: trimmed-duration x speed-fraction.
-    const dur = kbPreviewDurationSec(clip);
-    const delay = Math.min(Math.max(elapsedSec, 0), dur);
-    // Force a fresh animation instance (none -> reflow -> re-apply) so the new
-    // negative animation-delay is actually honored. Changing animation-delay on
-    // an already-instantiated animation does NOT re-seek it; only a restart does.
-    // The negative delay lands the restart exactly on the target frame, so there
-    // is no visible jump. This runs on discrete events only (never per tick).
-    wrap.style.animation = "none";
-    void wrap.offsetHeight; // reflow
-    wrap.style.animation = "rc-kenburns ease-in-out 1 both";
-    wrap.style.animationDuration = `${dur}s`;
-    wrap.style.animationDelay = `${-delay}s`;
-    wrap.style.animationPlayState = playing ? "running" : "paused";
+    const durMs = kbPreviewDurationSec(clip) * 1000;
+    const elapsedMs = Math.min(Math.max(elapsedSec * 1000, 0), durMs);
+    // Cancel first, then create — never let two WAAPI animations run on the same
+    // element. fill:"both" parks the zoom on its end frame at clip-end; cancel()
+    // on the next clip switch clears that frozen state before re-seeding.
+    kbAnimRef.current?.cancel();
+    const anim = wrap.animate(
+      [{ transform: `scale(${from})` }, { transform: `scale(${to})` }],
+      { duration: durMs, easing: "ease-in-out", fill: "both", iterations: 1 },
+    );
+    kbAnimRef.current = anim;
+    anim.currentTime = elapsedMs;
+    // Only play() when animation hasn't finished. Calling play() on a WAAPI
+    // animation whose currentTime >= duration resets it to 0 per spec — that's
+    // what caused zoom to snap back to scale(1) when resuming after the zoom
+    // animation had already completed (e.g. Fast speed, paused past the zoom end).
+    if (playing && elapsedMs < durMs) anim.play(); else anim.pause();
   }
 
   // Playback controls
@@ -838,14 +858,18 @@ export default function Arrange() {
                             avoids choppy playback when scaling. */}
                         <div
                           ref={videoWrapRef}
-                          className="absolute inset-0 will-change-transform"
+                          className="absolute inset-0"
                           style={{
+                            // Write transition FIRST so it is "none" before
+                            // React removes the inline transform below — prevents
+                            // a 0.3s CSS transition flash to scale(1) during the
+                            // one-frame gap before the WAAPI effect fires (U3d).
+                            transition: zoomState.style === "fixed" ? "transform 0.3s ease" : "none",
                             // Fixed zoom is applied here as a static scale so it
                             // shares the same layer isolation benefit.
                             transform: zoomState.style === "fixed" && fixedScale > 1
                               ? `scale(${fixedScale})` : undefined,
                             transformOrigin: `${focalX}% ${focalY}%`,
-                            transition: zoomState.style === "fixed" ? "transform 0.3s ease" : undefined,
                           }}
                         >
                           <video

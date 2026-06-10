@@ -369,13 +369,21 @@ The full state is encoded into the single `zoom_mode` string by `@/utils/zoom`
 human-readable badge tooltip used on every screen — no screen renders the raw
 `kb_*` string.
 
-**Ken Burns preview animation** — the centre preview video animates the zoom
-live via the `rc-kenburns` keyframe (`src/globals.css`):
-`transform: scale(var(--kb-from))` → `scale(var(--kb-to))`, `ease-in-out`, 4s.
-The endpoints (`--kb-from` / `--kb-to`) and the `animation` shorthand are set
-imperatively in an Arrange `useEffect` so the `<video>` element never remounts.
-It plays once on clip select and loops (`animation-iteration-count: infinite`)
-while the preview box is hovered.
+**Ken Burns preview animation** — the centre preview animates the zoom on a
+wrapper `<div>` (`videoWrapRef`, never the `<video>` itself) via the **Web
+Animations API** (`wrap.animate([{transform:"scale(from)"},{transform:"scale(to)"}],
+{ duration, easing: "ease-in-out", fill: "both", iterations: 1 })`). WAAPI with
+literal scale endpoints is compositor-accelerated in WebView2; the old
+`rc-kenburns` CSS keyframe read `var(--kb-*)` custom properties, which forced the
+animation onto the main thread and made playback choppy (U3d). The single
+`syncZoomToPlayhead(elapsedSec, playing)` helper is the only sync point: it
+positions the clock with `anim.currentTime` (precise seek, no reflow-restart) and
+freezes/continues with `anim.pause()` / `anim.play()`, called on discrete events
+only (select / play / pause / seek / clip-end) — never per `timeupdate` tick.
+Switching the zoom style away from Gradual (to Fixed/Off) calls `anim.cancel()`
+then nulls the ref so the `fill:"both"` end-state is cleared before React's inline
+`transform` takes over. Duration is trimmed-duration × speed-fraction (matches the
+render); `transformOrigin` carries the focal point.
 
 ### Left-rail + centre-preview layout (Batch M2 — Transitions tab)
 

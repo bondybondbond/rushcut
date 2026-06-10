@@ -102,12 +102,10 @@
   100%     { transform: scale(1.35); opacity: 0; }
 }
 
-/* Ken Burns preview — gradual zoom; scale endpoints set via --kb-from / --kb-to.
-   Direction (in vs out) is just which endpoint is the larger scale. */
-@keyframes rc-kenburns {
-  from { transform: scale(var(--kb-from, 1)); }
-  to   { transform: scale(var(--kb-to, 1)); }
-}
+/* Ken Burns preview gradual zoom is driven by the Web Animations API in
+   Arrange.tsx (U3d) — literal scale endpoints, compositor-accelerated. The old
+   @keyframes rc-kenburns (which read var(--kb-*) and could not be composited in
+   WebView2) was removed. */
 
 /* Wipe down — B enters from top, A exits downward */
 @keyframes rc-trans-wipd-a {

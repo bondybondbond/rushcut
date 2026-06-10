@@ -262,8 +262,25 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 ## CSS animation — `@keyframes` with `var()` custom properties blocks compositor acceleration
 
 **Problem:** A CSS `@keyframes` rule that reads a custom property (e.g. `transform: scale(var(--kb-from))`) cannot be promoted to the GPU compositor in Chromium/WebView2. The compositor evaluates keyframe values at rasterisation time; custom properties are resolved on the main thread per-frame, so the animation runs on the main thread (~60Hz JS timer) rather than the compositor (~120Hz rAF). Result: visibly choppy CSS scale animations, even with `will-change: transform` on the element.
-**Solution:** Use the Web Animations API (`element.animate([{transform:"scale(1)"},{transform:"scale(1.5)"}], {duration, easing, fill, iterations})`) with literal values — WAAPI `transform` animations ARE compositor-accelerated. `anim.currentTime = elapsedMs` provides precise seek without the `animation:none` / `offsetHeight` reflow-restart workaround. Deferred to U3d for `rc-kenburns` in `Arrange.tsx`.
-**Context:** `src/pages/Arrange.tsx` `videoWrapRef` gradual Ken Burns zoom animation. `rc-kenburns` keyframe currently uses `var(--kb-from)` / `var(--kb-to)` — this is why the zoom preview is choppy during playback. Applies to any CSS keyframe that reads a custom property in a `transform` or `opacity` value.
+**Solution:** Use the Web Animations API (`element.animate([{transform:"scale(1)"},{transform:"scale(1.5)"}], {duration, easing, fill, iterations})`) with literal values — WAAPI `transform` animations ARE compositor-accelerated. `anim.currentTime = elapsedMs` provides precise seek without the `animation:none` / `offsetHeight` reflow-restart workaround. SHIPPED U3d in `Arrange.tsx` (`kbAnimRef`); measured 60fps compositor draw, 0–1 dropped frames.
+**Context:** `src/pages/Arrange.tsx` `videoWrapRef` gradual Ken Burns zoom. Applies to any CSS keyframe that reads a custom property in a `transform`/`opacity` value. NOTE: WAAPI fixed the *mechanism* (compositor 60fps confirmed) but did NOT remove the *perceived* judder during zoom — see "WebView2 — gradual zoom preview judder is 30fps source content, not a rendering defect".
+**WAAPI gotcha:** calling `anim.play()` when `currentTime >= duration` resets it to 0 (spec). Guard with `if (playing && elapsedMs < durMs) anim.play(); else anim.pause()` or resuming after the zoom completes snaps the scale back to start. Also write `transition:"none"` (not `undefined`) and order it BEFORE `transform` in the JSX style object, so switching Fixed→Gradual doesn't briefly run the Fixed-mode `transition: transform 0.3s` against the cleared inline transform.
+
+---
+
+## WebView2 — gradual zoom preview judder is 30fps source content, not a rendering defect
+
+**Problem:** After the WAAPI fix, the Ken Burns zoom *preview* still looks choppy DURING the zoom but smooth once it stops — tempting a canvas rewrite or lower-res proxy. Both would be wasted effort.
+**Solution:** It is inherent frame-rate judder, not jank. The WAAPI transform animates at 60fps (compositor); the source video content updates at ~30fps. During motion the 60/30 mismatch is visible; when the zoom stops there's no motion to contrast against, so the same 30fps reads as smooth. Measured: rAF 59.9fps, RasterTask ~18 (NOT per-frame, so re-raster is ruled out), rVFC presented video = 30fps, 0–1 dropped frames — in BOTH animating and static cases. The FFmpeg render bakes zoom at 29.97fps locked to content, so it shares the same character. Canvas / lower-res proxy do NOT add frames and cannot help. The only lever is driving the transform from `requestVideoFrameCallback` (advance zoom one step per video frame → 30fps synced, render-faithful) — or accept it.
+**Context:** `src/pages/Arrange.tsx` zoom preview. Before proposing a preview-smoothness rewrite, confirm whether the complaint is compositor jank (fixable) or content frame-rate judder (inherent to the source fps) — they look similar but only one is fixable.
+
+---
+
+## Workflow — profiling/driving the Tauri WebView2: chrome-devtools MCP does NOT attach to it
+
+**Problem:** To run a performance trace on the running Tauri app, the chrome-devtools MCP launches its OWN separate Chrome (a blank/unrelated page) instead of attaching to the Tauri WebView2 on port 9222 — so MCP perf tools profile the wrong browser.
+**Solution:** Launch the binary with CDP (`scripts/launch-cdp.mjs`), then drive the WebView2's DevTools Protocol DIRECTLY: get the page target's `webSocketDebuggerUrl` from `http://localhost:9222/json/list`, open it with Node 22's built-in `WebSocket` (no `ws` dep), and send raw CDP (`Tracing.start/end`, `Runtime.evaluate` with `awaitPromise` to call `__TAURI_INTERNALS__.invoke(...)`). Combine `Tracing` frame/raster counts with in-page `requestAnimationFrame` + `requestVideoFrameCallback` samplers for a complete fps picture. Drive UI via `Runtime.evaluate` clicking `[data-testid=...]`. Same port-9222/WDIO conflict caveat applies — free the port before any WDIO run.
+**Context:** Any objective rendering/perf measurement on the Tauri app. Raw CDP is the reliable path; the chrome-devtools MCP is not.
 
 ---
 

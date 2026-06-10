@@ -102,6 +102,13 @@ Several distinct issues on the zoom tab; group as one correctness batch. **This 
 
 **Next after U3c:** U3b (zoom-tab playback UX, items 4-6), then U4 (bg zoom pre-cache / 8-min render), then U5a/b.
 
+## Batch U3d — Choppy zoom preview fix (WAAPI) — COMPLETE (2026-06-10)
+
+- **Shipped:** `rc-kenburns` CSS `@keyframes` (read `var()`, main-thread) replaced with WAAPI (`kbAnimRef` in `Arrange.tsx`). Measured via direct CDP trace: 60fps compositor draw, RasterTask ~18 (not per-frame), 0–1 dropped frames.
+- **Bug fixes bundled:** (a) WAAPI `play()` on a finished animation (`currentTime >= duration`) resets to 0 per spec → guarded with `elapsedMs < durMs`; (b) Fixed→Gradual mode-switch flash → JSX style now writes `transition:"none"` BEFORE `transform`.
+- **Root-cause finding (the real headline):** the residual perceived "choppiness during zoom" is NOT compositor jank — it is **30fps source content under 60fps zoom motion**. Confirmed by a 1080p render comparison: the FFmpeg output is 29.97fps with zoom baked frame-locked to content, sharing the same character. **Canvas rewrite and lower-res proxy would NOT help** (neither adds frames). User accepted; preview reads smooth (small preview box masks the stepping that fullscreen render exposes).
+- **Backlog (deferred lever):** drive the preview transform from `requestVideoFrameCallback` (advance zoom one step per video frame → 30fps synced, render-faithful) if a closer preview-to-render match is ever wanted.
+
 Four issues logged after the first U3a render. They split cleanly: **U3c-1 + U3c-2 are render-correctness bugs** (new, not covered anywhere); **U3c-3 maps to existing U4** (zoom pre-cache); **U3c-4 is a downstream consequence** of U3c-1, not an independent code fix. All four are **LOGS-FIRST** — the pipeline already emits the exact lines needed to confirm root cause before touching code. Do **not** write fixes until the relevant log line from the *corrupt first render* is read.
 
 **Priority order (confirmed 2026-06-07): U3c → U3b → U4.** U3c fixes broken render *output* (correctness); U3b is zoom-preview *UX* polish; U4 is render-time perf. Do not polish the preview interaction (U3b) while the render output is still wrong. U4 absorbs bug U3c-3 and rises in priority now that the 8-min render is a confirmed live pain point.
@@ -229,6 +236,7 @@ The founder's largest UX friction cluster, on the screen they spend the most tim
 - **Drag-region-to-timeline**: drag a trimmed in/out region down onto the film timeline as an alternative to the "+ Add to Film" button ([Trimmer.tsx:699](src/pages/Trimmer.tsx:699), backed by `add_clip_cut_cmd` [lib.rs:921](src-tauri/src/lib.rs:921)).
 - **Upload speed (20 clips ~30s)**: parallelize per-file `ffprobe` (currently sequential, [lib.rs:976](src-tauri/src/lib.rs:976)) and batch the per-clip DB inserts (`create_project` loop, [lib.rs:1007](src-tauri/src/lib.rs:1007)).
 - **Speculative full-segment pre-render** (beyond zoom cache): pre-build normalised+trimmed+zoomed per-clip segments so final render is mostly concat+music. Higher payoff, higher invalidation complexity — revisit after U4 proves the frontload pattern.
+- **Zoom crop-box exact easing** (U3d deferred): the U3e destination crop box uses a smoothstep approximation of the WAAPI animation's `cubic-bezier(0.42,0,0.58,1)` curve (`approxKenBurnsProgress` in [Arrange.tsx](src/pages/Arrange.tsx)). Drift is not user-perceptible — make it an exact bezier evaluator only if the drift ever becomes visible.
 
 ---
 

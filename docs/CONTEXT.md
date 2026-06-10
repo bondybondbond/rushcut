@@ -15,13 +15,13 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U3b + U3e COMPLETE (2026-06-09, zoom playback UX + destination crop box). Next: U3d, U4, U5.**
+**Phase 2 — Batch U3d COMPLETE (2026-06-10, WAAPI zoom + judder root-cause confirmed). Next: U4, U5.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U3d** — Choppy zoom playback fix. Root cause: `rc-kenburns` CSS `@keyframes` reads `var(--kb-from/--kb-to)` custom properties, which block Chromium/WebView2 compositor acceleration. Fix: replace CSS animation with WAAPI (`element.animate([...], {...})`) — compositor-accelerated, precise `currentTime` seek, eliminates reflow-restart hack. Update `approxKenBurnsProgress()` crop box math to read from `anim.currentTime` (single source of truth, no approximation needed). See LEARNINGS.md "CSS animation — @keyframes with var() custom properties".
+- **Batch U3d — COMPLETE (2026-06-10).** Replaced `rc-kenburns` CSS `@keyframes` (read `var()`, blocked compositor) with WAAPI (`kbAnimRef` in `Arrange.tsx`) — measured 60fps compositor, 0–1 dropped frames. Fixed two follow-on bugs: WAAPI `play()` resetting a finished animation to 0 (guard `elapsedMs < durMs`), and a Fixed→Gradual transition flash (write `transition:"none"` before `transform` in JSX style). **Key finding (measured via direct CDP trace + render comparison):** the residual "choppiness during zoom" is NOT jank — it is 30fps source content under 60fps zoom motion; the FFmpeg render shares the same 29.97fps character; canvas/lower-res proxy would NOT help. User accepted; preview reads as smooth. See LEARNINGS.md "WebView2 — gradual zoom preview judder is 30fps source content". Deferred lever (backlog): rVFC-synced transform for render-faithful 30fps preview.
 - **Batch U4** — Background zoom pre-cache (frontload the 8-min zoom stage).
 - **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
 - **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-09).
