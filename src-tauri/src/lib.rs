@@ -475,6 +475,23 @@ fn proxy_bg_log(msg: &str) {
     }
 }
 
+/// U4: append a [ZOOM_BG] log line to %TEMP%\rushcut\zoom-bg.log and stderr.
+fn zoom_bg_log(msg: &str) {
+    eprintln!("{}", msg);
+    let path = std::env::temp_dir().join("rushcut").join("zoom-bg.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "{} {}", ts, msg);
+    }
+}
+
 /// Batch S: record a real-encode proxy timing sample to %TEMP%\rushcut\proxy-timing.json.
 /// Skipped for native-codec and cache-hit paths (0s would skew the avg).
 /// Keeps last 50 entries; atomic write (tmp → rename) to prevent JSON corruption.
@@ -1492,6 +1509,138 @@ async fn generate_proxies_cmd(
     Ok(())
 }
 
+/// U4: Warm the per-clip zoom cache for all include=1 zoom clips in a project.
+///
+/// Builds a minimal manifest (job_id + clips), writes it to TEMP, and spawns
+/// `warm_zoom.py` via WSL at BELOW_NORMAL priority. Returns immediately — the
+/// warm job runs entirely in the background with no UI feedback.
+///
+/// A `{project_id}:zoom` key in the shared HashSet guards against duplicate batches
+/// (e.g. re-entering Arrange quickly). Non-zoom projects are a no-op.
+#[tauri::command]
+async fn warm_zoom_cache_cmd(
+    state: tauri::State<'_, Arc<Mutex<HashSet<String>>>>,
+    project_id: String,
+) -> Result<(), String> {
+    let zoom_key = format!("{}:zoom", project_id);
+    {
+        let mut set = state.lock().unwrap();
+        if set.contains(&zoom_key) {
+            zoom_bg_log(&format!("[ZOOM_BG] warm already running for project {}, skipping duplicate", project_id));
+            return Ok(());
+        }
+        set.insert(zoom_key.clone());
+    }
+
+    let project_data = get_project_with_clips(&project_id)
+        .map_err(|e| format!("DB error: {}", e))?;
+
+    // Only include=1 clips with a real zoom_mode (not null / not "none")
+    let zoom_clips: Vec<serde_json::Value> = project_data.clips.iter()
+        .filter(|c| {
+            c.include != 0
+                && c.zoom_mode.as_deref().map(|m| !m.is_empty() && m != "none").unwrap_or(false)
+        })
+        .map(|c| {
+            let clamped_out = c.out_ms.map(|o| o.min(c.duration_ms));
+            json!({
+                "local_path": c.local_path,
+                "proxy_path": c.proxy_path,
+                "proxy_status": c.proxy_status,
+                "in_ms": c.in_ms,
+                "out_ms": clamped_out,
+                "focal_x": c.focal_x,
+                "focal_y": c.focal_y,
+                "zoom_mode": c.zoom_mode,
+                "width": c.width,
+                "height": c.height,
+                "duration_ms": c.duration_ms,
+            })
+        })
+        .collect();
+
+    if zoom_clips.is_empty() {
+        zoom_bg_log(&format!("[ZOOM_BG] project={} no zoom clips, nothing to warm", project_id));
+        let mut set = state.lock().unwrap();
+        set.remove(&zoom_key);
+        return Ok(());
+    }
+
+    let warm_job_id = format!("warm-{}", Uuid::new_v4());
+    let clip_count = zoom_clips.len();
+    let manifest = json!({
+        "job_id": &warm_job_id,
+        "clips": zoom_clips,
+    });
+
+    let temp_dir = std::env::temp_dir().join("rushcut");
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    let manifest_path = temp_dir.join(format!("{}.json", warm_job_id));
+    std::fs::write(&manifest_path, manifest.to_string())
+        .map_err(|e| format!("Failed to write warm manifest: {}", e))?;
+
+    let wsl_manifest = win_to_wsl(&manifest_path.to_string_lossy());
+
+    zoom_bg_log(&format!(
+        "[ZOOM_BG] project={} job={} clips={} manifest={}",
+        project_id, warm_job_id, clip_count, wsl_manifest
+    ));
+
+    let guard = Arc::clone(&*state);
+    let pid = project_id.clone();
+    let zk = zoom_key.clone();
+
+    tauri::async_runtime::spawn(async move {
+        use std::os::windows::process::CommandExt;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+
+        let log_path = std::env::temp_dir().join("rushcut").join("zoom-bg.log");
+        let stderr_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .ok();
+
+        let mut cmd = std::process::Command::new("wsl");
+        cmd.args([
+            "-d", "Ubuntu-24.04",
+            "-u", "root",
+            "--",
+            "python3",
+            "/mnt/c/apps/rushcut/pipeline/warm_zoom.py",
+            "--manifest-path", &wsl_manifest,
+        ])
+        .stdout(std::process::Stdio::null())
+        .creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        if let Some(f) = stderr_file {
+            cmd.stderr(std::process::Stdio::from(f));
+        } else {
+            cmd.stderr(std::process::Stdio::null());
+        }
+
+        match tokio::task::spawn_blocking(move || cmd.status()).await {
+            Ok(Ok(status)) => zoom_bg_log(&format!(
+                "[ZOOM_BG] project={} job={} done exit={}",
+                pid, warm_job_id, status.code().unwrap_or(-1)
+            )),
+            Ok(Err(e)) => zoom_bg_log(&format!(
+                "[ZOOM_BG] project={} job={} spawn-error {}",
+                pid, warm_job_id, e
+            )),
+            Err(e) => zoom_bg_log(&format!(
+                "[ZOOM_BG] project={} job={} join-error {}",
+                pid, warm_job_id, e
+            )),
+        }
+
+        guard.lock().unwrap().remove(&zk);
+    });
+
+    Ok(())
+}
+
 /// Batch T2: FNV-1a 64-bit hash of a byte slice. Used to derive a stable proxy
 /// filename from a clip's source `local_path` so that (a) every cut from the same
 /// source maps to the same proxy file (dedup), and (b) a source keeps the same
@@ -2204,6 +2353,7 @@ pub fn run() {
             delete_project_cmd,
             open_output_path,
             generate_proxies_cmd,
+            warm_zoom_cache_cmd,
             get_proxy_readiness_cmd,
             get_proxy_avg_timing_cmd,
             generate_proxy_for_clip,

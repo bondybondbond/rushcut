@@ -209,6 +209,63 @@ def _zoom_cache_key(
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def pretrim_one_clip(i: int, src_p: Path, cm: dict, tmp: Path) -> tuple[Path, dict]:
+    """B-0 pre-trim one source clip to [in_s-2s, out_s+0.5s] via fast copy-seek.
+
+    Returns (pre_trimmed_path, pipeline_clip_meta) where the meta carries B-0-adjusted
+    in_ms/out_ms (offsets relative to the pre-trim window start). Clips with no user
+    trim are returned untouched. Extracted from the Step-1 _pretrim_worker closure so
+    warm_zoom.py reproduces the render's per-clip prep with identical offset math
+    (no copy-paste drift). See pipeline.md "B-0 trim offset mutation".
+    """
+    u_in = cm.get("in_ms")
+    u_out = cm.get("out_ms")
+    if u_in is not None or u_out is not None:
+        in_s = (u_in / 1000.0) if u_in is not None else 0.0
+        out_s = (u_out / 1000.0) if u_out is not None else None
+        a_start = max(0.0, in_s - 2.0)   # 2s pre-roll for keyframe alignment
+        out_path = tmp / f"pretrim_{i}.mp4"
+        cmd = [FFMPEG, "-y", "-ss", f"{a_start:.4f}"]
+        if out_s is not None:
+            cmd += ["-to", f"{out_s + 0.5:.4f}"]
+        cmd += ["-i", str(src_p), "-c", "copy", str(out_path)]
+        end_label = f"{out_s + 0.5:.2f}s" if out_s is not None else "EOF"
+        log.info("[B0] clip %d: pre-trim %.2fs -> %s (src=%s)", i, a_start, end_label, src_p.name)
+        ffmpeg_run(cmd)
+        adj_in = int((in_s - a_start) * 1000) if u_in is not None else None
+        adj_out = int((out_s - a_start) * 1000) if out_s is not None else None
+        return out_path, {**cm, "in_ms": adj_in, "out_ms": adj_out}
+    return src_p, cm
+
+
+def decide_clip_source(
+    clip_meta: dict, output_resolution: str, target_fps_int: int
+) -> tuple[bool, str | None, str]:
+    """Decide whether a clip's proxy can substitute for normalise.
+
+    Returns (use_proxy, proxy_path_wsl, reason). A proxy qualifies only when it is
+    valid, tall enough for the output resolution (>=1080p for 1080p, >=2160p for 4K),
+    AND its fps matches the render target. Extracted from Step 1 so warm_zoom.py mirrors
+    the render's proxy-vs-normalise partition exactly. See pipeline.md "Proxy reuse gate".
+    """
+    required_proxy_h = 2160 if output_resolution == "4k" else 1080
+    pwsl = clip_meta.get("proxy_path_wsl")
+    valid = bool(pwsl and is_valid_proxy(pwsl))
+    height, proxy_fps_int = _proxy_meta(pwsl) if valid else (0, 0)
+    fps_ok = (proxy_fps_int == target_fps_int)
+    if valid and height >= required_proxy_h and fps_ok:
+        return True, pwsl, f"using {height}p {proxy_fps_int}fps proxy, skipping normalise"
+    if not pwsl:
+        reason = "no proxy"
+    elif not valid:
+        reason = "invalid"
+    elif height < required_proxy_h:
+        reason = f"proxy-{height}p < required-{required_proxy_h}p"
+    else:
+        reason = f"proxy FPS mismatch: proxy-{proxy_fps_int}fps != target-{target_fps_int}fps"
+    return False, pwsl, reason
+
+
 def inject_silence_where_needed(
     clip_paths: list[Path],
     durations: list[float],
@@ -345,27 +402,7 @@ def run_pipeline(
     pipeline_clips:    list = [None] * n_clips
 
     def _pretrim_worker(i: int, src_p: Path, cm: dict) -> None:
-        u_in  = cm.get("in_ms")
-        u_out = cm.get("out_ms")
-        if u_in is not None or u_out is not None:
-            in_s    = (u_in  / 1000.0) if u_in  is not None else 0.0
-            out_s   = (u_out / 1000.0) if u_out is not None else None
-            a_start = max(0.0, in_s - 2.0)   # 2s pre-roll for keyframe alignment
-            out_path = tmp / f"pretrim_{i}.mp4"
-            cmd = [FFMPEG, "-y", "-ss", f"{a_start:.4f}"]
-            if out_s is not None:
-                cmd += ["-to", f"{out_s + 0.5:.4f}"]
-            cmd += ["-i", str(src_p), "-c", "copy", str(out_path)]
-            end_label = f"{out_s + 0.5:.2f}s" if out_s is not None else "EOF"
-            log.info("[B0] clip %d: pre-trim %.2fs -> %s (src=%s)", i, a_start, end_label, src_p.name)
-            ffmpeg_run(cmd)
-            adj_in  = int((in_s  - a_start) * 1000) if u_in  is not None else None
-            adj_out = int((out_s - a_start) * 1000) if out_s is not None else None
-            pre_trimmed_paths[i] = out_path
-            pipeline_clips[i]    = {**cm, "in_ms": adj_in, "out_ms": adj_out}
-        else:
-            pre_trimmed_paths[i] = src_p
-            pipeline_clips[i]    = cm
+        pre_trimmed_paths[i], pipeline_clips[i] = pretrim_one_clip(i, src_p, cm, tmp)
 
     with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as pool:
         futures = [pool.submit(_pretrim_worker, i, src_p, cm)
@@ -374,33 +411,20 @@ def run_pipeline(
             f.result()
 
     # Partition clips: use proxy as normalise substitute where available.
-    # Required proxy height depends on output resolution:
-    #   1080p render → proxy must be >= 1080p (prevents upscaling artefacts)
-    #   4K render    → proxy must be >= 2160p (1080p proxies produce blurry 4K output)
-    # Background gen (Batch N) now encodes at 2160p so proxies qualify for both resolutions.
-    required_proxy_h = 2160 if output_resolution == "4k" else 1080
+    # Required proxy height depends on output resolution (>=1080p for 1080p,
+    # >=2160p for 4K). Background gen (Batch N) encodes at 2160p so proxies qualify
+    # for both. The decision lives in decide_clip_source() so warm_zoom.py mirrors
+    # the render's proxy-vs-normalise partition exactly.
     proxy_clip_indices: set[int] = set()
     norm_clip_indices:  list[int] = []
 
     for i, cm in enumerate(pipeline_clips):
-        pwsl = cm.get("proxy_path_wsl")
-        # Cache checks to avoid multiple ffprobe calls per clip
-        valid = bool(pwsl and is_valid_proxy(pwsl))
-        height, proxy_fps_int = _proxy_meta(pwsl) if valid else (0, 0)
-        fps_ok = (proxy_fps_int == target_fps_int)
-        if valid and height >= required_proxy_h and fps_ok:
+        use_proxy, _pwsl, reason = decide_clip_source(cm, output_resolution, target_fps_int)
+        if use_proxy:
             proxy_clip_indices.add(i)
-            log.info("[C-proxy] clip %d: using %dp %dfps proxy, skipping normalise", i, height, proxy_fps_int)
+            log.info("[C-proxy] clip %d: %s", i, reason)
         else:
             norm_clip_indices.append(i)
-            if not pwsl:
-                reason = "no proxy"
-            elif not valid:
-                reason = "invalid"
-            elif height < required_proxy_h:
-                reason = f"proxy-{height}p < required-{required_proxy_h}p"
-            else:
-                reason = f"proxy FPS mismatch: proxy-{proxy_fps_int}fps != target-{target_fps_int}fps"
             log.info("[C-proxy] clip %d: %s, normalising from source", i, reason)
 
     log.info("[C-proxy] %d proxy-skip / %d normalise", len(proxy_clip_indices), len(norm_clip_indices))

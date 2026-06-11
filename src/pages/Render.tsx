@@ -472,11 +472,15 @@ export default function Render() {
       const sec = Math.floor((Date.now() - startTimeRef.current) / 1000);
       setElapsedLabel(sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`);
     }, 1000);
-    // U1e: every 30s, flag a stall if no progress/stage event for >120s. This does
+    // U1e: every 30s, flag a stall if no progress/stage event for >360s. This does
     // NOT change phase (the render may still be alive) -- it only surfaces a soft
-    // warning. The 120s window is reset by both pipeline-progress and pipeline-stage.
+    // warning. The 360s window is reset by both pipeline-progress and pipeline-stage.
+    // U4: threshold raised from 120s to 360s -- a cold zoom stage runs up to 8 min
+    // without emitting PROGRESS (one STAGE:zoom at start, then silent encode). With
+    // the bg warm cache in place this should be <5s, but keep a generous threshold
+    // for cold first-runs to avoid false stall warnings.
     const stallCheck = setInterval(() => {
-      if (Date.now() - lastProgressAtRef.current > 120_000) setStalled(true);
+      if (Date.now() - lastProgressAtRef.current > 360_000) setStalled(true);
     }, 30_000);
     return () => {
       clearInterval(interval);

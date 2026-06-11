@@ -587,6 +587,29 @@ When watching clips in the Film tab of the Trim screen (or Arrange screen), the 
 
 ---
 
+## Backlog — Cancel in-progress render (with confirmation)
+
+> **PRD item — reported 2026-06-11 (founder, during U4 diagnostics).**
+
+A render job that has started cannot currently be cancelled — the user must wait for it to finish (or stall out). Add the ability to cancel a running render from the Render screen, gated behind a confirmation prompt. Pairs naturally with the U1e stall-warning work: a stalled render is the prime case where the user wants out.
+
+**Scope:**
+- `src/pages/Render.tsx` — "Cancel render" control visible only while `phase === "rendering"` (and likely `"preparing"`). On click, `confirm()` from `@tauri-apps/plugin-dialog` (NOT `window.confirm` — broken in WebView2; see `.claude/rules/rust-tauri.md`).
+- `src-tauri/src/lib.rs` — new command to terminate the WSL `python3 run.py --job-id <uuid>` process for the job; clean up `/tmp/<job_id>` in WSL; set the job row status to cancelled/failed. May need to track child PID or kill-by-job-id in WSL.
+- Design per `docs/DESIGN.md`: secondary/destructive styling, peach headings, no grey text.
+
+---
+
+## Backlog — Zoom preview auto-plays on clip switch while paused (BUG)
+
+> **Bug — reported 2026-06-11 (founder, during U4 diagnostics).**
+
+In the Arrange zoom tab: press play to preview a zoom on a clip, then switch to a different clip. The Ken Burns zoom animation **auto-plays on the new clip even though playback is paused.** It should only animate when the user explicitly presses play on the new clip; a clip switch should land paused (static transform at t=0).
+
+**Scope:** `src/pages/Arrange.tsx` — the WAAPI zoom animation (`kbAnimRef`, `syncZoomToPlayhead`, clip-switch effect). The play/pause state is not respected when the active clip changes — the clip-switch path likely calls `play()` / restarts the animation regardless of paused state. Gate the animation start on the actual playing state when the clip changes, defaulting to paused. Reference: U3b introduced `syncZoomToPlayhead(elapsedSec, playing)`; U3d moved to WAAPI.
+
+---
+
 ## Backlog — Reorder clips in Trim screen via drag left/right on film timeline
 
 > **PRD item — reported 2026-05-19.**
