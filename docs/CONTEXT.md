@@ -15,14 +15,15 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U4 COMPLETE (2026-06-11, background zoom pre-cache). Next: U4b (zoom auto-play bug), then U5.**
+**Phase 2 — Batch U4b COMPLETE (2026-06-12, zoom preview auto-play on clip switch). Next: U4c (U1g /tmp volatility fix), then U5.**
 
 ---
 
 ## Immediate Next Task
 
 - **Batch U4 — COMPLETE (2026-06-11).** Background zoom cache warm: `pipeline/warm_zoom.py` + `warm_zoom_cache_cmd` Rust command + three-tier Arrange.tsx trigger (zoom-tab-leave immediate, 500ms debounced on param edit, unmount backstop). Verified: `zoom_cache_hits=4/4 t_zoom=0` on both 1080p + 4K renders. Stall threshold raised 120s→360s. 9/9 fast + 5/5 editor PASS.
-- **Batch U4b (BUG)** — Zoom preview auto-plays on clip switch while paused: when a clip is playing (with or without zoom), switching to another clip causes the Ken Burns WAAPI animation to auto-start on the new clip even though playback is paused. Fix scope: clip-switch effect in `Arrange.tsx` must check `isPlayingRef.current` before starting WAAPI animation. Tracked in PRD-DEV.md.
+- **Batch U4b — COMPLETE (2026-06-12).** Zoom preview auto-play on clip switch: added `prevZoomClipIdRef` to distinguish clip switch from param edit; clip switch always calls `syncZoomToPlayhead(0, false)` (bypasses stale `isPlayingRef`). Fix is `Arrange.tsx` clip-switch effect only.
+- **Batch U4c (BUG)** — U1g segmented render falls back to monolithic under memory pressure: WSL `/tmp/<job_id>/` is cleared between segment encodes and concat-manifest write → `[Errno 2]` → monolithic fallback → SIGTERM on 20-clip 4K projects. Fix: move U1g working dir from `/tmp/<job_id>/` to NTFS `%TEMP%\rushcut\<job_id>\` (same pattern as zoom-cache). `pipeline/render.py` `_render_segmented()` only.
 - **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
 - **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-11).
 - **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.

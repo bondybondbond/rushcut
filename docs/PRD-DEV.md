@@ -600,13 +600,23 @@ A render job that has started cannot currently be cancelled — the user must wa
 
 ---
 
-## Backlog — Zoom preview auto-plays on clip switch while paused (BUG)
+## ~~Backlog — Zoom preview auto-plays on clip switch while paused~~ **DONE (U4b, 2026-06-12)**
 
-> **Bug — reported 2026-06-11 (founder, during U4 diagnostics).**
+> **Bug — reported 2026-06-11 (founder, during U4 diagnostics). Fixed U4b.**
 
-In the Arrange zoom tab: press play to preview a zoom on a clip, then switch to a different clip. The Ken Burns zoom animation **auto-plays on the new clip even though playback is paused.** It should only animate when the user explicitly presses play on the new clip; a clip switch should land paused (static transform at t=0).
+`prevZoomClipIdRef` added to `Arrange.tsx` — clip-switch branch calls `syncZoomToPlayhead(0, false)` unconditionally, bypassing stale `isPlayingRef.current`. Param edits on the same clip still preserve live play state.
 
-**Scope:** `src/pages/Arrange.tsx` — the WAAPI zoom animation (`kbAnimRef`, `syncZoomToPlayhead`, clip-switch effect). The play/pause state is not respected when the active clip changes — the clip-switch path likely calls `play()` / restarts the animation regardless of paused state. Gate the animation start on the actual playing state when the clip changes, defaulting to paused. Reference: U3b introduced `syncZoomToPlayhead(elapsedSec, playing)`; U3d moved to WAAPI.
+---
+
+## Backlog — U1g segmented render falls back to monolithic under memory pressure (BUG)
+
+> **Bug — diagnosed 2026-06-12 (founder, during U4b diagnostics). Assigned Batch U4c.**
+
+`_render_segmented()` in `pipeline/render.py` writes `u1g_seg_N.mp4` and `u1g_concat.txt` to WSL `/tmp/<job_id>/`. Under memory pressure from two sequential 4K encodes, WSL tmpfs can silently clear that directory between batch-2 encode completing and the concat-manifest write. `write_text()` raises `[Errno 2] No such file or directory`; the outer `except Exception` catches it and falls back to the monolithic path — exactly the OOM scenario U1g was designed to prevent. Confirmed on job `db8f3aa6`: both batches reported `drift=0 frame(s)` then fell back → SIGTERM.
+
+**Fix:** Move U1g working dir from `Path("/tmp") / job_id` to `Path(os.environ["TEMP"]) / "rushcut" / job_id` (NTFS). Same pattern already used by zoom-cache and `warm_zoom.py`. Segment paths in the concat file need the `/mnt/c/...` prefix (existing `win_to_wsl()` helper). No other files change.
+
+**Scope:** `pipeline/render.py` `_render_segmented()` only — `TMP_BASE` constant + concat-path construction.
 
 ---
 
@@ -620,13 +630,13 @@ After a session involving drag-to-reorder (U2), the user observed 2 extra clips 
 
 ---
 
-## Backlog — MediaPantry silently hides clips whose source file path is stale
+## Backlog — MediaPantry shows fewer source files than Library count (BUG)
 
-> **UX issue — reported 2026-06-11 (founder, during U4 verification).**
+> **Bug — reported 2026-06-11 (founder, during U4 verification). Source files confirmed on disk; clips from all sources are accessible and editable in the film.**
 
-The Library clip count (`COUNT(DISTINCT local_path)`) includes all clips in the DB, including those whose source file has since been moved or deleted. The MediaPantry (Trimmer) only renders clips it can display (thumbnail accessible), so the visible count in the pantry is lower than the DB count. The user sees "3 files" in Library but only 1 file group in the pantry — no explanation.
+Library shows "3 files" for a project but MediaPantry (Trimmer, ALL CLIPS section) shows only 1 source file group. Files are confirmed on disk; clips from the missing sources are actively in the film and editable. Likely causes to investigate: (a) pantry only shows sources with `include=0` clips — files whose cuts are all already in the film disappear from the pantry (by-design-but-wrong UX), (b) grouping bug where clips are grouped by something other than `local_path` causing collisions, (c) distinct-path deduplication bug in the component's source-group builder.
 
-**Scope:** `src/components/MediaPantry.tsx` — show a dimmed "missing" row for source paths that have no accessible thumbnail, with a tooltip "Source file not found at original path". Allows users to understand and optionally remove stale entries.
+**Scope:** `src/components/MediaPantry.tsx` — read how it builds the source group list and what filter/grouping it applies. The ALL CLIPS section should show all source files regardless of their clips' `include` status.
 
 ---
 
@@ -898,6 +908,7 @@ Fill the four product gaps above → 8/10 for this niche. Genuinely better than 
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 5.2     | 2026-06-12 | Batch U4b DONE: Zoom preview auto-plays on clip switch. Root cause: zoom-sync effect read stale `isPlayingRef.current` (the `[isPlaying]` sync effect runs on the NEXT render, so on a clip-switch tick the ref still holds the old `true`). Fix: `prevZoomClipIdRef` in `Arrange.tsx` — clip-switch branch calls `syncZoomToPlayhead(0, false)` unconditionally (always land paused at t=0); same-clip param-edit branch reads `isPlayingRef` as before (no regression). `null` → first clipId counts as a switch (intentional — first load is paused). `src/pages/Arrange.tsx` only. 9/9 fast PASS. |
 | 5.1     | 2026-06-11 | Batch U4 DONE: Background zoom pre-cache. `pipeline/warm_zoom.py` — CLI warmer, serial (no ThreadPoolExecutor), warms BOTH `WARM_RESOLUTIONS=["1080p","4k"]`, proxy-substitute path skips HEVC decode, atomic `tmp->os.replace`, absolute imports throughout (direct-script invocation requires no relative imports). `warm_zoom_cache_cmd` Rust command — `{project_id}:zoom` concurrency guard, BELOW_NORMAL WSL spawn, `zoom-bg.log`. `pipeline/render.py` refactor: `pretrim_one_clip()` + `decide_clip_source()` extracted as module-level helpers (reused by warmer; parity-verified). `Arrange.tsx` three-tier trigger: (a) immediate on zoom-tab leave (cancels debounce), (b) 500ms debounced after zoom/focal param edit, (c) unmount backstop with debounce cleanup. `Render.tsx` stall threshold 120s->360s (cold zoom silent up to 8 min). Verified: `zoom_cache_hits=4/4 t_zoom=0` both 1080p + 4K (was 26-108s cold). 9/9 fast + 5/5 editor PASS. |
 | 5.0     | 2026-06-10 | Batch U3d DONE: Choppy zoom preview fix (WAAPI). `rc-kenburns` CSS @keyframes (read var(), blocked compositor) replaced with WAAPI (`kbAnimRef`). Root cause confirmed via direct CDP trace: residual judder is 30fps source content, not jank. Two follow-on bug fixes: WAAPI play() resets finished anim to 0 (guard `elapsedMs < durMs`); Fixed->Gradual flash (write `transition:"none"` before `transform` in JSX). 9/9 fast + 5/5 editor PASS. |
 | 4.9     | 2026-06-09 | Batch U3b + U3e DONE: Zoom playback UX + destination crop box. U3b: `syncZoomToPlayhead(elapsedSec, playing)` replaces `restartZoomAnim` — negative CSS animation-delay for clock positioning; gesture split click=play / drag=focal (4px threshold); Sound tab click-to-play. U3e: projected destination crop box using `approxKenBurnsProgress(t_raw)` smoothstep. U3a (prior): transformOrigin wipe fix, kbPreviewDurationSec helper, SAR mismatch fix in transitions.py. U3c: Ken Burns focal drift fixed in zoom.py. 9/9 fast + 5/5 editor PASS. |

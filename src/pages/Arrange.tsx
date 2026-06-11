@@ -172,6 +172,10 @@ export default function Arrange() {
   const selectedClipRef = useRef<Clip | null>(null);
   const loadedClipIdRef = useRef<string>("");
   const isPlayingRef    = useRef(false);   // mirror of isPlaying for use in effects
+  // Tracks which clip the zoom-sync effect last ran for, so it can tell a clip
+  // SWITCH (must land paused) apart from a param edit on the same clip (preserve
+  // live play state). See the zoom-sync effect below for the stale-ref reason.
+  const prevZoomClipIdRef = useRef<string | null>(null);
 
   // Sound tab — independent video instance + playback state
   const soundVideoRef = useRef<HTMLVideoElement>(null);
@@ -322,8 +326,24 @@ export default function Arrange() {
   // events (play/pause/seek/clip-end) re-sync via syncZoomToPlayhead directly.
   useEffect(() => {
     if (tab !== "zoom") return; // other tabs own their own video; leave untouched
-    // Read the live playhead off the element (not currentMs state) so this effect
-    // need not depend on currentMs — depending on it would re-fire ~4Hz.
+    // Distinguish a clip SWITCH from a param edit on the same clip. On a switch we
+    // must NOT read isPlayingRef: the video-reload effect above just called
+    // setIsPlaying(false), but that state change has not yet propagated to
+    // isPlayingRef (the [isPlaying] sync effect runs on the NEXT render), so the
+    // ref is stale `true` here. Reading it would re-arm and play() the zoom on the
+    // new clip even though playback is paused (U4b bug).
+    const clipChanged = prevZoomClipIdRef.current !== selectedClipId;
+    prevZoomClipIdRef.current = selectedClipId;
+    if (clipChanged) {
+      // New clip always lands paused at its start frame (t=0). null -> first real
+      // clipId also counts as a switch and is intentional — first load is paused.
+      syncZoomToPlayhead(0, false);
+      setCurrentMs(0);
+      return;
+    }
+    // Same clip — a zoom-mode / focal / trim edit during the session. Preserve the
+    // live play state. Read the live playhead off the element (not currentMs state)
+    // so this effect need not depend on currentMs — depending on it would re-fire ~4Hz.
     const inMs = selectedClip?.in_ms ?? 0;
     const v = videoRef.current;
     const elapsedSec = v ? Math.max(0, v.currentTime - inMs / 1000) : 0;

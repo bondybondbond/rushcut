@@ -28,6 +28,7 @@ Applies when working on `pipeline/**`, `src-tauri/src/lib.rs` (pipeline spawn), 
 ## Concurrent renders and log isolation
 
 - **Exit code 15 = SIGTERM from WSL restart** — not a code bug. Check `wsl -- ls /tmp/<job_id>` before debugging; a missing dir means WSL killed everything (memory pressure or a concurrent heavy render). Re-run once WSL is stable.
+- **U1g working directory must be NTFS, not WSL `/tmp`** — `_render_segmented()` uses `TMP_BASE = Path("/tmp")`. Under memory pressure from two sequential 4K encodes, WSL tmpfs can clear `/tmp/<job_id>/` between segment-batch completion and the concat-manifest write. `write_text()` then raises `[Errno 2]`; the fallback catches it and runs monolithic — defeating the whole purpose of U1g. Fix (Batch U4c): use `Path(os.environ["TEMP"]) / "rushcut" / str(job_id)` (NTFS). Segment paths in the concat file need the `/mnt/c/...` prefix. Same pattern as zoom-cache and `warm_zoom.py`.
 - **`pipeline-latest.log` must be a symlink, not a shared file** — two concurrent `run.py` processes opening the same file with `mode="w"` produce a sparse file with null-byte gaps (second process truncates but retains old offset). Pattern: each job writes to `pipeline-{job_id}.log`; update `pipeline-latest.log` symlink atomically: `latest.unlink(missing_ok=True); latest.symlink_to(f"pipeline-{job_id}.log")`.
 
 ## Sync / performance fixes — logs first
