@@ -15,16 +15,16 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U3d COMPLETE (2026-06-10, WAAPI zoom + judder root-cause confirmed). Next: U4, U5.**
+**Phase 2 — Batch U4 COMPLETE (2026-06-11, background zoom pre-cache). Next: U4b (zoom auto-play bug), then U5.**
 
 ---
 
 ## Immediate Next Task
 
-- **Batch U3d — COMPLETE (2026-06-10).** Replaced `rc-kenburns` CSS `@keyframes` (read `var()`, blocked compositor) with WAAPI (`kbAnimRef` in `Arrange.tsx`) — measured 60fps compositor, 0–1 dropped frames. Fixed two follow-on bugs: WAAPI `play()` resetting a finished animation to 0 (guard `elapsedMs < durMs`), and a Fixed→Gradual transition flash (write `transition:"none"` before `transform` in JSX style). **Key finding (measured via direct CDP trace + render comparison):** the residual "choppiness during zoom" is NOT jank — it is 30fps source content under 60fps zoom motion; the FFmpeg render shares the same 29.97fps character; canvas/lower-res proxy would NOT help. User accepted; preview reads as smooth. See LEARNINGS.md "WebView2 — gradual zoom preview judder is 30fps source content". Deferred lever (backlog): rVFC-synced transform for render-faithful 30fps preview.
-- **Batch U4** — Background zoom pre-cache (frontload the 8-min zoom stage).
+- **Batch U4 — COMPLETE (2026-06-11).** Background zoom cache warm: `pipeline/warm_zoom.py` + `warm_zoom_cache_cmd` Rust command + three-tier Arrange.tsx trigger (zoom-tab-leave immediate, 500ms debounced on param edit, unmount backstop). Verified: `zoom_cache_hits=4/4 t_zoom=0` on both 1080p + 4K renders. Stall threshold raised 120s→360s. 9/9 fast + 5/5 editor PASS.
+- **Batch U4b (BUG)** — Zoom preview auto-plays on clip switch while paused: when a clip is playing (with or without zoom), switching to another clip causes the Ken Burns WAAPI animation to auto-start on the new clip even though playback is paused. Fix scope: clip-switch effect in `Arrange.tsx` must check `isPlayingRef.current` before starting WAAPI animation. Tracked in PRD-DEV.md.
 - **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
-- **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-09).
+- **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-11).
 - **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted.
 - Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.

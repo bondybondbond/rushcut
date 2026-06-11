@@ -610,6 +610,26 @@ In the Arrange zoom tab: press play to preview a zoom on a clip, then switch to 
 
 ---
 
+## Backlog — Unexpected clips appear at front of film (BUG)
+
+> **Bug — reported 2026-06-11 (founder, during U4 verification).**
+
+After a session involving drag-to-reorder (U2), the user observed 2 extra clips appearing at the front of the film in the StickyFilmStrip. The clips were not intentionally added. Most likely cause: `sort_order` values assigned during `reorder_clips_cmd` left some pre-existing clips with a very low (0 or near-0) sort_order, causing them to sort before intended clips. Alternative: a clip inadvertently got `include=1` set.
+
+**Scope:** `src-tauri/src/lib.rs` `reorder_clips_cmd` + DB sort_order assignment logic. Diagnostic first: run `invoke("get_project", {projectId})` and inspect all `sort_order` + `include` values to identify the out-of-place clips.
+
+---
+
+## Backlog — MediaPantry silently hides clips whose source file path is stale
+
+> **UX issue — reported 2026-06-11 (founder, during U4 verification).**
+
+The Library clip count (`COUNT(DISTINCT local_path)`) includes all clips in the DB, including those whose source file has since been moved or deleted. The MediaPantry (Trimmer) only renders clips it can display (thumbnail accessible), so the visible count in the pantry is lower than the DB count. The user sees "3 files" in Library but only 1 file group in the pantry — no explanation.
+
+**Scope:** `src/components/MediaPantry.tsx` — show a dimmed "missing" row for source paths that have no accessible thumbnail, with a tooltip "Source file not found at original path". Allows users to understand and optionally remove stale entries.
+
+---
+
 ## Backlog — Reorder clips in Trim screen via drag left/right on film timeline
 
 > **PRD item — reported 2026-05-19.**
@@ -878,6 +898,9 @@ Fill the four product gaps above → 8/10 for this niche. Genuinely better than 
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 5.1     | 2026-06-11 | Batch U4 DONE: Background zoom pre-cache. `pipeline/warm_zoom.py` — CLI warmer, serial (no ThreadPoolExecutor), warms BOTH `WARM_RESOLUTIONS=["1080p","4k"]`, proxy-substitute path skips HEVC decode, atomic `tmp->os.replace`, absolute imports throughout (direct-script invocation requires no relative imports). `warm_zoom_cache_cmd` Rust command — `{project_id}:zoom` concurrency guard, BELOW_NORMAL WSL spawn, `zoom-bg.log`. `pipeline/render.py` refactor: `pretrim_one_clip()` + `decide_clip_source()` extracted as module-level helpers (reused by warmer; parity-verified). `Arrange.tsx` three-tier trigger: (a) immediate on zoom-tab leave (cancels debounce), (b) 500ms debounced after zoom/focal param edit, (c) unmount backstop with debounce cleanup. `Render.tsx` stall threshold 120s->360s (cold zoom silent up to 8 min). Verified: `zoom_cache_hits=4/4 t_zoom=0` both 1080p + 4K (was 26-108s cold). 9/9 fast + 5/5 editor PASS. |
+| 5.0     | 2026-06-10 | Batch U3d DONE: Choppy zoom preview fix (WAAPI). `rc-kenburns` CSS @keyframes (read var(), blocked compositor) replaced with WAAPI (`kbAnimRef`). Root cause confirmed via direct CDP trace: residual judder is 30fps source content, not jank. Two follow-on bug fixes: WAAPI play() resets finished anim to 0 (guard `elapsedMs < durMs`); Fixed->Gradual flash (write `transition:"none"` before `transform` in JSX). 9/9 fast + 5/5 editor PASS. |
+| 4.9     | 2026-06-09 | Batch U3b + U3e DONE: Zoom playback UX + destination crop box. U3b: `syncZoomToPlayhead(elapsedSec, playing)` replaces `restartZoomAnim` — negative CSS animation-delay for clock positioning; gesture split click=play / drag=focal (4px threshold); Sound tab click-to-play. U3e: projected destination crop box using `approxKenBurnsProgress(t_raw)` smoothstep. U3a (prior): transformOrigin wipe fix, kbPreviewDurationSec helper, SAR mismatch fix in transitions.py. U3c: Ken Burns focal drift fixed in zoom.py. 9/9 fast + 5/5 editor PASS. |
 | 4.8     | 2026-06-07 | Batch U2 DONE: Drag-to-reorder on StickyFilmStrip. `StickyFilmStrip.tsx` rewritten with dnd-kit (`DndContext` + `SortableContext` + `SortableFilmTile`, `PointerSensor { distance: 5 }`, `CSS.Translate.toString` for variable-width tiles). Swipe-delete replaced with hover-reveal bin icon. `onReorder` prop wired in Trimmer + Arrange: merge reordered film IDs back into full clip list (pantry sort_order safe), optimistic update + rollback. Bundled bugfix: `handleReorder` in `Trimmer.tsx` corrects `filmPlayIdx` by ID after reorder (integer index stayed fixed, causing playhead to show wrong clip after drag). Pre-existing E2E fixes: `arrange.spec.ts` + `sound.spec.ts` rc_* keys migrated from sessionStorage to localStorage (U1b debt). 9/9 fast PASS, 26/26 arrange PASS. |
 | 4.7     | 2026-06-07 | Batch U1g DONE (verified): Segmented xfade render (memory-bounded). Already shipped in U1b commit. `_render_segmented()` in `render.py` activates for >4-clip xfade renders without open/close-to-black transitions. Overlap-by-one batching (BATCH_SIZE=4): shared clip at boundary appears in both adjacent batches; boundary cut placed inside the solo region. Frame-count telescoping (`round(g_end*fps) - round(g_start*fps)`) prevents drift. Single audio acrossfade pass over all clips. `-c copy` concat + mux. In-filter trim (not `-c copy` segment trim). Verified: 21-clip 4K Stagecoach project — exit code 0, `drift=0 frame(s) (0.0ms)`, 7 batches, music + cards correct, peak WSL ~9.7 GB (12 GB safe). Gap: `has_open`/`has_close` still monolithic. 9/9 fast PASS, 14/14 render PASS. |
 | 4.6     | 2026-06-07 | Batch U1e DONE: Stalled render detection. `Render.tsx` `lastProgressAtRef` seeded from `active_job.updated_at` inside load useEffect (not `Date.now()` — prevents fresh remount masking pre-existing stall). 30s interval checks 120s inactivity threshold; both `pipeline-progress` AND `pipeline-stage` reset the ref. Warning panel: `border-l-2 border-l-[#FF8A65]`, "Try Again" -> `startNewVersion()`. Verified via SIGSTOP/SIGCONT + remount test (2.48s re-appearance, 54s stale job). DESIGN.md + LEARNINGS.md extended. 9/9 fast + 14/14 render PASS. |
