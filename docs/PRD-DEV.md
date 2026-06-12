@@ -690,6 +690,30 @@ Library shows "3 files" for a project but MediaPantry (Trimmer, ALL CLIPS sectio
 
 ---
 
+## Backlog — Render progress bar doesn't use full scale when stages are skipped (UX)
+
+> **Observed 2026-06-13 (founder, zoom-test render with no music or cards).**
+
+When a render has no music and no cards, the pipeline skips those stages entirely. The progress bar, which maps PROGRESS: stdout values (0-100) from the pipeline, still hits its max at the same point as a full render — but the "full render" reference includes music + cards. Without those stages the bar jumps from ~60% directly to done, wasting the upper 40% of the scale.
+
+**Fix:** The pipeline should weight `PROGRESS` values against the number of active stages, not total possible stages. Alternatively, `run.py` could remap the per-stage progress contributions at job start based on which stages are actually active (music=None → skip its progress band; cards=off → skip its band). This keeps the bar stretching smoothly from 0→100% regardless of the active stage count.
+
+**Scope:** `pipeline/run.py` or the per-stage progress emission in `render.py` — remap progress percentages to fill the full 0–100 range based on which stages are active. No UI change needed; `Render.tsx` already renders a linear 0–100% bar.
+
+---
+
+## Backlog — Background GPU workload (proxy/zoom-warm) can cause display driver reset during video playback (BUG)
+
+> **Observed 2026-06-13 (founder, zoom-test project, proxy + zoom-warm running in background).**
+
+User reported machine freeze while playing clips in the Arrange zoom tab, followed by Windows nightlight/dark mode setting being reset (symptom of a GPU driver timeout or display driver restart). Both proxy AMF encoding and zoom-warm run BELOW_NORMAL priority in WSL, but they still consume GPU/CPU. If the WebView2 renderer is also decoding video simultaneously, the combined load can cause a GPU driver timeout — Windows resets the driver to recover, which appears to the user as a brief freeze and display settings being wiped.
+
+**Immediate mitigation:** The Rust proxy batch already caps to 2 concurrent AMF workers. The zoom-warm runs serially (no ThreadPoolExecutor). No immediate code fix needed — the BELOW_NORMAL priority guard should limit impact. If this recurs consistently, investigate whether AMF can be further throttled or whether warm jobs should pause while a WebView2 video is actively playing.
+
+**Scope:** Monitor for recurrence. If reproducible: check `proxy-bg.log` + `zoom-bg.log` timestamps vs the freeze moment. If AMF is the cause, add a concurrency gate that pauses background AMF when `proxy_status='encoding'` for more than N simultaneous clips.
+
+---
+
 ## Backlog — Reorder clips in Trim screen via drag left/right on film timeline
 
 > **PRD item — reported 2026-05-19.**
