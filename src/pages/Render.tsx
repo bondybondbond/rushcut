@@ -110,6 +110,15 @@ export default function Render() {
   // Do not move that seed into render-body / useState init.
   const lastProgressAtRef = useRef<number>(Date.now());
   const [stalled, setStalled] = useState(false);
+  // U4f: stage-aware stall threshold. The cold zoom stage emits one STAGE:zoom then
+  // encodes silently (no PROGRESS) for up to ~7 min on a large project, which trips a
+  // fixed 360s threshold falsely. On STAGE:zoom we extend this to 1 min/clip
+  // (floor 360s, cap 600s). Reset to 360s when the render ends.
+  const maxStallMsRef = useRef<number>(360_000);
+  // U4f: inFilmCount mirror — the pipeline-stage listener is registered once, so a
+  // bare `inFilmCount` read inside it would be a stale closure. Always read .current.
+  const inFilmCountRef = useRef<number>(inFilmCount);
+  useEffect(() => { inFilmCountRef.current = inFilmCount; }, [inFilmCount]);
 
   // Batch R: proxy-readiness gate state. Render only auto-starts once every
   // include=1 clip has a proxy that matches render.py's reuse gate; otherwise
@@ -195,6 +204,8 @@ export default function Render() {
       setElapsedLabel("0s");
       // U1e: brand-new render has no prior activity -- seed the stall clock now.
       lastProgressAtRef.current = Date.now();
+      // U4f: fresh render starts at the baseline threshold (extended later on STAGE:zoom).
+      maxStallMsRef.current = 360_000;
       setStalled(false);
       setPhase("rendering");
     } catch (e) {
@@ -212,6 +223,13 @@ export default function Render() {
     // settled, so it passes the freshly-loaded value. All other callers fire
     // after has4K is set and can rely on the closure.
     const is4k = is4kOverride ?? has4K;
+    // U4d: backstop zoom warm — covers done-project direct opens (Smart Open routes
+    // straight to /render, skipping Trimmer's entry warm). Fire-and-forget, once per
+    // submit attempt; the Rust {project_id}:zoom guard dedupes against any Trimmer fire.
+    // Does NOT gate the render — it warms in parallel for this and the next render.
+    if (inFilmCount > 0) {
+      invoke("warm_zoom_cache_cmd", { projectId: pid }).catch(() => {});
+    }
     // T5: show the spinner immediately on entry. The proxy-readiness round-trip
     // (and, for a partial-proxy 4K render, the wait that follows) can take a few
     // seconds; without this the 4K gate stayed on screen and the button looked
@@ -412,6 +430,12 @@ export default function Render() {
       if (event.payload.jobId !== jobId) return;
       setStage(stageLabel(event.payload.stage));
       resetActivityTimer();
+      // U4f: the cold zoom stage encodes silently (no PROGRESS) -- extend the stall
+      // threshold to 1 min/clip (floor 360s, cap 600s) so it never trips falsely.
+      // Read inFilmCountRef.current (this listener is registered once -> stale closure).
+      if (event.payload.stage === "zoom") {
+        maxStallMsRef.current = Math.min(600_000, Math.max(360_000, inFilmCountRef.current * 60_000));
+      }
       // U1e: a stage transition is also liveness -- long xfade stages emit no
       // progress for 2-3 min, so counting stage events here prevents false stalls.
       lastProgressAtRef.current = Date.now();
@@ -480,13 +504,16 @@ export default function Render() {
     // the bg warm cache in place this should be <5s, but keep a generous threshold
     // for cold first-runs to avoid false stall warnings.
     const stallCheck = setInterval(() => {
-      if (Date.now() - lastProgressAtRef.current > 360_000) setStalled(true);
+      // U4f: threshold is stage-aware (extended during the cold zoom stage).
+      if (Date.now() - lastProgressAtRef.current > maxStallMsRef.current) setStalled(true);
     }, 30_000);
     return () => {
       clearInterval(interval);
       clearInterval(stallCheck);
       // U1e: leaving "rendering" (done/error) clears any standing stall warning.
       setStalled(false);
+      // U4f: reset the stage-aware threshold back to baseline for the next render.
+      maxStallMsRef.current = 360_000;
     };
   }, [phase]);
 

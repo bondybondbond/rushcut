@@ -37,11 +37,11 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
-## Workflow — `Start-Process` in PowerShell does not inherit `$env:` vars reliably
+## Workflow — launching the debug binary with WebView2 remote-debug port
 
-**Problem:** Setting `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "..."` in PowerShell and then using `Start-Process -FilePath rushcut.exe` does not propagate the variable to the child process on Windows PowerShell 5.x. The variable is silently dropped, so WebView2 never enters remote-debugging mode.
-**Solution:** Use Node.js `child_process.spawn()` with an explicit `env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "..." }` (as WDIO does), or use `cmd.exe /c "set VAR=val && rushcut.exe"` syntax from a shell that correctly inherits Win32 env blocks. Alternatively, run the WDIO setup which handles this correctly via `wdio.conf.ts` `beforeSession`.
-**Context:** Any session that manually launches the Tauri debug binary with CDP remote-debugging flags.
+**Problem:** `cmd /c "set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=... && start rushcut.exe"` spawns a detached process via `start` that does NOT inherit the inline `set`. Port 9222 is never opened. Same failure with `cmd /c "start /b /wait ..."`. The variable is silently dropped.
+**Solution:** Set the env var in PowerShell, then launch with `Start-Process` — this pattern works on Windows PowerShell 5.x and correctly propagates the variable to the child process: `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"; Start-Process "C:\apps\rushcut\src-tauri\target\debug\rushcut.exe"`. Confirm the port is up with `Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue` before running WDIO.
+**Context:** Any session that manually launches the Tauri debug binary with CDP remote-debugging flags before running E2E tests.
 
 ---
 

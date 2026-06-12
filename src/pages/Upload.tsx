@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ClipMeta, Clip, ProjectSummary } from "@/types/project";
 import { UploadZone } from "@/components/upload/UploadZone";
+import { renderStateFromStatus } from "@/utils/jobMeta";
 
 // Convert ClipMeta (from scan) to Clip (for UI display)
 function metaToClip(meta: ClipMeta, idx: number, existingCount = 0): Clip {
@@ -265,7 +266,10 @@ export default function Upload() {
                 {recentProjects.map((p) => (
                   <button
                     key={p.id}
-                    onClick={() => navigate(`/trimmer/${p.id}`)}
+                    onClick={() => {
+                      const state = renderStateFromStatus(p.last_job_status);
+                      navigate(state === "idle" ? `/trimmer/${p.id}` : `/render/${p.id}`);
+                    }}
                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-colors text-left"
                   >
                     <div className="w-10 h-8 rounded bg-[#1a1a1a] border border-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">

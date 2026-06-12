@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U4c COMPLETE (2026-06-12, U1g NTFS volatility fix verified). Next: U4d (proactive zoom warm).**
+**Phase 2 — Batch U4d + U4f COMPLETE (2026-06-13). Next: U4e (AMF auto-enable + bitrate 40M→15M).**
 
 ---
 
@@ -24,9 +24,8 @@
 - **Batch U4 — COMPLETE (2026-06-11).** Background zoom cache warm: `pipeline/warm_zoom.py` + `warm_zoom_cache_cmd` Rust command + three-tier Arrange.tsx trigger (zoom-tab-leave immediate, 500ms debounced on param edit, unmount backstop). Verified: `zoom_cache_hits=4/4 t_zoom=0` on both 1080p + 4K renders. Stall threshold raised 120s→360s. 9/9 fast + 5/5 editor PASS.
 - **Batch U4b — COMPLETE (2026-06-12).** Zoom preview auto-play on clip switch: added `prevZoomClipIdRef` to distinguish clip switch from param edit; clip switch always calls `syncZoomToPlayhead(0, false)` (bypasses stale `isPlayingRef`). Fix is `Arrange.tsx` clip-switch effect only.
 - **Batch U4c (BUG) — COMPLETE (2026-06-12).** Four `_render_segmented()` artifact paths moved from `/tmp` tmpfs to NTFS `seg_tmp` via new `_resolve_render_work_dir()` helper (mirrors zoom-cache pattern). `TMP_BASE` / line 357 intentionally untouched. Verified on job `c503f7a0` (21-clip Stagecoach, 4K, xfade): `[U1g] segment work dir: /mnt/c/...` confirmed in log, 7 batches, `drift=0 frame(s)`, no fallback, pipeline complete. **The stall alert that fired mid-render was a false positive** — cold zoom (>6 min, skipped zoom tab) exceeded the 360s stall threshold but the pipeline kept running and completed. Output file healthy (ffprobe: 140.6s, 4214 frames, no corruption). Separate bugs logged: (1) cold-zoom-on-skip-tab → PRD-DEV.md; (2) WebView2 crash playing 40Mbps 4K output → PRD-DEV.md.
-- **Next: U4d** — Proactive zoom warm: `Arrange.tsx` mount effect + `Render.tsx` pre-submitJob fire. Eliminates 7-min cold-zoom disaster (18/19 missed = 429s on 21-clip render).
-- **Then: U4e** — AMF auto-enable for 4K + bitrate 40M→15M (`pipeline/encoder.py`). Expected: 615s render → ~200-250s (AMF) or ~450s (libx264). Also fixes WebView2 crash (795MB → ~280MB).
-- **Then: U4f** — Dynamic stall threshold (`Render.tsx`): zoom-stage detection extends stall clock. Eliminates false "Pipeline timed out" on legitimate long stages.
+- **Batch U4d + U4f — COMPLETE (2026-06-13).** Proactive zoom warm on project entry (`Trimmer.tsx` entry warm gated on `zoom_mode != null` clips, `warmFiredRef` session guard) + Render submit backstop (fire-and-forget at top of `submitJob`). U4f: stage-aware stall threshold — `maxStallMsRef` (default 360s) extended to `min(600s, max(360s, inFilmCountRef.current * 60s))` on `STAGE:zoom`; `inFilmCountRef` synced from state to fix stale closure in once-registered listener; resets to 360s on leaving "rendering" and in `startRenderNow`. **Bundled routing fix:** `Upload.tsx` "Resume a Project" cards were hardcoded to `/trimmer/:id` regardless of job status — now uses `renderStateFromStatus` (same Library Smart Open logic), routing done projects to `/render/:id`. Verified: 4 warm fires in zoom-bg.log (all 10/10 cache hits); 9/9 fast E2E PASS.
+- **Next: U4e** — AMF auto-enable for 4K + bitrate 40M→15M (`pipeline/encoder.py`). Expected: 615s render → ~200-250s (AMF) or ~450s (libx264). Also fixes WebView2 crash (795MB → ~280MB).
 - **Then: U4g/U4h** — Cancel in-progress render + temp folder cleanup.
 - **After U4:** U5a/b — Trim playback polish (TrimBar click-to-seek, waveform improvements).
 - **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-11).
