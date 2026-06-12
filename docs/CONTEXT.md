@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U4b COMPLETE (2026-06-12, zoom preview auto-play on clip switch). Next: U4c (U1g /tmp volatility fix), then U5.**
+**Phase 2 — Batch U4c COMPLETE (2026-06-12, U1g NTFS volatility fix verified). Next: U4d (proactive zoom warm).**
 
 ---
 
@@ -23,12 +23,16 @@
 
 - **Batch U4 — COMPLETE (2026-06-11).** Background zoom cache warm: `pipeline/warm_zoom.py` + `warm_zoom_cache_cmd` Rust command + three-tier Arrange.tsx trigger (zoom-tab-leave immediate, 500ms debounced on param edit, unmount backstop). Verified: `zoom_cache_hits=4/4 t_zoom=0` on both 1080p + 4K renders. Stall threshold raised 120s→360s. 9/9 fast + 5/5 editor PASS.
 - **Batch U4b — COMPLETE (2026-06-12).** Zoom preview auto-play on clip switch: added `prevZoomClipIdRef` to distinguish clip switch from param edit; clip switch always calls `syncZoomToPlayhead(0, false)` (bypasses stale `isPlayingRef`). Fix is `Arrange.tsx` clip-switch effect only.
-- **Batch U4c (BUG)** — U1g segmented render falls back to monolithic under memory pressure: WSL `/tmp/<job_id>/` is cleared between segment encodes and concat-manifest write → `[Errno 2]` → monolithic fallback → SIGTERM on 20-clip 4K projects. Fix: move U1g working dir from `/tmp/<job_id>/` to NTFS `%TEMP%\rushcut\<job_id>\` (same pattern as zoom-cache). `pipeline/render.py` `_render_segmented()` only.
-- **Batch U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
+- **Batch U4c (BUG) — COMPLETE (2026-06-12).** Four `_render_segmented()` artifact paths moved from `/tmp` tmpfs to NTFS `seg_tmp` via new `_resolve_render_work_dir()` helper (mirrors zoom-cache pattern). `TMP_BASE` / line 357 intentionally untouched. Verified on job `c503f7a0` (21-clip Stagecoach, 4K, xfade): `[U1g] segment work dir: /mnt/c/...` confirmed in log, 7 batches, `drift=0 frame(s)`, no fallback, pipeline complete. **The stall alert that fired mid-render was a false positive** — cold zoom (>6 min, skipped zoom tab) exceeded the 360s stall threshold but the pipeline kept running and completed. Output file healthy (ffprobe: 140.6s, 4214 frames, no corruption). Separate bugs logged: (1) cold-zoom-on-skip-tab → PRD-DEV.md; (2) WebView2 crash playing 40Mbps 4K output → PRD-DEV.md.
+- **Next: U4d** — Proactive zoom warm: `Arrange.tsx` mount effect + `Render.tsx` pre-submitJob fire. Eliminates 7-min cold-zoom disaster (18/19 missed = 429s on 21-clip render).
+- **Then: U4e** — AMF auto-enable for 4K + bitrate 40M→15M (`pipeline/encoder.py`). Expected: 615s render → ~200-250s (AMF) or ~450s (libx264). Also fixes WebView2 crash (795MB → ~280MB).
+- **Then: U4f** — Dynamic stall threshold (`Render.tsx`): zoom-stage detection extends stall clock. Eliminates false "Pipeline timed out" on legitimate long stages.
+- **Then: U4g/U4h** — Cancel in-progress render + temp folder cleanup.
+- **After U4:** U5a/b — Trim playback polish (TrimBar click-to-seek, waveform improvements).
 - **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-11).
 - **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted.
-- Full sub-batch plan: `docs/batch-plan-u1-subbatches.md`.
+- Full sub-batch plan (U4d–U5b): `docs/batch-plan-u4d-subbatches.md`.
 
 ### Performance confirmed (2026-06-01, Batch T2 warm benchmark):
 

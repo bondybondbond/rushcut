@@ -620,6 +620,56 @@ A render job that has started cannot currently be cancelled — the user must wa
 
 ---
 
+## Backlog — Zoom cache cold when user skips Zoom tab (PERF)
+
+> **Observed 2026-06-12 (founder, U4c verification render). Future sub-batch TBD.**
+
+The U4 three-tier warm trigger fires on (a) zoom-tab-leave, (b) 500ms debounce on param edit, (c) Arrange unmount. All three require the user to have visited the zoom tab during the current session. If the user never opens the Zoom tab (e.g. re-rendering with same zoom settings), the warm_zoom job is never triggered → zoom stage runs cold on render → ~7-8 mins for a 7-clip 4K project, long enough to fire the U1e stall alert and crash the render.
+
+**Observed symptom (2026-06-12):** 2m42s film, 7 clips, 4K, xfade; zoom tab skipped; zoom stage ran cold; stall alert fired; render crashed ("Pipeline timed out"). Total elapsed >20 min.
+
+**Root cause:** warm_zoom is *reactive* (triggered by UI events) rather than *proactive* (triggered by any change that makes the cache stale). The cache should also be validated and warmed:
+- On project open (Arrange mount): if any included clip has a non-null `zoom_mode` and no warm cache entry, fire `warm_zoom_cache_cmd` immediately at BELOW_NORMAL priority.
+- On Render screen entry (before `submitJob`): gate check — if zoom clips exist and warm entries are absent, surface a soft warning or auto-trigger a warm pass before committing.
+
+**Ideal direction:** a lightweight "background job oracle" that, at well-defined entry points (project open, render screen entry), asserts which background jobs (proxy gen, zoom warming) need to be done and fires them if they haven't run. Frontloads the work regardless of which UI path the user took to get there.
+
+**Scope:** `src/pages/Arrange.tsx` (mount effect) + `src/pages/Render.tsx` (pre-submitJob check). `warm_zoom_cache_cmd` already exists in Rust and accepts any manifest; the trigger gap is purely in the React layer. May want a new lightweight Rust query: `get_zoom_clip_count_cmd(project_id)` returning how many included clips have a non-null zoom_mode — cheap signal to decide whether to fire the warmer.
+
+---
+
+## Backlog — WebView2 crashes playing high-bitrate 4K renders (BUG)
+
+> **Observed 2026-06-12 (founder, during U4c verification). Future sub-batch TBD.**
+
+Playing `stagecoach-2025-01.mp4` (795 MB, 4K H.264 40Mbps, 140s) in the Render screen's `<video>` element caused the WebView2 renderer to crash. The app restarted and routed to the initial state ("back to start"). The file itself is healthy — ffprobe confirms matching duration on both streams, 4214 frames, no corruption. The crash is WebView2 failing under 40Mbps 4K decode pressure, not a code bug in `Render.tsx` (confirmed: `onError` only sets `videoMissing=true`, no navigation).
+
+**Options (mutually exclusive, pick one per batch):**
+- **A (preferred): Lower encode bitrate for the player-facing output.** The 40Mbps target (`-b:v 40M` in `encoder.py`) is mastering quality — far above what WebView2 needs for in-app preview. Drop to `-b:v 20M` (still visually excellent at 4K) and re-evaluate. This fixes the player without adding pipeline steps.
+- **B: Dual-output render.** Keep the 40Mbps master for export, write a 8-12Mbps 1080p "preview" alongside it for the in-app player. More pipeline work, better user story (fast in-app preview + archival master). Scoped to pipeline + Render.tsx.
+- **C: Bypass in-app player entirely for large files.** Auto-open in Explorer/system player when the file exceeds a size or bitrate threshold. Simplest but degrades the done-state UX.
+
+**Scope:** `pipeline/encoder.py` (Option A) or `pipeline/render.py` + `src/pages/Render.tsx` (Option B). No Rust changes needed.
+
+---
+
+## Backlog — Temp folder accumulation cleanup (HOUSEKEEPING)
+
+> **Requested 2026-06-12 (founder). Future sub-batch TBD.**
+
+`%TEMP%\rushcut\` accumulates per-job working directories (`<job_id>/` with segment `.mp4` files, concat manifests, audio intermediates) indefinitely. With U4c moving U1g artifacts to NTFS, these are now persistent across WSL restarts — which is correct for durability, but also means every render leaves ~300-500 MB of segment files on disk forever.
+
+**Policy (founder-defined):**
+- Delete a job's working dir when the project is deleted from the Library.
+- Prune any remaining dirs older than 7 days (safety net for orphans).
+
+**Scope:**
+- `src-tauri/src/lib.rs` `delete_project_cmd` (or a new `cleanup_project_artifacts_cmd`) — on project delete, enumerate `%TEMP%\rushcut\<job_id>\` dirs for all jobs belonging to the project, delete them via `std::fs::remove_dir_all`. Rust already has the job→project association in the `jobs` table.
+- `pipeline/run.py` or a new standalone `cleanup.py` — 7-day prune of `%TEMP%\rushcut\` dirs whose name is a UUID and whose mtime is >7 days. Can run fire-and-forget from Rust on app startup or post-render, mirroring the `vacuum_proxies_cmd` pattern.
+- Scope does NOT include the zoom-cache dir (it has its own 2-day `_prune_zoom_cache` logic) or `pipeline-*.log` files (small, useful for debugging).
+
+---
+
 ## Backlog — Unexpected clips appear at front of film (BUG)
 
 > **Bug — reported 2026-06-11 (founder, during U4 verification).**
@@ -908,6 +958,7 @@ Fill the four product gaps above → 8/10 for this niche. Genuinely better than 
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 5.3     | 2026-06-12 | Batch U4c DONE: U1g segmented render `/tmp` volatility fix. `_resolve_render_work_dir(job_id)` helper added to `render.py` (mirrors zoom-cache NTFS resolution: env override → USERPROFILE → /tmp fallback). `_render_segmented()` allocates `seg_tmp` at function entry; four artifact paths (`u1g_seg_{bi}.mp4`, `u1g_concat.txt`, `u1g_video_full.mp4`, `u1g_audio_full.m4a`) repointed from `/tmp` tmpfs to NTFS `/mnt/c/.../Temp/rushcut/<job_id>/`. `TMP_BASE` / line 357 untouched (pre-trim/normalise stay on tmpfs for RAM speed). Verified: `[U1g] segment work dir: /mnt/c/...` in pipeline log for 21-clip 4K Stagecoach job; 7 batches; `drift=0 frame(s) (0.0ms)`; no fallback. Side findings: cold-zoom (skip-tab) caused false stall alert (429s > 360s threshold) + WebView2 crash playing 795MB 4K output — both filed as PRD backlog. New subbatch plan: `docs/batch-plan-u4d-subbatches.md` (U4d proactive warm → U4e AMF+15M → U4f stall threshold → U4g cancel → U4h cleanup). |
 | 5.2     | 2026-06-12 | Batch U4b DONE: Zoom preview auto-plays on clip switch. Root cause: zoom-sync effect read stale `isPlayingRef.current` (the `[isPlaying]` sync effect runs on the NEXT render, so on a clip-switch tick the ref still holds the old `true`). Fix: `prevZoomClipIdRef` in `Arrange.tsx` — clip-switch branch calls `syncZoomToPlayhead(0, false)` unconditionally (always land paused at t=0); same-clip param-edit branch reads `isPlayingRef` as before (no regression). `null` → first clipId counts as a switch (intentional — first load is paused). `src/pages/Arrange.tsx` only. 9/9 fast PASS. |
 | 5.1     | 2026-06-11 | Batch U4 DONE: Background zoom pre-cache. `pipeline/warm_zoom.py` — CLI warmer, serial (no ThreadPoolExecutor), warms BOTH `WARM_RESOLUTIONS=["1080p","4k"]`, proxy-substitute path skips HEVC decode, atomic `tmp->os.replace`, absolute imports throughout (direct-script invocation requires no relative imports). `warm_zoom_cache_cmd` Rust command — `{project_id}:zoom` concurrency guard, BELOW_NORMAL WSL spawn, `zoom-bg.log`. `pipeline/render.py` refactor: `pretrim_one_clip()` + `decide_clip_source()` extracted as module-level helpers (reused by warmer; parity-verified). `Arrange.tsx` three-tier trigger: (a) immediate on zoom-tab leave (cancels debounce), (b) 500ms debounced after zoom/focal param edit, (c) unmount backstop with debounce cleanup. `Render.tsx` stall threshold 120s->360s (cold zoom silent up to 8 min). Verified: `zoom_cache_hits=4/4 t_zoom=0` both 1080p + 4K (was 26-108s cold). 9/9 fast + 5/5 editor PASS. |
 | 5.0     | 2026-06-10 | Batch U3d DONE: Choppy zoom preview fix (WAAPI). `rc-kenburns` CSS @keyframes (read var(), blocked compositor) replaced with WAAPI (`kbAnimRef`). Root cause confirmed via direct CDP trace: residual judder is 30fps source content, not jank. Two follow-on bug fixes: WAAPI play() resets finished anim to 0 (guard `elapsedMs < durMs`); Fixed->Gradual flash (write `transition:"none"` before `transform` in JSX). 9/9 fast + 5/5 editor PASS. |

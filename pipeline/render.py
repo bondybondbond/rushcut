@@ -157,6 +157,23 @@ def _resolve_zoom_cache_dir() -> Path:
     return Path("/tmp/rushcut-zoom-cache")
 
 
+def _resolve_render_work_dir(job_id: "str | object") -> Path:
+    # U1g segment artifacts (per-batch segments, concat list, video/audio full)
+    # live on Windows-backed NTFS (via /mnt/c) instead of /tmp tmpfs, so they
+    # survive WSL memory-pressure eviction between the last batch encode and the
+    # concat-manifest write -- the [Errno 2] that silently dropped the segmented
+    # path back to the (exit-15-prone) monolithic render. Mirrors the zoom-cache
+    # resolution order: env override -> USERPROFILE -> /tmp fallback (test envs).
+    env = os.environ.get("RUSHCUT_ZOOM_CACHE_DIR")
+    if env:
+        return Path(env).parent / str(job_id)
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        user = Path(userprofile).name
+        return Path(f"/mnt/c/Users/{user}/AppData/Local/Temp/rushcut/{job_id}")
+    return Path(f"/tmp/rushcut-render/{job_id}")
+
+
 def _prune_zoom_cache(cache_dir: Path) -> None:
     """Best-effort prune of zoom cache files older than 2 days.
 
@@ -792,9 +809,13 @@ def run_pipeline(
         BATCH_SIZE = 4
 
         def _render_segmented() -> None:
+            seg_job_id = job.get("id") or job_id
+            seg_tmp = _resolve_render_work_dir(seg_job_id)
+            seg_tmp.mkdir(parents=True, exist_ok=True)
+            log.info("[U1g] segment work dir: %s", seg_tmp)
             xf = clamp_xfade_dur(durations)
             per_cut_names = resolve_cut_names(
-                len(current_paths), transition, shuffle_between, job.get("id")
+                len(current_paths), transition, shuffle_between, seg_job_id
             )
             # May raise ValueError if a boundary clip has no solo region.
             plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
@@ -843,7 +864,7 @@ def run_pipeline(
                 n_frames = round(g_end * fps_f) - round(g_start * fps_f)
                 covered_frames += n_frames
 
-                seg = tmp / f"u1g_seg_{bi}.mp4"
+                seg = seg_tmp / f"u1g_seg_{bi}.mp4"
 
                 def _build_batch(b_argv, c_args, paths, out_path, graph, vmap, nfr):
                     if is_amf:
@@ -893,9 +914,9 @@ def run_pipeline(
                 )
 
             # Concat the segments (all identical codec/params) -> video_full.
-            concat_list = tmp / "u1g_concat.txt"
+            concat_list = seg_tmp / "u1g_concat.txt"
             concat_list.write_text("".join(f"file '{s}'\n" for s in seg_files))
-            video_full = tmp / "u1g_video_full.mp4"
+            video_full = seg_tmp / "u1g_video_full.mp4"
             ffmpeg_run([
                 FFMPEG, "-y", "-f", "concat", "-safe", "0",
                 "-i", str(concat_list), "-c", "copy", str(video_full),
@@ -907,7 +928,7 @@ def run_pipeline(
             afc, a_out_lbl = build_audio_only_fc(durations, audio_flags, clip_volumes, xf, ln)
 
             if a_out_lbl:
-                audio_full = tmp / "u1g_audio_full.m4a"
+                audio_full = seg_tmp / "u1g_audio_full.m4a"
                 in_args = [a for p in current_paths for a in ("-i", str(p))]
                 ffmpeg_run(
                     [FFMPEG, "-y"] + in_args
