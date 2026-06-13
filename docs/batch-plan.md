@@ -240,6 +240,37 @@ The founder's largest UX friction cluster, on the screen they spend the most tim
 
 ---
 
+## Batch U4e — Render bitrate + AMF auto-enable for 4K — COMPLETE (2026-06-13)
+
+**Shipped:**
+- `pipeline/encoder.py`: AMF auto-enables for 4K silently (no UI toggle) — `amf_requested = use_amf or RUSHCUT_USE_AMF or output_resolution == "4k"`. Final AMF path switched CQP → VBR (`-rc vbr_peak -b:v 20M -maxrate 24M -bufsize 24M -quality quality`); the explicit `-maxrate` caps the bitrate peaks that crashed WebView2 under the old uncapped CQP. libx264 final path dropped 40M → 20M. Single tunable knob: `FINAL_BITRATE`. `RUSHCUT_FORCE_LIBX264=1` stays as the dev escape hatch.
+- `src/pages/Render.tsx`: "Fast render" toggle removed entirely (state, handler, UI). amf_fallback toast reworded to "GPU encode unavailable -- rendered on CPU (standard quality)". Added `videoLoadedRef` so a WebView2 *decode* failure during playback no longer shows the "no longer on disk" missing-file error (only a genuine load failure does).
+- `buildJobConfig.ts` / `renderStore.ts` / `types/project.ts`: dead `use_amf` pref + `rc_fast_render_*` key removed.
+- Wrapup skill cleanup fixed: was deleting ALL `C:\clips\processed\*.mp4` (user's real renders); now deletes only WDIO test slugs.
+
+**Bitrate decision (TV check, founder, 2026-06-13):** Compared 15M / 20M / 40M libx264 renders of the zoom-test project side by side. 20M is not indistinguishable from 40M but is a worthwhile compromise. **15M loses detail — bleaker / more pixelated, particularly bad at 1.5–2x zoomed-in state.** **Locked at 20M.** (Comparison renders: `C:\clips\processed\zoom-compare-{15m,20m,40m}-01.mp4` — founder to delete when done.)
+
+**Backlog spun off (zoom quality):** At high gradual-zoom (1.5–2x), output detail degrades noticeably at lower bitrates. Root cause is almost certainly that we zoom + encode **from the proxy** (already-compressed source) — see the V-series architectural note below. Investigate whether zoom quality can be improved overall; the clean-intermediate unlock (V1) is the likely fix, not a higher bitrate.
+
+---
+
+## Future — V-series: Render architecture (closing the DaVinci gap)
+
+**Context (founder analysis, 2026-06-13):** DaVinci is faster + higher-quality on the *same hardware* not because of the GPU but because of pipeline architecture. It (1) pre-renders clips into a GPU-optimised intermediate during editing (render cache), so export assembles pre-cooked frames; (2) runs parallel decode + encode; (3) offloads colour/effects to the GPU. RushCut currently re-encodes every frame from the **proxy** at export time, sequentially. The key insight: **DaVinci's quality edge is the source quality going into the encoder, not the bitrate** — it encodes from a clean pre-processed intermediate, whereas RushCut compresses already-compressed proxy footage. 25 Mbps from a clean intermediate beats 40 Mbps from a proxy.
+
+Roadmap (not scheduled — plan after the U series + any U4 sub-batches):
+
+| Phase | Change | Quality | Speed |
+| --- | --- | --- | --- |
+| **U4e (done)** | AMF VBR + 20M bitrate | Same / slightly lower | ~10min → 4–5min |
+| **V1 — clean intermediate** | Pre-render a merged high-bitrate/lossless intermediate from source before the final encode (DaVinci render-cache concept). Encode the final once from a clean source instead of decoding 21 proxy clips in sequence. **Also the likely fix for the U4e zoom-quality backlog item.** | Higher (cleaner source) | 4–5min → 2–3min |
+| **V1.5 — system player + higher bitrate** | Open the final in the system player (not WebView2) and raise bitrate to 25–35 Mbps. Cheap once V1 lands (WebView2 decode pressure no longer the ceiling). | On par with industry | Same as U4e |
+| **V2 — parallel pipeline** | True parallel decode + encode (CPU/iGPU decodes batch N+1 while encoder processes batch N). Most involved. | DaVinci-level | Sub-2min |
+
+This supersedes/absorbs the existing backlog item "Speculative full-segment pre-render (beyond zoom cache)" — V1 is the concrete first step. The thread to pull first after the U series: **pre-render a merged intermediate (lossless or high-bitrate) from all clips before the final encode.**
+
+---
+
 ## Cross-cutting notes
 - Follow `.claude/rules/e2e.md`: run WDIO from PowerShell, never mix `preview_*`/chrome-devtools MCP in a session that runs E2E (port 9222 conflict).
 - Per `.claude/rules/`: any pipeline change must be checked at **both** 1080p and 4K, and any displayed value (stage labels, zoom names, loop state) checked across all cross-screen display sites.

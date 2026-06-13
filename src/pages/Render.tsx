@@ -79,17 +79,16 @@ export default function Render() {
       return "1080p";
     }
   });
-  const [fastRender, setFastRender] = useState(() => {
-    try {
-      return getRenderPref(`rc_fast_render_${projectId}`) === "1";
-    } catch { return false; }
-  });
   const [toast, setToast] = useState<string | null>(null);
   const [doneMeta, setDoneMeta] = useState<DoneMeta | null>(null);
-  // T5: true once the output file fails to load (deleted from disk). Duration
+  // T5: true once the output file fails to LOAD (deleted from disk). Duration
   // captured from the actual <video> element so it matches the player exactly.
+  // videoLoadedRef tracks whether loadedmetadata fired for the current src —
+  // if it did, onError is a WebView2 decode crash (high-bitrate 4K), not a
+  // missing file. Reset whenever outputPath changes.
   const [videoMissing, setVideoMissing] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
+  const videoLoadedRef = useRef(false);
 
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -154,12 +153,6 @@ export default function Render() {
   function handleResSelect(res: "1080p" | "4k") {
     setOutputRes(res);
     setRenderPref(`rc_render_res_${projectId}`, res);
-  }
-
-  function handleFastRenderToggle() {
-    const next = !fastRender;
-    setFastRender(next);
-    setRenderPref(`rc_fast_render_${projectId}`, next ? "1" : "0");
   }
 
   function onResizePointerDown(e: React.PointerEvent) {
@@ -277,6 +270,7 @@ export default function Render() {
     setDoneMeta({ iso: job.updated_at, res: resLabel(job), analysisDuration: durationLabel(job) });
     setVideoMissing(false);
     setVideoDuration(null);
+    videoLoadedRef.current = false;
     setProgress(100);
     setPhase("done");
   }
@@ -290,6 +284,7 @@ export default function Render() {
     setDoneMeta(null);
     setVideoMissing(false);
     setVideoDuration(null);
+    videoLoadedRef.current = false;
     setJobId(null);
     setProgress(0);
     setStage("Starting up the magic...");
@@ -449,20 +444,22 @@ export default function Render() {
       setProgress(100);
       setOutputPath(event.payload.outputPath ?? null);
       setPhase("done");
-      // Batch R Part C: surface silent AMF -> libx264 fallback as a toast so
-      // a "Fast render" toggle that did nothing doesn't look like a no-op.
+      // U4e: AMF auto-enables for 4K (no UI toggle). Surface a silent
+      // AMF -> libx264 fallback as a toast so the user knows GPU encode
+      // was unavailable and the render fell back to CPU at standard quality.
       const analysis = event.payload.analysis;
       // T5: capture metadata for the freshly-finished render. Duration here is
       // the analysis fallback; the <video> element overrides it on load.
       setVideoMissing(false);
       setVideoDuration(null);
+      videoLoadedRef.current = false;
       setDoneMeta({
         iso: new Date().toISOString(),
         res: outputRes === "4k" ? "4K" : "1080p",
         analysisDuration: durationLabel({ analysis_summary: analysis ?? null }),
       });
       if (analysis && /(^|,)amf_fallback=1(,|$)/.test(analysis)) {
-        setToast("Fast render unavailable -- rendered at standard quality");
+        setToast("GPU encode unavailable -- rendered on CPU (standard quality)");
         setTimeout(() => setToast(null), 6000);
       }
       if (projectId) {
@@ -642,29 +639,6 @@ export default function Render() {
                 </div>
               </div>
 
-              <div className="border border-white/10 rounded-lg p-4 space-y-1">
-                <label className="flex items-center gap-3 cursor-pointer select-none">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={fastRender}
-                    data-testid="toggle-fast-render"
-                    onClick={handleFastRenderToggle}
-                    className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
-                      fastRender ? "bg-[#99B3FF]" : "bg-white/20"
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${
-                        fastRender ? "translate-x-4" : "translate-x-0"
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm text-[#e5e5e5]">Fast render</span>
-                </label>
-                <p className="text-xs text-[#a3a3a3] pl-12">slightly lower motion quality</p>
-              </div>
-
               <button
                 data-testid="btn-render-film"
                 onClick={() => projectId && submitJob(projectId)}
@@ -754,8 +728,8 @@ export default function Render() {
                   src={assetUrl}
                   controls
                   autoPlay={false}
-                  onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration)}
-                  onError={() => setVideoMissing(true)}
+                  onLoadedMetadata={(e) => { videoLoadedRef.current = true; setVideoDuration(e.currentTarget.duration); }}
+                  onError={() => { if (!videoLoadedRef.current) setVideoMissing(true); }}
                   className="w-full h-full object-contain"
                 />
               </div>

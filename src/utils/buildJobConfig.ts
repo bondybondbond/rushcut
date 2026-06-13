@@ -104,9 +104,6 @@ export function buildJobConfig(projectId: string): JobConfig {
     }
   } catch { /* ignore */ }
   try {
-    config.use_amf = getRenderPref(`rc_fast_render_${projectId}`) === "1";
-  } catch { /* ignore */ }
-  try {
     const raw = getRenderPref(`rc_cards_${projectId}`);
     if (raw) {
       const COLOR_MAP: Record<string, string> = { peach: "#FF8A65", black: "#0a0a0a", white: "#ffffff" };

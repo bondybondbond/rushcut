@@ -76,7 +76,6 @@ export interface JobConfig {
   output_resolution?: "1080p" | "4k";
   custom_music_path?: string;
   music_fade_out?: "none" | "2s" | "5s";
-  use_amf?: boolean;
 }
 
 export interface ProjectSummary {

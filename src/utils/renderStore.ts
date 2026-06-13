@@ -46,7 +46,6 @@ export function clearRenderPrefs(projectId: string): void {
     `rc_sound_${projectId}`,
     `rc_cards_${projectId}`,
     `rc_render_res_${projectId}`,
-    `rc_fast_render_${projectId}`,
     `rc_render_pending_${projectId}`,
   ];
   try {
