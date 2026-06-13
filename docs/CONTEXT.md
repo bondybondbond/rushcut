@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U4g COMPLETE (2026-06-13). Next: U4h deferred; next session: U5a/b.**
+**Phase 2 — Batch U4g + done-state polish COMPLETE (2026-06-13). Next: U4h deferred; next session: U5a/b.**
 
 ---
 

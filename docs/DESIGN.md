@@ -52,6 +52,19 @@ User decides. Pipeline executes. Every UI decision should reinforce this: give c
 
 ---
 
+## Screen title (h1) — always the screen name
+
+Every screen's `h1` is the **screen name**, unchanged by state. It is never replaced by status copy ("Your film", "Render Your Film", "Ready", etc.).
+
+```tsx
+<h1 className="text-3xl font-semibold text-[#FF8A65]">Render</h1>
+// NOT: "Your film" / "Render Your Film" / "Rendering..." etc.
+```
+
+Current screen names: **Trim**, **Arrange**, **Sound**, **Render**. Library and Upload are full-page views, not editor screens, and may use different heading styles. Status information (done, error, rendering) lives inside the content area below the h1, not in the h1 itself.
+
+---
+
 ## Buttons
 
 ### Primary CTA (peach)
@@ -1048,6 +1061,18 @@ Appears BELOW the main card, only when `outputRes !== "4k" && !videoMissing`:
 ```
 
 **Critical:** The `<video>` element must be entirely absent from JSX on the 4K path (not CSS-hidden). A hidden `<video src>` still loads and can fire spurious `onError` → `videoMissing` state flip.
+
+### Action button column — alignment rule
+
+All buttons in the right-column action panel must be **left-aligned** — icon and label flush left, never centered. Apply `justify-start text-left` to every button in the column. Add `flex-shrink-0` to the icon to prevent it collapsing when label text wraps.
+
+```tsx
+className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] ... text-left"
+// Icon:
+className="flex-shrink-0"
+```
+
+This rule applies to any vertical list of icon+label buttons regardless of the card width. Without `justify-start`, the default flex `justify-content: normal` can appear centered when text wraps to a second line in a narrow column.
 
 ### Cancel render button (rendering phase)
 

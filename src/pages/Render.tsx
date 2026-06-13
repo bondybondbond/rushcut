@@ -645,9 +645,7 @@ export default function Render() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
 
-          <h1 className="text-3xl font-semibold text-[#FF8A65]">
-            {phase === "done" ? "Your film" : "Render Your Film"}
-          </h1>
+          <h1 className="text-3xl font-semibold text-[#FF8A65]">Render</h1>
 
           {/* Ready — 4K gate */}
           {phase === "ready" && (
@@ -767,7 +765,7 @@ export default function Render() {
 
           {/* Done — V3 card design */}
           {phase === "done" && outputPath && (
-            <div className="flex flex-col gap-3">
+            <div data-testid="render-done" className="flex flex-col gap-3">
 
               {/* Main info + actions card */}
               <div
@@ -776,10 +774,10 @@ export default function Render() {
               >
                 {/* Left: metadata */}
                 <div className="p-7">
-                  {/* "Export finished" pill */}
+                  {/* Status pill */}
                   <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-3 py-[5px] rounded-full bg-green-500/10 text-green-400 border border-green-500/20">
                     <Check size={14} strokeWidth={2.5} />
-                    Export finished
+                    Rendering completed
                   </div>
 
                   {/* Film name */}
@@ -824,7 +822,7 @@ export default function Render() {
                     <Folder size={14} strokeWidth={2} className="text-[#4a4946] flex-shrink-0" />
                     <span>Saved to</span>
                     <button
-                      onClick={() => invoke("open_output_path", { path: outputPath })}
+                      onClick={() => invoke("open_folder_cmd", { folder: pathDirname(outputPath) })}
                       className="text-[#7a7874] font-medium hover:text-[#c8c5c0] transition-colors overflow-hidden text-ellipsis whitespace-nowrap max-w-[28ch]"
                     >
                       {pathDirname(outputPath)}
@@ -840,25 +838,25 @@ export default function Render() {
                   <button
                     data-testid="btn-open-in-player"
                     onClick={() => invoke("open_in_player_cmd", { path: outputPath })}
-                    className="w-full flex items-center gap-1.5 px-[18px] py-[10px] bg-[#FF8A65] text-[#0a0a0a] font-semibold text-[14px] rounded-lg hover:bg-[#ff9e7a] transition-all duration-150"
+                    className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] bg-[#FF8A65] text-[#0a0a0a] font-semibold text-[14px] rounded-lg hover:bg-[#ff9e7a] transition-all duration-150 text-left"
                   >
-                    <Play size={15} fill="currentColor" stroke="none" />
+                    <Play size={15} fill="currentColor" stroke="none" className="flex-shrink-0" />
                     Open film
                   </button>
                   <button
                     data-testid="btn-open-in-explorer"
-                    onClick={() => invoke("open_output_path", { path: outputPath })}
-                    className="w-full flex items-center gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150"
+                    onClick={() => invoke("open_folder_cmd", { folder: pathDirname(outputPath) })}
+                    className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150 text-left"
                   >
-                    <Folder size={15} strokeWidth={2} className="text-[#8a8883]" />
+                    <Folder size={15} strokeWidth={2} className="text-[#8a8883] flex-shrink-0" />
                     Open folder
                   </button>
                   <button
                     data-testid="btn-render-new"
                     onClick={startNewVersion}
-                    className="w-full flex items-center gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150"
+                    className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150 text-left"
                   >
-                    <RotateCcw size={15} strokeWidth={2} className="text-[#8a8883]" />
+                    <RotateCcw size={15} strokeWidth={2} className="text-[#8a8883] flex-shrink-0" />
                     Render another version
                   </button>
                 </div>

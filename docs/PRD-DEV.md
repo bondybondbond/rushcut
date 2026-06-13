@@ -978,10 +978,41 @@ Fill the four product gaps above → 8/10 for this niche. Genuinely better than 
 
 ---
 
+## Backlog — Configurable export folder location (UX)
+
+> **PRD item — reported 2026-06-13.**
+
+Rendered films currently always go to `C:\clips\processed\`. Users who store projects on a different drive, or who want exports alongside source clips, have no way to change this. The path is hardcoded in the `output_path` slug logic in `src-tauri/src/lib.rs` `start_job`.
+
+**Design:** Add an "Export folder" setting (persisted in a `settings` DB table or an app-config file). Show it on the Render screen or in a future Settings screen. Default: `C:\clips\processed\` (existing behaviour). On change, validate the path is writable. The setting should be per-app (not per-project).
+
+**Scope:** `src-tauri/src/lib.rs` `start_job` output path resolution; new `get_setting`/`set_setting` Rust commands or extend an existing config mechanism; Render screen or Settings UI for the folder picker (`tauri-plugin-dialog` folder open already wired).
+
+---
+
+## Backlog — Output file size display on done-state card (UX)
+
+> **PRD item — reported 2026-06-13.**
+
+The done-state stats card has a FILE SIZE slot that currently shows "--". File size is not in the ANALYSIS string and not fetched at render time. Fix requires either: (a) emitting `output_size_bytes=X` in the pipeline `ANALYSIS:` stdout line (cleanest — add `os.path.getsize(output_path)` before `DONE:` in `run.py`), or (b) a new Rust command that reads `fs::metadata` on the output path. Option (a) is simpler and doesn't require a binary rebuild.
+
+---
+
+## Backlog — Open-in-player: spam protection + focus behaviour (UX)
+
+> **PRD item — reported 2026-06-13.**
+
+`open_in_player_cmd` uses `cmd /c start "" path` which has no guard against double-clicking. Each click spawns a separate player instance (e.g. three rapid clicks = three Media Player windows). Also unverified: does the player steal foreground focus, or open behind the app? Both are worth confirming on the target device before launch.
+
+**Fix options:** (a) debounce the React click handler (simplest — 1s `useRef` guard); (b) track whether a player was spawned and disable the button temporarily. Option (a) is a one-liner. Focus behaviour is OS/player-dependent and may not need a code fix.
+
+---
+
 ## Changelog
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 5.6     | 2026-06-13 | Done-state polish (post-U4g): copy "Rendering completed" (was "Export finished"); h1 always "Render" (screen-naming rule, codified in DESIGN.md); action buttons `justify-start text-left` + `flex-shrink-0` icons; `open_folder_cmd` Rust command (opens directory directly — works when file is missing, unlike `/select,{file}`); "Open folder" + "Saved to" path click both use `open_folder_cmd(pathDirname(outputPath))`; `data-testid="render-done"` on done-state root (replaces fragile heading-text done detection in E2E); `e2e/render.spec.ts` h1 assertions updated to "Render"; done-state `waitUntil` uses `render-done` marker. 3 PRD backlog items added: configurable export folder, output file size display, open-in-player spam/focus. 9/9 fast + 14/14 render E2E PASS. |
 | 5.5     | 2026-06-13 | Batch U4g DONE: Cancel in-progress render + V3 done-state redesign + open-in-player. `pipeline/run.py`: `os.setpgrp()` + write Linux PID to `%TEMP%\rushcut\<job_id>.pid` (process-group leader pattern). `src-tauri/src/lib.rs`: `cancel_render_cmd` (PID-file read → `wsl kill -15 -<pgid>`, pkill fallback, `update_job_error`/`emit_error`, best-effort NTFS + WSL /tmp cleanup); `open_in_player_cmd` (`cmd /c start "" path` via separate OS args — path-with-spaces safe). `src/pages/Render.tsx`: cancel button (rendering phase, outlined white/30); V3 done-state split card (`1fr 1px 220px` grid, green pill, 2x2 stats grid, Saved-to dir row, right-column actions); `open_in_player_cmd` for both 4K + 1080p "Open film"; 1080p preview panel below main card; 4K: no in-app `<video>` (entirely absent from JSX — avoids spurious onError); error block cancel-specific copy ("No changes were made..."); `pathDirname()` + `shortDateTime()` helpers. `src/utils/buildJobConfig.ts`: always emit `output_resolution` (default "1080p" when no pref stored). `src/utils/jobMeta.ts`: `resLabel()` checks analysis `output_resolution` before `has_4k` (source clips != output resolution). `e2e/render.spec.ts`: "Render another version" assertion updated. 9/9 fast + 14/14 render E2E PASS. |
 | 5.4     | 2026-06-13 | Batch U4d + U4f DONE: Proactive zoom warm on project entry + stage-aware stall threshold. `Trimmer.tsx`: `warmFiredRef` session guard; `get_project.then()` fires `warm_zoom_cache_cmd` once on entry when any included clip has `zoom_mode != null` (covers re-render without visiting Zoom tab). `Render.tsx`: backstop warm fire-and-forget at top of `submitJob` (covers direct done-project opens skipping Trimmer); `inFilmCountRef` synced from state (`useEffect([inFilmCount])`) as stale-closure guard for once-registered `pipeline-stage` listener; `maxStallMsRef` (default 360s) extended to `min(600s, max(360s, count*60s))` on `STAGE:zoom`; resets to 360s in effect cleanup + `startRenderNow`. Bundled routing fix: `Upload.tsx` "Resume a Project" cards hardcoded to `/trimmer/:id` for all projects; replaced with `renderStateFromStatus(p.last_job_status)` — done projects now route to `/render/:id` (same Library Smart Open logic; `renderStateFromStatus` imported from `@/utils/jobMeta`). No Rust/pipeline changes. Verified: 4 warm fires in `zoom-bg.log` (all 10/10 cache hits); 9/9 fast E2E PASS. Backlog: progress bar scale when no music/cards stages (jump from 60%→done). |
 | 5.3     | 2026-06-12 | Batch U4c DONE: U1g segmented render `/tmp` volatility fix. `_resolve_render_work_dir(job_id)` helper added to `render.py` (mirrors zoom-cache NTFS resolution: env override → USERPROFILE → /tmp fallback). `_render_segmented()` allocates `seg_tmp` at function entry; four artifact paths (`u1g_seg_{bi}.mp4`, `u1g_concat.txt`, `u1g_video_full.mp4`, `u1g_audio_full.m4a`) repointed from `/tmp` tmpfs to NTFS `/mnt/c/.../Temp/rushcut/<job_id>/`. `TMP_BASE` / line 357 untouched (pre-trim/normalise stay on tmpfs for RAM speed). Verified: `[U1g] segment work dir: /mnt/c/...` in pipeline log for 21-clip 4K Stagecoach job; 7 batches; `drift=0 frame(s) (0.0ms)`; no fallback. Side findings: cold-zoom (skip-tab) caused false stall alert (429s > 360s threshold) + WebView2 crash playing 795MB 4K output — both filed as PRD backlog. New subbatch plan: `docs/batch-plan-u4d-subbatches.md` (U4d proactive warm → U4e AMF+15M → U4f stall threshold → U4g cancel → U4h cleanup). |

@@ -897,6 +897,17 @@ fn open_output_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a directory in Windows Explorer (no file selection). Works even when
+/// the output file has been deleted or moved — navigates to the folder itself.
+#[tauri::command]
+fn open_folder_cmd(folder: String) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(&folder)
+        .spawn()
+        .map_err(|e| format!("Failed to open folder: {}", e))?;
+    Ok(())
+}
+
 /// U4g: open a file in the system DEFAULT player (not Explorer). Used for 4K
 /// output, where the in-app WebView2 <video> hits the decode ceiling.
 /// `cmd /c start "" "<path>"` invokes ShellExecute semantics and honours the
@@ -2442,6 +2453,7 @@ pub fn run() {
             list_projects_cmd,
             delete_project_cmd,
             open_output_path,
+            open_folder_cmd,
             open_in_player_cmd,
             cancel_render_cmd,
             generate_proxies_cmd,

@@ -149,7 +149,8 @@ describe("Full E2E render — /render/:projectId", () => {
   it("clicks Render Film if present (4K resolution gate), then stage label appears", async () => {
     const heading = await $('h1');
     await heading.waitForExist({ timeout: 5_000 });
-    expect(await heading.getText()).toBe("Render Your Film");
+    // B: h1 is always the screen name "Render" (screen-naming rule introduced in U4g fixes)
+    expect(await heading.getText()).toBe("Render");
 
     // 4K projects show a resolution gate — wait up to 10s for the button, then click.
     // Non-4K projects auto-start (no button); skip the wait and fall through.
@@ -183,9 +184,9 @@ describe("Full E2E render — /render/:projectId", () => {
   it("progress bar increments and pipeline completes", async () => {
     await browser.waitUntil(
       async () => {
-        const h1 = await $("h1");
-        // T5: heading is now "Your film" (not "Your film is ready")
-        if (await h1.isExisting() && (await h1.getText()) === "Your film") return true;
+        // B: h1 is always "Render" — use dedicated render-done marker instead of heading text
+        const done = await $('[data-testid="render-done"]');
+        if (await done.isExisting()) return true;
         const pct = await $('[data-testid="progress-pct"]');
         if (!(await pct.isExisting())) return false;
         const value = parseInt(await pct.getText(), 10);
@@ -199,12 +200,11 @@ describe("Full E2E render — /render/:projectId", () => {
     );
   });
 
-  it("Your film heading appears on done state", async () => {
-    // T5: heading changed from "Your film is ready" -> "Your film" (always,
-    // revisit or fresh render -- no fresh-vs-revisit conditional).
+  it("Render heading is always the screen name", async () => {
+    // B: h1 is always "Render" regardless of phase (screen-naming rule, U4g fixes).
     const h1 = await $("h1");
     await h1.waitForExist({ timeout: 10_000 });
-    expect(await h1.getText()).toBe("Your film");
+    expect(await h1.getText()).toBe("Render");
   });
 
   it("video player has src set after render completes", async () => {
