@@ -690,6 +690,33 @@ Library shows "3 files" for a project but MediaPantry (Trimmer, ALL CLIPS sectio
 
 ---
 
+## Backlog — Drag trimmed clip section to film timeline to add (UX)
+
+> **Requested 2026-06-13 (founder). Currently requires pressing "Add to Film" button.**
+
+In clip mode on the Trim screen, the user wants to drag the selected/trimmed section of a clip straight down from the video area onto the StickyFilmStrip to add it to the film — without needing to press the "Add to Film" button. Natural gesture: grab the trimmed region (anywhere in the video container or TrimBar selected zone), drag downward, drop on the filmstrip.
+
+**Scope:** `src/pages/Trimmer.tsx` (drag start from video container/TrimBar), `src/components/StickyFilmStrip.tsx` (drop target + visual feedback). Requires distinguishing this vertical drag from the horizontal clip-reorder drags already in StickyFilmStrip. Non-trivial — own batch.
+
+---
+
+## Backlog — App freeze with dual-monitor setup during trim screen playback (BUG)
+
+> **Reported 2026-06-13 (founder). Batch U5c.**
+
+Intermittent total computer freeze (~30s) during trim screen use, accompanied by one monitor going black and nightlight mode resetting. Occurs during or after seeking/playback on the trim/film screen. Hypothesis: GPU/display driver crash triggered by concurrent proxy decode + WebView2 compositing on a dual-monitor system. Consequences include lost session state and nightlight configuration resetting.
+
+**Next steps (diagnostic first):** check Windows Event Viewer for display driver crash events (`Display` or `dxgkrnl` errors) timestamped around the freeze. Determine if crash correlates with specific clip resolution (4K HEVC), proxy format, or specific interaction pattern (rapid seeking, clip switching). Also check if the freeze happens only with HEVC source files (GPU hardware decode).
+
+**Possible mitigations (to evaluate after diagnosis):**
+- Force software decode for TrimBar video element (`-hwaccel none` proxy encode path — proxies are already H.264, so this may already be software)
+- Reduce concurrent video element count (two film slots + clip slot = 3 active decoders)
+- Validate that proxy files aren't corrupt (invalid moov atom causes retry loops in some decoders)
+
+**Scope:** diagnostic only for now; implementation depends on findings. Assign to U5c.
+
+---
+
 ## Backlog — Render progress bar doesn't use full scale when stages are skipped (UX)
 
 > **Observed 2026-06-13 (founder, zoom-test render with no music or cards).**
@@ -1012,6 +1039,7 @@ The done-state stats card has a FILE SIZE slot that currently shows "--". File s
 
 | Version | Date       | Changes                                                                                                                                                                                                                                                                             |
 | ------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 5.7     | 2026-06-13 | Batch U5a DONE: Trim-screen seek/playback responsiveness. `Trimmer.tsx`: `isSeekingRef` suppresses `onTimeUpdate` cursor writes during seek (stutter fix); `handleSeek` respects play state (paused→stay, playing→continue); `crossSeekToClip` mutes target video during rVFC frame-detect + unmutes in `onReady` (audio bleed fix), calls `setCurrentMs(seekMs)` in `onReady` (cursor fix), explicit `setIsPlaying` in `onReady` after slot swap (icon mismatch fix); `seekFilmTo` captures `wasPlaying` + calls `setCurrentMs` on same-clip path (frozen cursor fix); film video A/B `onTimeUpdate` guards + new `onSeeked` handlers. `StickyFilmStrip.tsx`: playhead upgraded to downward triangle pip (12×9px, `rgba(255,255,255,0.9)`, `top:4`) + 4px absolute line starting at `top:15` (2px gap below pip). `TrimBar.tsx`: hint copy stripped "& play". `e2e/trimmer.spec.ts`: 3 stale strings fixed ("Drag clips here"→"No clips added yet", "Total"→"1 clip in film", `expect(found).toBe(true)`→soft-skip). 9/9 fast + 12/12 trimmer PASS. |
 | 5.6     | 2026-06-13 | Done-state polish (post-U4g): copy "Rendering completed" (was "Export finished"); h1 always "Render" (screen-naming rule, codified in DESIGN.md); action buttons `justify-start text-left` + `flex-shrink-0` icons; `open_folder_cmd` Rust command (opens directory directly — works when file is missing, unlike `/select,{file}`); "Open folder" + "Saved to" path click both use `open_folder_cmd(pathDirname(outputPath))`; `data-testid="render-done"` on done-state root (replaces fragile heading-text done detection in E2E); `e2e/render.spec.ts` h1 assertions updated to "Render"; done-state `waitUntil` uses `render-done` marker. 3 PRD backlog items added: configurable export folder, output file size display, open-in-player spam/focus. 9/9 fast + 14/14 render E2E PASS. |
 | 5.5     | 2026-06-13 | Batch U4g DONE: Cancel in-progress render + V3 done-state redesign + open-in-player. `pipeline/run.py`: `os.setpgrp()` + write Linux PID to `%TEMP%\rushcut\<job_id>.pid` (process-group leader pattern). `src-tauri/src/lib.rs`: `cancel_render_cmd` (PID-file read → `wsl kill -15 -<pgid>`, pkill fallback, `update_job_error`/`emit_error`, best-effort NTFS + WSL /tmp cleanup); `open_in_player_cmd` (`cmd /c start "" path` via separate OS args — path-with-spaces safe). `src/pages/Render.tsx`: cancel button (rendering phase, outlined white/30); V3 done-state split card (`1fr 1px 220px` grid, green pill, 2x2 stats grid, Saved-to dir row, right-column actions); `open_in_player_cmd` for both 4K + 1080p "Open film"; 1080p preview panel below main card; 4K: no in-app `<video>` (entirely absent from JSX — avoids spurious onError); error block cancel-specific copy ("No changes were made..."); `pathDirname()` + `shortDateTime()` helpers. `src/utils/buildJobConfig.ts`: always emit `output_resolution` (default "1080p" when no pref stored). `src/utils/jobMeta.ts`: `resLabel()` checks analysis `output_resolution` before `has_4k` (source clips != output resolution). `e2e/render.spec.ts`: "Render another version" assertion updated. 9/9 fast + 14/14 render E2E PASS. |
 | 5.4     | 2026-06-13 | Batch U4d + U4f DONE: Proactive zoom warm on project entry + stage-aware stall threshold. `Trimmer.tsx`: `warmFiredRef` session guard; `get_project.then()` fires `warm_zoom_cache_cmd` once on entry when any included clip has `zoom_mode != null` (covers re-render without visiting Zoom tab). `Render.tsx`: backstop warm fire-and-forget at top of `submitJob` (covers direct done-project opens skipping Trimmer); `inFilmCountRef` synced from state (`useEffect([inFilmCount])`) as stale-closure guard for once-registered `pipeline-stage` listener; `maxStallMsRef` (default 360s) extended to `min(600s, max(360s, count*60s))` on `STAGE:zoom`; resets to 360s in effect cleanup + `startRenderNow`. Bundled routing fix: `Upload.tsx` "Resume a Project" cards hardcoded to `/trimmer/:id` for all projects; replaced with `renderStateFromStatus(p.last_job_status)` — done projects now route to `/render/:id` (same Library Smart Open logic; `renderStateFromStatus` imported from `@/utils/jobMeta`). No Rust/pipeline changes. Verified: 4 warm fires in `zoom-bg.log` (all 10/10 cache hits); 9/9 fast E2E PASS. Backlog: progress bar scale when no music/cards stages (jump from 60%→done). |

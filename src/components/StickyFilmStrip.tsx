@@ -475,19 +475,41 @@ export function StickyFilmStrip({
           {/* Playhead — absolute over both ruler and clip rows */}
           {playheadMs !== undefined && (
             <div
+              aria-hidden
               style={{
                 position: "absolute",
                 top: 0,
                 bottom: 0,
                 left: filmTimeToPx(playheadMs),
-                width: 2,
-                background: "white",
                 zIndex: 20,
                 pointerEvents: "none",
                 transform: "translateX(-50%)",
               }}
-              aria-hidden
-            />
+            >
+              {/* Downward triangle pip */}
+              <div style={{
+                position: "absolute",
+                top: 4,
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: 0,
+                height: 0,
+                borderLeft: "6px solid transparent",
+                borderRight: "6px solid transparent",
+                borderTop: "9px solid rgba(255,255,255,0.9)",
+              }} />
+              {/* 4px vertical line — starts below triangle tip with a 2px gap */}
+              <div style={{
+                position: "absolute",
+                top: 15,
+                bottom: 0,
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: 4,
+                background: "rgba(255,255,255,0.85)",
+                borderRadius: "1px",
+              }} />
+            </div>
           )}
 
           {/* Clip row — framed with blue border */}

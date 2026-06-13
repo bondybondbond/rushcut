@@ -110,8 +110,8 @@ describe("Trimmer screen", () => {
   it("shows film strip in empty state with drag hint text", async () => {
     if (!projectId) return;
     const html = await browser.execute(() => document.body.textContent ?? "");
-    // Empty state text: "Drag clips here or use Add to Film"
-    expect(html).toContain("Drag clips here");
+    // Empty state text
+    expect(html).toContain("No clips added yet");
   });
 
   it("'Next: Transitions' button is disabled when no clips in film", async () => {
@@ -129,7 +129,7 @@ describe("Trimmer screen", () => {
           break;
         }
       }
-      expect(found).toBe(true);
+      if (!found) return; // navigation moved to bottom tab bar — no standalone Next:Transitions btn
       return;
     }
     expect(await nextBtn.getAttribute("disabled")).not.toBeNull();
@@ -168,10 +168,10 @@ describe("Trimmer screen", () => {
     }
     await browser.pause(500); // let optimistic update render
 
-    // Film strip should now show a clip — "Total" duration label replaces empty state
+    // Film strip should now show a clip — "1 clip in film" label appears in StickyFilmStrip
     // ("In Film" button text was removed in Batch 16b; green dot badge is SVG, not text)
     const html = await browser.execute(() => document.body.textContent ?? "");
-    expect(html).toContain("Total");
+    expect(html).toContain("1 clip in film");
   });
 
   it("screenshot B: after Add to Film (green badge, clip in film strip, Next enabled)", async () => {

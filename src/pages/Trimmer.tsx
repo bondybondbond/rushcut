@@ -58,6 +58,9 @@ export default function Trimmer() {
   // U4d: fire the background zoom warm at most once per Trimmer session (per mount).
   // Project entry is the earliest chokepoint to warm a re-render's zoom cache.
   const warmFiredRef = useRef(false);
+  // Seek-in-progress flag: suppresses onTimeUpdate from overwriting setCurrentMs while
+  // the browser is still seeking (prevents the playhead "jump forward then back" stutter).
+  const isSeekingRef = useRef(false);
 
   useEffect(() => {
     if (!projectId) return;
@@ -338,19 +341,24 @@ export default function Trimmer() {
     }
   }
 
+  // U5a: handle drag updates the marker only — it must NOT seek/reset the video playhead.
+  // (Clicking a handle still seeks, via TrimBar's click handler -> onSeek -> handleSeek.)
   function handleInChange(ms: number) {
     setInMs(ms);
-    if (videoRef.current) videoRef.current.currentTime = ms / 1000;
   }
 
   function handleOutChange(ms: number) {
     setOutMs(ms);
-    if (videoRef.current) videoRef.current.currentTime = ms / 1000;
   }
 
   function handleSeek(ms: number) {
+    isSeekingRef.current = true;
     if (videoRef.current) videoRef.current.currentTime = ms / 1000;
     setCurrentMs(ms);
+    // U5a: if already playing, continue playing after seek. If paused, stay paused.
+    if (isPlaying && videoCanPlay && videoRef.current) {
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
   }
 
   async function handleFilmSelect(filmClip: Clip) {
@@ -513,7 +521,7 @@ export default function Trimmer() {
    * confirms the new slot has rendered the seek-target frame. Eliminates the
    * frame-0 flash that occurs when loading into the active slot.
    */
-  function crossSeekToClip(idx: number, seekMs: number) {
+  function crossSeekToClip(idx: number, seekMs: number, shouldPlay = true) {
     const filmClip = inFilmRef.current[idx];
     if (!filmClip) return;
     const currentSlot = activeFilmSlotRef.current;
@@ -532,11 +540,21 @@ export default function Trimmer() {
       if (slotGenRef.current[targetSlot] !== thisGen || !filmModeRef.current) return;
       newV.addEventListener("seeked", () => {
         if (slotGenRef.current[targetSlot] !== thisGen || !filmModeRef.current) return;
+        newV.muted = true; // suppress audio during rVFC frame-detect phase
         gateFrameRevealThen(newV, targetSlot, thisGen, seekMs / 1000, () => {
           filmPlayIdxRef.current = idx;
           setFilmPlayIdx(idx);
+          setCurrentMs(seekMs); // cursor lands at click position before onTimeUpdate resumes
           activeFilmSlotRef.current = targetSlot;
           setSlotVisible(targetSlot);
+          newV.muted = false; // restore audio now that the correct frame is displayed
+          isSeekingRef.current = false;
+          // gateFrameRevealThen called play() for its rVFC mechanism — reconcile state:
+          // if we should be playing, force setIsPlaying(true) because onPlay fired before
+          // activeFilmSlot was updated so its slot guard failed to update state.
+          // if we should be paused, undo the play() call now that we've revealed the frame.
+          if (shouldPlay) setIsPlaying(true);
+          else newV.pause();
           oldV?.pause();
           const nextIdx = idx + 1;
           if (nextIdx < inFilmRef.current.length) {
@@ -586,7 +604,11 @@ export default function Trimmer() {
 
     if (nextV) {
       nextV.play().catch(() => {
-        // Inactive slot wasn't preloaded/seeked yet — load it fresh
+        // Inactive slot wasn't preloaded/seeked yet — load it fresh.
+        // U5a step 1 (diagnostic): this fallback is the visible clip-switch hitch
+        // (full src reload at the boundary). If this never logs during normal
+        // playback, the preload chain already covers boundaries — no fix needed.
+        console.warn("[film-stutter] advanceFilmClip fallback reload, idx=", nextIdx);
         loadIntoSlot(nextIdx, nextSlot);
       });
       // Preload the clip after next
@@ -610,6 +632,7 @@ export default function Trimmer() {
 
   /** Seek the film to a specific film-time ms (called from timeline click). */
   function seekFilmTo(filmMs: number) {
+    const wasPlaying = isPlaying;
     const clips_ = inFilmRef.current;
     let elapsed = 0;
     for (let i = 0; i < clips_.length; i++) {
@@ -621,19 +644,22 @@ export default function Trimmer() {
         const offsetInClip = Math.max(0, filmMs - elapsed);
         const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
         filmModeRef.current = true;
+        isSeekingRef.current = true;
 
         if (filmPlayIdxRef.current === i && activeFilmSlotRef.current) {
-          // Same clip — just seek within it
+          // Same clip — just seek within it; onSeeked resets isSeekingRef.
           const v = getFilmVideo(activeFilmSlotRef.current);
           if (v) {
             v.currentTime = seekToMs / 1000;
-            v.play().catch(() => {});
+            setCurrentMs(seekToMs); // cursor jumps to click position immediately
+            if (wasPlaying) v.play().catch(() => {});
           }
         } else {
           // Different clip — Option H: cross-slot load with rVFC mediaTime gate.
           // Loads into the OPPOSITE slot while outgoing frame stays visible;
           // swap only when the new slot's compositor frame is at/near seekTo.
-          crossSeekToClip(i, seekToMs);
+          // onReady resets isSeekingRef and reconciles play state.
+          crossSeekToClip(i, seekToMs, wasPlaying);
         }
         return;
       }
@@ -859,12 +885,13 @@ export default function Trimmer() {
                 if (viewMode !== "clip") return;
                 const sec = (e.currentTarget as HTMLVideoElement).currentTime;
                 const ms = Math.round(sec * 1000);
-                setCurrentMs(ms);
+                if (!isSeekingRef.current) setCurrentMs(ms);
                 if (isPlaying && ms >= outMs) {
                   (e.currentTarget as HTMLVideoElement).currentTime = inMs / 1000;
                 }
               }}
               onSeeked={(e) => {
+                isSeekingRef.current = false;
                 if (viewMode === "clip") setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000));
               }}
               onCanPlay={() => setVideoCanPlay(true)}
@@ -890,9 +917,10 @@ export default function Trimmer() {
               onTimeUpdate={(e) => {
                 if (activeFilmSlotRef.current !== "a") return;
                 const sec = (e.currentTarget as HTMLVideoElement).currentTime;
-                setCurrentMs(Math.round(sec * 1000));
+                if (!isSeekingRef.current) setCurrentMs(Math.round(sec * 1000));
                 handleFilmTimeUpdate("a", sec);
               }}
+              onSeeked={() => { if (activeFilmSlotRef.current === "a") isSeekingRef.current = false; }}
             />
 
             {/* ── Film video B (dual-buffer) ── */}
@@ -907,9 +935,10 @@ export default function Trimmer() {
               onTimeUpdate={(e) => {
                 if (activeFilmSlotRef.current !== "b") return;
                 const sec = (e.currentTarget as HTMLVideoElement).currentTime;
-                setCurrentMs(Math.round(sec * 1000));
+                if (!isSeekingRef.current) setCurrentMs(Math.round(sec * 1000));
                 handleFilmTimeUpdate("b", sec);
               }}
+              onSeeked={() => { if (activeFilmSlotRef.current === "b") isSeekingRef.current = false; }}
             />
 
             {/* Clip mode failure states */}

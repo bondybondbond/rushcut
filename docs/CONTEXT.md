@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U4g + done-state polish COMPLETE (2026-06-13). Next: U4h deferred; next session: U5a/b.**
+**Phase 2 — Batch U5a COMPLETE (2026-06-13). Next: U5b (play past out-marker + film nav) or U5c (dual-monitor freeze diagnosis).**
 
 ---
 
@@ -29,7 +29,8 @@
 - **Spun off:** zoom-quality-at-high-zoom investigation + V-series render-architecture roadmap (clean intermediate → system player → parallel pipeline) in `docs/batch-plan.md`.
 - **Batch U4g — COMPLETE (2026-06-13).** Cancel in-progress render: process-group kill via PID file (`pipeline/run.py` `os.setpgrp()` + PID write); `cancel_render_cmd` Rust command (reads `.pid`, `wsl kill -15 -<pgid>`, `update_job_error`/`emit_error`, partial cleanup of NTFS work dir + WSL /tmp). Cancel button in rendering phase (outlined white/30, destructive secondary). Bundled: V3 done-state redesign — split card (`1fr 1px 220px` grid), green "Export finished" pill, 2x2 stats grid, "Saved to" dir row, right-column actions (Open film / Open folder / Render another version). `open_in_player_cmd` Rust: `cmd /c start "" path` (separate OS args, path-with-spaces safe). 1080p: preview panel below main card; 4K: no in-app video (system player only). Error block: cancel-specific sub-copy ("No changes were made...") vs render-failure copy. `buildJobConfig.ts` always emits `output_resolution`. `resLabel()` checks analysis `output_resolution` before `has_4k` (source vs output fix). 9/9 fast + 14/14 render E2E PASS.
 - **U4h deferred.** Project-delete temp cleanup + 7-day startup prune of old UUID `%TEMP%\rushcut\` dirs — next session.
-- **Next: U5a/b** — Trim playback polish (TrimBar click-to-seek, waveform improvements).
+- **Batch U5a — COMPLETE (2026-06-13).** Trim-screen seek/playback responsiveness: `handleSeek` respects play state; `isSeekingRef` suppresses cursor stutter; `crossSeekToClip` mutes during rVFC frame-detect (audio bleed fix) + `setCurrentMs` in `onReady` (cursor fix) + explicit `setIsPlaying` after slot swap (icon fix); `seekFilmTo` same-clip path calls `setCurrentMs` immediately. StickyFilmStrip playhead upgraded to triangle pip + 4px line with 2px gap (matches TrimBar style). Trimmer spec stale strings fixed (3 strings: "Drag clips here", "Total", "Next: Transitions"). 9/9 fast + 12/12 trimmer PASS.
+- **Next: U5b** — play past out-marker + film prev/next nav. Or **U5c** (dual-monitor freeze investigation) if prioritised.
 - **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-11).
 - **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted.

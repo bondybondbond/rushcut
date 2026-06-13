@@ -96,6 +96,19 @@ export function TrimBar({
     onCommit();
   }
 
+  // --- Handle click-to-seek ---
+  // A click (not a drag) on a handle seeks playback to that handle's position. We stop
+  // propagation so the track's own click doesn't also fire, and mirror onTrackClick's
+  // didDrag guard so the trailing click after a real drag is consumed without seeking.
+  function onHandleClick(e: React.MouseEvent<HTMLDivElement>, handle: "in" | "out") {
+    e.stopPropagation();
+    if (didDrag.current) {
+      didDrag.current = false;
+      return;
+    }
+    onSeek?.(handle === "in" ? inMs : outMs);
+  }
+
   const inPct = durationMs > 0 ? (inMs / durationMs) * 100 : 0;
   const outPct = durationMs > 0 ? (outMs / durationMs) * 100 : 100;
   const playheadPct = durationMs > 0 ? (currentMs / durationMs) * 100 : 0;
@@ -232,7 +245,7 @@ export function TrimBar({
           onPointerDown={(e) => onHandlePointerDown(e, "in")}
           onPointerMove={onHandlePointerMove}
           onPointerUp={onHandlePointerUp}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => onHandleClick(e, "in")}
         >
           <div className="w-px h-5 bg-[#0a0a0a]/50 rounded-full" />
         </div>
@@ -244,14 +257,14 @@ export function TrimBar({
           onPointerDown={(e) => onHandlePointerDown(e, "out")}
           onPointerMove={onHandlePointerMove}
           onPointerUp={onHandlePointerUp}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => onHandleClick(e, "out")}
         >
           <div className="w-px h-5 bg-[#0a0a0a]/50 rounded-full" />
         </div>
       </div>
 
       <p className="text-xs text-[#e5e5e5] mt-1.5 text-center">
-        Click to seek &middot; drag handles to trim &middot; saves on release
+        Click track to seek &middot; drag handles to trim &middot; saves on release
       </p>
     </div>
   );
