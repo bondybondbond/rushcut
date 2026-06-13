@@ -610,6 +610,11 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **Solution:** Track whether the video successfully loaded before treating an error as "missing": `const videoLoadedRef = useRef(false)`; set `true` in `onLoadedMetadata`; in `onError` only `setVideoMissing(true)` when `!videoLoadedRef.current`. Reset the ref to `false` everywhere a new src is assigned (`applyLatestRender`, `startNewVersion`, pipeline-done listener). A decode failure after a successful load is a playback problem, not a missing file — don't mislabel it.
 **Context:** `src/pages/Render.tsx`. Any `<video onError>` that distinguishes "file gone" from "couldn't play this frame" needs the loaded-ref gate. The underlying decode crash is the U4e bitrate problem (VBR cap fixes it); the ref just stops the wrong error message.
 
+## Workflow: Read only the top of CONTEXT.md during wrapup
+**Problem:** `docs/CONTEXT.md` is 600+ lines and growing; a full `Read` returns a ~25k-token truncated view. Wrapup only ever edits the top two sections ("Current Phase" + "Immediate Next Task", roughly lines 16–35).
+**Solution:** During wrapup, `Read(CONTEXT.md, limit=40)` to grab the editable header, edit there, and skip the rest. Only page deeper if specifically appending a "Recently shipped" block (which goes right under the header anyway).
+**Context:** Any wrapup Step 3 CONTEXT.md update. The historical "Recently shipped" log below is append-mostly and rarely needs reading.
+
 ## Workflow: Two-DB path confusion in Claude Code sandbox
 
 **Problem:** When `pnpm dev` runs inside the Claude Code sandbox, Tauri's `app_data_dir()` resolves to `C:\Users\Manasak\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\rushcut\` (sandbox path), not the standard `C:\Users\Manasak\AppData\Roaming\rushcut\`. The running app's DB is at the sandbox path; direct `sqlite3` queries against the standard path see a different (often empty or stale) DB.
