@@ -160,6 +160,25 @@ which starts a NEW render while the old WSL process is still running.
    Emits `pipeline-error` event so Render.tsx transitions to the error phase (with "Try Again").
 3. **DB:** Add nullable `wsl_pid INTEGER` column to `jobs` (additive migration, same pattern
    as `current_stage`). Stamp it in `start_job` after `spawn()` via `child.id()`.
+4. **Partial-output cleanup (EXPLICITLY IN SCOPE — do not assume).** SIGTERM on the pipeline can
+   leave a half-written MP4 in `C:\clips\processed\<slug>-NN.mp4` (FFmpeg killed mid-mux → no moov
+   atom, same corruption class as the proxy trap). `cancel_render_cmd` MUST delete the job's
+   in-flight output file after the kill so no orphaned/corrupt render sits in `processed/` to
+   confuse the next session. The output path is known at `start_job` time — record it (or derive
+   it from the slug counter) so cancel can remove it. Also remove the job's `%TEMP%\rushcut\<job_id>\`
+   working dir (overlaps U4h, but cancel should clean its own mess immediately, not wait for the prune).
+
+**Open-in-player for 4K output (bundled — natural fit, touches the same Render screen + Rust layer):**
+5. On render complete, for **4K** output replace/supplement the WebView2 `<video>` element with an
+   "Open in player" button that opens the file in the system default player via
+   `std::process::Command::new("explorer").arg(<output_path>)` (a new `open_in_player_cmd`, or reuse
+   the existing `open_output_path` pattern — note that one does `/select,` to reveal in Explorer; this
+   one should open the file itself, no `/select`). Keep the in-app `<video>` element for **1080p**
+   output, where WebView2 decodes fine. Gate on `outputRes === "4k"`.
+   - **Why:** permanently removes the WebView2 4K-decode ceiling (the crash U4e's VBR cap mitigated
+     but did not eliminate). This completes the "system player" half of **V-series V1.5** — when this
+     ships, cross that part off the roadmap, leaving only "raise bitrate to 25–35M" in V1.5 (which
+     still depends on V1 clean-intermediate landing first).
 
 **Scope:** `src/pages/Render.tsx`, `src-tauri/src/lib.rs`, `src-tauri/src/db.rs`.
 
@@ -168,7 +187,11 @@ outlined, `text-[#e5e5e5]`. NOT peach (that's positive CTA). Label: "Cancel rend
 
 **Verify:** Start a render, click "Cancel render", confirm dialog → pipeline log shows
 SIGTERM, job row shows `status='error'`, Render screen shows error state with "Try Again".
-Confirm a new render can be started immediately after cancel.
+Confirm a new render can be started immediately after cancel. **Confirm no partial/corrupt MP4 is
+left in `C:\clips\processed\` after cancel** (the killed-mid-mux file must be deleted), and the
+job's `%TEMP%\rushcut\<job_id>\` working dir is gone. For open-in-player: a 4K render shows the
+"Open in player" button (not the `<video>`) and clicking it opens the file in the system default
+player; a 1080p render still shows the in-app `<video>`.
 
 ---
 

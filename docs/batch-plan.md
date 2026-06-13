@@ -264,8 +264,10 @@ Roadmap (not scheduled — plan after the U series + any U4 sub-batches):
 | --- | --- | --- | --- |
 | **U4e (done)** | AMF VBR + 20M bitrate | Same / slightly lower | ~10min → 4–5min |
 | **V1 — clean intermediate** | Pre-render a merged high-bitrate/lossless intermediate from source before the final encode (DaVinci render-cache concept). Encode the final once from a clean source instead of decoding 21 proxy clips in sequence. **Also the likely fix for the U4e zoom-quality backlog item.** | Higher (cleaner source) | 4–5min → 2–3min |
-| **V1.5 — system player + higher bitrate** | Open the final in the system player (not WebView2) and raise bitrate to 25–35 Mbps. Cheap once V1 lands (WebView2 decode pressure no longer the ceiling). | On par with industry | Same as U4e |
+| **V1.5 — higher bitrate** | Raise final bitrate to 25–35 Mbps. **Quality/stability only — NOT a speed change** (encode time is bitrate-insensitive; the "Same as U4e" speed column is correct). Depends on V1 landing first (a clean intermediate is what makes the higher bitrate worth it; 25–35M from a proxy is wasted bits). | On par with industry | Same as U4e |
 | **V2 — parallel pipeline** | True parallel decode + encode (CPU/iGPU decodes batch N+1 while encoder processes batch N). Most involved. | DaVinci-level | Sub-2min |
+
+**System player — moved out of V1.5 into U4g.** The "open the 4K final in the system default player instead of WebView2" piece is being done in **U4g** (an "Open in player" button for 4K output via `explorer.exe`, keeping the in-app `<video>` for 1080p). It removes the WebView2 4K-decode ceiling permanently and is independent of V1, so there's no reason to wait. Once U4g ships, this is done — V1.5 shrinks to *just* the bitrate raise above.
 
 This supersedes/absorbs the existing backlog item "Speculative full-segment pre-render (beyond zoom cache)" — V1 is the concrete first step. The thread to pull first after the U series: **pre-render a merged intermediate (lossless or high-bitrate) from all clips before the final encode.**
 
