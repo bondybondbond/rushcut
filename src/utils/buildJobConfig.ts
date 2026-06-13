@@ -99,9 +99,7 @@ export function buildJobConfig(projectId: string): JobConfig {
   } catch { /* ignore */ }
   try {
     const res = getRenderPref(`rc_render_res_${projectId}`);
-    if (res === "1080p" || res === "4k") {
-      config.output_resolution = res;
-    }
+    config.output_resolution = res === "4k" ? "4k" : "1080p";
   } catch { /* ignore */ }
   try {
     const raw = getRenderPref(`rc_cards_${projectId}`);

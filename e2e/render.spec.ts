@@ -262,11 +262,10 @@ describe("Full E2E render — /render/:projectId", () => {
     expect(audioStream.codec_name).toBe("aac");
   });
 
-  it("Render new version button is present on done-state", async () => {
-    // T5: replaced "My Projects" + "Render again" with "Render new version".
-    // Lighter than a nav test -- avoids session expiry on long runs.
+  it("Render another version button is present on done-state", async () => {
+    // U4g V3 redesign: renamed from "Render new version" -> "Render another version".
     const btn = await $('[data-testid="btn-render-new"]');
     await btn.waitForExist({ timeout: 5_000 });
-    expect(await btn.getText()).toBe("Render new version");
+    expect(await btn.getText()).toBe("Render another version");
   });
 });

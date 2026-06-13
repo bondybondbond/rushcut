@@ -3,6 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { Check, Play, Folder, RotateCcw } from "lucide-react";
 import type { ProjectWithClips, JobConfig, PipelineProgressEvent, Job } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
@@ -20,6 +22,24 @@ type DoneMeta = { iso: string | null; res: string | null; analysisDuration: stri
 // Basename of a Windows path, e.g. "C:\clips\processed\clips-01.mp4" -> "clips-01.mp4".
 function pathBasename(p: string): string {
   return p.replace(/\\/g, "/").split("/").pop() ?? p;
+}
+
+// Directory portion of a Windows path, preserving original separators.
+function pathDirname(p: string): string {
+  const sep = p.includes("\\") ? "\\" : "/";
+  const parts = p.split(sep);
+  parts.pop();
+  return parts.join(sep);
+}
+
+// Compact date+time for the stats card, e.g. "13 Jun · 15:16".
+function shortDateTime(iso: string | null | undefined): string {
+  if (!iso) return "--";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "--";
+  const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${day} · ${time}`;
 }
 
 // Seconds -> "m:ss" (floored to match the native video control's displayed total).
@@ -267,7 +287,11 @@ export default function Render() {
   // analysis value is only a fallback for the missing-file case.
   function applyLatestRender(job: Job) {
     setOutputPath(job.local_output_path);
-    setDoneMeta({ iso: job.updated_at, res: resLabel(job), analysisDuration: durationLabel(job) });
+    const res = resLabel(job);
+    setDoneMeta({ iso: job.updated_at, res, analysisDuration: durationLabel(job) });
+    // Sync outputRes to the actual rendered resolution so the done-state shows
+    // the correct UI path (4K placeholder vs in-app <video> player).
+    if (res === "4K") setOutputRes("4k");
     setVideoMissing(false);
     setVideoDuration(null);
     videoLoadedRef.current = false;
@@ -296,6 +320,21 @@ export default function Render() {
       return;
     }
     await submitJob(projectId);
+  }
+
+  // U4g: cancel the in-flight render. Kills the WSL pipeline process group and
+  // cleans its working dirs (Rust); the existing pipeline-error listener then
+  // flips this screen into the error phase (with "Try Again").
+  async function cancelRender() {
+    if (!jobId) return;
+    const ok = await confirm("Cancel this render? Your clips are safe.", {
+      title: "Cancel render",
+      kind: "warning",
+    });
+    if (!ok) return;
+    await invoke("cancel_render_cmd", { jobId }).catch((e) =>
+      console.error("cancel_render_cmd failed:", e),
+    );
   }
 
   useEffect(() => {
@@ -690,6 +729,18 @@ export default function Render() {
               </div>
               <p data-testid="elapsed-timer" className="text-xs text-[#a3a3a3]">{elapsedLabel} elapsed</p>
 
+              {/* U4g: cancel the in-flight render. Secondary/destructive style
+                  per DESIGN.md -- outlined, NOT peach (peach = positive CTA). */}
+              <div className="pt-1">
+                <button
+                  data-testid="btn-cancel-render"
+                  onClick={cancelRender}
+                  className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
+                >
+                  Cancel render
+                </button>
+              </div>
+
               {/* U1e: soft stall warning -- shown when no liveness signal for >120s.
                   Non-blocking; the render may still be running. "Try Again" reuses
                   proxies via startNewVersion. Peach left-accent per DESIGN.md (the
@@ -714,82 +765,174 @@ export default function Render() {
             </div>
           )}
 
-          {/* Done — film view */}
-          {phase === "done" && assetUrl && (
-            <div className="space-y-3">
-              {/* Player stays mounted (even when hidden) so onError can fire. */}
+          {/* Done — V3 card design */}
+          {phase === "done" && outputPath && (
+            <div className="flex flex-col gap-3">
+
+              {/* Main info + actions card */}
               <div
-                ref={videoContainerRef}
-                className={`rounded-lg overflow-hidden bg-black border border-white/10 ${videoMissing ? "hidden" : ""}`}
-                style={videoHeight != null ? { height: videoHeight } : { maxHeight: "480px" }}
+                className="rounded-[14px] border border-white/[0.07] bg-[#1a1a1a] overflow-hidden grid"
+                style={{ gridTemplateColumns: "1fr 1px 220px" }}
               >
-                <video
-                  data-testid="video-player"
-                  src={assetUrl}
-                  controls
-                  autoPlay={false}
-                  onLoadedMetadata={(e) => { videoLoadedRef.current = true; setVideoDuration(e.currentTarget.duration); }}
-                  onError={() => { if (!videoLoadedRef.current) setVideoMissing(true); }}
-                  className="w-full h-full object-contain"
-                />
+                {/* Left: metadata */}
+                <div className="p-7">
+                  {/* "Export finished" pill */}
+                  <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-3 py-[5px] rounded-full bg-green-500/10 text-green-400 border border-green-500/20">
+                    <Check size={14} strokeWidth={2.5} />
+                    Export finished
+                  </div>
+
+                  {/* Film name */}
+                  <div
+                    data-testid="output-filename"
+                    className="mt-4 text-[26px] font-bold text-white tracking-tight leading-tight"
+                  >
+                    {displayName}
+                  </div>
+
+                  {/* Stats grid */}
+                  <div className="mt-5 grid grid-cols-2 gap-x-4">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4a4946] mb-[3px]">Format</div>
+                      <div className="text-[17px] font-bold text-[#e8e6e2] tracking-tight leading-tight">
+                        {outputRes === "4k" ? "4K UHD" : "1080p HD"}
+                      </div>
+                      <div className="text-[13px] text-[#7a7874]">
+                        {outputRes === "4k" ? "3840 x 2160" : "1920 x 1080"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4a4946] mb-[3px]">Runtime</div>
+                      <div className="text-[17px] font-bold text-[#e8e6e2] tracking-tight leading-tight">
+                        {durationDisplay ?? "--"}
+                      </div>
+                    </div>
+                    <div className="mt-[10px]">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4a4946] mb-[3px]">Rendered</div>
+                      <div className="text-[15px] font-bold text-[#e8e6e2] tracking-tight leading-tight">
+                        {doneMeta?.iso ? shortDateTime(doneMeta.iso) : "--"}
+                      </div>
+                    </div>
+                    <div className="mt-[10px]">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4a4946] mb-[3px]">File size</div>
+                      <div className="text-[13px] text-[#7a7874]">--</div>
+                    </div>
+                  </div>
+
+                  {/* Saved-to row */}
+                  <div className="mt-[18px] flex items-center gap-2 text-[13px] text-[#5a5956]">
+                    <Folder size={14} strokeWidth={2} className="text-[#4a4946] flex-shrink-0" />
+                    <span>Saved to</span>
+                    <button
+                      onClick={() => invoke("open_output_path", { path: outputPath })}
+                      className="text-[#7a7874] font-medium hover:text-[#c8c5c0] transition-colors overflow-hidden text-ellipsis whitespace-nowrap max-w-[28ch]"
+                    >
+                      {pathDirname(outputPath)}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Vertical divider */}
+                <div className="bg-white/[0.07]" />
+
+                {/* Right: actions */}
+                <div className="px-5 py-6 flex flex-col justify-center gap-2.5">
+                  <button
+                    data-testid="btn-open-in-player"
+                    onClick={() => invoke("open_in_player_cmd", { path: outputPath })}
+                    className="w-full flex items-center gap-1.5 px-[18px] py-[10px] bg-[#FF8A65] text-[#0a0a0a] font-semibold text-[14px] rounded-lg hover:bg-[#ff9e7a] transition-all duration-150"
+                  >
+                    <Play size={15} fill="currentColor" stroke="none" />
+                    Open film
+                  </button>
+                  <button
+                    data-testid="btn-open-in-explorer"
+                    onClick={() => invoke("open_output_path", { path: outputPath })}
+                    className="w-full flex items-center gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150"
+                  >
+                    <Folder size={15} strokeWidth={2} className="text-[#8a8883]" />
+                    Open folder
+                  </button>
+                  <button
+                    data-testid="btn-render-new"
+                    onClick={startNewVersion}
+                    className="w-full flex items-center gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150"
+                  >
+                    <RotateCcw size={15} strokeWidth={2} className="text-[#8a8883]" />
+                    Render another version
+                  </button>
+                </div>
               </div>
 
-              {!videoMissing && (
-                <div
-                  className="w-full h-2 flex items-center justify-center cursor-ns-resize border-t border-white/10"
-                  onPointerDown={onResizePointerDown}
-                  onPointerMove={onResizePointerMove}
-                  onPointerUp={onResizePointerUp}
-                />
+              {/* 1080p: in-app preview panel (below the info card) */}
+              {outputRes !== "4k" && !videoMissing && (
+                <div className="rounded-[14px] border border-white/[0.07] bg-[#1a1a1a] overflow-hidden">
+                  <div
+                    ref={videoContainerRef}
+                    className="relative w-full"
+                    style={videoHeight != null ? { height: videoHeight } : { maxHeight: "480px" }}
+                  >
+                    <video
+                      data-testid="video-player"
+                      src={assetUrl ?? undefined}
+                      controls
+                      autoPlay={false}
+                      onLoadedMetadata={(e) => { videoLoadedRef.current = true; setVideoDuration(e.currentTarget.duration); }}
+                      onError={() => { if (!videoLoadedRef.current) setVideoMissing(true); }}
+                      className="w-full h-full object-contain bg-black"
+                    />
+                  </div>
+                  <div
+                    className="h-2 w-full cursor-ns-resize"
+                    onPointerDown={onResizePointerDown}
+                    onPointerMove={onResizePointerMove}
+                    onPointerUp={onResizePointerUp}
+                  />
+                  <div className="px-4 py-3 flex items-center justify-between border-t border-white/[0.06]">
+                    <span className="text-[13px] text-[#7a7874]">
+                      <strong className="text-[#b0aeab] font-medium">{displayName}</strong>
+                      {durationDisplay ? ` · ${durationDisplay}` : ""}
+                      {" · 1080p"}
+                    </span>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-[3px] rounded-full bg-[rgba(90,144,112,0.12)] text-[#5a9070] border border-[rgba(90,144,112,0.2)]">
+                      In-app preview
+                    </span>
+                  </div>
+                </div>
               )}
 
-              {/* Missing-file note — sits alongside the metadata, never replaces it. */}
-              {videoMissing && (
+              {/* 1080p: missing-file notice */}
+              {outputRes !== "4k" && videoMissing && (
                 <div data-testid="render-missing" className="rounded-lg border border-white/10 bg-white/5 p-4">
                   <p className="text-sm text-[#a3a3a3]">This render is no longer on disk. Render a new version to recreate it.</p>
                 </div>
               )}
 
-              <div className="flex items-center gap-3">
-                {!videoMissing && (
-                  <button
-                    data-testid="btn-open-in-explorer"
-                    onClick={() => outputPath && invoke("open_output_path", { path: outputPath })}
-                    className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
-                  >
-                    Open in Explorer
-                  </button>
-                )}
-                <button
-                  data-testid="btn-render-new"
-                  onClick={startNewVersion}
-                  className="px-6 py-2.5 bg-[#FF8A65] text-[#0a0a0a] font-semibold text-base rounded-md hover:bg-[#ff9e7a] transition-all duration-200"
-                >
-                  Render new version
-                </button>
-              </div>
-              {displayName && (
-                <p data-testid="output-filename" className="text-sm text-[#a3a3a3]">{displayName}</p>
-              )}
+              {/* render-meta: off-screen element for E2E compat */}
               {doneMeta && (
-                <p data-testid="render-meta" className="text-sm text-[#a3a3a3]">
-                  Rendered {absoluteDateTime(doneMeta.iso)}
-                  {doneMeta.res ? <> &middot; {doneMeta.res}</> : null}
-                  {durationDisplay ? <> &middot; {durationDisplay}</> : null}
+                <p data-testid="render-meta" className="sr-only">
+                  {absoluteDateTime(doneMeta.iso)}
+                  {doneMeta.res ? ` · ${doneMeta.res}` : ""}
+                  {durationDisplay ? ` · ${durationDisplay}` : ""}
                 </p>
               )}
+
             </div>
           )}
 
           {/* Error */}
           {phase === "error" && (
             <div className="rounded-lg bg-red-900/20 border border-red-500/30 p-4 space-y-3">
-              <p className="text-red-300 text-sm">{errorMsg}</p>
-              {inFilmCount > 0 && (
+              <p className="text-red-300 text-sm font-medium">{errorMsg}</p>
+              {errorMsg === "Render cancelled" ? (
+                <p className="text-sm text-[#a3a3a3]">
+                  No changes were made. Select Try Again to restart the render, or go back to make changes.
+                </p>
+              ) : inFilmCount > 0 ? (
                 <p className="text-sm text-[#a3a3a3]">
                   Your edits and optimised clips are safe -- Try Again just re-runs the render and reuses them.
                 </p>
-              )}
+              ) : null}
               <div className="flex items-center gap-3">
                 {inFilmCount > 0 && (
                   <button

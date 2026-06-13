@@ -371,6 +371,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## UI — `has_4k` in analysis_summary reflects SOURCE resolution, not output resolution
+
+**Problem:** `has_4k=1` in the pipeline `ANALYSIS:` string means at least one source clip is 4K native. It does NOT mean the render output was 4K. A 1080p render of 4K-source clips produces `has_4k=1` AND `output_resolution=1080p` in the same analysis string. The old `resLabel()` fallback checked `has_4k` before `output_resolution`, so it returned "4K" for 1080p renders when the source was 4K footage.
+**Solution:** In any function that infers output resolution from analysis strings, always check `a.output_resolution` ("4k" or "1080p") BEFORE falling back to `a.has_4k`. The fixed order in `src/utils/jobMeta.ts`: `output_resolution === "4k"` → `output_resolution === "1080p"` → `has_4k === "1"` → `max_resolution >= 2160`.
+**Context:** `src/utils/jobMeta.ts` `resLabel()`. Also applies to any new consumer of the analysis string that needs to distinguish output quality from source quality.
+
+---
+
+## UI — `buildJobConfig` must always emit `output_resolution`; pref-absent != "use default"
+
+**Problem:** `buildJobConfig.ts` originally only stored `output_resolution` in `settings_json` when `getRenderPref` returned an explicit "1080p" or "4k" string (i.e. the user had clicked a resolution chip). New projects default to "1080p" via `useState` but never call `handleResSelect`, so no pref is written to localStorage and `settings_json` was missing `output_resolution`. `resLabel()` then fell through to the analysis fallback where `has_4k=1` (4K source clips) falsely returned "4K".
+**Solution:** Always emit `config.output_resolution = res === "4k" ? "4k" : "1080p"` in `buildJobConfig`, defaulting to "1080p" when no pref is stored. The `try/catch` wrapper means the default is always written even when `getRenderPref` throws. Fixed in `src/utils/buildJobConfig.ts`.
+**Context:** Any project where the user never explicitly touched the resolution chip on the Render screen. Affects how `resLabel()` reads the job and how the pipeline receives `output_resolution` in the manifest.
+
+---
+
 ## Workflow — Diagnosing pipeline failures: check WSL /tmp state first
 
 **Problem:** A render returns "Pipeline exited with status: exit code: 15" or similar non-zero exit. Reading `pipeline-latest.log` shows a half-complete run that ends mid-stage with no ERROR line.

@@ -962,6 +962,107 @@ Two `<video>` elements (slot A + slot B) are stacked `absolute inset-0 w-full h-
 
 ---
 
+## Render done-state — V3 split card (U4g)
+
+The render done state uses a split card with a vertical divider: metadata left, actions right. A separate video preview panel appears below only for 1080p output; 4K has no in-app `<video>` element.
+
+### Main card
+
+```tsx
+<div className="rounded-[14px] border border-white/[0.07] bg-[#1a1a1a] overflow-hidden grid"
+     style={{ gridTemplateColumns: "1fr 1px 220px" }}>
+  {/* LEFT — metadata */}
+  <div className="p-7">
+    {/* Export status pill */}
+    <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-3 py-[5px]
+                    rounded-full bg-green-500/10 text-green-400 border border-green-500/20">
+      <Check size={14} strokeWidth={2.5} /> Export finished
+    </div>
+    {/* Film name */}
+    <div data-testid="output-filename"
+         className="mt-4 text-[26px] font-bold text-white tracking-tight leading-tight">
+      {displayName}
+    </div>
+    {/* Stats 2x2 grid */}
+    <div className="mt-5 grid grid-cols-2 gap-x-4">
+      {/* Each stat: label text-[11px] uppercase tracking-widest text-[#4a4946] font-medium
+                    value text-[15px] font-semibold text-[#e5e5e5] */}
+    </div>
+    {/* Saved-to row */}
+    <div className="mt-[18px] flex items-center gap-2 text-[13px] text-[#5a5956]">
+      <Folder size={14} className="text-[#4a4946] flex-shrink-0" />
+      <span>Saved to</span>
+      <button className="text-[#7a7874] font-medium hover:text-[#c8c5c0] truncate max-w-[200px]">
+        {pathDirname(outputPath)}
+      </button>
+    </div>
+  </div>
+  {/* Vertical divider */}
+  <div className="bg-white/[0.07]" />
+  {/* RIGHT — actions */}
+  <div className="px-5 py-6 flex flex-col justify-center gap-2.5">
+    {/* Primary (peach): Open film */}
+    <button className="w-full flex items-center gap-1.5 px-[18px] py-[10px]
+                       bg-[#FF8A65] text-[#0a0a0a] font-semibold text-[14px] rounded-lg
+                       hover:bg-[#ffA07a] transition-colors duration-150">
+      <Play size={15} fill="currentColor" stroke="none" /> Open film
+    </button>
+    {/* Secondary: Open folder / Render another version */}
+    <button className="w-full flex items-center gap-1.5 px-[18px] py-[10px]
+                       border border-white/20 text-[#e5e5e5] font-medium text-[14px] rounded-lg
+                       hover:border-white/40 hover:bg-white/5 transition-colors duration-150">
+      <Folder size={15} /> Open folder
+    </button>
+    <button className="w-full flex items-center gap-1.5 px-[18px] py-[10px]
+                       border border-white/20 text-[#e5e5e5] font-medium text-[14px] rounded-lg
+                       hover:border-white/40 hover:bg-white/5 transition-colors duration-150">
+      <RotateCcw size={15} /> Render another version
+    </button>
+  </div>
+</div>
+```
+
+**Stats grid tokens:**
+- Label: `text-[11px] uppercase tracking-widest text-[#4a4946] font-medium`
+- Value: `text-[15px] font-semibold text-[#e5e5e5] mt-0.5`
+- Each stat is a `<div>` with a `pb-4 border-b border-white/[0.06]` bottom rule (last two skip the rule)
+
+**`pathDirname(p)`** — extracts directory from a Windows path (splits on `\\`, pops last segment, rejoins). Defined in `src/pages/Render.tsx`.
+
+**`shortDateTime(iso)`** — returns compact `"13 Jun · 16:10"` format for the Rendered stat. Use `absoluteDateTime()` (longer format) for anything requiring the full year.
+
+### 1080p preview panel
+
+Appears BELOW the main card, only when `outputRes !== "4k" && !videoMissing`:
+
+```tsx
+<div className="rounded-[14px] border border-white/[0.07] bg-[#1a1a1a] overflow-hidden">
+  <div ref={videoContainerRef} style={{ height: `${videoHeight}px` }} className="relative">
+    <video data-testid="video-player" src={assetUrl ?? undefined} controls
+           className="w-full h-full object-contain bg-black" />
+  </div>
+  {/* Resize handle */}
+  <div onMouseDown={startResize} className="h-1 bg-white/10 hover:bg-white/20 cursor-ns-resize" />
+  {/* Footer: filename · duration · 1080p + "In-app preview" badge */}
+</div>
+```
+
+**Critical:** The `<video>` element must be entirely absent from JSX on the 4K path (not CSS-hidden). A hidden `<video src>` still loads and can fire spurious `onError` → `videoMissing` state flip.
+
+### Cancel render button (rendering phase)
+
+Appears only during `phase === "rendering"`. Destructive secondary style (NOT peach):
+
+```tsx
+<button data-testid="btn-cancel-render"
+        className="border border-white/30 text-[#e5e5e5] px-5 py-2.5 rounded-lg text-base
+                   font-medium hover:border-white/60 hover:bg-white/5 transition-colors duration-150">
+  Cancel render
+</button>
+```
+
+---
+
 ## Key Copy Decisions
 
 | Old                                 | New                                              | Reason                                        |

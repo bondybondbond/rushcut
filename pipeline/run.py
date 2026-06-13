@@ -91,6 +91,17 @@ def main() -> None:
         _latest_fh.setFormatter(_fmt)
         logging.getLogger().addHandler(_latest_fh)
 
+    # U4g (cancel): become our own process-group leader so cancel_render_cmd can
+    # SIGTERM the whole tree (this Python + every ffmpeg child) with kill -15 -<pgid>.
+    # Then write our Linux PID to <job_id>.pid so Rust can find it -- child.id() on
+    # the Rust side is the wsl.exe Windows PID, NOT this process. Both best-effort:
+    # the stdout pipe (PROGRESS/STAGE/DONE) is fd-based and unaffected by setpgrp.
+    try:
+        os.setpgrp()
+        (_log_dir / f"{job_id}.pid").write_text(str(os.getpid()))
+    except OSError as e:
+        logging.warning("U4g: setpgrp/pid-file failed (cancel may fall back to pkill): %s", e)
+
     clips = manifest["clips"]
     settings = manifest.get("settings", {})
     output_path_win = manifest.get("output_path", f"C:\\clips\\processed\\{job_id}.mp4")

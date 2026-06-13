@@ -897,6 +897,87 @@ fn open_output_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// U4g: open a file in the system DEFAULT player (not Explorer). Used for 4K
+/// output, where the in-app WebView2 <video> hits the decode ceiling.
+/// `cmd /c start "" "<path>"` invokes ShellExecute semantics and honours the
+/// file's default-player association reliably -- launching `explorer.exe` as a
+/// file-opener does NOT fire the association correctly on all Windows configs.
+/// The empty "" is `start`'s title argument, so a quoted path is not swallowed
+/// as the window title.
+#[tauri::command]
+fn open_in_player_cmd(path: String) -> Result<(), String> {
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", &path])
+        .spawn()
+        .map_err(|e| format!("Failed to open in player: {}", e))?;
+    Ok(())
+}
+
+/// U4g: cancel an in-flight render. Kills the WSL pipeline process group
+/// (Python + all ffmpeg children), removes the job's working artifacts, and
+/// marks the job failed so the Render screen falls into its error phase.
+///
+/// Why a process-group kill: `run_pipeline` spawns `wsl.exe -- python3 run.py`,
+/// so the Rust-side `child.id()` is the wsl.exe WINDOWS PID, not run.py's Linux
+/// PID -- useless for `wsl kill`. Instead run.py calls os.setpgrp() and writes
+/// its Linux PID to `%TEMP%\rushcut\<job_id>.pid`; we read that and send
+/// `kill -15 -<pid>` (negative = whole group). If the pid file isn't there yet
+/// (cancel within ~500ms of start, before run.py wrote it), fall back to
+/// `pkill -15 -f <job_id>` -- sufficient, no retry loop.
+#[tauri::command]
+async fn cancel_render_cmd(app: AppHandle, job_id: String) -> Result<(), String> {
+    // Output path (for the defensive partial-file delete) -- read before we
+    // touch the row. Note: run.py only copies into processed/ on success, so a
+    // mid-render kill usually leaves NO file here; the delete is belt-and-braces.
+    let output_path = get_job(&job_id).ok().and_then(|j| j.local_output_path);
+
+    // All blocking work (wsl spawn + filesystem) off the async runtime.
+    let job_id_bg = job_id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let temp_dir = std::env::temp_dir().join("rushcut");
+        let pid_file = temp_dir.join(format!("{}.pid", job_id_bg));
+
+        // 1. Kill the pipeline process group.
+        let pid = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok());
+        match pid {
+            Some(p) => {
+                let _ = std::process::Command::new("wsl")
+                    .args(["-d", "Ubuntu-24.04", "-u", "root", "--",
+                           "kill", "-15", &format!("-{}", p)])
+                    .output();
+            }
+            None => {
+                // Fallback: pid file not written yet -- match run.py by job_id.
+                let _ = std::process::Command::new("wsl")
+                    .args(["-d", "Ubuntu-24.04", "-u", "root", "--",
+                           "pkill", "-15", "-f", &job_id_bg])
+                    .output();
+            }
+        }
+
+        // 2. Cleanup. Defensive partial output (usually absent); NTFS working
+        //    dir (U1g/U4c segments); WSL /tmp tmpfs dir; the pid file. All
+        //    non-fatal -- a missing target is the normal case.
+        if let Some(p) = &output_path {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::remove_dir_all(temp_dir.join(&job_id_bg));
+        let _ = std::process::Command::new("wsl")
+            .args(["-d", "Ubuntu-24.04", "-u", "root", "--",
+                   "rm", "-rf", &format!("/tmp/{}", job_id_bg)])
+            .output();
+        let _ = std::fs::remove_file(&pid_file);
+    })
+    .await;
+
+    // 3. Mark failed + notify the Render screen (reuses the error-phase wiring).
+    let _ = update_job_error(&job_id, "Render cancelled");
+    emit_error(&app, &job_id, "Render cancelled");
+    Ok(())
+}
+
 /// Persist clip order after a drag-to-reorder action on the Review screen.
 /// clip_ids must be the full ordered list; each clip receives sort_order = its index.
 #[tauri::command]
@@ -1322,9 +1403,18 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
         std::process::ExitStatus::default()
     });
     if !status.success() {
-        let msg = format!("Pipeline exited with status: {}", status);
-        let _ = update_job_error(&job_id, &msg);
-        emit_error(&app, &job_id, &msg);
+        // Guard against double-error: cancel_render_cmd may have already marked
+        // this job as error ("Cancelled by user") before the pipe-close reaches
+        // here. Don't overwrite it with the generic signal-15 message that fires
+        // from the same kill (it would confuse acceptance checks + the log).
+        let already_error = get_job(&job_id)
+            .map(|j| j.status == "error")
+            .unwrap_or(false);
+        if !already_error {
+            let msg = format!("Pipeline exited with status: {}", status);
+            let _ = update_job_error(&job_id, &msg);
+            emit_error(&app, &job_id, &msg);
+        }
     }
 }
 
@@ -2352,6 +2442,8 @@ pub fn run() {
             list_projects_cmd,
             delete_project_cmd,
             open_output_path,
+            open_in_player_cmd,
+            cancel_render_cmd,
             generate_proxies_cmd,
             warm_zoom_cache_cmd,
             get_proxy_readiness_cmd,

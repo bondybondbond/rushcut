@@ -32,6 +32,10 @@ export function resLabel(job: Pick<Job, "settings_json" | "analysis_summary">): 
   }
   // Fall back to the ANALYSIS string.
   const a = parseAnalysis(job.analysis_summary);
+  // Prefer explicit output_resolution over has_4k — source clips can be 4K while
+  // the render target is 1080p. has_4k reflects source resolution, not output.
+  if (a.output_resolution === "4k") return "4K";
+  if (a.output_resolution === "1080p") return "1080p";
   if (a.has_4k === "1") return "4K";
   if (a.max_resolution) return Number(a.max_resolution) >= 2160 ? "4K" : "1080p";
   return null;
