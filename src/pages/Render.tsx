@@ -107,6 +107,11 @@ export default function Render() {
   // if it did, onError is a WebView2 decode crash (high-bitrate 4K), not a
   // missing file. Reset whenever outputPath changes.
   const [videoMissing, setVideoMissing] = useState(false);
+  // #5: true once the 1080p in-app player crashes AFTER metadata loaded (a WebView2
+  // decode failure mid-playback, not a missing file). Distinct from videoMissing so
+  // we can offer an "open in system player" fallback instead of a "no longer on disk"
+  // notice. Reset alongside videoLoadedRef whenever outputPath changes.
+  const [playbackFailed, setPlaybackFailed] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
   const videoLoadedRef = useRef(false);
 
@@ -293,6 +298,7 @@ export default function Render() {
     // the correct UI path (4K placeholder vs in-app <video> player).
     if (res === "4K") setOutputRes("4k");
     setVideoMissing(false);
+    setPlaybackFailed(false);
     setVideoDuration(null);
     videoLoadedRef.current = false;
     setProgress(100);
@@ -307,6 +313,7 @@ export default function Render() {
     setOutputPath(null);
     setDoneMeta(null);
     setVideoMissing(false);
+    setPlaybackFailed(false);
     setVideoDuration(null);
     videoLoadedRef.current = false;
     setJobId(null);
@@ -490,6 +497,7 @@ export default function Render() {
       // T5: capture metadata for the freshly-finished render. Duration here is
       // the analysis fallback; the <video> element overrides it on load.
       setVideoMissing(false);
+      setPlaybackFailed(false);
       setVideoDuration(null);
       videoLoadedRef.current = false;
       setDoneMeta({
@@ -863,7 +871,7 @@ export default function Render() {
               </div>
 
               {/* 1080p: in-app preview panel (below the info card) */}
-              {outputRes !== "4k" && !videoMissing && (
+              {outputRes !== "4k" && !videoMissing && !playbackFailed && (
                 <div className="rounded-[14px] border border-white/[0.07] bg-[#1a1a1a] overflow-hidden">
                   <div
                     ref={videoContainerRef}
@@ -876,7 +884,12 @@ export default function Render() {
                       controls
                       autoPlay={false}
                       onLoadedMetadata={(e) => { videoLoadedRef.current = true; setVideoDuration(e.currentTarget.duration); }}
-                      onError={() => { if (!videoLoadedRef.current) setVideoMissing(true); }}
+                      onError={() => {
+                        // #5: metadata never loaded -> file gone; loaded then errored
+                        // -> WebView2 decode crash, offer the system-player fallback.
+                        if (!videoLoadedRef.current) setVideoMissing(true);
+                        else setPlaybackFailed(true);
+                      }}
                       className="w-full h-full object-contain bg-black"
                     />
                   </div>
@@ -903,6 +916,25 @@ export default function Render() {
               {outputRes !== "4k" && videoMissing && (
                 <div data-testid="render-missing" className="rounded-lg border border-white/10 bg-white/5 p-4">
                   <p className="text-sm text-[#a3a3a3]">This render is no longer on disk. Render a new version to recreate it.</p>
+                </div>
+              )}
+
+              {/* #5: 1080p in-app playback crashed after load -> system-player fallback */}
+              {outputRes !== "4k" && !videoMissing && playbackFailed && (
+                <div
+                  data-testid="render-playback-failed"
+                  className="rounded-md border border-white/10 border-l-2 border-l-[#FF8A65] bg-white/5 p-3 flex items-center justify-between gap-4"
+                >
+                  <p className="text-sm text-[#e5e5e5]">
+                    In-app preview couldn't play this file. Open it in your system player instead.
+                  </p>
+                  <button
+                    data-testid="btn-playback-open-player"
+                    onClick={() => invoke("open_in_player_cmd", { path: outputPath })}
+                    className="flex-shrink-0 px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
+                  >
+                    Open in system player
+                  </button>
                 </div>
               )}
 

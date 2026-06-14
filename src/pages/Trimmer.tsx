@@ -65,6 +65,10 @@ export default function Trimmer() {
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   const isSaving = useRef(false);
   const generatingProxyRef = useRef<Set<string>>(new Set());
+  // #29: the proxy-progress listener is registered once (deps [projectId]) and so
+  // cannot read live `sourceFailed` state. This ref mirrors it so the listener can
+  // decide adopt (recovery) vs defer (healthy) without a stale closure.
+  const sourceFailedRef = useRef(false);
   // U4d: fire the background zoom warm at most once per Trimmer session (per mount).
   // Project entry is the earliest chokepoint to warm a re-render's zoom cache.
   const warmFiredRef = useRef(false);
@@ -169,8 +173,18 @@ export default function Trimmer() {
         );
         setSelectedClip((prev) => {
           if (!prev || prev.id !== clipId) return prev;
-          setSourceFailed(false);
-          return { ...prev, proxy_path: winPath };
+          // #29: only swap the in-view clip's src when its source actually FAILED
+          // (recovery/upgrade). For a healthy clip, defer adoption — mutating
+          // proxy_path here changes the bound <video src> and forces a mid-view
+          // abort+reload that re-seeks to in_ms. The clips-array update above keeps
+          // the proxy, so re-selecting this clip later picks it up.
+          if (sourceFailedRef.current) {
+            diagLog(`proxy adopt (recovery) id=${clipId}`);
+            setSourceFailed(false);
+            return { ...prev, proxy_path: winPath };
+          }
+          diagLog(`proxy defer (healthy) id=${clipId}`);
+          return prev;
         });
       }
     ).then((fn) => { unlisten = fn; });
@@ -182,6 +196,9 @@ export default function Trimmer() {
     if (filmVideoARef.current) filmVideoARef.current.volume = volume;
     if (filmVideoBRef.current) filmVideoBRef.current.volume = volume;
   }, [volume]);
+
+  // #29: keep sourceFailedRef in sync for the once-registered proxy-progress listener.
+  useEffect(() => { sourceFailedRef.current = sourceFailed; }, [sourceFailed]);
 
   // Both film slots start hidden; setSlotVisible manages visibility imperatively (avoids React async paint race)
   useEffect(() => {

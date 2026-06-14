@@ -17,6 +17,12 @@ import {
 } from "@/utils/zoom";
 import type { ZoomStyle, ZoomState } from "@/utils/zoom";
 
+// #29: diagnostic logging (mirrors Trimmer.diagLog -> diag_log_cmd) to locate the
+// sporadic selectedClipId->null reset. Instrumentation only; remove once root-caused.
+function diagLog(line: string) {
+  invoke("diag_log_cmd", { line }).catch(() => {});
+}
+
 type ArrangeTab = "zoom" | "transitions" | "cards" | "sound";
 type CardColor = "peach" | "black" | "white";
 interface CardsState {
@@ -309,8 +315,21 @@ export default function Arrange() {
     setCurrentMs(0);
     setDurationMs(0);
     video.src = src;
+    diagLog(`arrange zoom-load id=${selectedClip.id} tab=${tab}`);
     video.load();
   }, [selectedClipId, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // #29 instrumentation: log every selectedClipId transition, flagging null resets
+  // (the reported "must re-pick a clip" symptom) with the prior value so the trigger
+  // can be correlated against clips refreshes / event timing in the diag log.
+  const prevSelectedIdRef = useRef<string | null>(selectedClipId);
+  useEffect(() => {
+    const prev = prevSelectedIdRef.current;
+    prevSelectedIdRef.current = selectedClipId;
+    if (selectedClipId === null && prev !== null) {
+      diagLog(`arrange selectedClipId->null (was ${prev}) tab=${tab} clips=${clips.length}`);
+    }
+  }, [selectedClipId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep isPlayingRef in sync so the zoom animation effect can read play
   // state without adding isPlaying to its dependency array (which would
@@ -379,6 +398,7 @@ export default function Arrange() {
     setSoundCurrentMs(0);
     setSoundDurationMs(0);
     video.src = src;
+    diagLog(`arrange sound-load id=${selectedClip.id} tab=${tab}`);
     video.load();
   }, [selectedClipId, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
