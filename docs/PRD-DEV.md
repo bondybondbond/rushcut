@@ -6,13 +6,15 @@
 
 ---
 
-> **Execution backlog:** Tracked in [GitHub Projects — RushCut Roadmap](https://github.com/users/bondybondbond/projects/1). Create/update/close issues via `gh issue create` / `gh project item-edit`. This file is for strategic direction and active batch specs only.
+> **Execution backlog:** Tracked in [GitHub Projects — RushCut Roadmap](https://github.com/users/bondybondbond/projects/1). Create/update/close issues via `gh issue create` / `gh project item-edit`. This file covers strategic direction, active batch specs, and the AI/Phase 3 roadmap — all three live here even though individual execution items live in GitHub Issues.
 >
 > **What belongs in this file:**
 >
 > - Phase goal and exit gate
 > - Active batch specs (not yet started or in progress)
-> - Phase 3 preview (high-level only)
+> - AI Enablement section — goals, principles, and open questions for the AI feature tier
+> - Phase 3 Preview — cloud/backend/monetization direction (high-level only)
+> - Swimlane legend — purpose and scope of each batch series
 > - Compact changelog table
 >
 > **What does NOT belong here:**
@@ -21,6 +23,30 @@
 > - Specs for delivered batches — once a batch ships, trim to a one-line "done" note in the changelog and delete the detail
 > - Lambda / Next.js / Supabase / R2 references — that infrastructure is gone
 > - Implementation details already captured in `LEARNINGS.md` or `.claude/rules/`
+
+---
+
+## Batch Series Swimlane Legend
+
+Each batch series has a distinct purpose. When choosing where a new item belongs, match it to its series by theme — not by batch number.
+
+| Series | Purpose | Status |
+|--------|---------|--------|
+| **U5** | Trim-screen playback UX — seek responsiveness, clip-to-clip transitions, dual-buffer improvements | U5a/b DONE · U5c next |
+| **U6** | Music playback improvements — seek dropout fix, loop toggle | Backlog |
+| **V1.x** | Critical stability bugs — crashes, wrong output content, data integrity, render failures | V1.1–V1.3 queued |
+| **V2.x** | UX polish — visual accuracy, discoverability, small quality-of-life improvements | V2.1–V2.3 queued |
+| **V3** | Advanced editor features — multi-version renders, add/remove clips, film-tab trim handles, branding | Deferred |
+| **V4.x** | Pipeline architecture — clean render intermediate (DaVinci-style cache), parallel decode+encode | Deferred |
+| **AI** | AI-powered automation — DJI highlight import, smart defaults, one-tap render, director screen, beat sync | Deferred (pre-GTM) |
+| **Photos** | Photo montage feature — Ken Burns sequence, frame styles, fan stack animation | Deferred |
+| **Phase3** | Cloud and platform — auth, Stripe, music API, Google Video Intelligence | Out of scope now |
+
+**Swimlane rules:**
+- Each batch in a series targets 1–3 items at most
+- Bugs and features in the same swimlane share a common theme — do not cross-pollinate
+- Deferred items stay in GitHub Issues (Status=Deferred) until a session picks them up
+- When a new series is needed, add it here and create the Target Batch options in GitHub Projects
 
 ---
 
