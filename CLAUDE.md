@@ -42,9 +42,10 @@
 | ------------------- | ------------------------------------------------------------------------- |
 | `docs/DESIGN.md`    | **Always** before touching any UI — colours, fonts, spacing, copy tone    |
 | `docs/CONTEXT.md`   | Start of a feature session — current batch, deferred items, next priority |
-| `docs/PRD-DEV.md`   | Planning a new feature or checking the backlog                            |
+| `docs/PRD-DEV.md`   | Strategic direction + active batch specs only (no individual backlog items) |
 | `docs/LEARNINGS.md` | Debugging a known class of problem (FFmpeg, pipeline, E2E) — **read before any in-session DB verification** (MSIX container path trap) |
 | `.claude/rules/`    | Path-specific technical rules — load the relevant file, not all of them   |
+| GitHub Projects #1  | **Execution backlog** — `gh project item-list 1 --owner bondybondbond --format json` to read; use `gh issue create` + `gh project item-add` to write. Source of truth for bugs, features, batches. |
 
 ---
 

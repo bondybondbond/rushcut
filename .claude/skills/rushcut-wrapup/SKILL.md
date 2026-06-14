@@ -115,7 +115,7 @@ Use native **Edit** tool.
 
 ---
 
-## Step 2.5 — Backlog harvest
+## Step 2.5 — Backlog harvest → GitHub Issues
 
 Scan the session for any gaps, known limitations, observed bugs, potential improvements, or "future batch" candidates that were mentioned during implementation or discussion — whether raised by the user, noted inline, or flagged as a deferred decision. This includes:
 
@@ -123,17 +123,44 @@ Scan the session for any gaps, known limitations, observed bugs, potential impro
 - **Observed side-effects** — e.g. "noticed X doesn't handle Y", "this only works for 1080p not 4K"
 - **User-raised concerns that weren't actioned** — e.g. "what about the case where…", "can we also…", "we should probably…"
 - **Explicit `// TODO` comments** added to source code during the session
-- **Anything the user would reasonably expect to find in PRD-DEV.md backlog** after this session
 
-For each item found:
+**GitHub Issues is now the source of truth for execution backlog** (not PRD-DEV.md). For each item found:
 
-1. **If it's a clear, actionable backlog item** → add a `## Backlog — [description]` entry to `docs/PRD-DEV.md` in the style of existing entries (problem description, root cause if known, scope/fix direction, 1–3 paragraphs max). Do not ask — just add it.
+1. **New actionable item** → create a GitHub Issue and add to project:
+   ```powershell
+   # Write body to temp file, then:
+   gh issue create --title "Short title" --body-file body.md --label "bug|enhancement|ux|performance|infrastructure" --repo bondybondbond/rushcut
+   # Capture the returned URL, then:
+   gh project item-add 1 --owner bondybondbond --url <issue-url>
+   # Set fields via GraphQL (see set-fields.ps1 pattern in session history or scripts/)
+   ```
+   Set Priority (P0-P3), RICE Score (0-100), Theme, Target Batch. Do not ask — just create.
 
-2. **If it's ambiguous** (unclear whether the user wants it tracked, or whether it's already covered elsewhere in PRD-DEV.md) → collect all ambiguous items and ask the user ONE question immediately after wrapup completes: *"I found [N] potential backlog items — should I add any of these to PRD-DEV.md? [list them]"*
+2. **Item shipped this session** → close the corresponding GitHub Issue:
+   ```powershell
+   gh issue close <number> --repo bondybondbond/rushcut --comment "Shipped in [batch name]."
+   ```
 
-Do NOT skip this step to save time. Missing backlog items from wrapup means the user has to remind you after the fact — which defeats the purpose of wrapup.
+3. **Item deferred** → update project Status to Deferred via `gh api graphql updateProjectV2ItemFieldValue`.
 
-Use native **Edit** tool for any PRD-DEV.md additions.
+4. **Ambiguous item** → collect all ambiguous items and ask the user ONE question after wrapup: *"I found [N] potential backlog items — should I create GitHub Issues for any of these? [list]"*
+
+**Do NOT add `## Backlog —` entries to PRD-DEV.md.** That file is strategic-only now.
+Do NOT skip this step to save time. Missing backlog items from wrapup means the user has to remind you after the fact.
+
+**RICE scoring guide:**
+- P0 bugs blocking usage = 80–100
+- P1 high-impact features/UX = 55–79
+- P2 nice-to-have improvements = 25–54
+- P3 future/low-priority = 0–24
+
+**Field IDs (project #1, owner bondybondbond):**
+- Project ID: `PVT_kwHOC1IP7s4BanXt`
+- Status: `PVTSSF_lAHOC1IP7s4BanXtzhVdroo` (Todo=f75ad846, In Progress=47fc9ee4, Done=98236657)
+- Priority: `PVTSSF_lAHOC1IP7s4BanXtzhVdrrU` (P0=7eacb906, P1=69fc2074, P2=279fea12, P3=157b2fd6)
+- RICE Score: `PVTF_lAHOC1IP7s4BanXtzhVdrrY` (number)
+- Theme: `PVTSSF_lAHOC1IP7s4BanXtzhVdrrc` (Feature=fe228fee, Bug=df6fc6c2, Performance=8c8ea89a, UX=5d406e8e, Pipeline=84bf01bd, E2E=384d8bd9, Infrastructure=5f5e44fd)
+- Target Batch: `PVTSSF_lAHOC1IP7s4BanXtzhVdrsY` (U5c=5162bb0a, V1=dd04dd5d, V2=310a0c7c, Future=c3eb29a4)
 
 ---
 
@@ -141,7 +168,7 @@ Use native **Edit** tool for any PRD-DEV.md additions.
 
 For Phase 2 work, update:
 - `docs/CONTEXT.md` — current phase, immediate next task, recently completed
-- `docs/PRD-DEV.md` — tick completed gate items, add changelog entry
+- `docs/PRD-DEV.md` — tick completed gate items, add changelog entry, update Phase goal/exit gate if changed. **Do NOT add individual backlog items here** — those go to GitHub Issues (Step 2.5).
 - `docs/ARCHIVE.md` — move resolved decisions/bugs (if file exists)
 
 If nothing changed substantially, skip.

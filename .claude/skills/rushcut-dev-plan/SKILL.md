@@ -26,6 +26,7 @@ Run these in parallel:
 3. **LEARNINGS.md** — `docs/LEARNINGS.md` — known failure patterns relevant to the request
 4. **Relevant rules file** — pick the matching file(s) from `.claude/rules/` (pipeline.md / rust-tauri.md / e2e.md) based on which layer is touched
 5. **Design system** — `docs/DESIGN.md` — **always read this when the request touches any UI component** (new screen, modified component, copy change, colour/layout decision)
+6. **GitHub backlog** — **only when the user asks "what's next?" or "plan the next batch"**: run `gh project item-list 1 --owner bondybondbond --format json` and find the highest RICE-score item(s) with Status=Todo/Planned. This is the primary source for what to work on — `docs/PRD-DEV.md` is strategic-only (Phase goal, active batch specs, Phase 3 preview) and no longer tracks individual backlog items.
 
 Only read additional source files if a specific function, config, or data structure is directly relevant to the plan. Use scoped `Read` with line offsets or `Grep` for targeted symbol searches — do not read entire large files unless unavoidable.
 

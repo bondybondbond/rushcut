@@ -6,20 +6,20 @@
 
 ---
 
+> **Execution backlog:** Tracked in [GitHub Projects — RushCut Roadmap](https://github.com/users/bondybondbond/projects/1). Create/update/close issues via `gh issue create` / `gh project item-edit`. This file is for strategic direction and active batch specs only.
+>
 > **What belongs in this file:**
-> 
+>
 > - Phase goal and exit gate
-> - Specs for batches not yet started or actively in progress
-> - Backlog items with enough detail to act on when prioritised
+> - Active batch specs (not yet started or in progress)
 > - Phase 3 preview (high-level only)
 > - Compact changelog table
-> 
+>
 > **What does NOT belong here:**
-> 
+>
+> - Individual backlog items — use GitHub Issues instead
 > - Specs for delivered batches — once a batch ships, trim to a one-line "done" note in the changelog and delete the detail
 > - Lambda / Next.js / Supabase / R2 references — that infrastructure is gone
-> - "Superseded" or "deferred" batch specs — move to `docs/archive/` or delete
-> - Research notes, user testing plans — those go in `docs/COMPETITORS.md` or a dedicated notes file
 > - Implementation details already captured in `LEARNINGS.md` or `.claude/rules/`
 
 ---
@@ -538,18 +538,6 @@ Silent background proxy pre-generation. Trigger: `Trimmer.tsx` unmount `useEffec
 
 ---
 
-## Backlog — Thumbnails show frame 0 of trimmed section (not raw clip start)
-
-> **PRD item — reported 2026-05-19. Adds visual clarity to per-clip editing.**
-
-Currently, clip thumbnails are extracted from the raw source clip at `~1s` seek (or wherever `scan.py` / native Rust extracts them). When a user has set `in_ms=15000ms` on a clip, the thumbnail still shows the clip's opening frame — not the frame they chose as their cut-in point. This makes it harder to identify which section of a long clip is being used.
-
-**Design:** On thumbnail generation, if `in_ms` is set, extract the frame at `in_ms` (or `in_ms + 500ms` to avoid a potential cut boundary). Update lazily: when the user saves an IN point change in the Trimmer, queue a thumbnail re-extract for that clip.
-
-**Scope:** `src-tauri/src/lib.rs` thumbnail extraction logic; `db::update_clip_thumbnail()`; potentially `Trimmer.tsx` to trigger re-extract on IN-point commit. May be too invasive for current batch — defer to a dedicated batch if so.
-
----
-
 ## Backlog — Click trimmed clip in film timeline to jump to editing it (Trim screen)
 
 > **PRD item — reported 2026-05-19.**
@@ -587,171 +575,11 @@ When watching clips in the Film tab of the Trim screen (or Arrange screen), the 
 
 ---
 
-## Backlog — Cancel in-progress render (with confirmation)
-
-> **PRD item — reported 2026-06-11 (founder, during U4 diagnostics).**
-
-A render job that has started cannot currently be cancelled — the user must wait for it to finish (or stall out). Add the ability to cancel a running render from the Render screen, gated behind a confirmation prompt. Pairs naturally with the U1e stall-warning work: a stalled render is the prime case where the user wants out.
-
-**Scope:**
-- `src/pages/Render.tsx` — "Cancel render" control visible only while `phase === "rendering"` (and likely `"preparing"`). On click, `confirm()` from `@tauri-apps/plugin-dialog` (NOT `window.confirm` — broken in WebView2; see `.claude/rules/rust-tauri.md`).
-- `src-tauri/src/lib.rs` — new command to terminate the WSL `python3 run.py --job-id <uuid>` process for the job; clean up `/tmp/<job_id>` in WSL; set the job row status to cancelled/failed. May need to track child PID or kill-by-job-id in WSL.
-- Design per `docs/DESIGN.md`: secondary/destructive styling, peach headings, no grey text.
-
----
-
 ## ~~Backlog — Zoom preview auto-plays on clip switch while paused~~ **DONE (U4b, 2026-06-12)**
 
 > **Bug — reported 2026-06-11 (founder, during U4 diagnostics). Fixed U4b.**
 
 `prevZoomClipIdRef` added to `Arrange.tsx` — clip-switch branch calls `syncZoomToPlayhead(0, false)` unconditionally, bypassing stale `isPlayingRef.current`. Param edits on the same clip still preserve live play state.
-
----
-
-## Backlog — U1g segmented render falls back to monolithic under memory pressure (BUG)
-
-> **Bug — diagnosed 2026-06-12 (founder, during U4b diagnostics). Assigned Batch U4c.**
-
-`_render_segmented()` in `pipeline/render.py` writes `u1g_seg_N.mp4` and `u1g_concat.txt` to WSL `/tmp/<job_id>/`. Under memory pressure from two sequential 4K encodes, WSL tmpfs can silently clear that directory between batch-2 encode completing and the concat-manifest write. `write_text()` raises `[Errno 2] No such file or directory`; the outer `except Exception` catches it and falls back to the monolithic path — exactly the OOM scenario U1g was designed to prevent. Confirmed on job `db8f3aa6`: both batches reported `drift=0 frame(s)` then fell back → SIGTERM.
-
-**Fix:** Move U1g working dir from `Path("/tmp") / job_id` to `Path(os.environ["TEMP"]) / "rushcut" / job_id` (NTFS). Same pattern already used by zoom-cache and `warm_zoom.py`. Segment paths in the concat file need the `/mnt/c/...` prefix (existing `win_to_wsl()` helper). No other files change.
-
-**Scope:** `pipeline/render.py` `_render_segmented()` only — `TMP_BASE` constant + concat-path construction.
-
----
-
-## Backlog — Zoom cache cold when user skips Zoom tab (PERF)
-
-> **Observed 2026-06-12 (founder, U4c verification render). Future sub-batch TBD.**
-
-The U4 three-tier warm trigger fires on (a) zoom-tab-leave, (b) 500ms debounce on param edit, (c) Arrange unmount. All three require the user to have visited the zoom tab during the current session. If the user never opens the Zoom tab (e.g. re-rendering with same zoom settings), the warm_zoom job is never triggered → zoom stage runs cold on render → ~7-8 mins for a 7-clip 4K project, long enough to fire the U1e stall alert and crash the render.
-
-**Observed symptom (2026-06-12):** 2m42s film, 7 clips, 4K, xfade; zoom tab skipped; zoom stage ran cold; stall alert fired; render crashed ("Pipeline timed out"). Total elapsed >20 min.
-
-**Root cause:** warm_zoom is *reactive* (triggered by UI events) rather than *proactive* (triggered by any change that makes the cache stale). The cache should also be validated and warmed:
-- On project open (Arrange mount): if any included clip has a non-null `zoom_mode` and no warm cache entry, fire `warm_zoom_cache_cmd` immediately at BELOW_NORMAL priority.
-- On Render screen entry (before `submitJob`): gate check — if zoom clips exist and warm entries are absent, surface a soft warning or auto-trigger a warm pass before committing.
-
-**Ideal direction:** a lightweight "background job oracle" that, at well-defined entry points (project open, render screen entry), asserts which background jobs (proxy gen, zoom warming) need to be done and fires them if they haven't run. Frontloads the work regardless of which UI path the user took to get there.
-
-**Scope:** `src/pages/Arrange.tsx` (mount effect) + `src/pages/Render.tsx` (pre-submitJob check). `warm_zoom_cache_cmd` already exists in Rust and accepts any manifest; the trigger gap is purely in the React layer. May want a new lightweight Rust query: `get_zoom_clip_count_cmd(project_id)` returning how many included clips have a non-null zoom_mode — cheap signal to decide whether to fire the warmer.
-
----
-
-## Backlog — WebView2 crashes playing high-bitrate 4K renders (BUG)
-
-> **Observed 2026-06-12 (founder, during U4c verification). Future sub-batch TBD.**
-
-Playing `stagecoach-2025-01.mp4` (795 MB, 4K H.264 40Mbps, 140s) in the Render screen's `<video>` element caused the WebView2 renderer to crash. The app restarted and routed to the initial state ("back to start"). The file itself is healthy — ffprobe confirms matching duration on both streams, 4214 frames, no corruption. The crash is WebView2 failing under 40Mbps 4K decode pressure, not a code bug in `Render.tsx` (confirmed: `onError` only sets `videoMissing=true`, no navigation).
-
-**Options (mutually exclusive, pick one per batch):**
-- **A (preferred): Lower encode bitrate for the player-facing output.** The 40Mbps target (`-b:v 40M` in `encoder.py`) is mastering quality — far above what WebView2 needs for in-app preview. Drop to `-b:v 20M` (still visually excellent at 4K) and re-evaluate. This fixes the player without adding pipeline steps.
-- **B: Dual-output render.** Keep the 40Mbps master for export, write a 8-12Mbps 1080p "preview" alongside it for the in-app player. More pipeline work, better user story (fast in-app preview + archival master). Scoped to pipeline + Render.tsx.
-- **C: Bypass in-app player entirely for large files.** Auto-open in Explorer/system player when the file exceeds a size or bitrate threshold. Simplest but degrades the done-state UX.
-
-**Scope:** `pipeline/encoder.py` (Option A) or `pipeline/render.py` + `src/pages/Render.tsx` (Option B). No Rust changes needed.
-
----
-
-## Backlog — Temp folder accumulation cleanup (HOUSEKEEPING)
-
-> **Requested 2026-06-12 (founder). Future sub-batch TBD.**
-
-`%TEMP%\rushcut\` accumulates per-job working directories (`<job_id>/` with segment `.mp4` files, concat manifests, audio intermediates) indefinitely. With U4c moving U1g artifacts to NTFS, these are now persistent across WSL restarts — which is correct for durability, but also means every render leaves ~300-500 MB of segment files on disk forever.
-
-**Policy (founder-defined):**
-- Delete a job's working dir when the project is deleted from the Library.
-- Prune any remaining dirs older than 7 days (safety net for orphans).
-
-**Scope:**
-- `src-tauri/src/lib.rs` `delete_project_cmd` (or a new `cleanup_project_artifacts_cmd`) — on project delete, enumerate `%TEMP%\rushcut\<job_id>\` dirs for all jobs belonging to the project, delete them via `std::fs::remove_dir_all`. Rust already has the job→project association in the `jobs` table.
-- `pipeline/run.py` or a new standalone `cleanup.py` — 7-day prune of `%TEMP%\rushcut\` dirs whose name is a UUID and whose mtime is >7 days. Can run fire-and-forget from Rust on app startup or post-render, mirroring the `vacuum_proxies_cmd` pattern.
-- Scope does NOT include the zoom-cache dir (it has its own 2-day `_prune_zoom_cache` logic) or `pipeline-*.log` files (small, useful for debugging).
-
----
-
-## Backlog — Unexpected clips appear at front of film (BUG)
-
-> **Bug — reported 2026-06-11 (founder, during U4 verification).**
-
-After a session involving drag-to-reorder (U2), the user observed 2 extra clips appearing at the front of the film in the StickyFilmStrip. The clips were not intentionally added. Most likely cause: `sort_order` values assigned during `reorder_clips_cmd` left some pre-existing clips with a very low (0 or near-0) sort_order, causing them to sort before intended clips. Alternative: a clip inadvertently got `include=1` set.
-
-**Scope:** `src-tauri/src/lib.rs` `reorder_clips_cmd` + DB sort_order assignment logic. Diagnostic first: run `invoke("get_project", {projectId})` and inspect all `sort_order` + `include` values to identify the out-of-place clips.
-
----
-
-## Backlog — MediaPantry shows fewer source files than Library count (BUG)
-
-> **Bug — reported 2026-06-11 (founder, during U4 verification). Source files confirmed on disk; clips from all sources are accessible and editable in the film.**
-
-Library shows "3 files" for a project but MediaPantry (Trimmer, ALL CLIPS section) shows only 1 source file group. Files are confirmed on disk; clips from the missing sources are actively in the film and editable. Likely causes to investigate: (a) pantry only shows sources with `include=0` clips — files whose cuts are all already in the film disappear from the pantry (by-design-but-wrong UX), (b) grouping bug where clips are grouped by something other than `local_path` causing collisions, (c) distinct-path deduplication bug in the component's source-group builder.
-
-**Scope:** `src/components/MediaPantry.tsx` — read how it builds the source group list and what filter/grouping it applies. The ALL CLIPS section should show all source files regardless of their clips' `include` status.
-
----
-
-## Backlog — Drag trimmed clip section to film timeline to add (UX)
-
-> **Requested 2026-06-13 (founder). Currently requires pressing "Add to Film" button.**
-
-In clip mode on the Trim screen, the user wants to drag the selected/trimmed section of a clip straight down from the video area onto the StickyFilmStrip to add it to the film — without needing to press the "Add to Film" button. Natural gesture: grab the trimmed region (anywhere in the video container or TrimBar selected zone), drag downward, drop on the filmstrip.
-
-**Scope:** `src/pages/Trimmer.tsx` (drag start from video container/TrimBar), `src/components/StickyFilmStrip.tsx` (drop target + visual feedback). Requires distinguishing this vertical drag from the horizontal clip-reorder drags already in StickyFilmStrip. Non-trivial — own batch.
-
----
-
-## Backlog — App freeze with dual-monitor setup during trim screen playback (BUG)
-
-> **Reported 2026-06-13 (founder). Batch U5c.**
-
-Intermittent total computer freeze (~30s) during trim screen use, accompanied by one monitor going black and nightlight mode resetting. Occurs during or after seeking/playback on the trim/film screen. Hypothesis: GPU/display driver crash triggered by concurrent proxy decode + WebView2 compositing on a dual-monitor system. Consequences include lost session state and nightlight configuration resetting.
-
-**Next steps (diagnostic first):** check Windows Event Viewer for display driver crash events (`Display` or `dxgkrnl` errors) timestamped around the freeze. Determine if crash correlates with specific clip resolution (4K HEVC), proxy format, or specific interaction pattern (rapid seeking, clip switching). Also check if the freeze happens only with HEVC source files (GPU hardware decode).
-
-**Possible mitigations (to evaluate after diagnosis):**
-- Force software decode for TrimBar video element (`-hwaccel none` proxy encode path — proxies are already H.264, so this may already be software)
-- Reduce concurrent video element count (two film slots + clip slot = 3 active decoders)
-- Validate that proxy files aren't corrupt (invalid moov atom causes retry loops in some decoders)
-
-**Scope:** diagnostic only for now; implementation depends on findings. Assign to U5c.
-
----
-
-## Backlog — Clip-mode: brief blank between clip changes (UX)
-
-> **Identified 2026-06-14 (U5b session).**
-
-When navigating between clips in clip mode (Prev/Next), a brief blank (black) appears between the outgoing clip's last frame and the incoming clip's first frame. This is inherent to the single-buffer architecture: `key={clip.id}` on the `<video>` element causes React to unmount the old element and mount a new one — the old frame disappears immediately, and the new frame is not visible until the `paintAndPlay` repaint sequence completes (~one render cycle + play→pause + seeked event).
-
-Film mode avoids this entirely via the dual-buffer A/B slot engine (`filmVideoARef`/`filmVideoBRef`): the outgoing slot stays visible while the incoming clip loads and is only swapped out after `gateFrameRevealThen` confirms the new frame is ready.
-
-**Fix:** Port the dual-buffer pattern to clip mode. Maintain two `<video>` refs for the clip preview; preload the next clip into the inactive slot while the current clip is displayed; swap slots after `seeked` confirms the right frame. The `clipCoverRef` cover div introduced in U5b would become unnecessary once dual-buffer is in place.
-
-**Scope:** `src/pages/Trimmer.tsx` only — clip-mode video element + `paintAndPlay` logic. Batch-level change (not a quick fix).
-
----
-
-## Backlog — Render progress bar doesn't use full scale when stages are skipped (UX)
-
-> **Observed 2026-06-13 (founder, zoom-test render with no music or cards).**
-
-When a render has no music and no cards, the pipeline skips those stages entirely. The progress bar, which maps PROGRESS: stdout values (0-100) from the pipeline, still hits its max at the same point as a full render — but the "full render" reference includes music + cards. Without those stages the bar jumps from ~60% directly to done, wasting the upper 40% of the scale.
-
-**Fix:** The pipeline should weight `PROGRESS` values against the number of active stages, not total possible stages. Alternatively, `run.py` could remap the per-stage progress contributions at job start based on which stages are actually active (music=None → skip its progress band; cards=off → skip its band). This keeps the bar stretching smoothly from 0→100% regardless of the active stage count.
-
-**Scope:** `pipeline/run.py` or the per-stage progress emission in `render.py` — remap progress percentages to fill the full 0–100 range based on which stages are active. No UI change needed; `Render.tsx` already renders a linear 0–100% bar.
-
----
-
-## Backlog — Background GPU workload (proxy/zoom-warm) can cause display driver reset during video playback (BUG)
-
-> **Observed 2026-06-13 (founder, zoom-test project, proxy + zoom-warm running in background).**
-
-User reported machine freeze while playing clips in the Arrange zoom tab, followed by Windows nightlight/dark mode setting being reset (symptom of a GPU driver timeout or display driver restart). Both proxy AMF encoding and zoom-warm run BELOW_NORMAL priority in WSL, but they still consume GPU/CPU. If the WebView2 renderer is also decoding video simultaneously, the combined load can cause a GPU driver timeout — Windows resets the driver to recover, which appears to the user as a brief freeze and display settings being wiped.
-
-**Immediate mitigation:** The Rust proxy batch already caps to 2 concurrent AMF workers. The zoom-warm runs serially (no ThreadPoolExecutor). No immediate code fix needed — the BELOW_NORMAL priority guard should limit impact. If this recurs consistently, investigate whether AMF can be further throttled or whether warm jobs should pause while a WebView2 video is actively playing.
-
-**Scope:** Monitor for recurrence. If reproducible: check `proxy-bg.log` + `zoom-bg.log` timestamps vs the freeze moment. If AMF is the cause, add a concurrency gate that pauses background AMF when `proxy_status='encoding'` for more than N simultaneous clips.
 
 ---
 
@@ -835,23 +663,6 @@ The bottom-right corner of the new shell (from Batch H) reserves space for a Rus
 **Data available:** `clips.filter(c => c.include === 1 && c.local_path === selectedClip.local_path)` gives all film cuts from the same source. Each has `in_ms` / `out_ms`. Compute pixel positions the same way as the active trim handles.
 
 **Scope:** TrimBar.tsx only. No DB or pipeline changes.
-
----
-
-## Backlog — Film Seek: Cross-Clip Stutter Fix
-
-> **Open bug — 3 fix attempts, partially improved. See `.claude/notes/film-seek-stutter.md` for full diagnosis.**
-
-Clicking the film timeline to seek to a position in a **different** clip from the one currently playing causes a brief flash of frame 0 before landing on the correct position. Same-clip seeks and clip-advance transitions work correctly.
-
-**Root cause (confirmed):** WebView2 GPU compositor lag. `seeked` fires in the JS renderer process before the decoded frame is committed to the compositor. `requestVideoFrameCallback` (rVFC) fires when the compositor presents a frame — but after a `src` change + `load()` + `seek`, the first frame rVFC fires for appears to be frame 0, not the seeked position.
-
-**Fixes shipped so far:**
-- Option B: imperative `ref.style.opacity` writes (bypasses React async batching) — partial improvement
-- Generation counter on `slotGenRef` (invalidates stale rVFC callbacks from overlapping seeks) — defensive fix
-- `didDragRef` reset fix in StickyFilmStrip (separate bug — click-to-seek was blocked after panning — **fixed**)
-
-**Recommended next fix (Option F in notes):** play→pause repaint before reveal. After `seeked` fires, call `v.muted=true; v.play().then(() => { v.pause(); v.muted=false; setSlotVisible(slot); v.play(); })`. Temporarily mutes to suppress the audio blip. This is the same proven repaint pattern the clip-mode video already uses successfully.
 
 ---
 
@@ -1016,26 +827,6 @@ Fill the four product gaps above → 8/10 for this niche. Genuinely better than 
 - Stabilisation via ffmpeg-vidstab
 - 50 clips / 20GB cap for Creator
 - Auth + Stripe (Creator £4.99/mo) + Pro tier (4K, AI Director, advanced transitions)
-
----
-
-## Backlog — Configurable export folder location (UX)
-
-> **PRD item — reported 2026-06-13.**
-
-Rendered films currently always go to `C:\clips\processed\`. Users who store projects on a different drive, or who want exports alongside source clips, have no way to change this. The path is hardcoded in the `output_path` slug logic in `src-tauri/src/lib.rs` `start_job`.
-
-**Design:** Add an "Export folder" setting (persisted in a `settings` DB table or an app-config file). Show it on the Render screen or in a future Settings screen. Default: `C:\clips\processed\` (existing behaviour). On change, validate the path is writable. The setting should be per-app (not per-project).
-
-**Scope:** `src-tauri/src/lib.rs` `start_job` output path resolution; new `get_setting`/`set_setting` Rust commands or extend an existing config mechanism; Render screen or Settings UI for the folder picker (`tauri-plugin-dialog` folder open already wired).
-
----
-
-## Backlog — Output file size display on done-state card (UX)
-
-> **PRD item — reported 2026-06-13.**
-
-The done-state stats card has a FILE SIZE slot that currently shows "--". File size is not in the ANALYSIS string and not fetched at render time. Fix requires either: (a) emitting `output_size_bytes=X` in the pipeline `ANALYSIS:` stdout line (cleanest — add `os.path.getsize(output_path)` before `DONE:` in `run.py`), or (b) a new Rust command that reads `fs::metadata` on the output path. Option (a) is simpler and doesn't require a binary rebuild.
 
 ---
 
