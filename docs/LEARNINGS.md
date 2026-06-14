@@ -267,6 +267,30 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## WebView2 repaint trick — audio blip from `v.play()` before async pause
+
+**Problem:** The WebView2 "display first frame" pattern (`v.play().then(() => v.pause())`) briefly plays audio in the gap between `play()` and the async `.then()` resolve. Audible sound blip with no visuals — confirmed in `paintAndPlay()` (clip-mode repaint) and `gateFrameRevealThen()` (film engine rVFC, which always calls `v.play()` internally).
+**Solution:** `v.muted = true` immediately before `v.play()`, then `v.muted = false` in both the `.then()` path and the `.catch()` fallback. For `gateFrameRevealThen`, mute on the *caller* side before invoking, unmute in the `onReady` callback — same pattern used in `crossSeekToClip`.
+**Context:** `src/pages/Trimmer.tsx` — `paintAndPlay()` useEffect and `loadIntoSlot()` `activate()`. Apply to every call site that does play-then-pause for frame detection.
+
+---
+
+## React imperative style override silently persists when state hasn't changed
+
+**Problem:** Imperatively setting `v.style.opacity = "0"` on a `<video>` element while React controls `opacity` via the JSX `style` prop. React's virtual DOM diff compares NEW vs OLD virtual DOM `opacity`— if both are `1` (state didn't change, no re-render), React skips the DOM update. The imperative `"0"` override persists permanently: black screen even during playback.
+**Solution:** Never imperatively override a CSS property that React manages via the `style` prop on the same element. Use a **separate overlay element** with its own `ref` (e.g. `clipCoverRef`): `<div ref={clipCoverRef} style={{ display:"none" }}>` at `absolute inset-0` with high `z-index`. Toggle `display: none`/`block` imperatively — React never manages `display` on this element, so no diff conflict.
+**Context:** `src/pages/Trimmer.tsx` — `clipCoverRef` pattern for clip-mode repaint window. Root cause of permanent black screen when `v.style.opacity` was attempted. Applies to any element needing both React style control AND imperative hide/show.
+
+---
+
+## `useLayoutEffect` for pre-paint DOM synchronization
+
+**Problem:** `useEffect` fires *after* the browser paints the updated DOM. For a cover-div pattern on clip change, `useEffect` to show the cover means the new clip's poster image (`<video poster={...}>`) flashes for one frame — poster renders, browser paints, then `useEffect` fires.
+**Solution:** Use `useLayoutEffect` with the same deps array. It fires synchronously after React's DOM update but **before** the browser paints, so the cover is already `display: block` before the user sees anything. Add `useLayoutEffect` to the React import.
+**Context:** `src/pages/Trimmer.tsx` — cover show before `paintAndPlay`. Use `useLayoutEffect` whenever a DOM state change must be invisible (no flash).
+
+---
+
 ## CSS animation — `@keyframes` with `var()` custom properties blocks compositor acceleration
 
 **Problem:** A CSS `@keyframes` rule that reads a custom property (e.g. `transform: scale(var(--kb-from))`) cannot be promoted to the GPU compositor in Chromium/WebView2. The compositor evaluates keyframe values at rasterisation time; custom properties are resolved on the main thread per-frame, so the animation runs on the main thread (~60Hz JS timer) rather than the compositor (~120Hz rAF). Result: visibly choppy CSS scale animations, even with `will-change: transform` on the element.

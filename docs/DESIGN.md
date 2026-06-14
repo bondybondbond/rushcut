@@ -738,6 +738,49 @@ Use `flex-1 min-h-0` on the video container div, NOT `flex-shrink-0 + aspectRati
 
 **`flex-shrink-0 + aspectRatio` anti-pattern:** pins height to content-derived value; the container fails to grow when the window is maximised, and surrounding space goes unused instead of going to the video.
 
+### Flanking Prev/Next nav around video preview
+
+Used on Trimmer and Arrange screens to navigate between clips without leaving the video area. Buttons flank the `videoContainerRef` div in a flex row, visible in both clip mode and film mode (handlers differ per mode).
+
+```tsx
+<div className="flex gap-4 flex-1 min-h-0 items-stretch">
+  <button
+    type="button"
+    onClick={() => handlePrev()}
+    disabled={isFirst}
+    className="self-center flex-shrink-0 flex items-center gap-1 border border-white/30 text-[#e5e5e5] rounded-md hover:border-white/60 hover:bg-white/5 px-3 py-2 text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+  >
+    <ChevronLeft size={14} /> Prev
+  </button>
+  {/* videoContainerRef div here — flex-1 min-h-0 */}
+  <button
+    type="button"
+    onClick={() => handleNext()}
+    disabled={isLast}
+    className="self-center flex-shrink-0 flex items-center gap-1 border border-white/30 text-[#e5e5e5] rounded-md hover:border-white/60 hover:bg-white/5 px-3 py-2 text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+  >
+    Next <ChevronRight size={14} />
+  </button>
+</div>
+```
+
+- Buttons are outlined secondary (not peach — they are navigation, not a CTA).
+- `self-center flex-shrink-0` keeps buttons vertically centred without growing.
+- `disabled:opacity-40 disabled:cursor-not-allowed` — first/last clip states.
+- Source counter overlay (top-left of video): `absolute top-2 left-2 bg-black/60 text-[#e5e5e5] text-xs px-2 py-0.5 rounded pointer-events-none z-10` — shows `"N / M"`.
+- `data-testid` on each button includes mode: `trim-clip-prev`/`trim-film-prev`, `trim-clip-next`/`trim-film-next`.
+
+### Clip cover div (repaint window)
+
+Imperatively-controlled overlay inside `videoContainerRef` to hide a `<video>` during the play/pause/seek repaint window (prevents poster flash and frame-0 flash on clip change in clip mode). React never manages this element's `display` property.
+
+```tsx
+{/* Cover during clip repaint window — shown/hidden imperatively by paintAndPlay */}
+<div ref={clipCoverRef} className="absolute inset-0 bg-black" style={{ display: "none", zIndex: 50 }} />
+```
+
+Show with `clipCoverRef.current.style.display = "block"` in `useLayoutEffect` (fires before paint). Hide with `style.display = "none"` in the `seeked` event listener after the right frame is decoded. Never toggle via React state — the whole point is to bypass React's render cycle.
+
 ### `TopInfoBar`
 `h-7 flex items-center pl-4 bg-[#0a0a0a] border-b border-white/10 text-sm text-[#e5e5e5] flex-shrink-0`
 Content: `{projectName} · {N} clip(s) · {fmtMs(totalMs)}`. Clips omit "0 clips" gracefully. Duration omit when 0.

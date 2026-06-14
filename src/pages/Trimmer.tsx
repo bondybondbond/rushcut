@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Play, Pause } from "lucide-react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { Play, Pause, ChevronLeft, ChevronRight } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -51,6 +51,7 @@ export default function Trimmer() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const clipCoverRef = useRef<HTMLDivElement>(null);
   const [videoHeight, setVideoHeight] = useState<number | null>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   const isSaving = useRef(false);
@@ -179,6 +180,14 @@ export default function Trimmer() {
     if (filmVideoBRef.current) { filmVideoBRef.current.style.opacity = "0"; filmVideoBRef.current.style.pointerEvents = "none"; }
   }, []);
 
+  // Show cover synchronously before browser paints the new clip's poster image —
+  // useLayoutEffect fires after DOM update but before paint, so poster never flashes.
+  // paintAndPlay() (useEffect below) hides the cover after seeked confirms the right frame.
+  useLayoutEffect(() => {
+    if (!selectedClip || !clipCoverRef.current) return;
+    clipCoverRef.current.style.display = "block";
+  }, [selectedClip?.id, selectedClip?.proxy_path]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !selectedClip) return;
@@ -190,8 +199,27 @@ export default function Trimmer() {
       if (!v) return;
       const target = inMs / 1000;
       v.currentTime = target > 0 ? target : 0.05;
-      // Always show first frame without autoplaying (WebView2 requires play/pause to repaint)
-      v.play().then(() => { v.pause(); setIsPlaying(false); v.currentTime = inMs / 1000; }).catch(() => { v.currentTime = inMs / 1000; });
+      // WebView2 requires play/pause to decode and display the first frame.
+      // Mute + show cover div before play so neither audio nor advancing frames are
+      // visible. Cover is a separate ref not managed by React's style prop, so
+      // hiding/showing it imperatively doesn't conflict with React's opacity diff.
+      v.muted = true;
+      const cover = clipCoverRef.current;
+      if (cover) cover.style.display = "block";
+      v.play().then(() => {
+        v.pause();
+        v.currentTime = inMs / 1000;
+        v.addEventListener("seeked", () => {
+          v.muted = false;
+          if (cover) cover.style.display = "none";
+          setIsPlaying(false);
+        }, { once: true });
+      }).catch(() => {
+        v.muted = false;
+        if (cover) cover.style.display = "none";
+        v.currentTime = inMs / 1000;
+        setIsPlaying(false);
+      });
     }
 
     if (v.readyState >= 2) {
@@ -386,6 +414,13 @@ export default function Trimmer() {
     if (!v) return;
     if (v.paused) {
       if (viewMode === "clip" && v.readyState === 0) v.load();
+      // U5b item 4b: at the clip's natural end, restart from the in-marker.
+      // Gated on the natural end (v.ended / duration), NOT outMs — playback is
+      // free across the whole clip; markers are only the cut boundary.
+      if (viewMode === "clip" && clip && (v.ended || v.currentTime * 1000 >= clip.duration_ms - 50)) {
+        v.currentTime = inMs / 1000;
+        setCurrentMs(inMs);
+      }
       v.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
       v.pause();
@@ -471,8 +506,8 @@ export default function Trimmer() {
     }
   }
 
-  /** Load clip[idx] into `slot`, seek to startMs (defaults to in_ms), then play and preload next. */
-  function loadIntoSlot(idx: number, slot: "a" | "b", startMs?: number) {
+  /** Load clip[idx] into `slot`, seek to startMs (defaults to in_ms), then optionally play and preload next. */
+  function loadIntoSlot(idx: number, slot: "a" | "b", startMs?: number, shouldPlay = true) {
     const filmClip = inFilmRef.current[idx];
     if (!filmClip) return;
     filmPlayIdxRef.current = idx;
@@ -491,8 +526,11 @@ export default function Trimmer() {
     function activate() {
       if (!filmModeRef.current || !v || slotGenRef.current[slot] !== thisGen) return;
       activeFilmSlotRef.current = slot;
+      v.muted = true; // suppress audio blip during rVFC frame-detect (same pattern as crossSeekToClip)
       gateFrameRevealThen(v, slot, thisGen, seekMs / 1000, () => {
         setSlotVisible(slot);
+        if (!shouldPlay) v.pause();
+        v.muted = false;
         const nextIdx = idx + 1;
         if (nextIdx < inFilmRef.current.length) {
           const nextSlot: "a" | "b" = slot === "a" ? "b" : "a";
@@ -667,6 +705,23 @@ export default function Trimmer() {
     }
   }
 
+  /**
+   * U5b item 5: prev/next film-clip nav. Reads filmPlayIdxRef (imperative — always
+   * fresh) for the current index, then reuses seekFilmTo by computing the film-time
+   * at the target clip's start. seekFilmTo preserves play state (wasPlaying) and
+   * updates both filmPlayIdx state + ref, so the counter/disabled binding stay in sync.
+   */
+  function gotoFilmClip(dir: -1 | 1) {
+    const list = inFilmRef.current;
+    const target = filmPlayIdxRef.current + dir;
+    if (target < 0 || target >= list.length) return;
+    let filmStart = 0;
+    for (let i = 0; i < target; i++) {
+      filmStart += Math.max(0, (list[i].out_ms ?? list[i].duration_ms) - (list[i].in_ms ?? 0));
+    }
+    seekFilmTo(filmStart);
+  }
+
   // Enter/exit film mode
   useEffect(() => {
     filmModeRef.current = viewMode === "film";
@@ -676,7 +731,7 @@ export default function Trimmer() {
       activeFilmSlotRef.current = "a";
       setFilmPlayIdx(0);
       filmPlayIdxRef.current = 0;
-      if (inFilmRef.current.length > 0) loadIntoSlot(0, "a");
+      if (inFilmRef.current.length > 0) loadIntoSlot(0, "a", undefined, false);
       else setSlotVisible("a");
     } else {
       // Pause film videos; clip video restores naturally (its src was never changed)
@@ -754,24 +809,7 @@ export default function Trimmer() {
   }
 
   const clipControls = (
-    <div className="flex flex-col w-full h-full gap-3 py-2">
-      <p className="text-sm text-[#e5e5e5] text-center">{sourceIdx + 1} / {sourceClips.length}</p>
-      <div className="flex gap-1.5 w-full flex-shrink-0">
-        <button
-          onClick={() => handleNav(-1)}
-          disabled={!canGoPrev}
-          className="flex-1 py-3 border border-white/30 rounded-md text-sm text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
-        >
-          &#8592; Prev
-        </button>
-        <button
-          onClick={() => handleNav(1)}
-          disabled={!canGoNext}
-          className="flex-1 py-3 border border-white/30 rounded-md text-sm text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
-        >
-          Next &#8594;
-        </button>
-      </div>
+    <div className="flex flex-col w-full h-full gap-3 py-2 justify-center">
       <button
         data-testid="btn-add-to-film"
         onClick={() => {
@@ -860,11 +898,30 @@ export default function Trimmer() {
               </button>
             </div>
           )}
+          {/* U5b item 5b: flex row flanks the video with film prev/next. Sizing
+              (flex-1 / videoHeight resize override) lives on THIS row; the inner
+              container is h-full so the resize handle still measures the same height. */}
           <div
-            ref={videoContainerRef}
-            className="w-full rounded-xl overflow-hidden bg-black relative flex-1 min-h-0"
+            className="flex gap-4 w-full flex-1 min-h-0"
             style={videoHeight != null ? { flex: "none", height: videoHeight } : {}}
           >
+            <button
+              type="button"
+              data-testid={viewMode === "film" ? "trim-film-prev" : "trim-clip-prev"}
+              onClick={() => viewMode === "film" ? gotoFilmClip(-1) : handleNav(-1)}
+              disabled={viewMode === "film" ? filmPlayIdx <= 0 : !canGoPrev}
+              className="self-center flex-shrink-0 flex items-center gap-1 border border-white/30 text-[#e5e5e5] rounded-md hover:border-white/60 hover:bg-white/5 px-3 py-2 text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft size={14} />
+              Prev
+            </button>
+          <div
+            ref={videoContainerRef}
+            className="rounded-xl overflow-hidden bg-black relative flex-1 min-h-0 h-full"
+          >
+            {/* Cover shown during clip repaint window (play/pause/seek) — imperatively managed, z-50 over all video slots */}
+            <div ref={clipCoverRef} className="absolute inset-0 bg-black z-50" style={{ display: "none" }} />
+
             {/* ── Clip mode video ── */}
             <video
               ref={videoRef}
@@ -886,9 +943,8 @@ export default function Trimmer() {
                 const sec = (e.currentTarget as HTMLVideoElement).currentTime;
                 const ms = Math.round(sec * 1000);
                 if (!isSeekingRef.current) setCurrentMs(ms);
-                if (isPlaying && ms >= outMs) {
-                  (e.currentTarget as HTMLVideoElement).currentTime = inMs / 1000;
-                }
+                // U5b item 4a: no loop-back at outMs — playback runs freely to the
+                // clip's natural end. In/out markers are the cut boundary, not a cage.
               }}
               onSeeked={(e) => {
                 isSeekingRef.current = false;
@@ -951,12 +1007,28 @@ export default function Trimmer() {
                 <span className="text-[10px] text-[#e5e5e5]/80 leading-none">Generating video...</span>
               </div>
             )}
-            {/* Film mode overlay: clip position counter */}
+            {/* Position counter overlay — film mode shows film clip index, clip mode shows source clip index */}
             {viewMode === "film" && inFilmCount > 0 && (
               <div className="absolute top-2 left-2 bg-black/60 text-[#e5e5e5] text-xs px-2 py-0.5 rounded pointer-events-none z-10">
                 {filmPlayIdx + 1} / {inFilmCount}
               </div>
             )}
+            {viewMode === "clip" && sourceClips.length > 1 && (
+              <div className="absolute top-2 left-2 bg-black/60 text-[#e5e5e5] text-xs px-2 py-0.5 rounded pointer-events-none z-10">
+                {sourceIdx + 1} / {sourceClips.length}
+              </div>
+            )}
+          </div>
+            <button
+              type="button"
+              data-testid={viewMode === "film" ? "trim-film-next" : "trim-clip-next"}
+              onClick={() => viewMode === "film" ? gotoFilmClip(1) : handleNav(1)}
+              disabled={viewMode === "film" ? filmPlayIdx >= inFilmCount - 1 : !canGoNext}
+              className="self-center flex-shrink-0 flex items-center gap-1 border border-white/30 text-[#e5e5e5] rounded-md hover:border-white/60 hover:bg-white/5 px-3 py-2 text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
+              <ChevronRight size={14} />
+            </button>
           </div>
 
           <div
