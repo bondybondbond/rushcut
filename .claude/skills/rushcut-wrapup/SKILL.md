@@ -115,6 +115,28 @@ Use native **Edit** tool.
 
 ---
 
+## Step 2.5 — Backlog harvest
+
+Scan the session for any gaps, known limitations, observed bugs, potential improvements, or "future batch" candidates that were mentioned during implementation or discussion — whether raised by the user, noted inline, or flagged as a deferred decision. This includes:
+
+- **Known gaps stated during dev** — e.g. "this works but has a blank flash we didn't fix", "film screen avoids this but clip screen doesn't yet", "deferred to a future batch"
+- **Observed side-effects** — e.g. "noticed X doesn't handle Y", "this only works for 1080p not 4K"
+- **User-raised concerns that weren't actioned** — e.g. "what about the case where…", "can we also…", "we should probably…"
+- **Explicit `// TODO` comments** added to source code during the session
+- **Anything the user would reasonably expect to find in PRD-DEV.md backlog** after this session
+
+For each item found:
+
+1. **If it's a clear, actionable backlog item** → add a `## Backlog — [description]` entry to `docs/PRD-DEV.md` in the style of existing entries (problem description, root cause if known, scope/fix direction, 1–3 paragraphs max). Do not ask — just add it.
+
+2. **If it's ambiguous** (unclear whether the user wants it tracked, or whether it's already covered elsewhere in PRD-DEV.md) → collect all ambiguous items and ask the user ONE question immediately after wrapup completes: *"I found [N] potential backlog items — should I add any of these to PRD-DEV.md? [list them]"*
+
+Do NOT skip this step to save time. Missing backlog items from wrapup means the user has to remind you after the fact — which defeats the purpose of wrapup.
+
+Use native **Edit** tool for any PRD-DEV.md additions.
+
+---
+
 ## Step 3 — Planning doc
 
 For Phase 2 work, update:
