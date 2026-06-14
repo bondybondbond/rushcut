@@ -14,6 +14,15 @@ import { readTransitionConfig } from "@/utils/buildJobConfig";
 import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
 
+// U5c (Issue #2): fire-and-forget freeze-diagnostic trace. Appends to
+// %TEMP%\rushcut\playback-trace.log via diag_log_cmd so the last playback events
+// before an OS-level GPU TDR freeze survive on disk. Low-frequency, user-driven
+// events only (never per-rVFC-frame). Diagnostic signature of a compositor/TDR
+// stall: a "gate-start" line with no matching "gate-ok"/"gate-cap" after it.
+function diagLog(line: string) {
+  invoke("diag_log_cmd", { line }).catch(() => {});
+}
+
 export default function Trimmer() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -194,6 +203,7 @@ export default function Trimmer() {
     const currentSrc = selectedClip.proxy_path ?? selectedClip.local_path;
     const isNewSrc = lastPaintedProxy.current !== currentSrc;
     lastPaintedProxy.current = currentSrc;
+    if (isNewSrc) diagLog(`clip-switch id=${selectedClip.id} readyState=${v.readyState}`);
 
     function paintAndPlay() {
       if (!v) return;
@@ -380,6 +390,7 @@ export default function Trimmer() {
   }
 
   function handleSeek(ms: number) {
+    diagLog(`clip-seek ms=${ms} playing=${isPlaying}`);
     isSeekingRef.current = true;
     if (videoRef.current) videoRef.current.currentTime = ms / 1000;
     setCurrentMs(ms);
@@ -412,6 +423,7 @@ export default function Trimmer() {
       ? getFilmVideo(activeFilmSlotRef.current)
       : videoRef.current;
     if (!v) return;
+    diagLog(`toggle-play mode=${viewMode} wasPaused=${v.paused}`);
     if (v.paused) {
       if (viewMode === "clip" && v.readyState === 0) v.load();
       // U5b item 4b: at the clip's natural end, restart from the in-marker.
@@ -475,6 +487,7 @@ export default function Trimmer() {
     const TOLERANCE_SEC = 0.05;
     const MAX_WAITS = 30;
     let waits = 0;
+    diagLog(`gate-start slot=${slot} gen=${thisGen} target=${targetSec.toFixed(3)}`);
     v.play().catch(() => {});
 
     const rVFC = (v as HTMLVideoElement & {
@@ -485,11 +498,13 @@ export default function Trimmer() {
       if (!filmModeRef.current || slotGenRef.current[slot] !== thisGen) return;
       const frameTime = metadata?.mediaTime ?? v.currentTime;
       if (frameTime >= targetSec - TOLERANCE_SEC) {
+        diagLog(`gate-ok slot=${slot} gen=${thisGen} fires=${waits + 1}`);
         onReady();
         return;
       }
       if (waits >= MAX_WAITS) {
         console.warn("film-seek: rVFC mediaTime gate hit safety cap");
+        diagLog(`gate-cap slot=${slot} gen=${thisGen} fires=${waits}`);
         onReady();
         return;
       }
@@ -500,6 +515,7 @@ export default function Trimmer() {
     if (rVFC) {
       rVFC.call(v, check);
     } else {
+      diagLog(`gate-noRVFC slot=${slot} gen=${thisGen}`);
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (filmModeRef.current && slotGenRef.current[slot] === thisGen) onReady();
       }));
@@ -567,6 +583,9 @@ export default function Trimmer() {
     const newV = getFilmVideo(targetSlot);
     const oldV = getFilmVideo(currentSlot);
     if (!newV) return;
+    // Both slots decode concurrently here (outgoing stays visible while new loads) —
+    // the prime window for doubled GPU decode load under heavy seeking.
+    diagLog(`cross-seek idx=${idx} from=${currentSlot} to=${targetSlot} seekMs=${seekMs}`);
 
     const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
     slotGenRef.current[targetSlot]++;
@@ -622,6 +641,7 @@ export default function Trimmer() {
   /** Called from timeupdate on the active slot when the clip boundary is reached. */
   function advanceFilmClip() {
     const nextIdx = filmPlayIdxRef.current + 1;
+    diagLog(`film-advance next=${nextIdx}`);
     if (nextIdx >= inFilmRef.current.length) {
       getFilmVideo(activeFilmSlotRef.current)?.pause();
       filmModeRef.current = false;
@@ -647,6 +667,7 @@ export default function Trimmer() {
         // (full src reload at the boundary). If this never logs during normal
         // playback, the preload chain already covers boundaries — no fix needed.
         console.warn("[film-stutter] advanceFilmClip fallback reload, idx=", nextIdx);
+        diagLog(`film-advance-fallback idx=${nextIdx}`);
         loadIntoSlot(nextIdx, nextSlot);
       });
       // Preload the clip after next
@@ -670,6 +691,7 @@ export default function Trimmer() {
 
   /** Seek the film to a specific film-time ms (called from timeline click). */
   function seekFilmTo(filmMs: number) {
+    diagLog(`film-seek filmMs=${filmMs} playing=${isPlaying}`);
     const wasPlaying = isPlaying;
     const clips_ = inFilmRef.current;
     let elapsed = 0;
@@ -715,6 +737,7 @@ export default function Trimmer() {
     const list = inFilmRef.current;
     const target = filmPlayIdxRef.current + dir;
     if (target < 0 || target >= list.length) return;
+    diagLog(`film-nav dir=${dir} target=${target}`);
     let filmStart = 0;
     for (let i = 0; i < target; i++) {
       filmStart += Math.max(0, (list[i].out_ms ?? list[i].duration_ms) - (list[i].in_ms ?? 0));

@@ -45,7 +45,7 @@
 | `docs/PRD-DEV.md`   | Strategic direction, active batch specs, AI Enablement section, Phase 3 preview, and swimlane legend |
 | `docs/LEARNINGS.md` | Debugging a known class of problem (FFmpeg, pipeline, E2E) — **read before any in-session DB verification** (MSIX container path trap) |
 | `.claude/rules/`    | Path-specific technical rules — load the relevant file, not all of them   |
-| GitHub Projects #1  | **Execution backlog** — `gh project item-list 1 --owner bondybondbond --format json` to read; use `gh issue create` + `gh project item-add` to write. Source of truth for bugs, features, batches. |
+| GitHub Projects #1  | **Execution backlog** — `gh project item-list 1 --owner bondybondbond --format json` to read; `gh issue view <n> --repo bondybondbond/rushcut --comments` to get the full brief for a ticket (body + session comments = primary input for planning). Use `gh issue create` + `gh project item-add` to write new items; `gh issue comment` to annotate existing ones. Swimlane, RICE, and field IDs: `.claude/skills/rushcut-wrapup/SKILL.md` Step 2.5. |
 | `docs/archive/`     | Historical reference only. `phase1/` = Phase 1 architecture + changelog. `completed-plans/` = shipped batch plan specs (U1, U4d subbatches, photo feature, splash diagnostics). Do not modify. |
 
 ---

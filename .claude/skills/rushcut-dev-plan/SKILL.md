@@ -26,7 +26,18 @@ Run these in parallel:
 3. **LEARNINGS.md** — `docs/LEARNINGS.md` — known failure patterns relevant to the request
 4. **Relevant rules file** — pick the matching file(s) from `.claude/rules/` (pipeline.md / rust-tauri.md / e2e.md) based on which layer is touched
 5. **Design system** — `docs/DESIGN.md` — **always read this when the request touches any UI component** (new screen, modified component, copy change, colour/layout decision)
-6. **GitHub backlog** — **only when the user asks "what's next?" or "plan the next batch"**: run `gh project item-list 1 --owner bondybondbond --format json` and find the highest RICE-score item(s) with Status=Todo/Planned. This is the primary source for what to work on — `docs/PRD-DEV.md` is strategic-only (Phase goal, active batch specs, Phase 3 preview) and no longer tracks individual backlog items.
+6. **GitHub Issues — always fetch the relevant ticket(s):**
+
+   **Case A — specific batch or issue named** (e.g. "let's do U5c", "fix #29", "start V1.2"):
+   - Find the issue: `gh issue list --repo bondybondbond/rushcut --search "U5c" --state open --json number,title` (or use the issue number directly)
+   - Fetch the full issue with all comments: `gh issue view <number> --repo bondybondbond/rushcut --comments`
+   - Read the body AND every comment — comments contain pre-scoped observations, implementation hints, known failure modes, and context from previous sessions. Treat them as the primary brief for this task.
+
+   **Case B — "what's next?" or "plan the next batch"**:
+   - Run `gh project item-list 1 --owner bondybondbond --format json` and find the highest RICE-score open items (Status=Backlog/Planned)
+   - Pick the top candidate(s), then fetch each with `gh issue view <number> --repo bondybondbond/rushcut --comments` as in Case A
+
+   `docs/PRD-DEV.md` is strategic-only (Phase goal, swimlane legend, Phase 3 preview) — it no longer tracks individual backlog items or implementation notes.
 
 Only read additional source files if a specific function, config, or data structure is directly relevant to the plan. Use scoped `Read` with line offsets or `Grep` for targeted symbol searches — do not read entire large files unless unavoidable.
 

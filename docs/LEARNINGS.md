@@ -78,6 +78,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Diagnostics — AMD GPU TDR events appear in Application log (WER 1001), not System log
+
+**Problem:** Windows Event ID 141 (GPU watchdog timeout / VIDEO_TDR_FAILURE) is stored as a kernel dump file (`WATCHDOG-YYYYMMDD-HHMM.dmp`) and reported to the **Application** log as WER Event 1001 with `Event Name: LiveKernelEvent` and `P1: 141`. Querying the System log for IDs 4101, 141, etc. returns nothing even when a TDR just occurred — that is the wrong log.
+**Solution:** To detect AMD TDR events: `Get-WinEvent -FilterHashtable @{ LogName='Application'; StartTime=... } | Where-Object { $_.Id -eq 1001 -and $_.Message -like '*141*' }`. The `Attached files:` field in the message contains the WATCHDOG dump path (e.g. `WATCHDOG-20260614-2208.dmp`) — the filename timestamp is the exact crash time. `AMD_REPORT_UM-*.dmp` files in the same `LiveKernelReports\` directory are secondary confirmation. All WER 1001 events for recent crashes are batched and logged the minute after the crash, all with the same `TimeCreated` second.
+**Context:** `scripts/diagnose-freeze.ps1` (fixed in U5c to also check Application log). Any "freeze investigation" on AMD hardware. Dump files at `C:\WINDOWS\LiveKernelReports\WATCHDOG\` — requires admin to list directly.
+
+---
+
+## Platform — AMD GPU + Chromium + dual-monitor: disable MPO to stop GPU TDR freeze
+
+**Problem:** AMD GPU + Tauri WebView2 (Chromium-based) + dual monitors causes periodic GPU driver TDR (`VIDEO_TDR_FAILURE`, WATCHDOG P1=141). Heavy video decode (seeking, dual-buffer A/B slot) spikes GPU compositor load; the second display adds scanout overhead; AMD's driver hits the 2s watchdog. Symptom: whole-OS freeze ~30s, one monitor goes black, Windows night light turns off on recovery (GPU gamma ramp wiped by driver reset — the "night light" symptom is the smoking gun for TDR).
+**Solution:** Disable Multiplane Overlay (MPO) via `New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Dwm" -Name "OverlayTestMode" -Value 5 -PropertyType DWORD -Force` (requires admin, survives reboots, reversible). Script: `scripts/apply-mpo-fix.ps1`. Verify fix with `scripts/diagnose-freeze.ps1` — confirms `OverlayTestMode = 5` and absence of new WATCHDOG files. Also recommend updating AMD driver if dated >1 year.
+**Context:** Fixed in U5c (2026-06-14) on this machine. Applied system-wide — affects all Chromium/Edge/Chrome processes. No known negative side-effects on modern AMD hardware.
+
+---
+
 ## Pipeline — U1g segmented render falls back to monolithic when WSL /tmp is cleared mid-job
 
 **Problem:** `_render_segmented()` writes segment files (`u1g_seg_N.mp4`) and the concat manifest (`u1g_concat.txt`) to `/tmp/<job_id>/` (WSL tmpfs). Under memory pressure from two sequential large 4K encodes, WSL can clear the directory between the last segment encode completing and the concat-assembly write. `concat_list.write_text()` then raises `[Errno 2] No such file or directory`; the outer `except Exception` catches it and falls back to the monolithic path — exactly the OOM scenario U1g was designed to avoid. Confirmed on job `db8f3aa6`: both batches completed (`drift=0`), then `/tmp/<job_id>/u1g_concat.txt` write failed.

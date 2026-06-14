@@ -128,39 +128,171 @@ Scan the session for any gaps, known limitations, observed bugs, potential impro
 
 1. **New actionable item** → create a GitHub Issue and add to project:
    ```powershell
-   # Write body to temp file, then:
-   gh issue create --title "Short title" --body-file body.md --label "bug|enhancement|ux|performance|infrastructure" --repo bondybondbond/rushcut
-   # Capture the returned URL, then:
-   gh project item-add 1 --owner bondybondbond --url <issue-url>
-   # Set fields via GraphQL (see set-fields.ps1 pattern in session history or scripts/)
+   $url = gh issue create --title "Short title" --body "Description." --label "bug" --repo bondybondbond/rushcut
+   $num = $url -replace '.*/issues/', ''
+   gh project item-add 1 --owner bondybondbond --url $url
+   # Then set fields — see GraphQL pattern below
    ```
-   Set Priority (P0-P3), RICE Score (0-100), Theme, Target Batch. Do not ask — just create.
+   Set Priority, RICE Score, Theme, Target Batch. Do not ask — assign based on the guides below.
 
-2. **Item shipped this session** → close the corresponding GitHub Issue:
+2. **Item shipped this session** → add a closing comment with key session insights, then close:
    ```powershell
-   gh issue close <number> --repo bondybondbond/rushcut --comment "Shipped in [batch name]."
+   gh issue comment <number> --repo bondybondbond/rushcut --body "Shipped in [batch name].
+
+   **Key findings from this session:**
+   - [What the root cause turned out to be]
+   - [Any traps or non-obvious constraints discovered]
+   - [Approach taken and why]
+   - [Known gaps or follow-ons left open]"
+
+   gh issue close <number> --repo bondybondbond/rushcut
    ```
 
-3. **Item deferred** → update project Status to Deferred via `gh api graphql updateProjectV2ItemFieldValue`.
+3. **Item deferred** → add a comment explaining why, then update Status to Deferred:
+   ```powershell
+   gh issue comment <number> --repo bondybondbond/rushcut --body "Deferred: [reason — e.g. blocked by X, descoped to keep batch small, needs more investigation]."
+   # Then update project Status field to Deferred via GraphQL
+   gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: { projectId: "PVT_kwHOC1IP7s4BanXt", itemId: "<item-node-id>", fieldId: "PVTSSF_lAHOC1IP7s4BanXtzhVdroo", value: { singleSelectOptionId: "0bd9395d" } }) { projectV2Item { id } } }'
+   ```
 
-4. **Ambiguous item** → collect all ambiguous items and ask the user ONE question after wrapup: *"I found [N] potential backlog items — should I create GitHub Issues for any of these? [list]"*
+4. **Observations / pre-scope notes for a future issue** → for any insight, known gap, or pre-scoped implementation note that relates to an existing ticket, add it as a comment so the next session that picks up that ticket has the context:
+   ```powershell
+   gh issue comment <number> --repo bondybondbond/rushcut --body "Context from [batch name] session ($(Get-Date -Format 'yyyy-MM-dd')):
+
+   [The observation, insight, or pre-scoped note. Be specific:
+   - What was observed / what broke / what the user said
+   - Any hypothesis about root cause or approach
+   - Relevant file paths, function names, or code locations
+   - Edge cases or constraints to keep in mind]"
+   ```
+   This replaces what used to be inline notes in PRD-DEV.md. The next dev plan session will read these comments via `gh issue view <number> --comments` and use them as the brief.
+
+   **What qualifies for a comment:**
+   - "Deferred to a future batch" notes with context about why
+   - Observed side-effects that weren't fixed ("clip mode works, film mode doesn't")
+   - User-raised concerns that weren't actioned this session
+   - Implementation insights discovered mid-session ("the real issue is X, not Y")
+   - `// TODO` comments added to source code — copy the surrounding context here too
+
+5. **Ambiguous item** → collect all ambiguous items and ask the user ONE question after wrapup: *"I found [N] potential backlog items — should I create GitHub Issues for any of these? [list]"*
 
 **Do NOT add `## Backlog —` entries to PRD-DEV.md.** That file is strategic-only now.
 Do NOT skip this step to save time. Missing backlog items from wrapup means the user has to remind you after the fact.
 
-**RICE scoring guide:**
-- P0 bugs blocking usage = 80–100
-- P1 high-impact features/UX = 55–79
-- P2 nice-to-have improvements = 25–54
-- P3 future/low-priority = 0–24
+---
 
-**Field IDs (project #1, owner bondybondbond):**
-- Project ID: `PVT_kwHOC1IP7s4BanXt`
-- Status: `PVTSSF_lAHOC1IP7s4BanXtzhVdroo` (Todo=f75ad846, In Progress=47fc9ee4, Done=98236657)
-- Priority: `PVTSSF_lAHOC1IP7s4BanXtzhVdrrU` (P0=7eacb906, P1=69fc2074, P2=279fea12, P3=157b2fd6)
-- RICE Score: `PVTF_lAHOC1IP7s4BanXtzhVdrrY` (number)
-- Theme: `PVTSSF_lAHOC1IP7s4BanXtzhVdrrc` (Feature=fe228fee, Bug=df6fc6c2, Performance=8c8ea89a, UX=5d406e8e, Pipeline=84bf01bd, E2E=384d8bd9, Infrastructure=5f5e44fd)
-- Target Batch: `PVTSSF_lAHOC1IP7s4BanXtzhVdrsY` (U5c=5162bb0a, V1=dd04dd5d, V2=310a0c7c, Future=c3eb29a4)
+### Swimlane (Target Batch) assignment
+
+Match new items to the correct series by theme. Read the description, not just the batch name.
+
+| If the item is... | Assign to |
+|-------------------|-----------|
+| Crash, data corruption, wrong output content, silent render failure | **V1.x** next available sub-batch |
+| Visual inaccuracy, misleading UI, missing affordance, QoL polish | **V2.x** next available sub-batch |
+| Trim-screen playback feel (seek, cross-clip, dual-buffer) | **U5** (or new U5.x) |
+| Music playback (seek dropout, loop, sync, volume) | **U6** |
+| New editing capability requiring meaningful new UI + state | **V3** |
+| Pipeline architecture (render cache, parallelism, decode/encode) | **V4.x** |
+| AI automation / smart defaults / director features | **AI** |
+| Photo montage / Ken Burns sequences | **Photos** |
+| Cloud, auth, Stripe, music API | **Phase3** |
+| Doesn't fit above, or too low-priority to schedule | **Future** |
+
+**When no sub-batch exists yet** (e.g. V1.3 is full and a new V1.4 is needed), create a new option:
+```powershell
+gh api graphql -f query='mutation { createProjectV2SingleSelectFieldOption(input: { projectId: "PVT_kwHOC1IP7s4BanXt", fieldId: "PVTSSF_lAHOC1IP7s4BanXtzhVdrsY", name: "V1.4 — Brief description", color: GRAY, description: "" }) { field { ... on ProjectV2SingleSelectField { id } } } }'
+```
+Then add the new option to the swimlane legend table in `docs/PRD-DEV.md`.
+
+---
+
+### Theme assignment
+
+| Theme | Use when |
+|-------|----------|
+| Bug | Wrong behaviour, crash, silent failure, incorrect output |
+| UX | Visual accuracy, interaction pattern, copy, discoverability |
+| Feature | New capability that doesn't exist yet |
+| Performance | Speed, memory usage, render time, proxy throughput |
+| Pipeline | FFmpeg, Python pipeline, proxy gen, normalise |
+| E2E | Test infrastructure, WDIO specs, eval skill |
+| Infrastructure | Build system, DB schema, temp cleanup, Rust tooling |
+
+---
+
+### RICE scoring
+
+Pick the midpoint of the range if unsure. Round to the nearest 5.
+
+| Score | Priority | When to use |
+|-------|----------|-------------|
+| 80–100 | P0 | Crash or data corruption on a common user path; blocks shipping |
+| 55–79 | P1 | High-impact bug or feature on an active flow; most users hit it |
+| 25–54 | P2 | Noticeable but non-blocking; affects some users or an edge case |
+| 0–24 | P3 | Low-impact, rare path, or a nice idea for later |
+
+---
+
+### GraphQL pattern — set all fields on a new item
+
+```powershell
+# After gh project item-add, get the item node ID:
+$items = gh project item-list 1 --owner bondybondbond --format json | ConvertFrom-Json
+$itemId = ($items.items | Where-Object { $_.content.number -eq $num }).id
+
+$pid = "PVT_kwHOC1IP7s4BanXt"
+
+# Status → Backlog
+gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTSSF_lAHOC1IP7s4BanXtzhVdroo`", value: { singleSelectOptionId: `"f75ad846`" } }) { projectV2Item { id } } }"
+
+# Priority (replace option ID per table below)
+gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTSSF_lAHOC1IP7s4BanXtzhVdrrU`", value: { singleSelectOptionId: `"69fc2074`" } }) { projectV2Item { id } } }"
+
+# RICE Score (replace 55 with actual score)
+gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTF_lAHOC1IP7s4BanXtzhVdrrY`", value: { number: 55 } }) { projectV2Item { id } } }"
+
+# Theme (replace option ID per table below)
+gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTSSF_lAHOC1IP7s4BanXtzhVdrrc`", value: { singleSelectOptionId: `"df6fc6c2`" } }) { projectV2Item { id } } }"
+
+# Target Batch (replace option ID per table below)
+gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTSSF_lAHOC1IP7s4BanXtzhVdrsY`", value: { singleSelectOptionId: `"bf4709a5`" } }) { projectV2Item { id } } }"
+```
+
+---
+
+### Field IDs and option IDs (project #1, owner bondybondbond)
+
+**Project ID:** `PVT_kwHOC1IP7s4BanXt`
+
+**Status** (`PVTSSF_lAHOC1IP7s4BanXtzhVdroo`):
+`f75ad846`=Backlog · `47fc9ee4`=In Progress · `98236657`=Done · `34c38c83`=Planned · `0bd9395d`=Deferred · `bf262634`=On Hold
+
+**Priority** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrrU`):
+`7eacb906`=P0-Critical · `69fc2074`=P1-High · `279fea12`=P2-Medium · `157b2fd6`=P3-Low
+
+**RICE Score** (`PVTF_lAHOC1IP7s4BanXtzhVdrrY`): number field
+
+**Theme** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrrc`):
+`fe228fee`=Feature · `df6fc6c2`=Bug · `8c8ea89a`=Performance · `5d406e8e`=UX · `84bf01bd`=Pipeline · `384d8bd9`=E2E · `5f5e44fd`=Infrastructure
+
+**Target Batch** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrsY`):
+`5162bb0a`=U5c — Dual-monitor freeze
+`0c7f24e6`=U6 — Music seek + loop
+`dd04dd5d`=V1 — Stability bugs [series]
+`bf4709a5`=V1.1 — Unexpected clips / MediaPantry
+`5832f5cd`=V1.2 — WebView2 crash + driver reset
+`905b42ca`=V1.3 — Swipe + spam + instance guard
+`310a0c7c`=V2 — UX polish [series]
+`e7603a01`=V2.1 — Trim handles + thumbnail in-point
+`215a4b61`=V2.2 — Progress bar + export folder
+`5127308c`=V2.3 — Sound polish + drag-to-bin
+`d52bc38c`=V3 — Add/remove clips + multi-version
+`50d13c6e`=V4.1 — DaVinci-style render cache
+`787b82d8`=V4.2 — Parallel decode + encode
+`3af29521`=AI — Smart defaults + beat sync
+`89182532`=Photos — Ken Burns montage
+`8f28c9c8`=Phase3 — Cloud + auth + Stripe
+`c3eb29a4`=Future — Unscheduled backlog
 
 ---
 

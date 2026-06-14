@@ -492,6 +492,27 @@ fn zoom_bg_log(msg: &str) {
     }
 }
 
+/// U5c (Issue #2): append a freeze-diagnostic line to %TEMP%\rushcut\playback-trace.log.
+/// Called fire-and-forget from the Trimmer on low-frequency, user-driven playback events so the
+/// last events before an OS-level GPU TDR freeze survive on disk (flushed per call).
+/// Millisecond epoch timestamp -- seek bursts happen within seconds. Mirrors zoom_bg_log.
+#[tauri::command]
+fn diag_log_cmd(line: String) {
+    let path = std::env::temp_dir().join("rushcut").join("playback-trace.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let _ = writeln!(f, "{} {}", ts, line);
+        let _ = f.flush();
+    }
+}
+
 /// Batch S: record a real-encode proxy timing sample to %TEMP%\rushcut\proxy-timing.json.
 /// Skipped for native-codec and cache-hit paths (0s would skew the avg).
 /// Keeps last 50 entries; atomic write (tmp → rename) to prevent JSON corruption.
@@ -2464,6 +2485,7 @@ pub fn run() {
             vacuum_proxies_cmd,
             reset_proxy_encoding_cmd,
             get_music_dir_cmd,
+            diag_log_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
