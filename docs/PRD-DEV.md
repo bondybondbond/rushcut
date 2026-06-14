@@ -717,6 +717,20 @@ Intermittent total computer freeze (~30s) during trim screen use, accompanied by
 
 ---
 
+## Backlog — Clip-mode: brief blank between clip changes (UX)
+
+> **Identified 2026-06-14 (U5b session).**
+
+When navigating between clips in clip mode (Prev/Next), a brief blank (black) appears between the outgoing clip's last frame and the incoming clip's first frame. This is inherent to the single-buffer architecture: `key={clip.id}` on the `<video>` element causes React to unmount the old element and mount a new one — the old frame disappears immediately, and the new frame is not visible until the `paintAndPlay` repaint sequence completes (~one render cycle + play→pause + seeked event).
+
+Film mode avoids this entirely via the dual-buffer A/B slot engine (`filmVideoARef`/`filmVideoBRef`): the outgoing slot stays visible while the incoming clip loads and is only swapped out after `gateFrameRevealThen` confirms the new frame is ready.
+
+**Fix:** Port the dual-buffer pattern to clip mode. Maintain two `<video>` refs for the clip preview; preload the next clip into the inactive slot while the current clip is displayed; swap slots after `seeked` confirms the right frame. The `clipCoverRef` cover div introduced in U5b would become unnecessary once dual-buffer is in place.
+
+**Scope:** `src/pages/Trimmer.tsx` only — clip-mode video element + `paintAndPlay` logic. Batch-level change (not a quick fix).
+
+---
+
 ## Backlog — Render progress bar doesn't use full scale when stages are skipped (UX)
 
 > **Observed 2026-06-13 (founder, zoom-test render with no music or cards).**
