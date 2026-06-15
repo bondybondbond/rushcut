@@ -349,6 +349,24 @@ export default function Trimmer() {
   }
 
   async function handleDeleteCut(cutClip: Clip) {
+    // Clamp filmPlayIdx against the post-delete in-film list before setClips fires async.
+    // setClips is async — `clips`/`inFilm` are still pre-delete in this render cycle, so
+    // derive the new in-film list locally (mirrors handleReorder pattern).
+    const newClips = clips.filter(c => c.id !== cutClip.id);
+    const newInFilm = newClips.filter(c => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
+    const currentId = inFilm[filmPlayIdx]?.id;
+    const newIdx = currentId ? newInFilm.findIndex(c => c.id === currentId) : -1;
+    if (newIdx >= 0) {
+      if (newIdx !== filmPlayIdx) {
+        setFilmPlayIdx(newIdx);
+        filmPlayIdxRef.current = newIdx;
+      }
+    } else {
+      const clamped = Math.max(0, newInFilm.length - 1);
+      setFilmPlayIdx(clamped);
+      filmPlayIdxRef.current = clamped;
+    }
+
     setClips(prev => prev.filter(c => c.id !== cutClip.id));
     try {
       await invoke("delete_clip_cmd", { clipId: cutClip.id });

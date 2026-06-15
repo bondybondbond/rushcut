@@ -15,12 +15,14 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U6 + follow-up bug fixes COMPLETE (2026-06-15). Next: U6a bug fixes (#51–54) or V1.3 or next founder priority.**
+**Phase 2 — Batch U6a COMPLETE (2026-06-16). Next: U6b (#56 music mid-film silence) or V1.3 or next founder priority.**
 
 ---
 
 ## Immediate Next Task
 
+- **Batch U6a — COMPLETE (2026-06-16).** Master preview bug fixes: #51 dual-buffer onError proxy fallback, #52 canonical lucide play button + time label, #53 StickyFilmStrip auto-fit on delete + filmPlayIdx clamp, #54 post-film-end rewind resumes music (play()-in-seeked-handler fix). #55 remains deferred (Future swimlane). Issues #51–54 closed. 9/9 fast PASS (trimmer in progress).
+- **Batch U6b — NEXT.** #56: music goes silent when film is still rolling + loop OFF + music track shorter than film + user scrubs back into music-covered region. Fix scoped in issue #56 comment: mid-playback branch of seekToFilmMs needs `ma.ended` check + play-in-seeked-handler. Small batch — single file change.
 - **Batch U6 + follow-up — COMPLETE (2026-06-15).** Music seek + loop toggle. Core: "Loop music" toggle in Sound > Music tab (default ON, back-compat); mute-bridge seek (no backward-seek dropout); `music_loop` wired through manifest → `run.py` → `render.py` → `music.py`. Follow-up NOW batch: Bug A (spurious extra clip after film-end — `filmPlayingRef` guard + active-slot check on `onEnded` in both slots); Bug B (click-to-play dead on first entry — transparent `z-10` idle click-catcher overlay). 4 U6a items filed as deferred: #51 proxy-missing stall, #52 scrubber restyle, #53 trim reflow, #54 rewind-after-end no music. #55 render no-disk buttons also filed. Issues #17 + #18 closed. 9/9 fast PASS.
 - **U6a deferred (#51, #52, #53, #54)**: Master preview bug fixes. Target Batch = U6 in project. Create a "U6a" Target Batch option via GitHub Projects web UI (API mutation doesn't exist) then move these items to it.
 - **#55 deferred**: Render done-state — hide "Open film" + "Open folder" when file no longer on disk. P2/RICE 35.
@@ -36,8 +38,8 @@
 - **Batch U5b — COMPLETE (2026-06-14).** Trim-screen UX batch: (1) Prev/Next flanking buttons in BOTH clip mode and film mode (removed from right column); (2) Autoplay suppressed on film-mode entry (`loadIntoSlot(0, "a", undefined, false)`); (3) Audio blip fix on clip Prev/Next — `v.muted = true/false` wrapping `paintAndPlay`'s `v.play().then(v.pause)` repaint trick; (4) Clip-mode cover div (`clipCoverRef`) — `absolute inset-0 bg-black` overlay, toggled imperatively, prevents poster-image flash; (5) `useLayoutEffect` shows cover before browser paint (prevents one-frame poster flash). `gotoFilmClip(dir)` helper reuses `seekFilmTo`. Counter overlay (`N / M`) on both modes. Right column: "Add to Film" vertically centred, Prev/Next removed. 9/9 fast + 12/12 trimmer PASS. **Known gap:** single-buffer clip-mode still shows brief blank between clips (inherent — old frame drops immediately on `key={clip.id}` remount). Dual-buffer fix is batch-level.
 - **Batch U5c — COMPLETE (2026-06-14).** AMD GPU TDR (VIDEO_TDR_FAILURE) root cause confirmed via WATCHDOG dump files (Application log WER 1001 P1=141). MPO disabled: OverlayTestMode=5 applied via scripts/apply-mpo-fix.ps1. Founder tested post-reboot — heavy film-mode seeking no longer crashes. Issues #2 and #6 closed (same root cause). Diagnostic tools added: scripts/diagnose-freeze.ps1 (updated to check Application log) + scripts/apply-mpo-fix.ps1.
 - **Batch V1.2 — COMPLETE (2026-06-15).** WebView2 crash + driver reset bundle. #30 verified stale (swipe-delete removed in U2, middle-mouse pan works). #5 hardened: `playbackFailed` state in `Render.tsx` — onError when `videoLoadedRef=true` shows inline "Open in system player" fallback panel (peach left-border warning pattern); closed. #29 Trimmer root cause confirmed + fixed: proxy-progress listener was mutating `selectedClip.proxy_path` mid-playback causing abort+reload; guard with `sourceFailedRef` — only adopt on recovery path. #29 Arrange: `diagLog` instrumentation added before both `video.load()` calls and `selectedClipId->null` tracker; null-reset not reproduced, issue stays open. New issues filed: #48 filmstrip pan tooltip (V2.3/P3), #49 4K bitrate gap (V4.2/P2), #50 zoom pre-cache timing (V4.1/P2). 9/9 fast + 12/12 trimmer + 14/14 render PASS.
-- **Next: V1.3 (swipe + spam + instance guard) or next founder priority.**
-- **E2E:** 9/9 fast + 5/5 editor PASS (2026-06-11).
+- **Next: U6b (#56) or V1.3 (swipe + spam + instance guard) or next founder priority.**
+- **E2E:** 9/9 fast PASS (2026-06-16). Trimmer pending.
 - **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted.
 - Full sub-batch plan (U4d–U5b): `docs/batch-plan-u4d-subbatches.md`.

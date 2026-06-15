@@ -321,6 +321,7 @@ gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { proje
 `5162bb0a`=U5c — Dual-monitor freeze
 `0c7f24e6`=U6 — Music seek + loop
 `38f62851`=U6a — Master preview bug fixes
+`70120dff`=U6b — Music mid-film silence fix
 `dd04dd5d`=V1 — Stability bugs [series]
 `bf4709a5`=V1.1 — Unexpected clips / MediaPantry
 `5832f5cd`=V1.2 — WebView2 crash + driver reset

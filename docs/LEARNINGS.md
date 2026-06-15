@@ -816,11 +816,19 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
-## Sound.tsx — "stopped-at-end" state: seekToFilmMs cannot restart music
+## WebView2 — `play()` called after `currentTime` write races the seek and silently stays paused
 
-**Problem:** When the film plays to its natural end, `stopFilmPlayback()` sets `filmPlayingRef.current = false` and pauses `ma` (the music audio element). If the user then drags the scrubber backward, `seekToFilmMs` repositions `ma.currentTime` via the mute-bridge but never calls `ma.play()` — the `filmPlayingRef.current === false` guard blocks it. Music stays silent even though the video frame updates correctly.
-**Solution:** Distinguish the "stopped-at-end" state from the normal "paused" state. When the user seeks while in stopped-at-end, call `ma.play()` if the target position is a valid (non-end) position. Alternatively: on a user-initiated scrub from stopped-at-end, auto-transition to "paused" state (so the guard lets music through on next play). The quick workaround: pressing Play after seeking correctly restarts both video and audio.
-**Context:** `Sound.tsx` `seekToFilmMs` + `stopFilmPlayback`. Filed as issue #54 (U6a). Loop ON is unaffected because `ma.loop = true` keeps audio running after the track ends.
+**Problem:** In WebView2 (and Chromium generally), calling `ma.play()` on the line immediately after `ma.currentTime = target` produces a resolved promise but leaves the element paused (`paused: true` after `.then()`). The seek starts asynchronously; `play()` queues before the seek settles, and the browser resolves the promise without actually starting playback. Confirmed via diagnostic logs: `play() RESOLVED { paused: true, muted: false }`.
+**Solution:** Call `ma.play()` inside the mute-bridge `seeked` handler — not after the `currentTime` assignment line. By the time `seeked` fires, the browser has confirmed data at the new position and `play()` reliably starts. Pattern used in `Sound.tsx` `trySync` (U6a): `ma.addEventListener("seeked", () => { ma.muted = false; if (shouldPlay) ma.play().catch(() => {}); }, { once: true }); ma.currentTime = target;`
+**Context:** `Sound.tsx` `seekToFilmMs` `trySync()` — wasIdle branch (post-film-end scrub). Applies to any `<audio>` or `<video>` where play must resume after a programmatic seek. The mute-bridge pattern is already in LEARNINGS (`Tauri — audio dropout on currentTime write`) — this is an extension of it covering the play-resume case.
+
+---
+
+## Workflow — PowerShell `$PID` is a reserved read-only variable; use Bash for `gh api graphql`
+
+**Problem:** PowerShell has a built-in automatic variable `$PID` (the current process ID). It is case-insensitive — assigning `$pid = "PVT_kwHO..."` throws `Cannot overwrite variable PID because it is read-only or constant`. Any GraphQL mutation that stores a project ID in `$pid` will silently abort the block.
+**Solution:** Use a different variable name (`$projId`, `$projectNodeId`), OR use Bash for `gh api graphql` calls that reference a project ID — Bash has no such reserved variable conflict and is required for multi-line heredoc mutations anyway.
+**Context:** Any PowerShell script setting GitHub Projects GraphQL node IDs. Bash (`gh api graphql -f query="$(cat file)"`) is already required for multi-line mutations — prefer it for all project-related GraphQL calls.
 
 ---
 

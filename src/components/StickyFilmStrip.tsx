@@ -314,19 +314,29 @@ export function StickyFilmStrip({
     return () => ro.disconnect();
   }, [totalMs]);
 
-  // Auto-fit or scroll-to-end when a clip is added to the film
+  // Auto-fit or scroll-to-end when the film clip count changes
   useEffect(() => {
     const cur = inFilm.length;
-    if (cur > prevFilmLengthRef.current && hasInitialized.current && trackRef.current) {
+    if (hasInitialized.current && trackRef.current) {
       const el = trackRef.current;
-      if (isAutoFitRef.current && totalMs > 0) {
+      if (cur > prevFilmLengthRef.current) {
+        // Clip added — auto-fit or scroll to end
+        if (isAutoFitRef.current && totalMs > 0) {
+          const containerWidth = el.getBoundingClientRect().width;
+          if (containerWidth > 0) {
+            setPxPerMs(Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, containerWidth / totalMs)));
+            el.scrollLeft = 0;
+          }
+        } else {
+          requestAnimationFrame(() => { if (el) el.scrollLeft = el.scrollWidth; });
+        }
+      } else if (cur < prevFilmLengthRef.current && isAutoFitRef.current && totalMs > 0) {
+        // Clip deleted — re-fit remaining tiles to fill the container
         const containerWidth = el.getBoundingClientRect().width;
         if (containerWidth > 0) {
           setPxPerMs(Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, containerWidth / totalMs)));
           el.scrollLeft = 0;
         }
-      } else {
-        requestAnimationFrame(() => { if (el) el.scrollLeft = el.scrollWidth; });
       }
     }
     prevFilmLengthRef.current = cur;

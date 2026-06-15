@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Play, Pause } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -123,6 +124,9 @@ export default function Sound() {
   const [isFilmPlaying, setIsFilmPlaying] = useState(false);
   const [isFilmPaused, setIsFilmPaused] = useState(false);
   const [filmPlayIdx, setFilmPlayIdx] = useState(0);    // drives "Clip N / M" label
+  // #51: transient note shown when a clip's proxy is missing and we fell back to the source file
+  const [proxyFallbackNote, setProxyFallbackNote] = useState(false);
+  const proxyNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const configured = useConfiguredTabs(projectId ?? "");
 
@@ -186,6 +190,7 @@ export default function Sound() {
     return () => {
       audioRef.current?.pause();
       if (previewTimerRef.current !== null) clearTimeout(previewTimerRef.current);
+      if (proxyNoteTimerRef.current !== null) clearTimeout(proxyNoteTimerRef.current);
       // Stop rough-mix playback on route leave
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
@@ -208,6 +213,56 @@ export default function Sound() {
 
   function getFilmVideo(slot: "a" | "b") {
     return slot === "a" ? filmVideoARef.current : filmVideoBRef.current;
+  }
+
+  // #51: stamp which clip + source-kind a slot's <video> currently holds, so the
+  // onError handler can resolve the clip and decide whether a fallback is still possible.
+  // usingSource="0" -> currently playing the proxy; "1" -> already on the original source file.
+  function stampSlot(v: HTMLVideoElement, clip: Clip) {
+    v.dataset.clipId = clip.id;
+    v.dataset.usingSource = clip.proxy_path ? "0" : "1";
+  }
+
+  // #51: a slot's <video> failed to load/play. If it was on the proxy, fall back to the
+  // original source file (dual-buffer aware): the PRELOADED (inactive) slot retries silently
+  // so it is ready when promoted; the ACTIVE slot recovers mid-playback and surfaces a note.
+  // If it was already on the source, give up gracefully (advance past the clip if active) so
+  // the film never stalls.
+  function handleSlotError(slot: "a" | "b") {
+    const v = getFilmVideo(slot);
+    if (!v) return;
+    const clip = inFilmRef.current.find((c) => c.id === v.dataset.clipId);
+    if (!clip) return;
+    const isActive = slot === activeFilmSlotRef.current;
+
+    if (v.dataset.usingSource === "1" || !clip.proxy_path) {
+      // Already on the source (or no proxy to fall back from) and still failing.
+      if (isActive && filmPlayingRef.current) {
+        console.warn("[sound] active slot source playback failed, advancing past clip", clip.id);
+        advanceFilmClipRough();
+      }
+      return;
+    }
+
+    // Proxy failed -> swap to the original source file at the clip's in-point.
+    const sourceSrc = convertFileSrc(clip.local_path);
+    const seekSec = (clip.in_ms ?? 0) / 1000;
+    v.dataset.usingSource = "1";
+    v.src = sourceSrc;
+    v.addEventListener("loadedmetadata", () => {
+      v.currentTime = seekSec;
+      if (isActive && filmPlayingRef.current) v.play().catch(() => {});
+    }, { once: true });
+    v.load();
+
+    if (isActive) {
+      setProxyFallbackNote(true);
+      if (proxyNoteTimerRef.current !== null) clearTimeout(proxyNoteTimerRef.current);
+      proxyNoteTimerRef.current = setTimeout(() => {
+        setProxyFallbackNote(false);
+        proxyNoteTimerRef.current = null;
+      }, 4000);
+    }
   }
 
   function setSlotVisible(slot: "a" | "b" | "none") {
@@ -290,6 +345,7 @@ export default function Sound() {
     v.style.opacity = "0";
     v.style.pointerEvents = "none";
     v.src = src;
+    stampSlot(v, filmClip);
     v.addEventListener("loadedmetadata", () => {
       if (!filmPlayingRef.current) return;
       v.addEventListener("seeked", activate, { once: true });
@@ -305,6 +361,7 @@ export default function Sound() {
     if (!v) return;
     const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
     v.src = src;
+    stampSlot(v, filmClip);
     v.addEventListener("loadedmetadata", () => {
       v.currentTime = (filmClip.in_ms ?? 0) / 1000;
     }, { once: true });
@@ -325,6 +382,7 @@ export default function Sound() {
     const thisGen = slotGenRef.current[targetSlot];
 
     newV.src = src;
+    stampSlot(newV, filmClip);
     newV.addEventListener("loadedmetadata", () => {
       if (slotGenRef.current[targetSlot] !== thisGen || !filmPlayingRef.current) return;
       newV.addEventListener("seeked", () => {
@@ -567,6 +625,9 @@ export default function Sound() {
     if (ma) {
       ma.loop = sound.musicLoop; // U6: keep loop state current (volume chip / mood may have changed)
       ma.volume = MUSIC_VOLUME[sound.volume];
+      // wasIdle: play() must fire inside the seeked handler — WebView2 resolves play() immediately
+      // but never starts playback if called while a seek is still in flight (LEARNINGS: mute-bridge pattern).
+      const shouldPlayAfterSeek = wasIdle && sound.mood !== "none";
       const trySync = () => {
         try {
           const trackDur = ma.duration || clamped / 1000;
@@ -575,13 +636,18 @@ export default function Sound() {
             ? (clamped / 1000) % trackDur
             : Math.min(clamped / 1000, trackDur);
           // Skip redundant reseeks within 100ms (matches scrub-debounce tolerance) — avoids glitch during a continuous drag
-          if (Math.abs(target - ma.currentTime) < 0.1) return;
-          // Mute-bridge the reseek (LEARNINGS: WebView2 audio dropout on currentTime write); unmute once the seek lands
+          if (Math.abs(target - ma.currentTime) < 0.1) {
+            if (shouldPlayAfterSeek) ma.play().catch(() => {});
+            return;
+          }
+          // Mute-bridge the reseek (LEARNINGS: WebView2 audio dropout on currentTime write); unmute + play once seek lands
           ma.muted = true;
-          const unmute = () => { ma.muted = false; };
-          ma.addEventListener("seeked", unmute, { once: true });
+          ma.addEventListener("seeked", () => {
+            ma.muted = false;
+            if (shouldPlayAfterSeek) ma.play().catch(() => {});
+          }, { once: true });
           ma.currentTime = target;
-        } catch { /* music may not be loaded yet */ }
+        } catch (e) { /* music may not be loaded yet */ }
       };
       if (ma.readyState >= 1) trySync();
       else ma.addEventListener("loadedmetadata", trySync, { once: true });
@@ -594,8 +660,7 @@ export default function Sound() {
       slotGenRef.current = { a: 0, b: 0 };
       setIsFilmPlaying(true);
       setIsFilmPaused(false);
-      if (ma && sound.mood !== "none") ma.play().catch(() => {});
-      // Load into slot A with seek target
+      // Load into slot A with seek target; music play is handled by trySync's seeked handler above
       loadIntoSlot(idx, "a", seekMs);
       return;
     }
@@ -1036,6 +1101,7 @@ export default function Sound() {
                   : undefined
                 }
                 onEnded={() => { if (activeFilmSlotRef.current === "a") advanceFilmClipRough(); }}
+                onError={() => handleSlotError("a")}
                 onTimeUpdate={(e) => {
                   if (activeFilmSlotRef.current !== "a") return;
                   handleFilmTimeUpdate("a", (e.currentTarget as HTMLVideoElement).currentTime);
@@ -1054,6 +1120,7 @@ export default function Sound() {
                   : undefined
                 }
                 onEnded={() => { if (activeFilmSlotRef.current === "b") advanceFilmClipRough(); }}
+                onError={() => handleSlotError("b")}
                 onTimeUpdate={(e) => {
                   if (activeFilmSlotRef.current !== "b") return;
                   handleFilmTimeUpdate("b", (e.currentTarget as HTMLVideoElement).currentTime);
@@ -1085,7 +1152,7 @@ export default function Sound() {
                 stacking order over the idle click-catcher overlay (defensive; they're
                 already a separate sibling below the video area). */}
             <div className="relative z-20 flex items-center gap-3 px-4 py-3 border-t border-white/10 flex-shrink-0">
-              {/* Play / Pause button */}
+              {/* Play / Pause button — canonical media button per DESIGN.md */}
               <button
                 disabled={inFilm.length === 0}
                 onClick={
@@ -1093,20 +1160,12 @@ export default function Sound() {
                   : isFilmPaused ? resumeFilmPlayback
                   : startFilmPlayback
                 }
-                className="w-8 h-8 flex items-center justify-center rounded-full bg-[#FF8A65] text-[#0a0a0a] hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                className="w-10 h-10 flex items-center justify-center rounded-full bg-[#FF8A65] text-white hover:bg-[#ff9e7a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
               >
-                {isFilmPlaying ? (
-                  /* Pause — two bars */
-                  <svg viewBox="0 0 15 15" fill="currentColor" className="w-3 h-3">
-                    <rect x="3.5" y="2" width="2.5" height="11" rx="0.5" />
-                    <rect x="9" y="2" width="2.5" height="11" rx="0.5" />
-                  </svg>
-                ) : (
-                  /* Play — teenyicons MIT */
-                  <svg viewBox="0 0 15 15" fill="currentColor" className="w-3 h-3">
-                    <path d="M4.79062 2.09314C4.63821 1.98427 4.43774 1.96972 4.27121 2.05542C4.10467 2.14112 4 2.31271 4 2.5V12.5C4 12.6873 4.10467 12.8589 4.27121 12.9446C4.43774 13.0303 4.63821 13.0157 4.79062 12.9069L11.7906 7.90687C11.922 7.81301 12 7.66148 12 7.5C12 7.33853 11.922 7.18699 11.7906 7.09314L4.79062 2.09314Z" />
-                  </svg>
-                )}
+                {isFilmPlaying
+                  ? <Pause size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />
+                  : <Play  size={22} fill="currentColor" stroke="#0a0a0a" strokeWidth={1.5} />
+                }
               </button>
 
               {/* Seekable progress bar with fade-out marker */}
@@ -1150,11 +1209,18 @@ export default function Sound() {
               {/* Elapsed / total timer */}
               <span
                 ref={elapsedLabelRef}
-                className="text-sm text-[#a3a3a3] flex-shrink-0 tabular-nums font-mono"
+                className="text-sm text-[#e5e5e5] flex-shrink-0 tabular-nums font-mono"
               >
                 {`${fmtMs(0)} / ${fmtMs(totalMs)}`}
               </span>
             </div>
+
+            {/* #51: transient note when a clip's proxy was missing and we fell back to the source file */}
+            {proxyFallbackNote && (
+              <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
+                <p className="text-sm text-[#e5e5e5] whitespace-nowrap">Optimised preview missing for one clip -- using the original file.</p>
+              </div>
+            )}
           </div>
 
           {/* Right sidebar: music controls */}

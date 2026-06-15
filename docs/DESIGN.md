@@ -1035,6 +1035,18 @@ Two `<video>` elements (slot A + slot B) are stacked `absolute inset-0 w-full h-
 - Music sync and fade-out volume handled imperatively in `handleFilmTimeUpdate`
 - `slotGenRef.current[slot]++` only inside `loadIntoSlot` / `crossSeekToClip` — never in a `useEffect` to avoid music-state re-renders polluting film refs
 
+### Dual-buffer `onError` — proxy fallback per slot (U6a)
+
+Both slot `<video>` elements must have `onError` handlers. `onError` does NOT bubble — attach directly to each element.
+
+**Dual-buffer aware logic:** check `slot === activeFilmSlotRef.current` to decide recovery path:
+- **Inactive (preloaded) slot:** retry silently — swap src to `convertFileSrc(local_path)` and re-`load()`. No toast. If this also fails, leave the slot unplayable (it will be skipped when promoted).
+- **Active (playing) slot:** swap src + resume `play()` mid-playback; show a transient non-blocking note (4s auto-dismiss). If local_path also fails, advance past the clip.
+
+Stamp each slot's `<video>` element with `dataset.clipId` and `dataset.usingSource` ("0"=proxy, "1"=source) at every src-set site (`loadIntoSlot`, `preloadIntoSlot`, `crossSeekToClip`). The handler reads these to resolve which clip failed and whether it has already retried the source — preventing infinite retry loops.
+
+**Toast pattern for proxy fallback note:** `fixed bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none`, `bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg`, body `text-sm text-[#e5e5e5] whitespace-nowrap`. Clear with a `proxyNoteTimerRef` to avoid accumulation across clips.
+
 ---
 
 ## Render done-state — V3 split card (U4g)
