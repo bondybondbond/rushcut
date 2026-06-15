@@ -68,6 +68,7 @@ export const DEFAULT_CONFIG: JobConfig = {
   zoom: false,
   filter_boring: true,
   music_volume: "balanced",
+  music_loop: true,
 };
 
 export function buildJobConfig(projectId: string): JobConfig {
@@ -82,7 +83,7 @@ export function buildJobConfig(projectId: string): JobConfig {
   try {
     const raw = getRenderPref(`rc_sound_${projectId}`);
     if (raw) {
-      const s = JSON.parse(raw) as { mood?: string; volume?: string; customPath?: string; musicFadeOut?: string };
+      const s = JSON.parse(raw) as { mood?: string; volume?: string; customPath?: string; musicFadeOut?: string; musicLoop?: boolean };
       if (s.mood && (VALID_MOODS as readonly string[]).includes(s.mood)) {
         config.music_mood = s.mood as JobConfig["music_mood"];
       }
@@ -94,6 +95,10 @@ export function buildJobConfig(projectId: string): JobConfig {
       }
       if (s.musicFadeOut && (VALID_FADE_OUTS as readonly string[]).includes(s.musicFadeOut)) {
         config.music_fade_out = s.musicFadeOut as "none" | "2s" | "5s";
+      }
+      // U6: loop defaults ON; only an explicit `false` disables it (back-compat for pre-U6 rc_sound)
+      if (typeof s.musicLoop === "boolean") {
+        config.music_loop = s.musicLoop;
       }
     }
   } catch { /* ignore */ }

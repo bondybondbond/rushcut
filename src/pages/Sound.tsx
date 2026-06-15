@@ -23,6 +23,7 @@ interface SoundState {
   volume: MusicVolume;
   customPath?: string;
   musicFadeOut: MusicFadeOut;
+  musicLoop: boolean;
 }
 
 const LIBRARY_MOODS: { value: LibraryMood; label: string; description: string }[] = [
@@ -48,7 +49,7 @@ const FADE_OUT_OPTIONS: { value: MusicFadeOut; label: string }[] = [
   { value: "5s",   label: "5s" },
 ];
 
-const DEFAULT_SOUND: SoundState = { mood: "none", volume: "balanced", musicFadeOut: "2s" };
+const DEFAULT_SOUND: SoundState = { mood: "none", volume: "balanced", musicFadeOut: "2s", musicLoop: true };
 const PREVIEW_DURATION_MS = 30_000;
 
 function deriveSource(mood: MusicMood): MusicSource {
@@ -76,6 +77,8 @@ function readStorage(key: string): SoundState {
       volume: VALID_VOLUMES.includes(parsed.volume as MusicVolume) ? (parsed.volume as MusicVolume) : DEFAULT_SOUND.volume,
       customPath: typeof parsed.customPath === "string" ? parsed.customPath : undefined,
       musicFadeOut: VALID_FADE_OUTS.includes(parsed.musicFadeOut as MusicFadeOut) ? (parsed.musicFadeOut as MusicFadeOut) : DEFAULT_SOUND.musicFadeOut,
+      // Back-compat: existing (pre-U6) projects have no musicLoop key -> default ON (matches today's always-loop render)
+      musicLoop: typeof parsed.musicLoop === "boolean" ? parsed.musicLoop : DEFAULT_SOUND.musicLoop,
     };
   } catch {
     return DEFAULT_SOUND;
@@ -359,6 +362,10 @@ export default function Sound() {
   // ---------------------------------------------------------------------------
 
   function advanceFilmClipRough() {
+    // Guard against stray onEnded re-entry after the film already stopped (e.g. a
+    // buffered/preloaded slot firing `ended` post-seek). Without this, the advance
+    // state machine plays one extra clip with no music sync. See U6 follow-up Bug A.
+    if (!filmPlayingRef.current) return;
     const prevClip = inFilmRef.current[filmPlayIdxRef.current];
     if (prevClip) {
       clipStartMsRef.current += Math.max(
@@ -468,7 +475,7 @@ export default function Sound() {
           : null;
       if (src) {
         ma.src = src;
-        ma.loop = false;
+        ma.loop = sound.musicLoop; // U6: loop track to fill film when enabled
         ma.volume = MUSIC_VOLUME[sound.volume];
         ma.currentTime = 0;
         ma.play().catch(() => {});
@@ -551,17 +558,30 @@ export default function Sound() {
           : null;
       if (src) {
         ma.src = src;
-        ma.loop = false;
+        ma.loop = sound.musicLoop;
         ma.load();
       }
     }
 
     // Sync music position — reset volume first so fade re-applies from handleFilmTimeUpdate
     if (ma) {
+      ma.loop = sound.musicLoop; // U6: keep loop state current (volume chip / mood may have changed)
       ma.volume = MUSIC_VOLUME[sound.volume];
       const trySync = () => {
-        try { ma.currentTime = Math.min(clamped / 1000, ma.duration || clamped / 1000); }
-        catch { /* music may not be loaded yet */ }
+        try {
+          const trackDur = ma.duration || clamped / 1000;
+          // U6: loop ON -> map film time into the looped track via modulo; OFF -> clamp to track end (plays once)
+          const target = sound.musicLoop
+            ? (clamped / 1000) % trackDur
+            : Math.min(clamped / 1000, trackDur);
+          // Skip redundant reseeks within 100ms (matches scrub-debounce tolerance) — avoids glitch during a continuous drag
+          if (Math.abs(target - ma.currentTime) < 0.1) return;
+          // Mute-bridge the reseek (LEARNINGS: WebView2 audio dropout on currentTime write); unmute once the seek lands
+          ma.muted = true;
+          const unmute = () => { ma.muted = false; };
+          ma.addEventListener("seeked", unmute, { once: true });
+          ma.currentTime = target;
+        } catch { /* music may not be loaded yet */ }
       };
       if (ma.readyState >= 1) trySync();
       else ma.addEventListener("loadedmetadata", trySync, { once: true });
@@ -675,6 +695,13 @@ export default function Sound() {
     persist({ ...sound, musicFadeOut });
   }
 
+  function handleLoopToggle() {
+    const musicLoop = !sound.musicLoop;
+    // Apply to a live preview immediately so the user hears the change without restarting
+    if (musicAudioRef.current) musicAudioRef.current.loop = musicLoop;
+    persist({ ...sound, musicLoop });
+  }
+
   async function handleCustomTrack() {
     stopPreview();
     const result = await open({ filters: [{ name: "Audio", extensions: ["mp3", "m4a", "wav", "aac", "flac"] }] });
@@ -734,7 +761,9 @@ export default function Sound() {
     !showComparison ? null
     : selectedTrackMs! >= totalMs
     ? <span className="text-[#22c55e]"> &mdash; long enough</span>
-    : <span> &mdash; will loop ~{Math.ceil(totalMs / selectedTrackMs!)}x</span>;
+    : sound.musicLoop
+    ? <span> &mdash; will loop ~{Math.ceil(totalMs / selectedTrackMs!)}x</span>
+    : <span> &mdash; plays once, then silence</span>;
 
   return (
     <EditorShell
@@ -955,6 +984,32 @@ export default function Sound() {
               </div>
             </div>
 
+            {/* Loop music — fill the film when the track is shorter than the film */}
+            <div className="border border-white/15 rounded-lg p-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-base font-medium text-[#e5e5e5]">Loop music to fill film</p>
+                <p className="text-sm text-[#a3a3a3] mt-0.5">
+                  When the track is shorter than the film, repeat it. Off plays the track once, then silence.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={sound.musicLoop}
+                data-testid="toggle-music-loop"
+                onClick={handleLoopToggle}
+                className={`relative w-11 h-6 rounded-full flex-shrink-0 transition-colors duration-200 ${
+                  sound.musicLoop ? "bg-[#99B3FF]" : "bg-white/25"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform duration-200 ${
+                    sound.musicLoop ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
             <p className="text-sm text-[#a3a3a3]">
               Settings are saved automatically. Head to Master to preview with music.
             </p>
@@ -980,7 +1035,7 @@ export default function Sound() {
                   : inFilm.length > 0 ? startFilmPlayback
                   : undefined
                 }
-                onEnded={advanceFilmClipRough}
+                onEnded={() => { if (activeFilmSlotRef.current === "a") advanceFilmClipRough(); }}
                 onTimeUpdate={(e) => {
                   if (activeFilmSlotRef.current !== "a") return;
                   handleFilmTimeUpdate("a", (e.currentTarget as HTMLVideoElement).currentTime);
@@ -998,7 +1053,7 @@ export default function Sound() {
                   : inFilm.length > 0 ? startFilmPlayback
                   : undefined
                 }
-                onEnded={advanceFilmClipRough}
+                onEnded={() => { if (activeFilmSlotRef.current === "b") advanceFilmClipRough(); }}
                 onTimeUpdate={(e) => {
                   if (activeFilmSlotRef.current !== "b") return;
                   handleFilmTimeUpdate("b", (e.currentTarget as HTMLVideoElement).currentTime);
@@ -1013,10 +1068,23 @@ export default function Sound() {
                   </p>
                 </div>
               )}
+              {/* U6 Bug B: idle click-catcher. The slot <video>s start at pointer-events:none
+                  (set on mount + by setSlotVisible), so on first entry no element receives the
+                  click. This transparent overlay (z-10, above the videos) lets a click anywhere
+                  on the preview start playback. It unmounts the instant playback starts, so it
+                  never intercepts the pause/resume toggle that the visible slot then handles. */}
+              {!isFilmPlaying && !isFilmPaused && inFilm.length > 0 && (
+                <div
+                  className="absolute inset-0 z-10 cursor-pointer"
+                  onClick={startFilmPlayback}
+                />
+              )}
             </div>
 
-            {/* Controls bar */}
-            <div className="flex items-center gap-3 px-4 py-3 border-t border-white/10 flex-shrink-0">
+            {/* Controls bar — relative z-20 so scrubber + play button always win the
+                stacking order over the idle click-catcher overlay (defensive; they're
+                already a separate sibling below the video area). */}
+            <div className="relative z-20 flex items-center gap-3 px-4 py-3 border-t border-white/10 flex-shrink-0">
               {/* Play / Pause button */}
               <button
                 disabled={inFilm.length === 0}

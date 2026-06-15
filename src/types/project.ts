@@ -76,6 +76,7 @@ export interface JobConfig {
   output_resolution?: "1080p" | "4k";
   custom_music_path?: string;
   music_fade_out?: "none" | "2s" | "5s";
+  music_loop?: boolean; // loop music to fill film when track is shorter (default true)
 }
 
 export interface ProjectSummary {

@@ -140,6 +140,9 @@ def main() -> None:
             "music_fade_out_s": {"none": 0.0, "2s": 2.0, "5s": 5.0}.get(
                 settings.get("music_fade_out", "2s"), 2.0
             ),
+            # U6: music_loop -> when track is shorter than film, ON tiles it to fill (default),
+            # OFF plays the track once and leaves the rest of the film without music.
+            "music_loop": bool(settings.get("music_loop", True)),
             # Batch Q: Windows ffmpeg.exe path for h264_amf GPU encode (Step 5).
             # Resolved in Rust via where.exe; "" means fallback to libx264.
             "win_ffmpeg_path": manifest.get("win_ffmpeg_path", ""),

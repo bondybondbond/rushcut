@@ -96,7 +96,10 @@ def _build_filter(
     # Final trim + volume + optional fade + mix tail (applied after all acrossfade ops).
     # Movie audio is ducked by movie_vol so prominent music actually dominates.
     fade_filter = f",afade=t=out:st={fade_start:.4f}:d={eff_fade:.4f}" if eff_fade > 0 else ""
-    amix = "[movaudio][mus]amix=inputs=2:duration=first:dropout_transition=3"
+    # duration=longest -> output length driven by the longest input. With [movaudio] first
+    # (full film length), this equals the film; explicit (not "first") so loop-OFF short music
+    # never truncates the film and it survives any future amix input reordering.
+    amix = "[movaudio][mus]amix=inputs=2:duration=longest:dropout_transition=3"
     amix_tail = (
         f"{amix}[amixed];[amixed]{loudnorm_filter()}[aout]"
         if apply_loudnorm
@@ -137,6 +140,7 @@ def mix_music(
     movie_vol: float = 1.0,
     custom_track_path: "Path | None" = None,
     fade_out_s: float = FADE_OUT_S,
+    loop: bool = True,
     apply_loudnorm: bool = False,
 ) -> Path:
     """
@@ -172,11 +176,13 @@ def mix_music(
     active_start, active_end = _get_active_region(track_path)
     active_dur  = active_end - active_start
     crossfade_s = min(CROSSFADE_S, active_dur * 0.4)
-    n_copies    = _compute_copies(video_duration_s, active_dur, crossfade_s)
+    # U6: loop ON tiles the track to cover the film; loop OFF plays it once (single copy),
+    # leaving the rest of the film without music (amix duration=longest keeps film length).
+    n_copies    = _compute_copies(video_duration_s, active_dur, crossfade_s) if loop else 1
 
     log.info(
-        "[music] Mixing %s (active=%.2fs-%.2fs, video=%.2fs, copies=%d, xfade=%.2fs, vol=%.4f)",
-        track_name, active_start, active_end, video_duration_s, n_copies, crossfade_s, music_volume,
+        "[music] Mixing %s (active=%.2fs-%.2fs, video=%.2fs, copies=%d, xfade=%.2fs, vol=%.4f, loop=%s)",
+        track_name, active_start, active_end, video_duration_s, n_copies, crossfade_s, music_volume, loop,
     )
 
     fc = _build_filter(n_copies, active_start, active_end, crossfade_s, video_duration_s, music_volume, movie_vol, fade_out_s, apply_loudnorm)

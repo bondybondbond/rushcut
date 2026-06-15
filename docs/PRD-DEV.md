@@ -856,6 +856,21 @@ Fill the four product gaps above → 8/10 for this niche. Genuinely better than 
 
 ---
 
+## Decision point — Sound mixer: clip volume on Master screen
+
+> **Raised 2026-06-15 (founder testing U6).**
+
+Currently the Sound > Master tab can only adjust music volume. Clip audio volume is set per-clip on the Arrange screen (Arrange > clip > Sound tab). The founder noted that on the Master screen, loud clip audio with no way to reduce it forces a workaround of boosting music volume instead — an indirect, imprecise fix.
+
+**Decision to research:** Should per-clip volume controls move to (or also appear on) the Master screen? An improved sound mixer on Master would let users hear the final mix in context and adjust clip-level audio there. Key open questions:
+- How do competitors handle per-clip volume in a simple timeline tool? (DaVinci, CapCut, iMovie)
+- Would a global "clip audio level" master knob suffice, or does it need per-clip granularity?
+- If per-clip: what UI pattern works without a full timeline-style DAW (scrollable clip rows are wide)?
+
+Not blocking Phase 2 launch. Research before V-series sound polish.
+
+---
+
 ## Backlog — Open-in-player: spam protection + focus behaviour (UX)
 
 > **PRD item — reported 2026-06-13.**
