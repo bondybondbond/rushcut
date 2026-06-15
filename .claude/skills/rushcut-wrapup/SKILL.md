@@ -198,11 +198,53 @@ Match new items to the correct series by theme. Read the description, not just t
 | Cloud, auth, Stripe, music API | **Phase3** |
 | Doesn't fit above, or too low-priority to schedule | **Future** |
 
-**When no sub-batch exists yet** (e.g. V1.3 is full and a new V1.4 is needed), create a new option:
-```powershell
-gh api graphql -f query='mutation { createProjectV2SingleSelectFieldOption(input: { projectId: "PVT_kwHOC1IP7s4BanXt", fieldId: "PVTSSF_lAHOC1IP7s4BanXtzhVdrsY", name: "V1.4 — Brief description", color: GRAY, description: "" }) { field { ... on ProjectV2SingleSelectField { id } } } }'
+**When no sub-batch exists yet** (e.g. V1.3 is full and a new V1.4 is needed), add the option via `updateProjectV2Field` with ALL existing options included (with their current IDs so item assignments are preserved) plus the new one (no id, GitHub assigns one):
+
+```bash
+# Step 1 — query current options with IDs
+gh api graphql -f query='{
+  node(id: "PVT_kwHOC1IP7s4BanXt") {
+    ... on ProjectV2 {
+      field(name: "Target Batch") {
+        ... on ProjectV2SingleSelectField { options { id name color description } }
+      }
+    }
+  }
+}'
+
+# Step 2 — write mutation to a temp file (PowerShell variable expansion and multi-line args break -f query=)
+# Include ALL existing options by ID + the new one at the end (no id field)
+# File: %TEMP%\rushcut\add-swimlane.graphql
+# Then run:
+QUERY=$(cat /tmp/add-swimlane.graphql)
+gh api graphql -f query="$QUERY"
+# Or from Bash: gh api graphql -f query="$(cat /c/Users/Manasak/AppData/Local/Temp/rushcut/add-swimlane.graphql)"
 ```
-Then add the new option to the swimlane legend table in `docs/PRD-DEV.md`.
+
+Example mutation body (omit projectId — UpdateProjectV2FieldInput does NOT accept it):
+```graphql
+mutation {
+  updateProjectV2Field(input: {
+    fieldId: "PVTSSF_lAHOC1IP7s4BanXtzhVdrsY"
+    singleSelectOptions: [
+      {id: "existing-id-1", name: "U6 — Music seek + loop", color: GRAY, description: ""},
+      {id: "existing-id-2", name: "V1.1 — ...", color: GRAY, description: ""},
+      # ... all existing options with their IDs ...
+      {name: "V1.4 — Brief description", color: GRAY, description: ""}
+    ]
+  }) {
+    projectV2Field {
+      ... on ProjectV2SingleSelectField { options { id name } }
+    }
+  }
+}
+```
+
+**[TRAP] `createProjectV2SingleSelectFieldOption` does NOT exist** — removed from GitHub's API. Calling it returns `Field 'createProjectV2SingleSelectFieldOption' doesn't exist on type 'Mutation'`.
+**[TRAP] `updateProjectV2Field` input does NOT accept `projectId`** — only `fieldId`, `name`, and `singleSelectOptions`.
+**[TRAP] PowerShell `-f query=$query` splits multi-line strings into multiple args** — write the mutation to a temp `.graphql` file and pass via Bash `$(cat file)` or PowerShell `Get-Content` piped differently.
+
+Then add the new option to the swimlane legend table in `docs/PRD-DEV.md` and to the "Field IDs and option IDs" section below.
 
 ---
 
@@ -278,6 +320,7 @@ gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { proje
 **Target Batch** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrsY`):
 `5162bb0a`=U5c — Dual-monitor freeze
 `0c7f24e6`=U6 — Music seek + loop
+`38f62851`=U6a — Master preview bug fixes
 `dd04dd5d`=V1 — Stability bugs [series]
 `bf4709a5`=V1.1 — Unexpected clips / MediaPantry
 `5832f5cd`=V1.2 — WebView2 crash + driver reset
