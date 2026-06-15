@@ -1006,6 +1006,25 @@ Shown ONLY before the first play (`hasPlayedRef.current === false`) when not pla
 
 `absolute inset-0 flex items-center justify-center pointer-events-none` — `text-sm text-[#a3a3a3]`
 
+### Idle click-catcher overlay (first-entry click-to-play)
+
+Both dual-buffer slot `<video>` elements start with `pointer-events: none` (set by the mount `useEffect` and by `setSlotVisible`). This prevents the inactive slot from capturing clicks, but also means the video area receives NO clicks while idle — the first-entry "click anywhere to play" affordance is dead.
+
+Fix: add a transparent `absolute inset-0 z-10 cursor-pointer` overlay div that is rendered ONLY while idle (not playing and not paused and `inFilm.length > 0`). Its `onClick` calls `startFilmPlayback`. The overlay unmounts the instant playback starts, so it never intercepts subsequent click-to-toggle interactions (those go to the active video slot, whose `pointer-events` were restored by `setSlotVisible`).
+
+**Z-index rules for the video area stack:**
+- Slot `<video>` elements: no explicit z-index (stacked by DOM order)
+- Idle click-catcher overlay: `z-10` — above the slots, catches the click
+- Controls bar (scrubber + play button): must live in a SEPARATE sibling div BELOW the video area container, or use `relative z-20` if nested — must always win the stacking order over the overlay
+
+```tsx
+{!isFilmPlaying && !isFilmPaused && inFilm.length > 0 && (
+  <div className="absolute inset-0 z-10 cursor-pointer" onClick={startFilmPlayback} />
+)}
+```
+
+**Do NOT** restore `pointer-events: auto` on the idle active slot as the fix — that risks re-introducing the poster-image flash that the `pointer-events: none` guard was added to prevent.
+
 ### Dual-buffer model (black-flash fix)
 
 Two `<video>` elements (slot A + slot B) are stacked `absolute inset-0 w-full h-full object-contain` inside the video area div. Only the active slot has `opacity: 1; pointer-events: default`; the inactive slot has `opacity: 0; pointer-events: none` (set imperatively via `setSlotVisible`, never via React state). On clip advance the inactive slot is pre-loaded and seeked to `in_ms` while the current clip is still playing; the swap is instantaneous with no decode wait. For cross-clip seeks during playback, `crossSeekToClip` loads into the opposite slot and uses `requestVideoFrameCallback` with a `metadata.mediaTime` gate (`TOLERANCE_SEC = 0.05`, `MAX_WAITS = 30` safety cap) to defer visibility until the GPU compositor has presented the seek-target frame — preventing frame-0 flash on WebView2. `slotGenRef` invalidates stale rVFC callbacks from rapid overlapping seeks.

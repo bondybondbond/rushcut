@@ -808,6 +808,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — `gh project item-add` silently does nothing; use GraphQL directly
+
+**Problem:** `gh project item-add 1 --owner bondybondbond --url <issue-url>` exits 0 but does not add the item to the project (total item count stays unchanged). No error, no diagnostic output.
+**Solution:** Use the GraphQL mutation directly: get the issue node ID (`gh api repos/bondybondbond/rushcut/issues/<N> --jq '.node_id'`) then call `addProjectV2ItemById` (`gh api graphql -f query='mutation { addProjectV2ItemById(input: { projectId: "PVT_kwHOC1IP7s4BanXt", contentId: "<node_id>" }) { item { id } } }'`). The returned `item.id` is the project item node ID needed for subsequent field-update mutations.
+**Context:** Step 2.5 of any wrapup — always use the GraphQL path when adding issues to GitHub Projects #1. `gh project item-add` CLI is unreliable.
+
+---
+
+## Sound.tsx — "stopped-at-end" state: seekToFilmMs cannot restart music
+
+**Problem:** When the film plays to its natural end, `stopFilmPlayback()` sets `filmPlayingRef.current = false` and pauses `ma` (the music audio element). If the user then drags the scrubber backward, `seekToFilmMs` repositions `ma.currentTime` via the mute-bridge but never calls `ma.play()` — the `filmPlayingRef.current === false` guard blocks it. Music stays silent even though the video frame updates correctly.
+**Solution:** Distinguish the "stopped-at-end" state from the normal "paused" state. When the user seeks while in stopped-at-end, call `ma.play()` if the target position is a valid (non-end) position. Alternatively: on a user-initiated scrub from stopped-at-end, auto-transition to "paused" state (so the guard lets music through on next play). The quick workaround: pressing Play after seeking correctly restarts both video and audio.
+**Context:** `Sound.tsx` `seekToFilmMs` + `stopFilmPlayback`. Filed as issue #54 (U6a). Loop ON is unaffected because `ma.loop = true` keeps audio running after the track ends.
+
+---
+
 ## UX / product decisions (locked)
 
 - **Draft-first, configure-optional** — show the first render before any configuration. Mandatory configure screens before a draft add friction at the worst moment. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.

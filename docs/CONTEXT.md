@@ -15,12 +15,15 @@
 
 ## Current Phase
 
-**Phase 2 — Batch V1.2 COMPLETE (2026-06-15). Next: V1.3 or next founder priority.**
+**Phase 2 — Batch U6 + follow-up bug fixes COMPLETE (2026-06-15). Next: U6a bug fixes (#51–54) or V1.3 or next founder priority.**
 
 ---
 
 ## Immediate Next Task
 
+- **Batch U6 + follow-up — COMPLETE (2026-06-15).** Music seek + loop toggle. Core: "Loop music" toggle in Sound > Music tab (default ON, back-compat); mute-bridge seek (no backward-seek dropout); `music_loop` wired through manifest → `run.py` → `render.py` → `music.py`. Follow-up NOW batch: Bug A (spurious extra clip after film-end — `filmPlayingRef` guard + active-slot check on `onEnded` in both slots); Bug B (click-to-play dead on first entry — transparent `z-10` idle click-catcher overlay). 4 U6a items filed as deferred: #51 proxy-missing stall, #52 scrubber restyle, #53 trim reflow, #54 rewind-after-end no music. #55 render no-disk buttons also filed. Issues #17 + #18 closed. 9/9 fast PASS.
+- **U6a deferred (#51, #52, #53, #54)**: Master preview bug fixes. Target Batch = U6 in project. Create a "U6a" Target Batch option via GitHub Projects web UI (API mutation doesn't exist) then move these items to it.
+- **#55 deferred**: Render done-state — hide "Open film" + "Open folder" when file no longer on disk. P2/RICE 35.
 - **Batch U4 — COMPLETE (2026-06-11).** Background zoom cache warm: `pipeline/warm_zoom.py` + `warm_zoom_cache_cmd` Rust command + three-tier Arrange.tsx trigger (zoom-tab-leave immediate, 500ms debounced on param edit, unmount backstop). Verified: `zoom_cache_hits=4/4 t_zoom=0` on both 1080p + 4K renders. Stall threshold raised 120s→360s. 9/9 fast + 5/5 editor PASS.
 - **Batch U4b — COMPLETE (2026-06-12).** Zoom preview auto-play on clip switch: added `prevZoomClipIdRef` to distinguish clip switch from param edit; clip switch always calls `syncZoomToPlayhead(0, false)` (bypasses stale `isPlayingRef`). Fix is `Arrange.tsx` clip-switch effect only.
 - **Batch U4c (BUG) — COMPLETE (2026-06-12).** Four `_render_segmented()` artifact paths moved from `/tmp` tmpfs to NTFS `seg_tmp` via new `_resolve_render_work_dir()` helper (mirrors zoom-cache pattern). `TMP_BASE` / line 357 intentionally untouched. Verified on job `c503f7a0` (21-clip Stagecoach, 4K, xfade): `[U1g] segment work dir: /mnt/c/...` confirmed in log, 7 batches, `drift=0 frame(s)`, no fallback, pipeline complete. **The stall alert that fired mid-render was a false positive** — cold zoom (>6 min, skipped zoom tab) exceeded the 360s stall threshold but the pipeline kept running and completed. Output file healthy (ffprobe: 140.6s, 4214 frames, no corruption). Separate bugs logged: (1) cold-zoom-on-skip-tab → PRD-DEV.md; (2) WebView2 crash playing 40Mbps 4K output → PRD-DEV.md.
