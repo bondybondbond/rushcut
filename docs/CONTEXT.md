@@ -15,7 +15,7 @@
 
 ## Current Phase
 
-**Phase 2 — Batch U6b COMPLETE (2026-06-16). Next: V1.3 (swipe + spam + instance guard) or next founder priority.**
+**Phase 2 — Batch #11 + #55 corrections COMPLETE (2026-06-16). Next: V1.3 (swipe + spam + instance guard) or next founder priority.**
 
 ---
 
@@ -38,8 +38,9 @@
 - **Batch U5b — COMPLETE (2026-06-14).** Trim-screen UX batch: (1) Prev/Next flanking buttons in BOTH clip mode and film mode (removed from right column); (2) Autoplay suppressed on film-mode entry (`loadIntoSlot(0, "a", undefined, false)`); (3) Audio blip fix on clip Prev/Next — `v.muted = true/false` wrapping `paintAndPlay`'s `v.play().then(v.pause)` repaint trick; (4) Clip-mode cover div (`clipCoverRef`) — `absolute inset-0 bg-black` overlay, toggled imperatively, prevents poster-image flash; (5) `useLayoutEffect` shows cover before browser paint (prevents one-frame poster flash). `gotoFilmClip(dir)` helper reuses `seekFilmTo`. Counter overlay (`N / M`) on both modes. Right column: "Add to Film" vertically centred, Prev/Next removed. 9/9 fast + 12/12 trimmer PASS. **Known gap:** single-buffer clip-mode still shows brief blank between clips (inherent — old frame drops immediately on `key={clip.id}` remount). Dual-buffer fix is batch-level.
 - **Batch U5c — COMPLETE (2026-06-14).** AMD GPU TDR (VIDEO_TDR_FAILURE) root cause confirmed via WATCHDOG dump files (Application log WER 1001 P1=141). MPO disabled: OverlayTestMode=5 applied via scripts/apply-mpo-fix.ps1. Founder tested post-reboot — heavy film-mode seeking no longer crashes. Issues #2 and #6 closed (same root cause). Diagnostic tools added: scripts/diagnose-freeze.ps1 (updated to check Application log) + scripts/apply-mpo-fix.ps1.
 - **Batch V1.2 — COMPLETE (2026-06-15).** WebView2 crash + driver reset bundle. #30 verified stale (swipe-delete removed in U2, middle-mouse pan works). #5 hardened: `playbackFailed` state in `Render.tsx` — onError when `videoLoadedRef=true` shows inline "Open in system player" fallback panel (peach left-border warning pattern); closed. #29 Trimmer root cause confirmed + fixed: proxy-progress listener was mutating `selectedClip.proxy_path` mid-playback causing abort+reload; guard with `sourceFailedRef` — only adopt on recovery path. #29 Arrange: `diagLog` instrumentation added before both `video.load()` calls and `selectedClipId->null` tracker; null-reset not reproduced, issue stays open. New issues filed: #48 filmstrip pan tooltip (V2.3/P3), #49 4K bitrate gap (V4.2/P2), #50 zoom pre-cache timing (V4.1/P2). 9/9 fast + 12/12 trimmer + 14/14 render PASS.
+- **#11 + #55 corrections — COMPLETE (2026-06-16).** #55 (render done-state missing file): `file_exists_cmd` Rust + `fileOnDisk` state in Render.tsx — gates Open film/folder/Saved-to path for both 1080p and 4K. #11 rescoped: filmstrip cut tiles re-extract thumbnail at `in_ms` on creation (`handleAddCutForClip`); pantry tiles stay at 1s (static). `saveCurrentClip` re-extract removed. New issues: [#57](https://github.com/bondybondbond/rushcut/issues/57) filmstrip source colour coding, [#58](https://github.com/bondybondbond/rushcut/issues/58) file size display (both Future/P3). 9/9 fast + 12/12 trimmer PASS.
 - **Next: V1.3 (swipe + spam + instance guard) or next founder priority.**
-- **E2E:** 9/9 fast PASS (2026-06-16). Trimmer pending.
+- **E2E:** 9/9 fast + 12/12 trimmer PASS (2026-06-16).
 - **Backlog (low priority):** open/close-to-black projects (`has_open`/`has_close`) still use monolithic path — exit-15 risk on very large 4K with those transitions.
 - **Known gap (not urgent):** `handleDeleteCut` in `Trimmer.tsx` does not correct `filmPlayIdx` when the currently-playing clip is deleted.
 - Full sub-batch plan (U4d–U5b): `docs/batch-plan-u4d-subbatches.md`.

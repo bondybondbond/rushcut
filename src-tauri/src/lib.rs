@@ -207,7 +207,7 @@ fn probe_single_file(path: &std::path::Path) -> Result<ClipMeta, String> {
     let duration_s = stream_dur.or(format_dur).unwrap_or(0.0);
     let duration_ms = (duration_s * 1000.0) as i64;
 
-    let thumbnail_data = extract_thumbnail_piped(&path_str);
+    let thumbnail_data = extract_thumbnail_piped(&path_str, 1.0);
 
     let filename = path.file_name()
         .and_then(|n| n.to_str())
@@ -227,12 +227,13 @@ fn probe_single_file(path: &std::path::Path) -> Result<ClipMeta, String> {
     })
 }
 
-/// Extract a JPEG thumbnail frame at 1s seek, piped to stdout, returned as a data URI.
+/// Extract a JPEG thumbnail frame at `seek_secs` seek, piped to stdout, returned as a data URI.
 /// Uses -map 0:v:0 to skip DJI embedded MJPEG thumbnail in stream 1.
-fn extract_thumbnail_piped(src: &str) -> Option<String> {
+fn extract_thumbnail_piped(src: &str, seek_secs: f64) -> Option<String> {
+    let seek = format!("{:.3}", seek_secs.max(0.0));
     let output = std::process::Command::new(ffmpeg_exe())
         .args([
-            "-ss", "1",
+            "-ss", &seek,
             "-i", src,
             "-map", "0:v:0",
             "-frames:v", "1",
@@ -285,6 +286,41 @@ fn extract_thumbnail_to_file(src: &str, clip_id: &str) -> Option<String> {
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Some(format!("data:image/jpeg;base64,{}", b64))
+}
+
+/// Re-extract a clip's thumbnail at `at_ms` (the trim in-point) and broadcast it (issue #11).
+/// Reuses the existing `thumbnail-progress` event so the Trimmer swaps the new frame into
+/// both the Media Pantry source tile and the film-strip cut tile live — no new listener.
+/// Fire-and-forget from the frontend; the ffmpeg call runs on a blocking pool thread so it
+/// never stalls the UI.
+#[tauri::command]
+async fn regenerate_thumbnail_at_cmd(
+    app: AppHandle,
+    project_id: String,
+    clip_id: String,
+    local_path: String,
+    at_ms: i64,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let seek = at_ms as f64 / 1000.0;
+        if let Some(data) = extract_thumbnail_piped(&local_path, seek) {
+            let _ = update_clip_thumbnail(&clip_id, &data);
+            let _ = app.emit("thumbnail-progress", json!({
+                "projectId": project_id,
+                "clipId": clip_id,
+                "thumbnailData": data,
+            }));
+        }
+    });
+    Ok(())
+}
+
+/// Whether a file still exists on disk (issue #55 — used to hide dead "Open film"/"Open folder"
+/// actions on the Render done-state when the output has been deleted). Works for both 1080p and
+/// 4K, unlike the 1080p-only `<video>` onError signal.
+#[tauri::command]
+fn file_exists_cmd(path: String) -> bool {
+    std::path::Path::new(&path).exists()
 }
 
 /// Get peak volume in dBFS by running volumedetect on the audio.
@@ -2486,6 +2522,8 @@ pub fn run() {
             reset_proxy_encoding_cmd,
             get_music_dir_cmd,
             diag_log_cmd,
+            regenerate_thumbnail_at_cmd,
+            file_exists_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

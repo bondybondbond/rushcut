@@ -273,10 +273,11 @@ export default function Trimmer() {
         zoomMode: null,
         include: clip.include,
       });
+      const newInMs = inMs > 0 ? inMs : null;
       setClips((prev) =>
         prev.map((c) =>
           c.id === clip.id
-            ? { ...c, in_ms: inMs > 0 ? inMs : null, out_ms: outMs < clip.duration_ms ? outMs : null }
+            ? { ...c, in_ms: newInMs, out_ms: outMs < clip.duration_ms ? outMs : null }
             : c
         )
       );
@@ -343,6 +344,14 @@ export default function Trimmer() {
         outMs: cutOutMs < targetClip.duration_ms ? cutOutMs : null,
       });
       setClips(prev => [...prev, newCut]);
+      // #11: a fresh cut clones the source's thumbnail (the 1s frame). Re-extract at the
+      // cut's own in-point so the film-strip tile shows the cut's true start frame.
+      invoke("regenerate_thumbnail_at_cmd", {
+        projectId,
+        clipId: newCut.id,
+        localPath: newCut.local_path,
+        atMs: newCut.in_ms ?? 0,
+      }).catch(() => {});
     } catch (err) {
       console.error("[trimmer] add cut failed", err);
     }

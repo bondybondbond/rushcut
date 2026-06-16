@@ -22,7 +22,7 @@
 
 - **Two instances share one DB.** User runs `src-tauri/target/debug/rushcut.exe` directly (always-on Vite dev server). WDIO tests launch a separate process of the same binary. Both write to `%APPDATA%\rushcut\rushcut.db`. Never confuse their generated artifacts — WDIO renders show `instance=wdio` in the timing log.
 - **WSL and PowerShell: use the PowerShell tool, not Bash.** Claude Code Bash = Git Bash; it mangles `/mnt/c/` paths, `$variables`, and `|` pipes inside `powershell.exe -Command "..."`. Use the dedicated `PowerShell` tool for all WSL calls and any PowerShell with variables or pipes. Glob patterns in PowerShell args get expanded by Git Bash — use `cmd.exe /c` for those.
-- **`git push` hangs silently in this shell.** Always push as: `GIT_ASKPASS=echo GIT_TERMINAL_PROMPT=0 git push https://<token>@github.com/bondybondbond/rushcut.git main`
+- **`git push`:** Use `git push origin main` — Windows Credential Manager holds the PAT (set up 2026-06-16). The old `GIT_ASKPASS=echo ...` workaround was Bash-only and no longer needed.
 - **Asset URLs:** Always `convertFileSrc(winPath)` from `@tauri-apps/api/core`. Never construct `asset://` URLs manually — video element shows nothing.
 - **`pipeline-progress` Rust event must NOT include `stage`.** Only emit `{ jobId, progress }`. Stage field clobbers human-readable labels from `pipeline-stage`.
 - **`DEFAULT_CONFIG.transition = "none"`** (not "crossfade"). Three options: `"none"` / `"crossfade"` / `"dip_to_black"`.

@@ -114,6 +114,19 @@ export default function Render() {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
   const videoLoadedRef = useRef(false);
+  // #55: a render's output file can be deleted between sessions. `fileOnDisk` is checked
+  // whenever a done-state output path is shown (load path AND fresh pipeline-done) and gates
+  // the "Open film"/"Open folder" actions + the "Saved to" link. Works for 1080p AND 4K.
+  // NOTE: this overlaps with the 1080p-only `videoMissing` <video> onError signal above —
+  // both mean "file gone" on 1080p. Kept separate for now (videoMissing also distinguishes a
+  // decode crash from a missing file); FUTURE: consolidate into one source of truth.
+  const [fileOnDisk, setFileOnDisk] = useState(true);
+  useEffect(() => {
+    if (phase !== "done" || !outputPath) return;
+    invoke<boolean>("file_exists_cmd", { path: outputPath })
+      .then(setFileOnDisk)
+      .catch(() => setFileOnDisk(true));
+  }, [phase, outputPath]);
 
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -829,12 +842,19 @@ export default function Render() {
                   <div className="mt-[18px] flex items-center gap-2 text-[13px] text-[#5a5956]">
                     <Folder size={14} strokeWidth={2} className="text-[#4a4946] flex-shrink-0" />
                     <span>Saved to</span>
-                    <button
-                      onClick={() => invoke("open_folder_cmd", { folder: pathDirname(outputPath) })}
-                      className="text-[#7a7874] font-medium hover:text-[#c8c5c0] transition-colors overflow-hidden text-ellipsis whitespace-nowrap max-w-[28ch]"
-                    >
-                      {pathDirname(outputPath)}
-                    </button>
+                    {/* #55: clickable only while the file exists; plain text once it's gone. */}
+                    {fileOnDisk ? (
+                      <button
+                        onClick={() => invoke("open_folder_cmd", { folder: pathDirname(outputPath) })}
+                        className="text-[#7a7874] font-medium hover:text-[#c8c5c0] transition-colors overflow-hidden text-ellipsis whitespace-nowrap max-w-[28ch]"
+                      >
+                        {pathDirname(outputPath)}
+                      </button>
+                    ) : (
+                      <span className="text-[#7a7874] font-medium overflow-hidden text-ellipsis whitespace-nowrap max-w-[28ch]">
+                        {pathDirname(outputPath)}
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -843,22 +863,27 @@ export default function Render() {
 
                 {/* Right: actions */}
                 <div className="px-5 py-6 flex flex-col justify-center gap-2.5">
-                  <button
-                    data-testid="btn-open-in-player"
-                    onClick={() => invoke("open_in_player_cmd", { path: outputPath })}
-                    className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] bg-[#FF8A65] text-[#0a0a0a] font-semibold text-[14px] rounded-lg hover:bg-[#ff9e7a] transition-all duration-150 text-left"
-                  >
-                    <Play size={15} fill="currentColor" stroke="none" className="flex-shrink-0" />
-                    Open film
-                  </button>
-                  <button
-                    data-testid="btn-open-in-explorer"
-                    onClick={() => invoke("open_folder_cmd", { folder: pathDirname(outputPath) })}
-                    className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150 text-left"
-                  >
-                    <Folder size={15} strokeWidth={2} className="text-[#8a8883] flex-shrink-0" />
-                    Open folder
-                  </button>
+                  {/* #55: hide the "Open" actions when the file is gone — they would fail. */}
+                  {fileOnDisk && (
+                    <>
+                      <button
+                        data-testid="btn-open-in-player"
+                        onClick={() => invoke("open_in_player_cmd", { path: outputPath })}
+                        className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] bg-[#FF8A65] text-[#0a0a0a] font-semibold text-[14px] rounded-lg hover:bg-[#ff9e7a] transition-all duration-150 text-left"
+                      >
+                        <Play size={15} fill="currentColor" stroke="none" className="flex-shrink-0" />
+                        Open film
+                      </button>
+                      <button
+                        data-testid="btn-open-in-explorer"
+                        onClick={() => invoke("open_folder_cmd", { folder: pathDirname(outputPath) })}
+                        className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150 text-left"
+                      >
+                        <Folder size={15} strokeWidth={2} className="text-[#8a8883] flex-shrink-0" />
+                        Open folder
+                      </button>
+                    </>
+                  )}
                   <button
                     data-testid="btn-render-new"
                     onClick={startNewVersion}
@@ -871,7 +896,7 @@ export default function Render() {
               </div>
 
               {/* 1080p: in-app preview panel (below the info card) */}
-              {outputRes !== "4k" && !videoMissing && !playbackFailed && (
+              {outputRes !== "4k" && fileOnDisk && !videoMissing && !playbackFailed && (
                 <div className="rounded-[14px] border border-white/[0.07] bg-[#1a1a1a] overflow-hidden">
                   <div
                     ref={videoContainerRef}
@@ -912,8 +937,10 @@ export default function Render() {
                 </div>
               )}
 
-              {/* 1080p: missing-file notice */}
-              {outputRes !== "4k" && videoMissing && (
+              {/* #55: missing-file notice — shown for ANY resolution once fileOnDisk is false
+                  (4K has no <video> element, so it relies entirely on the existence check).
+                  The 1080p videoMissing path is kept as a fallback for the onError case. */}
+              {(!fileOnDisk || (outputRes !== "4k" && videoMissing)) && (
                 <div data-testid="render-missing" className="rounded-lg border border-white/10 bg-white/5 p-4">
                   <p className="text-sm text-[#a3a3a3]">This render is no longer on disk. Render a new version to recreate it.</p>
                 </div>
