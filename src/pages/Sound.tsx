@@ -635,16 +635,25 @@ export default function Sound() {
           const target = sound.musicLoop
             ? (clamped / 1000) % trackDur
             : Math.min(clamped / 1000, trackDur);
+          // U6b: film still rolling but music already ran out (loop OFF) and user scrubbed BACK into the track.
+          // ma.ended is the primary signal; ma.paused arm is narrowed to "paused because it reached the end"
+          // so it won't leak when manual-pause / mid-seek pause states are added later.
+          const musicEndedButFilmRolling =
+            filmPlayingRef.current && !isFilmPaused &&
+            (ma.ended || (ma.paused && ma.currentTime >= trackDur - 0.1));
+          // Only resume if the film position is genuinely WITHIN the track (loop OFF) — not at/after its end.
+          const withinTrack = !sound.musicLoop && clamped / 1000 < trackDur - 0.05;
+          const shouldPlay = shouldPlayAfterSeek || (musicEndedButFilmRolling && withinTrack);
           // Skip redundant reseeks within 100ms (matches scrub-debounce tolerance) — avoids glitch during a continuous drag
           if (Math.abs(target - ma.currentTime) < 0.1) {
-            if (shouldPlayAfterSeek) ma.play().catch(() => {});
+            if (shouldPlay) ma.play().catch(() => {});
             return;
           }
           // Mute-bridge the reseek (LEARNINGS: WebView2 audio dropout on currentTime write); unmute + play once seek lands
           ma.muted = true;
           ma.addEventListener("seeked", () => {
             ma.muted = false;
-            if (shouldPlayAfterSeek) ma.play().catch(() => {});
+            if (shouldPlay) ma.play().catch(() => {});
           }, { once: true });
           ma.currentTime = target;
         } catch (e) { /* music may not be loaded yet */ }

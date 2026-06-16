@@ -824,6 +824,14 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## HTMLAudioElement — use `ma.ended` not `ma.paused` to detect "track played to completion"
+
+**Problem:** When an audio track reaches its natural end, both `ma.ended === true` AND `ma.paused === true`. Using `ma.paused` alone as the "music is done" signal is too broad — it's also true during seek races, mid-seek state transitions, and future explicit-pause features. Checking `ma.paused` alone leads to spurious `play()` calls in those other states.
+**Solution:** Use `ma.ended` as the primary signal. If a secondary `ma.paused` check is needed (e.g. to catch an edge case where `ended` hasn't settled), narrow it: `ma.paused && ma.currentTime >= trackDur - 0.1` — this reads as "paused because it reached the end", not just "paused". Pattern in `Sound.tsx` `trySync` (U6b): `const musicEndedButFilmRolling = filmPlayingRef.current && !isFilmPaused && (ma.ended || (ma.paused && ma.currentTime >= trackDur - 0.1))`.
+**Context:** `Sound.tsx` `seekToFilmMs` — any branch that decides whether to call `ma.play()` after a seek. Applies broadly to any audio element where "reached the end" needs to be distinguished from other paused states.
+
+---
+
 ## Workflow — PowerShell `$PID` is a reserved read-only variable; use Bash for `gh api graphql`
 
 **Problem:** PowerShell has a built-in automatic variable `$PID` (the current process ID). It is case-insensitive — assigning `$pid = "PVT_kwHO..."` throws `Cannot overwrite variable PID because it is read-only or constant`. Any GraphQL mutation that stores a project ID in `$pid` will silently abort the block.
