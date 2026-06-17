@@ -234,6 +234,22 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
+## Workflow — Multi-line Python scripts passed via inline -c or PowerShell string are silently corrupted
+
+**Problem:** Writing a multi-line diagnostic/repair Python script as an inline `-c` argument to Bash or as an inline PowerShell string corrupts quote characters. Git Bash mangling and PowerShell string escaping both turn valid Python (`'%tagecoach%'`, `'file:' + db`) into syntax errors that Python reports as `SyntaxError: invalid syntax` or `unexpected token '('`. The corruption is silent — the printed command looks fine, but the actual bytes Python receives are wrong.
+**Solution:** Write every multi-line diagnostic or repair script to a named temp file first (`%TEMP%\rushcut\diag_NAME.py` or `repair_NAME.py`), then call it via PowerShell WSL invocation: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/NAME.py`. The file round-trip preserves all quotes verbatim. Keep diagnostic scripts around (don't delete them immediately) — they are useful if the same data needs re-inspection.
+**Context:** Any session requiring WSL Python to query or modify the SQLite DB directly. Applies to both `diag_*.py` and `repair_*.py` scripts. Confirmed in V1.1 session.
+
+---
+
+## React — Decorating a data object with a derived/cosmetic field leaks to DB if the object is later persisted
+
+**Problem:** A component computes a temporary cosmetic value (e.g. a badge flag) by spreading it onto a cloned object (`{ ...clip, include: 1 }`), then passes that decorated object as a prop. If a descendant or sibling callback captures the decorated object as `selectedClip` and later calls a persist function (`saveCurrentClip` → `update_clip_review_cmd`), the cosmetic field value is written to the DB — corrupting canonical state. The bug is invisible until the user navigates away, because the UI reads from local state (which is correct) while the DB holds the wrong value.
+**Solution:** Keep cosmetic/derived values in a separate prop or variable rather than overloading a semantic field on the object. For the pantry in-film badge, the fix is an explicit `inFilmPaths: Set<string>` prop read at render time; the source `Clip` object is never decorated. As a defence-in-depth, any persist function should re-read canonical state from the top-level array (`clips.find(c => c.id === clip.id)?.include`) rather than trusting the potentially-decorated captured object.
+**Context:** `Trimmer.tsx` `pantryClips` decoration block (deleted in V1.1). `MediaPantry.tsx` `inFilmPaths` prop pattern. Any React component where a display-only derived value is computed by mutating a copy of a persisted entity.
+
+---
+
 ## FFmpeg — filter_complex
 
 - **`crop` filter latches `iw`/`ih` from the FIRST FRAME when upstream `scale=eval=frame` produces variable-size output** — `crop`'s `iw` variable is evaluated at filter init (the first frame) and frozen there. For gradual zoom-in (zf starts at 1.0): `iw_latched = src_w = out_w`, so `(iw-ow)*fx = 0` for every frame regardless of focal point → always zooms top-left. For zoom-out (zf starts at ratio): `iw_latched = src_w*ratio`; as zoom shrinks the valid range narrows until x exceeds it → rightward drift, then hard left snap. Fix: substitute the same `zf(t)` expression that drives scale, applied to known Python-constant source integers, directly into the crop origin: `crop=out_w:out_h:'(2*trunc(SRC_W*ZF/2)-out_w)*fx':'(2*trunc(SRC_H*ZF/2)-out_h)*fy'`. Because `zf` contains FFmpeg's `t` variable, the crop tracks the correct focal every frame. Bump the zoom cache key version constant whenever the formula changes so stale cached files are not reused.

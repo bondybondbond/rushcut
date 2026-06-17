@@ -14,6 +14,14 @@ Rust stores timestamps via `chrono::Utc::now().to_rfc3339()` as ISO 8601 (`"2026
 - JS `invoke("name")` must match Rust `fn name` exactly — mismatch is a runtime error, not a compile error.
 - JS invoke arg keys must match the `snake_case → camelCase` conversion of each Rust parameter name. Example: `fn update_clip_volume_cmd(clip_id: String, clip_volume: f64)` → `invoke("update_clip_volume_cmd", { clipId, clipVolume })`. Passing `{ volume }` instead of `{ clipVolume }` silently drops the call with "missing required key clipVolume" in the console — no compile-time error, easy to miss.
 
+## `update_clip_review_cmd` — trim/zoom/focal save ONLY, never include state
+
+`update_clip_review_cmd` persists per-clip review edits: `in_ms`, `out_ms`, `focal_x`, `focal_y`, `zoom_mode`, `clip_volume`. It also accepts `include` for technical reasons but **must never be the mechanism that changes a clip's `include` state**. Include state is owned exclusively by:
+- `add_clip_cut_cmd` — sets `include=1` (adds a cut to the film)
+- `delete_clip_cmd` — removes the `include=1` row (removes a cut from the film)
+
+Source template rows (`include=0`) must never be flipped to `include=1` by `update_clip_review_cmd`. If the payload's `include` differs from the DB row, that is a bug in the caller — not a valid shortcut to add/remove a clip from the film. Defence-in-depth: any React `saveCurrentClip` should re-read canonical `include` from the top-level clips array (`clips.find(c => c.id === clip.id)?.include`) rather than trusting a possibly-decorated selected object. Root cause of V1.1 phantom-clip / pantry-undercount bugs.
+
 ## job-started event — emitted by start_job for Library live-update (T6)
 
 `start_job` emits `"job-started"` (`{ jobId, projectId }`) immediately after `insert_job` succeeds and before `spawn`. This lets `Library.tsx` add the new job to its `jobsMap` without polling, so `pipeline-progress`/`done`/`error` events resolve correctly even if Library was already mounted before the render started. Emit point: after `.map_err(|e| ...)` on `insert_job`, before `let job_id_bg = job_id.clone()`. Both `job_id` and `project_id` are still owned at that point — neither is consumed until the `spawn` closure.

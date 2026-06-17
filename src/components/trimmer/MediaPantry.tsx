@@ -4,18 +4,19 @@ interface MediaPantryProps {
   clips: Clip[];
   selectedId: string | null;
   onSelect: (clip: Clip) => void;
+  inFilmPaths: Set<string>;
 }
 
-export function MediaPantry({ clips, selectedId, onSelect }: MediaPantryProps) {
+export function MediaPantry({ clips, selectedId, onSelect, inFilmPaths }: MediaPantryProps) {
   return (
     <div className="h-full overflow-y-auto p-3">
       <p className="text-xs text-[#e5e5e5]/50 uppercase tracking-wide mb-3 font-semibold">
-        All Clips
+        All Files
       </p>
       <div className="grid grid-cols-2 gap-2">
         {clips.map((clip) => {
           const isSelected = clip.id === selectedId;
-          const inFilm = clip.include === 1;
+          const inFilm = inFilmPaths.has(clip.local_path);
           return (
             <button
               key={clip.id}

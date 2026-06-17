@@ -74,6 +74,7 @@ Written to `C:\clips\processed\<slug>-01.mp4`, `<slug>-02.mp4` etc. Slug = `slug
 - **Windows path to WSL:** `C:\clips\DJI_01.MP4` → `/mnt/c/clips/DJI_01.MP4`.
 - **`run.py` config completeness:** Every `JobConfig` field needs `settings.get(key, safe_default)`. Missing fields silently use wrong defaults.
 - **`or default` idiom silently promotes `0` / `0.0` to `default`** — `float(d.get("clip_volume", 1.0) or 1.0)` coerces Python's falsy `0.0` (muted clip) to `1.0` (full volume) because `0.0 or 1.0 == 1.0`. Rule: whenever the valid value range includes `0` or `0.0`, use an explicit None check: `float(v) if v is not None else default`. This applies to any numeric manifest field where zero is a valid non-default (volume, start offset, card opacity, etc.).
+- **Multi-line diagnostic/repair scripts must be written to a temp `.py` file — never passed inline via `-c`** — both Git Bash `-c` strings and PowerShell inline strings corrupt Python quote characters in multi-line scripts, producing `SyntaxError: invalid syntax` or `unexpected token '('`. Pattern: write to `%TEMP%\rushcut\diag_NAME.py` (or `repair_NAME.py`) using the Write tool, then invoke via PowerShell: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/NAME.py`. Keep scripts on disk — useful for re-inspection. Confirmed in V1.1 session.
 
 ## FFmpeg rules
 

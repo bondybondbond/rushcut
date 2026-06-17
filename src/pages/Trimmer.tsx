@@ -263,7 +263,8 @@ export default function Trimmer() {
     if (!clip || !projectId || isSaving.current) return;
     isSaving.current = true;
     try {
-      console.log("[trimmer] save clip", clip.id, { inMs, outMs, include: clip.include });
+      const canonicalInclude = clips.find(c => c.id === clip.id)?.include ?? clip.include;
+      console.log("[trimmer] save clip", clip.id, { inMs, outMs, include: canonicalInclude });
       await invoke("update_clip_review_cmd", {
         clipId: clip.id,
         inMs: inMs > 0 ? inMs : null,
@@ -271,7 +272,7 @@ export default function Trimmer() {
         focalX: null,
         focalY: null,
         zoomMode: null,
-        include: clip.include,
+        include: canonicalInclude,
       });
       const newInMs = inMs > 0 ? inMs : null;
       setClips((prev) =>
@@ -838,11 +839,6 @@ export default function Trimmer() {
         .map(c => ({ inMs: c.in_ms ?? 0, outMs: c.out_ms ?? c.duration_ms ?? 0 }))
         .filter(r => r.outMs > r.inMs)
     : [];
-  const pantryClips = sourceClips.map(c => ({
-    ...c,
-    include: cutPaths.has(c.local_path) ? 1 : 0,
-  })) as Clip[];
-
   const sourceIdx = clip
     ? (clip.include === 0
         ? sourceClips.findIndex(c => c.id === clip.id)
@@ -914,9 +910,10 @@ export default function Trimmer() {
       configured={configured}
       leftPanel={
         <MediaPantry
-          clips={pantryClips}
+          clips={sourceClips}
           selectedId={clip.include === 0 ? clip.id : sourceClips.find(sc => sc.local_path === clip.local_path)?.id ?? null}
           onSelect={handlePantrySelect}
+          inFilmPaths={cutPaths}
         />
       }
       transitionValue={transitionVal}
