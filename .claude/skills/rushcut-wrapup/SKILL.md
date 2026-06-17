@@ -340,14 +340,15 @@ gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { proje
 
 ---
 
-## Step 3 — Planning doc
+## Step 3 — Strategic doc (PRD-DEV.md)
 
-For Phase 2 work, update:
-- `docs/CONTEXT.md` — current phase, immediate next task, recently completed
-- `docs/PRD-DEV.md` — tick completed gate items, add changelog entry, update Phase goal/exit gate if changed. **Do NOT add individual backlog items here** — those go to GitHub Issues (Step 2.5).
-- `docs/ARCHIVE.md` — move resolved decisions/bugs (if file exists)
+`docs/PRD-DEV.md` is **strategic-only**: forward roadmap (AI Director, Auth/4K/Tier), AI Enablement, Phase 3 preview, swimlane legend. Update it **only** if one of those changed this session.
 
-If nothing changed substantially, skip.
+- **Do NOT add a changelog entry.** The PRD-DEV changelog is retired — "what shipped when" lives in git log (authoritative) + `docs/archive/completed-plans/PRD-DEV-batches-14-N-full.md` (frozen history).
+- **Do NOT add individual backlog items** — those go to GitHub Issues (Step 2.5).
+- Current state + next task is **not** recorded here — that is MEMORY.md only (Step 4).
+
+If no strategic/roadmap/swimlane change, skip this step entirely.
 
 Use native **Edit** tool.
 
@@ -355,12 +356,14 @@ Use native **Edit** tool.
 
 ## Step 4 — Memory updates (`C:\Users\Manasak\.claude\projects\C--apps-rushcut\memory\MEMORY.md`)
 
-Update if the current state genuinely changed: a feature completed, a major constraint was discovered, the next priority shifted.
+MEMORY.md is the **single state doc** — current phase + next task only. It is small by design (~45 lines). Keep it that way.
 
-Key sections to keep current:
-- **Current State** — one-line summary of where things stand now
-- **Batch / Feature Status** — tick completed items
-- **Critical Constraints** — add anything new that must never be regressed
+- **Overwrite the `## Current State` line(s) — never append a new dated block.** Replace "last shipped / next" with the new reality. History belongs in git log + `docs/archive/`, not here.
+- **Do NOT add a batch-status list or a changelog stack.** If you find yourself adding a second dated entry, you are re-creating the diary this taxonomy removed — delete the old line instead.
+- **New critical constraints** that must never be regressed go to **CLAUDE.md** (project-wide) or the matching `.claude/rules/` file — NOT MEMORY.md. MEMORY.md only holds the one-line index pointers to topic memory files plus the Current State.
+- Topic memory files (`feedback_*`, `project_*`, etc.) follow the standard memory format; add a one-line index pointer here if you create a new one.
+
+If current state did not change, skip.
 
 Use native **Edit** tool.
 

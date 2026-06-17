@@ -404,21 +404,6 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ---
 
-## Lambda pipeline
-
-- **Cards as pre-rendered video segments** — render intro/end cards as short H.264 clips before filter_complex. Avoids mixing lavfi sources with real clips inside a single filter_complex; cards pass through xfade unchanged.
-- **Loudnorm timeout guard** — two-pass loudnorm adds ~2–4x real-time. Add `LAMBDA_TIMEOUT_BUFFER_S` env var (default 30s); check `context.get_remaining_time_in_millis()` before running and skip with WARNING if insufficient.
-- **`run_local()` safe defaults** — synthetic job dicts must default all boolean config flags to `False` explicitly. Missing keys cause KeyError deep in the pipeline, not at the entry point.
-- **Supabase REST from Lambda via `requests`** — use raw REST API with service role key (`apikey` + `Authorization: Bearer` headers); skip supabase-py. PATCH requires `Prefer: return=minimal` header.
-
-## Workflow — WSL sqlite3 reads stale NTFS data; use invoke() for live DB debugging
-
-**Problem:** Reading `%APPDATA%\rushcut\rushcut.db` via `wsl sqlite3` can show data that is one or more writes behind the live Tauri app. The WSL filesystem cache for NTFS-backed files does not flush on every write, so a query run immediately after a Tauri session may return rows from a previous session or omit recently-inserted rows entirely.
-**Solution:** Use `invoke("list_projects_cmd")` or `invoke("get_project", ...)` from the running Tauri app (via `mcp__chrome-devtools__evaluate_script`) to inspect live DB state. Only fall back to WSL sqlite3 when the app itself is not running.
-**Context:** Any debugging session that checks DB state after a render or project creation — especially when troubleshooting "project not found" or missing proxy_status rows.
-
----
-
 ## Pipeline — Zoom cache keys are resolution-specific (1080p entries don't satisfy 4K)
 
 **Problem:** The zoom cache sha1 key includes `output_resolution`. A full set of 1080p zoom cache hits produces 0 hits on the next 4K render of the same project, because the cache files differ. This means a "warm cache" verification done at 1080p does NOT confirm 4K warm-cache behaviour.
@@ -572,28 +557,10 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`tauri::State<'_>` is not `Send` — cannot be moved into `spawn()`** — `tauri::async_runtime::spawn(async move { ... })` requires all captured values to implement `Send`. `tauri::State<'_, T>` does not. Fix: before the spawn, extract the inner `Arc` via `Arc::clone(&*state)` and move the clone into the closure instead. If `T` is already an `Arc<Mutex<...>>`, this is a single `Arc::clone` call.
 - **`window.confirm()` is silently swallowed by Tauri WebView2** — `window.confirm()` returns `true` immediately without showing any dialog. Never use it for destructive-action confirmation in a Tauri app. Replace with an in-app React state `pendingConfirm` that renders an inline confirmation panel inside the component tree.
 
-## Next.js / Turbopack
-
-- **`@ffprobe-installer/ffprobe` needs `serverExternalPackages`** — the package bundles a README.md that Turbopack can't handle, causing `Unknown module type` 500 on first API call. Fix: add `serverExternalPackages: ['@ffprobe-installer/ffprobe']` to `next.config.ts`.
-- **Supabase schema cache:** "Reload Schema" button removed from Dashboard. Run `NOTIFY pgrst, 'reload schema';` in the SQL editor after schema changes instead.
-- **JSX ternary can only return one node per branch** — adding a sibling element to an existing ternary branch causes "Expected '</', got '{'" parse error. Wrap the two sibling elements in a `<>` fragment.
-- **`localStorage` projectId persists across sessions** — clear it on upload page mount (`useEffect(() => localStorage.removeItem('rushcut_project_id'), [])`) so new visits always start a fresh project rather than appending to a stale one.
-
-## Cloudflare R2
-
-- **R2 presign with AWS SDK** — use `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` with `region: 'auto'` and `endpoint: 'https://{accountId}.r2.cloudflarestorage.com'`. No custom middleware needed.
-
 ## Git / Windows
 
 - **`git push` hangs silently in non-interactive shells (Windows)** — Windows Credential Manager intercepts the push even when a PAT is embedded in the remote URL, blocking indefinitely with no output. Always push as `GIT_ASKPASS=echo GIT_TERMINAL_PROMPT=0 git push https://<token>@github.com/<repo>.git main`. Use `Stop-Process -Name git -Force` in PowerShell to kill hung processes.
 - **Rust build artifacts block GitHub push** — `src-tauri/target/` contains files up to 668 MB; committing them triggers `GH001: Large files detected` and GitHub rejects the push. Add `src-tauri/target/` and `src-tauri/gen/` to `.gitignore` before the first commit. Recovery: `git filter-branch --tree-filter 'rm -rf src-tauri/target src-tauri/gen' -- <first-bad-commit>^..HEAD` then `git push --force`.
-
-## Docker / WSL (Windows)
-
-- **Docker Desktop requires WSL 2** — fresh install reports `wslUpdateRequired: true` and fails to start. Run `wsl --install --no-distribution` first, then **restart Windows**. Check state: `docker info 2>&1 | grep wslUpdateRequired`. Plan for the restart before any session where Docker is needed.
-- **Docker Desktop v4.65.0 `dockerInference` socket crash** — confirmed unfixed bug. On every startup Docker tries to `remove()` a Unix socket file (`AppData\Local\Docker\run\dockerInference`); Windows rejects this and Docker crashes. `EnableInference: false` in `settings-store.json` does not suppress it. **Workaround**: install Docker Engine natively in WSL2 (`wsl --install -d Ubuntu-24.04 --no-launch`, set root as default, `curl -fsSL https://get.docker.com | sh`). All Docker commands run as: `wsl -d Ubuntu-24.04 -u root -- bash -c "service docker start && docker ..."`.
-- **Lambda rejects OCI manifest lists** — `docker buildx build --platform linux/arm64` produces an OCI manifest list by default; Lambda returns "image manifest media type not supported". Fix: add `--provenance=false`. Always build Lambda images with `docker build --platform linux/arm64 --provenance=false`.
-- **IAM role creation requires explicit permission** — `AWSLambda_FullAccess` does not include `iam:CreateRole`. Workaround: use AWS CloudShell (full IAM access as root account) to create the Lambda execution role; use the scoped CLI user for everything else.
 
 ## Browser / media
 
@@ -678,20 +645,10 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 - **`onError` double-fire guard for lazy proxy gen** — `onError` on a `<video>` element fires every time a failed source is re-presented (e.g. React re-renders). Using `!clip.proxy_path` as the guard is insufficient: if proxy gen fails silently and proxy_path is never set, the trigger fires infinitely. Use a `Set<string>` ref (`generatingProxyRef`) keyed by clip ID; add on first trigger, check before re-triggering. Clear on clip nav so each clip gets one attempt.
 
 ## WebView2 — `<video> onError` fires on decode failure too, not just missing files
+
 **Problem:** `Render.tsx` showed "this render is no longer on disk" via `onError={() => setVideoMissing(true)}`. But `onError` fires for ANY media error — including a WebView2 decode crash *during playback* of a file that is present and valid (e.g. a high-bitrate 4K clip mid-play). The user saw the missing-file warning appear seconds into a video that was sitting in the folder the whole time.
 **Solution:** Track whether the video successfully loaded before treating an error as "missing": `const videoLoadedRef = useRef(false)`; set `true` in `onLoadedMetadata`; in `onError` only `setVideoMissing(true)` when `!videoLoadedRef.current`. Reset the ref to `false` everywhere a new src is assigned (`applyLatestRender`, `startNewVersion`, pipeline-done listener). A decode failure after a successful load is a playback problem, not a missing file — don't mislabel it.
 **Context:** `src/pages/Render.tsx`. Any `<video onError>` that distinguishes "file gone" from "couldn't play this frame" needs the loaded-ref gate. The underlying decode crash is the U4e bitrate problem (VBR cap fixes it); the ref just stops the wrong error message.
-
-## Workflow: Read only the top of CONTEXT.md during wrapup
-**Problem:** `docs/CONTEXT.md` is 600+ lines and growing; a full `Read` returns a ~25k-token truncated view. Wrapup only ever edits the top two sections ("Current Phase" + "Immediate Next Task", roughly lines 16–35).
-**Solution:** During wrapup, `Read(CONTEXT.md, limit=40)` to grab the editable header, edit there, and skip the rest. Only page deeper if specifically appending a "Recently shipped" block (which goes right under the header anyway).
-**Context:** Any wrapup Step 3 CONTEXT.md update. The historical "Recently shipped" log below is append-mostly and rarely needs reading.
-
-## Workflow: Two-DB path confusion in Claude Code sandbox
-
-**Problem:** When `pnpm dev` runs inside the Claude Code sandbox, Tauri's `app_data_dir()` resolves to `C:\Users\Manasak\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\rushcut\` (sandbox path), not the standard `C:\Users\Manasak\AppData\Roaming\rushcut\`. The running app's DB is at the sandbox path; direct `sqlite3` queries against the standard path see a different (often empty or stale) DB.
-**Solution:** Before any `sqlite3` query during an active dev session, always use the sandbox path: `/mnt/c/Users/Manasak/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/rushcut/rushcut.db`. Run `invoke("list_projects_cmd")` in the browser console to confirm the project IDs match before writing DB update queries.
-**Context:** Any wrapup or eval step that queries or patches the running app's DB directly (proxy_path, waveform_data, thumbnail_data updates). Standard AppData path is correct for builds run outside Claude Code.
 
 ## E2E Testing — Tauri + WebView2 + WDIO
 
@@ -705,7 +662,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 **Problem:** WDIO v9 + msedgedriver 146 negotiate BiDi protocol despite `wdio:enforceWebDriverClassic: true`. BiDi internally calls `browsingContext.navigate` which hangs forever because Vite's HMR WebSocket prevents `readyState === "complete"`.
 **Solution:** 3-layer fix: (1) `--disable-bidi` flag on msedgedriver spawn (primary — kills BiDi negotiation entirely), (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list` before spawning msedgedriver. Reduced blind delay from 6s to 2s (only covers DOM hydration gap now).
-**Context:** `wdio.conf.ts` — msedgedriver spawn args, capabilities block, `waitForAppRoute()` helper. See `docs/E2E-DEBUGGING.md` for full history.
+**Context:** `wdio.conf.ts` — msedgedriver spawn args, capabilities block, `waitForAppRoute()` helper. (Full original debugging history was in the retired `docs/E2E-DEBUGGING.md` — see git history if needed.)
 
 ## [getHTML(false) causes spec timeout when body contains base64 thumbnails]
 

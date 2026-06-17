@@ -21,12 +21,11 @@ Read the user's `<context>` block carefully. Identify:
 
 Run these in parallel:
 
-1. **Memory** — `C:\Users\Manasak\.claude\projects\C--apps-rushcut\memory\MEMORY.md` — current state, batch status, critical constraints
-2. **Context doc** — `docs/CONTEXT.md` — current sprint state, next priority, deferred items
-3. **LEARNINGS.md** — `docs/LEARNINGS.md` — known failure patterns relevant to the request
-4. **Relevant rules file** — pick the matching file(s) from `.claude/rules/` (pipeline.md / rust-tauri.md / e2e.md) based on which layer is touched
-5. **Design system** — `docs/DESIGN.md` — **always read this when the request touches any UI component** (new screen, modified component, copy change, colour/layout decision)
-6. **GitHub Issues — always fetch the relevant ticket(s):**
+1. **Memory** — `C:\Users\Manasak\.claude\projects\C--apps-rushcut\memory\MEMORY.md` — read in full; it is the single source for current state + next task (CONTEXT.md no longer exists). Small file by design.
+2. **LEARNINGS.md** — `docs/LEARNINGS.md` is a large pattern library — **do NOT read it in full.** `Grep` it for the patterns relevant to this request (e.g. the component, FFmpeg filter, or failure class involved) and read only the matching entries.
+3. **Relevant rules file** — pick the matching file(s) from `.claude/rules/` (pipeline.md / rust-tauri.md / e2e.md) based on which layer is touched
+4. **Design system** — `docs/DESIGN.md` — **always read this when the request touches any UI component** (new screen, modified component, copy change, colour/layout decision)
+5. **GitHub Issues — always fetch the relevant ticket(s):**
 
    **Case A — specific batch or issue named** (e.g. "let's do U5c", "fix #29", "start V1.2"):
    - Find the issue: `gh issue list --repo bondybondbond/rushcut --search "U5c" --state open --json number,title` (or use the issue number directly)

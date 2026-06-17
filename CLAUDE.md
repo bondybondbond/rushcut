@@ -36,17 +36,25 @@
 
 ---
 
+## Docs model (what lives where)
+
+Four buckets — keep them separate; never let one accumulate another's content:
+
+- **State** (current phase + next task): **MEMORY.md only** (auto-loaded each session). Overwrite, never append a diary.
+- **Reference** (looked up on demand, deduplicated, no chronological entries): `docs/DESIGN.md`, `docs/LEARNINGS.md`, `.claude/rules/*`.
+- **Strategic** (forward roadmap only): `docs/PRD-DEV.md`.
+- **History + backlog**: git log + GitHub Issues + `docs/archive/` — never duplicated into the live docs.
+
 ## Key docs (read when relevant)
 
 | File                | When to read                                                              |
 | ------------------- | ------------------------------------------------------------------------- |
 | `docs/DESIGN.md`    | **Always** before touching any UI — colours, fonts, spacing, copy tone    |
-| `docs/CONTEXT.md`   | Start of a feature session — current batch, deferred items, next priority |
-| `docs/PRD-DEV.md`   | Strategic direction, active batch specs, AI Enablement section, Phase 3 preview, and swimlane legend |
-| `docs/LEARNINGS.md` | Debugging a known class of problem (FFmpeg, pipeline, E2E) — **read before any in-session DB verification** (MSIX container path trap) |
+| `docs/LEARNINGS.md` | Debugging a known class of problem (FFmpeg, pipeline, E2E) — pattern library; grep for the relevant pattern, don't read in full. **Read before any in-session DB verification** (MSIX container path trap) |
+| `docs/PRD-DEV.md`   | Strategic direction only — forward roadmap (AI Director, Auth/4K/Tier), AI Enablement, Phase 3 preview, swimlane legend. **No changelog, no backlog** (those moved to git log + GitHub Issues). |
 | `.claude/rules/`    | Path-specific technical rules — load the relevant file, not all of them   |
 | GitHub Projects #1  | **Execution backlog** — `gh project item-list 1 --owner bondybondbond --format json` to read; `gh issue view <n> --repo bondybondbond/rushcut --comments` to get the full brief for a ticket (body + session comments = primary input for planning). Use `gh issue create` + `gh project item-add` to write new items; `gh issue comment` to annotate existing ones. Swimlane, RICE, and field IDs: `.claude/skills/rushcut-wrapup/SKILL.md` Step 2.5. |
-| `docs/archive/`     | Historical reference only. `phase1/` = Phase 1 architecture + changelog. `completed-plans/` = shipped batch plan specs (U1, U4d subbatches, photo feature, splash diagnostics). Do not modify. |
+| `docs/archive/`     | Historical reference only. `phase1/` = Phase 1 architecture + changelog. `completed-plans/` = shipped batch plan specs + the full pre-2026-06-18 PRD-DEV batch history/changelog (`PRD-DEV-batches-14-N-full.md`). `DECISIONS.md` / `PRD.md` / `COMPETITORS.md` = retired strategy docs. Do not modify. |
 
 ---
 

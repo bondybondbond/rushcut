@@ -255,3 +255,22 @@
 - Supabase still used for job/clip state tracking (unchanged contract)
 - R2 retained idle for Phase 3 cloud share-link feature
 - Phase 3 will reintroduce cloud mode for users who want it (Vercel + Lambda reactivated)
+
+---
+
+## DEC-024 — Guided clip-review editor (anti-fake-AI)
+
+**Decision:** Product pivots to a guided clip-review editor — the user sets IN/OUT + focal point per clip; the pipeline does deterministic assembly. No invisible auto-curation.
+**Anchor:** "RushCut does not decide your memories for you. It helps you shape them quickly." / "Anti-fake-AI, not anti-AI."
+
+## DEC-025 — AI policy: selective, user-visible only
+
+**Decision:** AI is used only where the improvement is demonstrable and sellable. Never for internals the user can't see or verify. Referenced throughout PRD-DEV.md AI Enablement as "qualifies under AI policy."
+
+## DEC-026 — Clip Review has two modes
+
+**Decision:** Quick (default: Include/Skip + focal point only) and Precise (opt-in per clip: adds IN/OUT handles + zoom preset). Quick mode must be fast enough that a 60-clip session is not a chore. (Note: superseded in practice by the task-based screen architecture — Trimmer/Arrange/Sound — but the "don't force full manual trimming on every clip" principle stands.)
+
+## DEC-027 — Post-review editor stays minimal
+
+**Decision:** The editor does reorder, music, transition, intro/outro, render — no feature creep. Any per-clip decision belongs in the review/trim screens, not a catch-all editor.

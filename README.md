@@ -35,7 +35,7 @@ rushcut/
 
 **Phase:** Pre-build — PRD drafted, architecture defined, not yet in code.
 
-**Next step:** Scaffold Next.js app + test FFmpeg Lambda pipeline locally with real DJI footage. See `docs/PRD.md` Phase 1.
+**Next step:** Scaffold Next.js app + test FFmpeg Lambda pipeline locally with real DJI footage. See `docs/archive/PRD.md` (Phase 1, historical).
 
 ---
 
@@ -49,14 +49,16 @@ rushcut/
 | Video processing | FFmpeg on AWS Lambda (containerised)        |
 | Payments         | Stripe                                      |
 
-Full stack rationale in `docs/ARCHITECTURE.md`.
+Full stack rationale in `docs/archive/phase1/ARCHITECTURE-phase1.md` (historical — superseded by the Tauri build; see `CLAUDE.md`).
 
 ---
 
 ## For AI assistants reading this
 
-- Start with `docs/PRD.md` for full product context
-- Check `docs/DECISIONS.md` before suggesting architectural changes — decisions already made are logged there with reasons
-- Check `docs/CHANGELOG.md` for what was last worked on
-- The author uses Claude Code as primary coding assistant
+> **This README predates the Tauri pivot** — the "Current status" and "Tech stack" sections above describe the retired Phase-1 cloud architecture (Next.js / Supabase / R2 / Lambda), which is gone. Do not treat them as current.
+
+- **Start with `CLAUDE.md`** (repo root) — the canonical, current entry point: architecture, critical rules, and the docs model.
+- Current state + next task: the project memory (`MEMORY.md`); execution backlog: GitHub Projects #1.
+- Historical Phase-1 product context and decision log are archived under `docs/archive/` (`PRD.md`, `DECISIONS.md`, `phase1/`).
+- The author uses Claude Code as primary coding assistant.
 - No rush on timeline — quality over speed, personal pain point drives all prioritisation

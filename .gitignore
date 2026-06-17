@@ -26,6 +26,13 @@ src-tauri/gen/
 .DS_Store
 Thumbs.db
 
+# SQLite DBs — the real DB lives in %APPDATA%\rushcut, never in the repo.
+# Guards against stray DB files written with a corrupted path-as-filename.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
 # Editor
 .vscode/
 .idea/
