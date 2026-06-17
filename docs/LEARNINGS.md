@@ -1,7 +1,29 @@
 # LEARNINGS.md — rushcut
 
-Pattern library. Organised by topic. Add to existing sections — do NOT add dated/batch headers.
-Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
+Pattern library. **Category lives in the header tag, not the file order** — entries stay chronological underneath.
+Each entry: `## <Tag> — <title>`, problem in ≤1 sentence, fix in ≤2 sentences. Do NOT add dated/batch headers.
+
+**How to use:** don't read this file in full. To pull a category, grep the tag, e.g. `grep -nE "^## E2E" docs/LEARNINGS.md`.
+
+**Category tags (grep these):**
+
+| Tag | Scope |
+|-----|-------|
+| `Workflow` | Session mechanics — DB cross-check, WSL reads, MCP/CDP, tooling, multi-line script traps |
+| `React` | Component/state/media-element patterns, refs, render lifecycle |
+| `WebView2` | Video playback, first-frame repaint, GPU compositor, `play()`/seek races |
+| `FFmpeg` | `filter_complex`, codecs, audio, version-specific option changes |
+| `Pipeline` / `Pipeline Python` / `Pipeline events` | render.py, manifest fields, Tauri↔React event contract |
+| `Proxy` | Proxy gen, reuse gate, concurrency guards, resolution-awareness |
+| `Tauri` | Commands, plugins, capabilities, Win32 dialogs |
+| `E2E` | WDIO, msedgedriver, CDP, spec/selector hygiene |
+| `SQLite` | datetime comparisons, schema constraints |
+| `CSS` | Animations, compositor acceleration |
+| `UI` / `UX` | Display-value mapping, product decisions (locked) |
+| `Platform` / `Diagnostics` | AMD GPU TDR, MPO, WSL2 memory limits |
+| `DJI` | Osmo Pocket 3 container/stream specifics |
+
+When adding an entry, reuse one of these tags so category-grep stays reliable. New tag → add a row here.
 
 ---
 
@@ -508,7 +530,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ## Pipeline events — Tauri / React contract
 
-## [Stage label clobber]
+## Pipeline events — Stage label clobber
 
 **Problem:** `pipeline-progress` Rust event includes a `stage` field (e.g. `"processing"`), which immediately overwrites the human-readable label set by the `pipeline-stage` event one line earlier.
 **Solution:** `pipeline-progress` must only emit `{ jobId, progress }`. The `pipeline-stage` event exclusively owns the label; the React progress handler must only call `setProgress`, not `setStage`.
@@ -652,91 +674,91 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 
 ## E2E Testing — Tauri + WebView2 + WDIO
 
-## [WDIO BiDi reports stale about:blank for WebView2 attach mode]
+## E2E — WDIO BiDi reports stale about:blank for WebView2 attach mode
 
 **Problem:** WDIO v9 enables WebDriver BiDi by default; `browsingContext.getTree` returns `about:blank` even when CDP `/json/list` shows the correct URL — the BiDi protocol has a known mismatch with WebView2's CDP attach implementation.
 **Solution:** Add `"wdio:enforceWebDriverClassic": true` to the capability. This disables BiDi and uses classic WebDriver protocol, which reads the correct URL.
 **Context:** `wdio.conf.ts` capabilities block. Required any time msedgedriver attaches to an already-running WebView2 via `ms:edgeOptions.debuggerAddress`.
 
-## [msedgedriver BiDi negotiation hangs on Vite HMR WebSocket]
+## E2E — msedgedriver BiDi negotiation hangs on Vite HMR WebSocket
 
 **Problem:** WDIO v9 + msedgedriver 146 negotiate BiDi protocol despite `wdio:enforceWebDriverClassic: true`. BiDi internally calls `browsingContext.navigate` which hangs forever because Vite's HMR WebSocket prevents `readyState === "complete"`.
 **Solution:** 3-layer fix: (1) `--disable-bidi` flag on msedgedriver spawn (primary — kills BiDi negotiation entirely), (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list` before spawning msedgedriver. Reduced blind delay from 6s to 2s (only covers DOM hydration gap now).
 **Context:** `wdio.conf.ts` — msedgedriver spawn args, capabilities block, `waitForAppRoute()` helper. (Full original debugging history was in the retired `docs/E2E-DEBUGGING.md` — see git history if needed.)
 
-## [getHTML(false) causes spec timeout when body contains base64 thumbnails]
+## E2E — getHTML(false) causes spec timeout when body contains base64 thumbnails
 
 **Problem:** `$("body").getHTML(false)` in WDIO specs transfers the entire body innerHTML (~1.9MB when MediaPantry clips have base64 thumbnail data) through WebDriver, taking >10 minutes and exceeding the Mocha 600s spec timeout.
 **Solution:** Never call `getHTML(false)` to check for a string in specs — use targeted element selectors (`$('[data-testid="..."]').getText()` or `$$("button").find()`) or `browser.execute(() => document.querySelector("...").textContent)` to check specific nodes. Only use `getHTML` on small, known-bounded DOM subtrees.
 **Context:** `e2e/trimmer.spec.ts` — any spec that runs after clips are loaded into MediaPantry. The thumbnail base64 data is embedded in every `<img>` in the pantry grid and makes the full body HTML enormous.
 
-## [E2E spec route waits and text assertions rot silently after flow changes]
+## E2E — spec route waits and text assertions rot silently after flow changes
 
 **Problem:** URL `waitUntil` strings and `toContain()` text checks become stale without any compile error when routing or UI copy changes. Examples: `gap-editor.spec.ts` waited for `/editor/` after "Open project" routes to `/trimmer/`; `trimmer.spec.ts` checked for `"In Film"` text that was removed in Batch 16b C3 (replaced by a green SVG dot badge with no text).
 **Solution:** After any routing change or UI copy removal, grep `e2e/**/*.spec.ts` for the old URL strings and old text values and update them. `document.body.textContent` is safer than `getHTML()` but still silently misses removed text. Always verify text assertions still match current UI copy.
 **Context:** Any E2E spec maintenance pass after a navigation-layer batch. Run `grep -n "toContain\|waitUntil\|includes" e2e/*.spec.ts` to surface candidates.
 
-## [Stale WebView2 subprocess holds CDP port between test runs]
+## E2E — stale WebView2 subprocess holds CDP port between test runs
 
 **Problem:** Killing `rushcut.exe` does not kill the WebView2 subprocess (a separate OS process). The stale subprocess holds port 9222 across test runs; the next run attaches to a dead WebView2, causing `getUrl()` to time out.
 **Solution:** In `beforeSession`, use PowerShell `Get-NetTCPConnection -LocalPort 9222 | Stop-Process -Force` to kill whatever process holds the port before launching the binary.
 **Context:** `wdio.conf.ts` `beforeSession` cleanup block. Also `taskkill /F /IM rushcut.exe` and `/IM msedgedriver.exe`.
 
-## [browser.url() hangs indefinitely with Vite dev server]
+## E2E — browser.url() hangs indefinitely with Vite dev server
 
 **Problem:** `browser.url("http://localhost:1420/")` hangs for 2+ minutes because WDIO's `POST /session/:id/url` waits for `document.readyState === "complete"`. Vite's persistent HMR WebSocket prevents this state from ever firing.
 **Solution:** Remove all `browser.url()` calls. Instead, poll `browser.getUrl()` using `browser.waitUntil()` and check for the expected route substring (e.g. `url.includes("/upload")`).
 **Context:** `e2e/fast.spec.ts` `before` hook; any spec that runs against the debug binary (Vite dev server).
 
-## [CDP /json/list URL vs WebDriver getUrl() mismatch]
+## E2E — CDP /json/list URL vs WebDriver getUrl() mismatch
 
 **Problem:** CDP REST `/json/list[].url` reflects the browser process's pending navigation target (e.g. `http://localhost:1420/`), while WebDriver `GET /url` reflects the renderer process (which may still show `about:blank` during navigation).
 **Solution:** Use `/json/list` only to confirm the app has launched and navigated away from blank — not as a proxy for what WebDriver will return. Always use `browser.waitUntil(getUrl())` after attaching msedgedriver.
 **Context:** `wdio.conf.ts` `checkTargets` function.
 
-## [Tailwind hover variants appear in class attribute — toContain() matches inactive state]
+## E2E — Tailwind hover variants appear in class attribute (toContain matches inactive state)
 
 **Problem:** `expect(el.getAttribute("class")).toContain("border-white/60")` matches even when the element is *inactive*, because the inactive class string contains `hover:border-white/60`. The Tailwind class attribute is a literal space-separated string of utility names including all variants.
 **Solution:** When asserting active vs inactive state with `toContain`, pick a token that exists **only** in the active class — not also present as a hover variant of the inactive class. Prefer background tokens (`bg-white/15`) over border tokens when the inactive class uses a matching hover border (`hover:border-white/60`). For inactive negation use `not.toContain("bg-white/15")`.
 **Context:** Any WDIO spec asserting chip active/inactive state on elements whose inactive style has hover variants that share a colour token with the active style.
 
-## [Prefer debug binary over release for E2E; release binary is stale after source changes]
+## E2E — prefer debug binary over release; release binary is stale after source changes
 
 **Problem:** The release binary has the frontend embedded at build time. After adding `data-testid` attrs, a release binary built before those changes will fail all selector-based tests.
 **Solution:** In `wdio.conf.ts`, check for the debug binary first (`src-tauri/target/debug/rushcut.exe`), fall back to release. Debug binary loads the frontend from the live Vite dev server and always reflects current source without a full `tauri build`.
 **Context:** `wdio.conf.ts` `APP_PATH` / `usingDebug` constants.
 
-## [Chrome-devtools MCP UIDs go stale after React re-renders]
+## E2E — chrome-devtools MCP UIDs go stale after React re-renders
 
 **Problem:** After clicking a button that changes React state (navigation, chip toggle), all UIDs from the previous `take_snapshot`/`wait_for` are invalidated. Clicking a stale UID errors with "Element with uid X no longer exists".
 **Solution:** Always take a fresh snapshot (`take_snapshot` or `wait_for`) before every interaction after a state change. For sequential clicks in a loop (e.g., music chips), add ~200ms delay or take a snapshot between each click.
 **Context:** `rushcut-eval` skill — applies to any chrome-devtools MCP interaction with a React app.
 
-## [WDIO/Jest `expect(val, message)` 2-arg form not supported]
+## E2E — WDIO/Jest `expect(val, message)` 2-arg form not supported
 
 **Problem:** `expect(value, "error message").toBe(...)` throws "Expect takes at most one argument" — this Jest version doesn't accept a custom message as the second arg to `expect()`.
 **Solution:** For value assertions use `expect(value).toBe(...)` without a message. For null/existence guards use `if (!x) throw new Error("x missing")` before the assertion.
 **Context:** `e2e/gap-editor.spec.ts` and `e2e/render.spec.ts` — any spec using a message arg on `expect()`.
 
-## [isExisting() returns immediately — fails on async-loaded elements]
+## E2E — isExisting() returns immediately (fails on async-loaded elements)
 
 **Problem:** `$('[data-testid="btn-render-film"]').isExisting()` returns `false` when the element renders conditionally after an async `useEffect` (e.g. `get_project` + `has_4k_clips_cmd` resolve 1–2s after mount), so a click is skipped and downstream assertions never see the expected state. The Render screen starts in `"starting"` phase (spinner only); `btn-render-film` only appears in `"ready"` phase.
 **Solution:** Replace `isExisting()` with `waitForExist({ timeout: N })` wrapped in try/catch. On timeout, treat the absence as expected (non-4K path auto-starts without a button) and continue. `isExisting()` is only safe for elements that must be present synchronously.
 **Context:** `e2e/render.spec.ts` — applies to any spec asserting conditional UI that renders after an async data fetch. Root cause: Render screen `useState<Phase>("starting")` + `Promise.all([get_project, has_4k_clips_cmd])` in `useEffect`.
 
-## [Progress element disappears before poll catches 100%]
+## E2E — progress element disappears before poll catches 100%
 
 **Problem:** `waitUntil` polling for `progress-pct >= 100` times out even when the pipeline succeeds. The done state renders and removes the progress element between two 2s poll intervals — the poller never sees 100%.
 **Solution:** Include the "done" state as an alternative early-exit condition: `if (await h1.getText() === "Your film is ready") return true` before checking the progress value.
 **Context:** `e2e/render.spec.ts` — any spec that polls a transitional UI element that disappears on completion.
 
-## [invoke() via evaluate_script bypasses React state]
+## E2E — invoke() via evaluate_script bypasses React state
 
 **Problem:** Calling `window.__TAURI_INTERNALS__.invoke("scan_folder")` via `evaluate_script` returns data from Rust but doesn't update the React component's state (no `setClips()` call). Upload page shows no clips.
 **Solution:** Accept this as a permanent limitation. Use `invoke("scan_folder")` only to get clip metadata for `create_project`, not to populate UI. Mark clip display checks as SKIP in eval.
 **Context:** `rushcut-eval` skill — Upload page eval section.
 
-## [Workflow: E2E spec planning requires reading routing + page components, not just spec files]
+## E2E — spec planning requires reading routing + page components, not just spec files
 
 **Problem:** When planning E2E spec fixes, exploring only the spec files and `e2e.md` misses the current navigation target. The plan assumed "Open project" still routes to `/editor/` — requiring 3 planning iterations before implementation.
 **Solution:** For any E2E task involving navigation: always read `src/App.tsx` (route map), the relevant page component (`Trimmer.tsx`, `Editor.tsx`, etc.), and `StepNav.tsx` in the initial Phase 1 exploration. The spec's expected URL is only correct if you verify it against the actual route registered in `App.tsx`.
@@ -751,7 +773,7 @@ Each bullet: problem in ≤1 sentence, fix in ≤2 sentences.
 **If Vite + binary must be launched from tools:** Use a single PowerShell call that starts Vite as a `Start-Job` AND launches the binary before the call returns. Background jobs from PowerShell persist for the lifetime of that PowerShell invocation — they die when the shell exits. Bash `&` background processes die immediately. The only reliable pattern: `$viteJob = Start-Job { cd C:\apps\rushcut; pnpm dev:vite }; Start-Sleep 12; Start-Process rushcut.exe`. Both operations must be in the same PowerShell tool call.
 **Context:** `rushcut-eval` skill — pre-flight check before any MCP screenshot or WDIO run. Confirmed Batch B Run 3 (2026-05-03): Bash background Vite died between calls, requiring 8 extra round trips.
 
-## [Render screen: auto-start is better UX than idle-with-button]
+## UX — Render screen auto-start beats idle-with-button
 
 **Problem:** An idle render screen with a single "Render Film" button adds unnecessary friction — user has already made all decisions (clips, transition, sound) on prior screens. The single button buys nothing.
 **Solution:** Auto-start render on mount: `get_project` → `start_job` immediately in `useEffect`. Show a "starting" spinner state while the project loads, then transition directly to the progress bar. No idle phase. "Try Again" in the error state is the only explicit re-trigger.
