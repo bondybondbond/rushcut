@@ -7,21 +7,21 @@ Each entry: `## <Tag> — <title>`, problem in ≤1 sentence, fix in ≤2 senten
 
 **Category tags (grep these):**
 
-| Tag | Scope |
-|-----|-------|
-| `Workflow` | Session mechanics — DB cross-check, WSL reads, MCP/CDP, tooling, multi-line script traps |
-| `React` | Component/state/media-element patterns, refs, render lifecycle |
-| `WebView2` | Video playback, first-frame repaint, GPU compositor, `play()`/seek races |
-| `FFmpeg` | `filter_complex`, codecs, audio, version-specific option changes |
-| `Pipeline` / `Pipeline Python` / `Pipeline events` | render.py, manifest fields, Tauri↔React event contract |
-| `Proxy` | Proxy gen, reuse gate, concurrency guards, resolution-awareness |
-| `Tauri` | Commands, plugins, capabilities, Win32 dialogs |
-| `E2E` | WDIO, msedgedriver, CDP, spec/selector hygiene |
-| `SQLite` | datetime comparisons, schema constraints |
-| `CSS` | Animations, compositor acceleration |
-| `UI` / `UX` | Display-value mapping, product decisions (locked) |
-| `Platform` / `Diagnostics` | AMD GPU TDR, MPO, WSL2 memory limits |
-| `DJI` | Osmo Pocket 3 container/stream specifics |
+| Tag                                                | Scope                                                                                    |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `Workflow`                                         | Session mechanics — DB cross-check, WSL reads, MCP/CDP, tooling, multi-line script traps |
+| `React`                                            | Component/state/media-element patterns, refs, render lifecycle                           |
+| `WebView2`                                         | Video playback, first-frame repaint, GPU compositor, `play()`/seek races                 |
+| `FFmpeg`                                           | `filter_complex`, codecs, audio, version-specific option changes                         |
+| `Pipeline` / `Pipeline Python` / `Pipeline events` | render.py, manifest fields, Tauri↔React event contract                                   |
+| `Proxy`                                            | Proxy gen, reuse gate, concurrency guards, resolution-awareness                          |
+| `Tauri`                                            | Commands, plugins, capabilities, Win32 dialogs                                           |
+| `E2E`                                              | WDIO, msedgedriver, CDP, spec/selector hygiene                                           |
+| `SQLite`                                           | datetime comparisons, schema constraints                                                 |
+| `CSS`                                              | Animations, compositor acceleration                                                      |
+| `UI` / `UX`                                        | Display-value mapping, product decisions (locked)                                        |
+| `Platform` / `Diagnostics`                         | AMD GPU TDR, MPO, WSL2 memory limits                                                     |
+| `DJI`                                              | Osmo Pocket 3 container/stream specifics                                                 |
 
 When adding an entry, reuse one of these tags so category-grep stays reliable. New tag → add a row here.
 

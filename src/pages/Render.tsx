@@ -114,6 +114,12 @@ export default function Render() {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
   const videoLoadedRef = useRef(false);
+  // #32: spam guard for the external player. cmd /c start is fire-and-forget, so each
+  // click of "Open film" spawns a separate player window. A 1s debounce keyed on the
+  // last-open wall-clock time collapses a double/triple-click into one launch while
+  // still allowing a deliberate re-open ~1s later. Only the timestamp lives in the ref;
+  // openInPlayer is a plain in-body function so it always reads the current outputPath.
+  const lastOpenRef = useRef<number>(0);
   // #55: a render's output file can be deleted between sessions. `fileOnDisk` is checked
   // whenever a done-state output path is shown (load path AND fresh pipeline-done) and gates
   // the "Open film"/"Open folder" actions + the "Saved to" link. Works for 1080p AND 4K.
@@ -652,6 +658,17 @@ export default function Render() {
   // to the pipeline-reported value when the file is missing.
   const durationDisplay = videoDuration != null ? fmtDuration(videoDuration) : (doneMeta?.analysisDuration ?? null);
 
+  // #32: debounced launch of the external system player. Shared by both the primary
+  // "Open film" button and the playback-failed fallback; a single ref collapses rapid
+  // clicks on either into one window. Reads outputPath fresh on every call.
+  const openInPlayer = () => {
+    if (!outputPath) return;
+    const now = Date.now();
+    if (now - lastOpenRef.current < 1000) return;
+    lastOpenRef.current = now;
+    invoke("open_in_player_cmd", { path: outputPath });
+  };
+
   return (
     <EditorShell
       projectId={projectId ?? ""}
@@ -868,7 +885,7 @@ export default function Render() {
                     <>
                       <button
                         data-testid="btn-open-in-player"
-                        onClick={() => invoke("open_in_player_cmd", { path: outputPath })}
+                        onClick={openInPlayer}
                         className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] bg-[#FF8A65] text-[#0a0a0a] font-semibold text-[14px] rounded-lg hover:bg-[#ff9e7a] transition-all duration-150 text-left"
                       >
                         <Play size={15} fill="currentColor" stroke="none" className="flex-shrink-0" />
@@ -957,7 +974,7 @@ export default function Render() {
                   </p>
                   <button
                     data-testid="btn-playback-open-player"
-                    onClick={() => invoke("open_in_player_cmd", { path: outputPath })}
+                    onClick={openInPlayer}
                     className="flex-shrink-0 px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
                   >
                     Open in system player

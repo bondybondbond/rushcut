@@ -40,15 +40,15 @@ User decides. Pipeline executes. Every UI decision should reinforce this: give c
 
 **Minimum readable text: `text-xs` (12px).** Never go below this for any interactive or readable element — buttons, hints, labels, chips. `text-sm` (14px) remains the floor for body content. The only permitted sub-12px text is purely decorative timeline overlay data (ruler ticks, clip sequence badges, duration labels inside StickyFilmStrip clip tiles) — those are visual data embedded in a dense graphic context, not readable running text.
 
-| Role               | Class                                   | Size        |
-| ------------------ | --------------------------------------- | ----------- |
-| Page heading       | `text-3xl font-semibold text-[#FF8A65]` | 30px, peach |
-| Section heading    | `text-xl font-medium text-[#e5e5e5]`    | 20px        |
-| Body / labels      | `text-base text-[#e5e5e5]`              | 16px        |
-| Secondary text     | `text-base text-[#a3a3a3]`              | 16px        |
-| Small label        | `text-sm text-[#a3a3a3]`                | 14px        |
-| Muted / hint       | `text-sm text-[#555555]`                | 14px        |
-| Micro-control / UI chrome | `text-xs text-[#a3a3a3]`        | 12px — minimum floor for interactive/readable elements |
+| Role                      | Class                                   | Size                                                   |
+| ------------------------- | --------------------------------------- | ------------------------------------------------------ |
+| Page heading              | `text-3xl font-semibold text-[#FF8A65]` | 30px, peach                                            |
+| Section heading           | `text-xl font-medium text-[#e5e5e5]`    | 20px                                                   |
+| Body / labels             | `text-base text-[#e5e5e5]`              | 16px                                                   |
+| Secondary text            | `text-base text-[#a3a3a3]`              | 16px                                                   |
+| Small label               | `text-sm text-[#a3a3a3]`                | 14px                                                   |
+| Muted / hint              | `text-sm text-[#555555]`                | 14px                                                   |
+| Micro-control / UI chrome | `text-xs text-[#a3a3a3]`                | 12px — minimum floor for interactive/readable elements |
 
 ---
 
@@ -148,6 +148,7 @@ Single row below the preview: `[filled-peach play btn] [range input accent-[#FF8
 ### Timeline state badges
 
 Stacked in `flex gap-0.5`, `absolute bottom-1 right-1 z-10 pointer-events-none`:
+
 - **Zoom "Z" badge** — `w-3.5 h-3.5 rounded-sm bg-[#22c55e] flex items-center justify-center` with inner `<span className="text-[8px] font-bold text-[#0a0a0a] leading-none">Z</span>`. Shown when `clip.zoom_mode != null`.
 - **Volume dot** — `w-1.5 h-1.5 rounded-full bg-[#B794F4]` (`--rc-purple`). Shown when `clip.clip_volume !== 1.0`.
 
@@ -246,6 +247,7 @@ Trigger: only show the gate when the project actually has the capability (e.g. 4
 ```
 
 Rules:
+
 - Selection persists to `sessionStorage` so Retry re-reads it.
 - `buildConfig()` is called at click time (not at mount) so it captures the current chip state.
 - `"ready"` phase is conditional: only entered when `is4K === true`. Non-4K projects skip directly to `"starting"`.
@@ -310,6 +312,7 @@ When a 4K cold render is triggered (0/N proxies ready), the Render screen enters
 ```
 
 **Clip tile states:**
+
 - **Encoding (pulsing):** `rc-proxy-pulse` class — `box-shadow` blue ring at `rgba(153, 179, 255, 0.2–0.85)`, 1.4s ease-in-out infinite (defined in `globals.css`). Thumbnail visible in background.
 - **Done (green check):** No pulse class. Green `#22c55e` badge `w-4 h-4 rounded-sm` top-right with `<Check size={10} strokeWidth={3} text-[#0a0a0a]>`.
 - **Tile base:** `w-16 aspect-video rounded border border-white/15 bg-black bg-cover bg-center`.
@@ -355,6 +358,7 @@ Vertical card button with an animated thumbnail on top and a label below. Used o
 - **`data-testid="chip-transition-{value}"`** preserved on the `<button>` for E2E
 
 **Keyframe naming convention** (`src/globals.css`):
+
 - `rc-trans-{type}-a` / `rc-trans-{type}-b` — type is `none`, `cf` (crossfade), `dip`, `wipe`, `zoom`
 - None: `steps(1, end)` timing; Crossfade + Dip: `ease-in-out`; Wipe: `clip-path: inset()` animation; Zoom: `transform: scale()` + opacity — all 3s duration
 - Clip colours: A = `#1e3a4c` (dark teal), B = `#2d1a2f` (dark purple), container bg = `#000000`
@@ -429,6 +433,7 @@ The pipeline never receives `"shuffle"` — `shuffleBetween: true` causes `trans
 When the user chooses between fundamentally different content sources (e.g. No Music / Rushcut Library / Upload Own Track), render three source chips in a row at the top of the card. Selecting a source expands sub-content below with a thin separator.
 
 **Active state per source type:**
+
 - "Off" source (e.g. No Music): `border-white/60 text-white bg-white/15` — bright white signals "off" unambiguously, not music-blue
 - "On" sources (Library, Upload): standard `border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10`
 
@@ -460,6 +465,7 @@ Sub-chips (e.g. mood chips inside Library): separated by `border-t border-white/
 When a source requires a file picked via OS dialog, show two distinct states inside the expanded section:
 
 **Empty state** — no file chosen yet:
+
 ```tsx
 <button type="button" onClick={handleCustomTrack}
   className="flex items-center gap-2 w-full px-4 py-3 rounded-md border border-dashed border-white/25 text-sm text-[#a3a3a3] hover:border-white/50 hover:text-[#e5e5e5] transition-all duration-200">
@@ -469,6 +475,7 @@ When a source requires a file picked via OS dialog, show two distinct states ins
 ```
 
 **File chosen** — filename (prominent) + preview button + change link in a single row:
+
 ```tsx
 <div className="flex items-center gap-3">
   <p className="text-base font-semibold text-[#e5e5e5] truncate flex-1">filename.mp3</p>
@@ -486,6 +493,7 @@ Filename: `text-base font-semibold text-[#e5e5e5]` — 2 size steps above descri
 When a chip represents content with a known duration (e.g. a music track), append the duration inline in the chip label: `"Cinematic · 2:34"`. The badge is part of the chip text node — not a separate element — so it inherits the chip's active/inactive colour automatically.
 
 Rules:
+
 - Use `·` (middle dot `&middot;`) as the separator, with a space on each side.
 - Format via `fmtMs(ms)` — `M:SS` (minutes + zero-padded seconds). Define inline per file, not as a shared util.
 - Only show the badge when the duration is known. Render the bare label while probing: `{label}{dur !== undefined ? \` · ${fmtMs(dur * 1000)}\` : ""}`.
@@ -502,11 +510,12 @@ When both film duration and selected track duration are known, show a one-line s
 
 ```tsx
 <p className="text-sm text-[#a3a3a3]">
-  Film: {fmtMs(filmDurationMs)} &middot; Track: {fmtMs(selectedTrackMs)}{loopNote}
+  Film: {fmtMs(filmDurationMs)} · Track: {fmtMs(selectedTrackMs)}{loopNote}
 </p>
 ```
 
 Where `loopNote` is a derived `React.ReactNode` (computed above `return`, not an IIFE in JSX):
+
 - Track ≥ film: `<span className="text-[#22c55e]"> &mdash; long enough</span>` — green (`--rc-green`)
 - Track < film: `<span> &mdash; will loop ~{Math.ceil(filmDurationMs / selectedTrackMs)}x</span>` — secondary text, neutral
 
@@ -580,6 +589,7 @@ First introduced in Batch L for the Cards tab title/subtitle inputs. Use this pa
 ```
 
 Rules:
+
 - Surface: `bg-white/5` (subtle dark fill)
 - Border: `border-white/15` idle, `border-white/40` on focus — no colour ring
 - Text: `text-sm text-[#e5e5e5]`
@@ -651,11 +661,13 @@ Keep `cardTextColor` co-located per file — it's small enough that a shared uti
 Fixed to the bottom of the viewport on all editor screens. `src/components/BottomTabBar.tsx`.
 
 ### Container
+
 ```
 fixed bottom-0 left-0 right-0 h-12 bg-[#0a0a0a] border-t border-white/10 flex items-center px-2 gap-1 z-40
 ```
 
 ### Tab states
+
 ```tsx
 {/* Active tab — peach text + 2px bottom underline */}
 "flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-md text-[#FF8A65] relative"
@@ -669,29 +681,34 @@ fixed bottom-0 left-0 right-0 h-12 bg-[#0a0a0a] border-t border-white/10 flex it
 ```
 
 ### Tab icons (lucide-react)
-| Tab | Icon | data-testid |
-|---|---|---|
-| Home | `Home` | `tab-home` |
-| Trim | `Scissors` | `tab-trim` |
-| Arrange | `Layers` | `tab-arrange` |
-| Sound | `Music` | `tab-sound` |
-| Render | `Clapperboard` | `tab-render` |
+
+| Tab     | Icon           | data-testid   |
+| ------- | -------------- | ------------- |
+| Home    | `Home`         | `tab-home`    |
+| Trim    | `Scissors`     | `tab-trim`    |
+| Arrange | `Layers`       | `tab-arrange` |
+| Sound   | `Music`        | `tab-sound`   |
+| Render  | `Clapperboard` | `tab-render`  |
 
 Icons: `w-4 h-4`; labels: `text-[10px] leading-none font-medium`.
 
 ### Configuration state
+
 - `useConfiguredTabs(projectId)` reads sessionStorage and returns `Set<"arrange" | "sound">`.
 - "arrange" configured: `rc_transition_${projectId}` is non-null and !== `"none"`.
 - "sound" configured: `rc_sound_${projectId}` parsed JSON has `mood` that is non-null and !== `"none"`.
 - Active tab always shows peach regardless of configuration state.
 
 ### Render tab guard
+
 If `!configured.has("arrange") && !configured.has("sound")`, show `window.confirm("You haven't set transitions or music yet. Render anyway?")` before navigating to `/render/:id`. If user cancels, stay on current screen. If either is configured, navigate directly.
 
 ### RC wordmark
+
 Far-right of the tab bar: `text-[#FF8A65] font-bold text-sm tracking-widest ml-auto pr-2` — text `"RC"`. Batch I will replace with SVG logo.
 
 ### Layout note
+
 `EditorShell` uses `pb-12` on the outer `h-screen` container so center content scrolls above the fixed bar without overlap.
 
 ---
@@ -701,6 +718,7 @@ Far-right of the tab bar: `text-[#FF8A65] font-bold text-sm tracking-widest ml-a
 Shared layout wrapper for all editor screens. `src/components/EditorShell.tsx`.
 
 ### Layout structure
+
 ```
 h-screen pb-12 bg-[#0a0a0a] text-[#e5e5e5] overflow-hidden  (flex col)
 ├── TopInfoBar (h-7, flex-shrink-0)
@@ -721,19 +739,22 @@ h-screen pb-12 bg-[#0a0a0a] text-[#e5e5e5] overflow-hidden  (flex col)
 ```
 
 ### Width alignment rule
+
 The timeline row ALWAYS has `w-52 left gutter + filmstrip + w-48 effects`, regardless of whether the left panel (MediaPantry) is visible above. This keeps the filmstrip exactly the same width on every screen — no layout shift when navigating between Trim (with pantry) and Arrange/Sound (without). The left gutter is blank on Arrange/Sound screens and reserved for future per-screen timeline controls.
 
 **The controls column in Trimmer must be exactly `w-48`** (matching the effects aside) so the TrimBar and filmstrip share the same left/right edges.
 
 ### Per-screen column config
-| Screen | leftPanel | children layout | timelineHud |
-|---|---|---|---|
-| Trim | MediaPantry (w-52) | `flex h-full`: video+TrimBar (`flex-1`) + controls (`w-48`) | StickyFilmStrip |
-| Arrange | — | centered chip picker | StickyFilmStrip |
-| Sound | — | source selector | StickyFilmStrip |
-| Render | — | ready/rendering/done phases | — (no timeline, no ChosenEffects) |
+
+| Screen  | leftPanel          | children layout                                             | timelineHud                       |
+| ------- | ------------------ | ----------------------------------------------------------- | --------------------------------- |
+| Trim    | MediaPantry (w-52) | `flex h-full`: video+TrimBar (`flex-1`) + controls (`w-48`) | StickyFilmStrip                   |
+| Arrange | —                  | centered chip picker                                        | StickyFilmStrip                   |
+| Sound   | —                  | source selector                                             | StickyFilmStrip                   |
+| Render  | —                  | ready/rendering/done phases                                 | — (no timeline, no ChosenEffects) |
 
 ### Video container responsive sizing (Trimmer)
+
 Use `flex-1 min-h-0` on the video container div, NOT `flex-shrink-0 + aspectRatio + maxHeight`. With `flex-1 min-h-0`, the container fills available vertical space; the `<video>` inside uses `w-full h-full object-contain` to maintain aspect ratio with letterboxing. When the user manually resizes via the drag handle, override with `style={{ flex: "none", height: videoHeight }}`.
 
 **`flex-shrink-0 + aspectRatio` anti-pattern:** pins height to content-derived value; the container fails to grow when the window is maximised, and surrounding space goes unused instead of going to the video.
@@ -782,10 +803,12 @@ Imperatively-controlled overlay inside `videoContainerRef` to hide a `<video>` d
 Show with `clipCoverRef.current.style.display = "block"` in `useLayoutEffect` (fires before paint). Hide with `style.display = "none"` in the `seeked` event listener after the right frame is decoded. Never toggle via React state — the whole point is to bypass React's render cycle.
 
 ### `TopInfoBar`
+
 `h-7 flex items-center pl-4 bg-[#0a0a0a] border-b border-white/10 text-sm text-[#e5e5e5] flex-shrink-0`
 Content: `{projectName} · {N} clip(s) · {fmtMs(totalMs)}`. Clips omit "0 clips" gracefully. Duration omit when 0.
 
 ### `ChosenEffects`
+
 Rendered inside the timeline row's right aside (w-48), filling the same 100px height as the filmstrip. `data-testid="chosen-effects"`. Chip style: `bg-[#99B3FF]/20 border border-[#99B3FF]/50 text-[#99B3FF] text-xs px-2 py-0.5 rounded`. Header: `text-[10px] text-[#a3a3a3] uppercase tracking-widest`. Empty state: `text-xs text-[#a3a3a3] italic "None set"`. Add `h-full` to the root div so it fills the row height.
 
 ---
@@ -851,12 +874,12 @@ When a source clip has been cut into the film one or more times already, those r
 
 ### Visual spec
 
-| Property | Value |
-|---|---|
-| Fill | `rgba(153, 179, 255, 0.26)` — `#99B3FF` (badge blue) at 26% opacity |
-| Edges | Bracket gradient: edges 52%, fill 26%. `background: linear-gradient(to right, rgba(153,179,255,0.52) 0px, rgba(153,179,255,0.26) 10px, rgba(153,179,255,0.26) calc(100% - 10px), rgba(153,179,255,0.52) 100%)` |
-| Z-index | 2 — same tier as the waveform overlay; below selected region (z-3) |
-| Interactivity | `pointer-events-none` — purely decorative |
+| Property      | Value                                                                                                                                                                                                          |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fill          | `rgba(153, 179, 255, 0.26)` — `#99B3FF` (badge blue) at 26% opacity                                                                                                                                            |
+| Edges         | Bracket gradient: edges 52%, fill 26%. `background: linear-gradient(to right, rgba(153,179,255,0.52) 0px, rgba(153,179,255,0.26) 10px, rgba(153,179,255,0.26) calc(100% - 10px), rgba(153,179,255,0.52) 100%)` |
+| Z-index       | 2 — same tier as the waveform overlay; below selected region (z-3)                                                                                                                                             |
+| Interactivity | `pointer-events-none` — purely decorative                                                                                                                                                                      |
 
 ### Micro-cut guard
 
@@ -977,12 +1000,12 @@ The Master tab on the Sound screen is a full-screen film playback layout. It rep
 
 `flex items-center gap-3 px-4 py-3 border-t border-white/10 flex-shrink-0`
 
-| Element | Pattern |
-|---|---|
-| Play/Pause button | `w-8 h-8 rounded-full bg-[#FF8A65] text-[#0a0a0a]` — circular peach |
-| Progress bar track | `flex-1 h-1.5 bg-white/20 rounded-full cursor-pointer relative` |
-| Progress fill | `h-full bg-[#FF8A65] rounded-full pointer-events-none` — peach fill |
-| Elapsed/total timer | `text-sm text-[#a3a3a3] flex-shrink-0 tabular-nums font-mono` |
+| Element             | Pattern                                                             |
+| ------------------- | ------------------------------------------------------------------- |
+| Play/Pause button   | `w-8 h-8 rounded-full bg-[#FF8A65] text-[#0a0a0a]` — circular peach |
+| Progress bar track  | `flex-1 h-1.5 bg-white/20 rounded-full cursor-pointer relative`     |
+| Progress fill       | `h-full bg-[#FF8A65] rounded-full pointer-events-none` — peach fill |
+| Elapsed/total timer | `text-sm text-[#a3a3a3] flex-shrink-0 tabular-nums font-mono`       |
 
 ### Fade-out marker on progress bar
 
@@ -1013,6 +1036,7 @@ Both dual-buffer slot `<video>` elements start with `pointer-events: none` (set 
 Fix: add a transparent `absolute inset-0 z-10 cursor-pointer` overlay div that is rendered ONLY while idle (not playing and not paused and `inFilm.length > 0`). Its `onClick` calls `startFilmPlayback`. The overlay unmounts the instant playback starts, so it never intercepts subsequent click-to-toggle interactions (those go to the active video slot, whose `pointer-events` were restored by `setSlotVisible`).
 
 **Z-index rules for the video area stack:**
+
 - Slot `<video>` elements: no explicit z-index (stacked by DOM order)
 - Idle click-catcher overlay: `z-10` — above the slots, catches the click
 - Controls bar (scrubber + play button): must live in a SEPARATE sibling div BELOW the video area container, or use `relative z-20` if nested — must always win the stacking order over the overlay
@@ -1040,6 +1064,7 @@ Two `<video>` elements (slot A + slot B) are stacked `absolute inset-0 w-full h-
 Both slot `<video>` elements must have `onError` handlers. `onError` does NOT bubble — attach directly to each element.
 
 **Dual-buffer aware logic:** check `slot === activeFilmSlotRef.current` to decide recovery path:
+
 - **Inactive (preloaded) slot:** retry silently — swap src to `convertFileSrc(local_path)` and re-`load()`. No toast. If this also fails, leave the slot unplayable (it will be skipped when promoted).
 - **Active (playing) slot:** swap src + resume `play()` mid-playback; show a transient non-blocking note (4s auto-dismiss). If local_path also fails, advance past the clip.
 
@@ -1110,6 +1135,7 @@ The render done state uses a split card with a vertical divider: metadata left, 
 ```
 
 **Stats grid tokens:**
+
 - Label: `text-[11px] uppercase tracking-widest text-[#4a4946] font-medium`
 - Value: `text-[15px] font-semibold text-[#e5e5e5] mt-0.5`
 - Each stat is a `<div>` with a `pb-4 border-b border-white/[0.06]` bottom rule (last two skip the rule)
