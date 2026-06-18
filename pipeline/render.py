@@ -20,6 +20,7 @@ Entry points:
 import hashlib
 import logging
 import os
+import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -172,6 +173,34 @@ def _resolve_render_work_dir(job_id: "str | object") -> Path:
         user = Path(userprofile).name
         return Path(f"/mnt/c/Users/{user}/AppData/Local/Temp/rushcut/{job_id}")
     return Path(f"/tmp/rushcut-render/{job_id}")
+
+
+def _mem_available_mb() -> "int | None":
+    # Read MemAvailable from /proc/meminfo for U1g fallback diagnostics. MUST NEVER
+    # raise: this only feeds a log line, and a failure here must never fail a render.
+    # /proc/meminfo may be missing/unreadable/malformed in some environments -- a
+    # None return is a valid, expected outcome that callers format as "%s".
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    # "MemAvailable:   12345678 kB"
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        return None
+    return None
+
+
+def _classify_segmented_failure(exc: Exception) -> "tuple[str, int | None]":
+    # Collapsed taxonomy (logs-first): the only decision that matters next is
+    # whether monolithic is the legit fallback. ValueError from plan_video_batches
+    # means the project cannot be segmented (no solo region) -> "planner". Anything
+    # else is "other"; we still parse the FFmpeg exit code as a concrete signal
+    # (e.g. 15 = SIGTERM/OOM) when the message carries it.
+    if isinstance(exc, ValueError):
+        return ("planner", None)
+    m = re.search(r"FFmpeg failed \(exit (-?\d+)\)", str(exc))
+    return ("other", int(m.group(1)) if m else None)
 
 
 def _prune_zoom_cache(cache_dir: Path) -> None:
@@ -808,6 +837,10 @@ def run_pipeline(
         # ---------------------------------------------------------------
         BATCH_SIZE = 4
 
+        # Mutable progress holder so the outer fallback handler can report which
+        # batch was in flight (and its input size) when a failure occurred.
+        progress = {"batch": 0, "total": 0, "batch_len": 0}
+
         def _render_segmented() -> None:
             seg_job_id = job.get("id") or job_id
             seg_tmp = _resolve_render_work_dir(seg_job_id)
@@ -819,6 +852,7 @@ def run_pipeline(
             )
             # May raise ValueError if a boundary clip has no solo region.
             plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
+            progress["total"] = len(plan)
             log.info(
                 "[U1g] segmented render: %d batches total=%.3fs xfade_dur=%.3f",
                 len(plan), total, xf,
@@ -840,6 +874,8 @@ def run_pipeline(
             covered_frames = 0
             for bi, b in enumerate(plan):
                 idxs = b["clip_indices"]
+                progress["batch"] = bi + 1
+                progress["batch_len"] = len(idxs)
                 bdurs = b["local_durations"]
                 bpaths = [current_paths[k] for k in idxs]
                 # Global cut between clip k and k+1 == per_cut_names[k]; this
@@ -952,8 +988,22 @@ def run_pipeline(
             try:
                 _render_segmented()
                 did_batched = True
+                log.info(
+                    "[U1g] segmented render complete (no fallback) batches=%s clips_total=%s mem_avail_mb=%s",
+                    progress["total"], len(current_paths), _mem_available_mb(),
+                )
             except Exception as e:  # noqa: BLE001 -- fall back to monolithic on any planner/encode failure
-                log.warning("[U1g] segmented render failed (%s) -- falling back to monolithic", e)
+                # Logs-first instrumentation (issue #7): capture full diagnostics on
+                # the (exit-15-prone) monolithic fallback so the next in-the-wild
+                # failure can be designed against without re-running. Behaviour
+                # unchanged -- still falls back to monolithic this session.
+                cls, ffmpeg_exit = _classify_segmented_failure(e)
+                log.warning(
+                    "[U1g][fallback] class=%s exc_type=%s ffmpeg_exit=%s mem_avail_mb=%s batch=%s/%s "
+                    "batch_len=%s clips_total=%s exc=%r -- falling back to monolithic",
+                    cls, e.__class__.__name__, ffmpeg_exit, _mem_available_mb(), progress["batch"],
+                    progress["total"], progress["batch_len"], len(current_paths), e,
+                )
                 did_batched = False
 
         if not did_batched:

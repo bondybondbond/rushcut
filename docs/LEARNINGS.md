@@ -120,7 +120,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 **Problem:** `_render_segmented()` writes segment files (`u1g_seg_N.mp4`) and the concat manifest (`u1g_concat.txt`) to `/tmp/<job_id>/` (WSL tmpfs). Under memory pressure from two sequential large 4K encodes, WSL can clear the directory between the last segment encode completing and the concat-assembly write. `concat_list.write_text()` then raises `[Errno 2] No such file or directory`; the outer `except Exception` catches it and falls back to the monolithic path — exactly the OOM scenario U1g was designed to avoid. Confirmed on job `db8f3aa6`: both batches completed (`drift=0`), then `/tmp/<job_id>/u1g_concat.txt` write failed.
 **Solution:** Move U1g segment files and concat manifest to NTFS `%TEMP%\rushcut\<job_id>\` — the same pattern already used by zoom-cache and `warm_zoom.py`. NTFS survives WSL memory events; tmpfs does not. FFmpeg can read NTFS via `/mnt/c/...` paths. U1g concat txt entries need the `/mnt/c/` prefix. This is Batch U4c.
-**Context:** `pipeline/render.py` `_render_segmented()` — `TMP_BASE = Path("/tmp")` line ~128; `concat_list.write_text()` line ~897. Symptom in logs: two `[U1g] segment frames=N expected=N drift=0` lines followed immediately by `[WARNING] [U1g] segmented render failed ([Errno 2] No such file or directory: '/tmp/.../u1g_concat.txt') -- falling back to monolithic`.
+**Context:** `pipeline/render.py` `_render_segmented()` — `TMP_BASE = Path("/tmp")` line ~128; `concat_list.write_text()` line ~897. Symptom in logs: two `[U1g] segment frames=N expected=N drift=0` lines followed immediately by `[WARNING] [U1g] segmented render failed ([Errno 2] No such file or directory: '/tmp/.../u1g_concat.txt') -- falling back to monolithic`. **Issue #7 follow-up (2026-06-18):** U4c fixed the `[Errno 2]` path but the blanket `except Exception` still silently drops to monolithic on any failure (OOM/exit-15, drift, etc.). Added structured instrumentation (`[U1g][fallback] class=... exc_type=... ffmpeg_exit=... mem_avail_mb=... batch=.../... batch_len=... clips_total=... exc=%r`) and an explicit `[U1g] segmented render complete (no fallback) batches=... clips_total=... mem_avail_mb=...` success marker. Hardening (planner-vs-other classification + BATCH_SIZE retry 4→3→2) deferred until a real `[U1g][fallback]` line is captured.
 
 ---
 
@@ -832,6 +832,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** PowerShell has a built-in automatic variable `$PID` (the current process ID). It is case-insensitive — assigning `$pid = "PVT_kwHO..."` throws `Cannot overwrite variable PID because it is read-only or constant`. Any GraphQL mutation that stores a project ID in `$pid` will silently abort the block.
 **Solution:** Use a different variable name (`$projId`, `$projectNodeId`), OR use Bash for `gh api graphql` calls that reference a project ID — Bash has no such reserved variable conflict and is required for multi-line heredoc mutations anyway.
 **Context:** Any PowerShell script setting GitHub Projects GraphQL node IDs. Bash (`gh api graphql -f query="$(cat file)"`) is already required for multi-line mutations — prefer it for all project-related GraphQL calls.
+
+---
+
+## Workflow — `gh issue view` returns empty body when issue has no comments; use `--json`
+
+**Problem:** `gh issue view <number> --repo owner/repo --comments` prints nothing when there are no comments — not even the issue body. The `--comments` flag apparently suppresses the body-only output path in some `gh` versions.
+**Solution:** Use `gh issue view <number> --repo owner/repo --json number,title,body,comments` to reliably get the body + comment array regardless of whether comments exist.
+**Context:** Any dev-plan session that reads a GitHub issue as the primary brief. Affects `gh` CLI in this environment (Windows, Claude Code session).
 
 ---
 
