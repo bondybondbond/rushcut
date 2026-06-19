@@ -181,11 +181,15 @@ export default function Render() {
 
   const configured = useConfiguredTabs(projectId ?? "");
 
-  const transitionVal = (() => {
+  const { transitionVal, openingTransitionVal, closingTransitionVal } = (() => {
     try {
       const tc = readTransitionConfig(projectId ?? "");
-      return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null);
-    } catch { return null; }
+      return {
+        transitionVal: tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null),
+        openingTransitionVal: tc.opening !== "none" ? tc.opening : null,
+        closingTransitionVal: tc.closing !== "none" ? tc.closing : null,
+      };
+    } catch { return { transitionVal: null, openingTransitionVal: null, closingTransitionVal: null }; }
   })();
   const soundMoodVal = (() => {
     try {
@@ -678,6 +682,8 @@ export default function Render() {
       activeTab="render"
       configured={configured}
       transitionValue={transitionVal}
+      openingTransition={openingTransitionVal}
+      closingTransition={closingTransitionVal}
       soundMood={soundMoodVal}
     >
       <div className="flex-1 overflow-y-auto">

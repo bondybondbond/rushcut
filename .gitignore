@@ -21,6 +21,8 @@ build/
 # Rust / Tauri build artifacts
 src-tauri/target/
 src-tauri/gen/
+# Machine-specific Cargo config (MSVC lib paths — not portable across machines)
+src-tauri/.cargo/
 
 # OS
 .DS_Store

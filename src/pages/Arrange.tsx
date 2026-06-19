@@ -75,6 +75,11 @@ const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
 // Random pool for shuffle — excludes "none" (shuffle implies a visible transition)
 const SHUFFLE_POOL: TransitionValue[] = ["crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "dissolve", "barn_door", "band_wipe"];
 
+const OPEN_CLOSE_OPTIONS: { value: TransitionValue; label: string }[] = [
+  { value: "none",         label: "None" },
+  { value: "dip_to_black", label: "Dip to black" },
+];
+
 // Zoom model (parse / build / label) lives in @/utils/zoom — shared so badges
 // on other screens never render the raw zoom_mode string. UI-only chip lists
 // stay here.
@@ -792,6 +797,8 @@ export default function Arrange() {
       activeTab="arrange"
       configured={configured}
       transitionValue={transConfig.shuffleBetween ? "shuffle" : transConfig.between}
+      openingTransition={transConfig.opening}
+      closingTransition={transConfig.closing}
       soundMood={soundMoodVal}
       timelineHud={
         <StickyFilmStrip
@@ -1341,6 +1348,52 @@ export default function Arrange() {
                   </div>
                 );
               })()}
+
+              {/* ── Opening transition ───────────────────────────── */}
+              <div className="border border-white/15 rounded-lg p-6">
+                <p className="text-xl font-medium text-[#e5e5e5] mb-1">Film opening</p>
+                <p className="text-sm text-[#a3a3a3] mb-4">Fade in from black at the start of your film.</p>
+                <div className="flex gap-2">
+                  {OPEN_CLOSE_OPTIONS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      data-testid={`chip-opening-${value}`}
+                      onClick={() => handleSelectOpening(value)}
+                      className={`text-sm font-medium rounded-lg px-4 py-2 border-2 transition-colors duration-200 focus:outline-none ${
+                        transConfig.opening === value
+                          ? "border-[#99B3FF] bg-[#99B3FF]/5 text-[#99B3FF]"
+                          : "border-white/20 hover:border-white/50 text-[#e5e5e5]"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── Closing transition ───────────────────────────── */}
+              <div className="border border-white/15 rounded-lg p-6">
+                <p className="text-xl font-medium text-[#e5e5e5] mb-1">Film closing</p>
+                <p className="text-sm text-[#a3a3a3] mb-4">Fade out to black at the end of your film.</p>
+                <div className="flex gap-2">
+                  {OPEN_CLOSE_OPTIONS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      data-testid={`chip-closing-${value}`}
+                      onClick={() => handleSelectClosing(value)}
+                      className={`text-sm font-medium rounded-lg px-4 py-2 border-2 transition-colors duration-200 focus:outline-none ${
+                        transConfig.closing === value
+                          ? "border-[#99B3FF] bg-[#99B3FF]/5 text-[#99B3FF]"
+                          : "border-white/20 hover:border-white/50 text-[#e5e5e5]"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               <p className="text-sm text-[#a3a3a3]">
                 All choices are saved automatically. Continue to Sound to choose music for your film.

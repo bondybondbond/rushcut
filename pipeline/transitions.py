@@ -288,6 +288,89 @@ def _build_pre_volume(
     return "; ".join(parts)
 
 
+def build_open_close_post_fc(
+    inner_duration: float,
+    has_audio: bool,
+    scale_w: str,
+    scale_h: str,
+    target_fps_raw: str,
+    opening_transition: str = "none",
+    closing_transition: str = "none",
+    xfade_dur: float = XFADE_DUR,
+    clip_tbn_str: str = "1/30000",
+) -> "tuple[str, str, str]":
+    """Wrap a single pre-rendered inner clip with open/close-to-black xfade.
+
+    Used by the U1g segmented post-pass (issue #31): the segmented path renders
+    the inner content (all clips) to one intermediate file, then this graph fades
+    it in from / out to black in a single memory-light pass instead of forcing the
+    whole project onto the exit-15-prone monolithic graph.
+
+    The inner clip is FFmpeg input index 0 ([0:v] / [0:a]); black/silence are
+    inline color/aevalsrc sources (no extra -i). Mirrors the open/close branch of
+    build_filter_complex but operates on ONE pre-encoded input instead of N clips.
+    Use the SAME xfade/acrossfade construction -- NOT FFmpeg's fade/afade filter.
+
+    No loudnorm here: loudnorm is already fused into the inner audio pass.
+
+    Returns (fc, v_out_label, a_out_label). a_out is "" when has_audio is False.
+    """
+    has_open = opening_transition != "none"
+    has_close = closing_transition != "none"
+    if not has_open and not has_close:
+        raise ValueError("build_open_close_post_fc called with no open/close transition")
+
+    # +0.1s buffer for black-frame sources: xfade offset must be < input duration.
+    black_dur = xfade_dur + 0.1
+    # format=yuv420p,setsar=1 on the black source so it matches the decoded inner
+    # stream exactly (xfade rejects mismatched pixel format / SAR). Defensive vs the
+    # monolithic graph where every input shares the in-graph canvas filter.
+    black = (
+        f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r={target_fps_raw},"
+        f"format=yuv420p,setsar=1,settb={clip_tbn_str}"
+    )
+    parts: list[str] = []
+    v_inner = "[0:v]"
+    a_inner = "[0:a]"
+
+    # --- Opening xfade: black -> inner ---
+    v_after_open = "[vwrap]" if has_close else "[vout]"
+    a_after_open = "[awrap]" if has_close else "[aout]"
+    total_after_open = inner_duration
+    if has_open:
+        open_name = _TRANSITION_MAP.get(opening_transition, "fade")
+        parts.append(f"{black}[sv_bopen]")
+        parts.append(
+            f"[sv_bopen]{v_inner}"
+            f"xfade=transition={open_name}:duration={xfade_dur:.4f}:offset=0"
+            f"{v_after_open}"
+        )
+        total_after_open = inner_duration + 0.1  # black_dur - xfade_dur
+        if has_audio:
+            parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abo]")
+            parts.append(f"[abo]{a_inner}acrossfade=d={xfade_dur:.4f}{a_after_open}")
+    else:
+        v_after_open = v_inner
+        a_after_open = a_inner
+
+    # --- Closing xfade: content -> black ---
+    if has_close:
+        close_name = _TRANSITION_MAP.get(closing_transition, "fade")
+        closing_offset = total_after_open - xfade_dur
+        parts.append(f"{black}[sv_bclose]")
+        parts.append(
+            f"{v_after_open}[sv_bclose]"
+            f"xfade=transition={close_name}:duration={xfade_dur:.4f}:offset={closing_offset:.4f}"
+            f"[vout]"
+        )
+        if has_audio:
+            parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abc]")
+            parts.append(f"{a_after_open}[abc]acrossfade=d={xfade_dur:.4f}[aout]")
+
+    a_out = "[aout]" if has_audio else ""
+    return "; ".join(parts), "[vout]", a_out
+
+
 def build_filter_complex(
     clip_paths: list[Path],
     durations: list[float],
@@ -301,6 +384,8 @@ def build_filter_complex(
     seed: str | None = None,
     opening_transition: str = "none",
     closing_transition: str = "none",
+    target_fps_raw: str = "30000/1001",
+    clip_tbn_str: str = "1/30000",
 ) -> tuple[str, str, str]:
     """
     Build filter_complex string for N clips with xfade transitions.
@@ -476,7 +561,7 @@ def build_filter_complex(
         # Inline color source for black opening frame (no extra -i input needed).
         # +0.1s buffer: xfade offset must be < input duration.
         all_parts.append(
-            f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r=25[sv_bopen]"
+            f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r={target_fps_raw},settb={clip_tbn_str}[sv_bopen]"
         )
         all_parts.append(
             f"[sv_bopen]{v_inner}"
@@ -505,7 +590,7 @@ def build_filter_complex(
         # +0.1s buffer: xfade offset must be < input duration.
         closing_offset = total_after_open - xfade_dur
         all_parts.append(
-            f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r=25[sv_bclose]"
+            f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r={target_fps_raw},settb={clip_tbn_str}[sv_bclose]"
         )
         all_parts.append(
             f"{v_after_open}[sv_bclose]"

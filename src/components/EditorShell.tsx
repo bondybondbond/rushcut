@@ -17,6 +17,10 @@ interface EditorShellProps {
   actionBar?: ReactNode;
   /** Currently chosen transition value (e.g. "crossfade") */
   transitionValue?: string | null;
+  /** Opening transition (e.g. "dip_to_black") */
+  openingTransition?: string | null;
+  /** Closing transition (e.g. "dip_to_black") */
+  closingTransition?: string | null;
   /** Currently chosen music mood (e.g. "cinematic") */
   soundMood?: string | null;
   /** Overall timeline HUD (StickyFilmStrip). Omit on Render screen. */
@@ -34,6 +38,8 @@ export function EditorShell({
   leftPanel,
   actionBar,
   transitionValue,
+  openingTransition,
+  closingTransition,
   soundMood,
   timelineHud,
   children,
@@ -75,6 +81,8 @@ export function EditorShell({
             <aside className="w-48 flex-shrink-0 border-l border-white/10 bg-[#0a0a0a] overflow-hidden">
               <ChosenEffects
                 transitionValue={transitionValue}
+                openingTransition={openingTransition}
+                closingTransition={closingTransition}
                 soundMood={soundMood}
               />
             </aside>

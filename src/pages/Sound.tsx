@@ -145,11 +145,15 @@ export default function Sound() {
   // without needing to re-subscribe on every render.
   inFilmRef.current = inFilm;
 
-  const transitionVal = (() => {
+  const { transitionVal, openingTransitionVal, closingTransitionVal } = (() => {
     try {
       const tc = readTransitionConfig(projectId ?? "");
-      return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null);
-    } catch { return null; }
+      return {
+        transitionVal: tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null),
+        openingTransitionVal: tc.opening !== "none" ? tc.opening : null,
+        closingTransitionVal: tc.closing !== "none" ? tc.closing : null,
+      };
+    } catch { return { transitionVal: null, openingTransitionVal: null, closingTransitionVal: null }; }
   })();
 
   useEffect(() => {
@@ -848,6 +852,8 @@ export default function Sound() {
       activeTab="sound"
       configured={configured}
       transitionValue={transitionVal}
+      openingTransition={openingTransitionVal}
+      closingTransition={closingTransitionVal}
       soundMood={sound.mood}
       timelineHud={
         <StickyFilmStrip

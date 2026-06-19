@@ -39,15 +39,26 @@ from .transitions import (
     build_filter_complex,
     build_batch_video_fc,
     build_audio_only_fc,
+    build_open_close_post_fc,
     plan_video_batches,
     resolve_cut_names,
     clamp_xfade_dur,
 )
 from .trim import trim
-from .utils import FFMPEG, ffmpeg_run, get_duration, get_frame_size, has_audio, log_av_sync
+from .utils import FFMPEG, ffmpeg_run, ffprobe_json, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import apply_zoom
 
 log = logging.getLogger(__name__)
+
+
+def _fps_to_tbn(fps_raw: str) -> str:
+    """Derive the libx264 container time_base string from the fps rational.
+
+    libx264 sets tbn = fps_numerator (e.g. 30000/1001 -> 1/30000, 25 -> 1/25).
+    Inline color sources for xfade must use settb matching this value or FFmpeg
+    6.1.1 rejects the filter with 'timebase mismatch' (exit 234).
+    """
+    return f"1/{fps_raw.split('/')[0]}"
 
 
 def round_to_standard_fps(r_frame_rate: str) -> int:
@@ -189,6 +200,29 @@ def _mem_available_mb() -> "int | None":
     except Exception:
         return None
     return None
+
+
+def _probe_frame_count(path: Path) -> int:
+    """Video frame count of an encoded file (issue #31 post-pass drift assert).
+
+    Prefers the stream nb_frames metadata (written by libx264 / h264_amf); falls
+    back to a full -count_frames decode only when metadata is absent. Both inner
+    and output are freshly encoded by us, so metadata is normally present.
+    """
+    try:
+        data = ffprobe_json(["-select_streams", "v:0",
+                             "-show_entries", "stream=nb_frames", str(path)])
+        streams = data.get("streams", [])
+        if streams and streams[0].get("nb_frames") not in (None, "N/A"):
+            return int(streams[0]["nb_frames"])
+    except Exception:
+        pass
+    data = ffprobe_json(["-select_streams", "v:0", "-count_frames",
+                         "-show_entries", "stream=nb_read_frames", str(path)])
+    streams = data.get("streams", [])
+    if streams and streams[0].get("nb_read_frames") not in (None, "N/A"):
+        return int(streams[0]["nb_read_frames"])
+    raise RuntimeError(f"cannot probe frame count for {path}")
 
 
 def _classify_segmented_failure(exc: Exception) -> "tuple[str, int | None]":
@@ -963,6 +997,12 @@ def run_pipeline(
             ln = loudnorm_filter() if (mode != "draft" and not music_on) else None
             afc, a_out_lbl = build_audio_only_fc(durations, audio_flags, clip_volumes, xf, ln)
 
+            # Issue #31: when open/close-to-black is enabled, mux to an inner
+            # intermediate first, then wrap it with the open/close xfade in a
+            # memory-light post-pass below. Otherwise mux straight to output.
+            needs_open_close = has_open or has_close
+            mux_target = (seg_tmp / "u1g_inner.mp4") if needs_open_close else output
+
             if a_out_lbl:
                 audio_full = seg_tmp / "u1g_audio_full.m4a"
                 in_args = [a for p in current_paths for a in ("-i", str(p))]
@@ -971,18 +1011,107 @@ def run_pipeline(
                     + ["-filter_complex", afc, "-map", a_out_lbl, "-vn",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(audio_full)]
                 )
-                # Mux video + audio -> render.mp4 (output). Two linear streams,
+                # Mux video + audio -> inner/output. Two linear streams,
                 # zero muxing queue. Step 6 (music) consumes this exactly as before.
                 ffmpeg_run([
                     FFMPEG, "-y", "-i", str(video_full), "-i", str(audio_full),
-                    "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(output),
+                    "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(mux_target),
                 ])
             else:
-                ffmpeg_run([FFMPEG, "-y", "-i", str(video_full), "-c", "copy", str(output)])
+                ffmpeg_run([FFMPEG, "-y", "-i", str(video_full), "-c", "copy", str(mux_target)])
 
-        use_batched = (
-            len(current_paths) > BATCH_SIZE and has_xfade and not has_open and not has_close
-        )
+            if needs_open_close:
+                _apply_open_close_post(mux_target, output, bool(a_out_lbl), xf, fps_f)
+
+        def _apply_open_close_post(
+            inner: Path, out: Path, inner_has_audio: bool,
+            xfade_dur: float, fps_f: float,
+        ) -> None:
+            # Issue #31: fade the (already concatenated) inner content in from /
+            # out to black in one extra pass. Memory-light: 1 decoder + 1 encoder +
+            # xfade ring buffer -- far under the monolithic peak that crashes (exit 15)
+            # on big 4K projects. Mirrors the proven monolithic open/close xfade.
+            iw, ih = get_frame_size(inner)
+            inner_dur = get_duration(inner)
+            pp_fc, pp_vmap, pp_amap = build_open_close_post_fc(
+                inner_duration=inner_dur,
+                has_audio=inner_has_audio,
+                scale_w=str(iw),
+                scale_h=str(ih),
+                target_fps_raw=target_fps_raw,
+                opening_transition=opening_transition,
+                closing_transition=closing_transition,
+                xfade_dur=xfade_dur,
+                clip_tbn_str=_fps_to_tbn(target_fps_raw),
+            )
+
+            # Guardrail 2 (issue #31): near-lossless rate control so the second
+            # encode generation does not compound compression. Draft keeps its fast
+            # args (quality not critical there).
+            def _pp_codec(amf: bool) -> list:
+                if mode == "draft":
+                    _, c, _ = video_encoder_args(
+                        mode, output_resolution, win_ffmpeg,
+                        force_libx264=not amf, use_amf=use_amf,
+                    )
+                    return c
+                if amf:
+                    return ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                            "-rc", "vbr_peak", "-b:v", "40M", "-maxrate", "40M",
+                            "-bufsize", "40M", "-quality", "quality"]
+                return ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                        "-crf", "16", "-preset", "medium"]
+
+            def _build_pp(b_argv, c_args, amf):
+                i_arg = to_win_path(inner) if amf else str(inner)
+                o_arg = to_win_path(out) if amf else str(out)
+                # Guardrail 1: NO -frames:v cap -- the filter graph defines length.
+                cmd = b_argv + ["-y", "-i", i_arg, "-filter_complex", pp_fc,
+                                "-map", pp_vmap, "-r", target_fps_raw]
+                if pp_amap:
+                    cmd += ["-map", pp_amap]
+                cmd += c_args
+                if pp_amap:
+                    cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+                cmd.append(o_arg)
+                return cmd
+
+            log.info(
+                "[U1g] open/close post-pass: open=%s close=%s inner_dur=%.3fs size=%dx%d",
+                opening_transition, closing_transition, inner_dur, iw, ih,
+            )
+            pp_cmd = _build_pp(bin_argv, _pp_codec(is_amf), is_amf)
+
+            def _pp_fallback():
+                fb_argv, _, _ = video_encoder_args(
+                    mode, output_resolution, win_ffmpeg, force_libx264=True
+                )
+                return _build_pp(fb_argv, _pp_codec(False), False)
+
+            _run_with_amf_fallback(pp_cmd, _pp_fallback)
+
+            # Guardrail 1: ffprobe-validate the output length against the inner +
+            # open/close delta (+/-1 frame). The only guard against silent duration
+            # drift if a future FFmpeg/encoder change diverges from the graph length.
+            inner_frames = _probe_frame_count(inner)
+            out_frames = _probe_frame_count(out)
+            delta_expected = (round(0.1 * fps_f) if has_open else 0) + \
+                             (round(0.1 * fps_f) if has_close else 0)
+            expected_frames = inner_frames + delta_expected
+            drift_frames = abs(out_frames - expected_frames)
+            log.info(
+                "[U1g] post-pass open/close frames=%d inner=%d expected=%d drift=%d frame(s)",
+                out_frames, inner_frames, expected_frames, drift_frames,
+            )
+            if drift_frames > 1:
+                raise RuntimeError(
+                    f"[U1g] post-pass open/close drift {drift_frames} frames -- sync risk"
+                )
+
+        # Issue #31: open/close-to-black no longer forces the monolithic fallback --
+        # the inner content renders segmented and the open/close fade is applied as a
+        # memory-light post-pass (_apply_open_close_post).
+        use_batched = len(current_paths) > BATCH_SIZE and has_xfade
         did_batched = False
         if use_batched:
             try:
@@ -1008,7 +1137,7 @@ def run_pipeline(
 
         if not did_batched:
             # Monolithic single-graph path: small projects (<= BATCH_SIZE), the
-            # "none"/concat path, open/close transitions, or a segmented fallback.
+            # "none"/concat path, or a segmented fallback.
             fc, v_out, a_out = build_filter_complex(
                 current_paths, durations, audio_flags,
                 transition=transition,
@@ -1019,6 +1148,8 @@ def run_pipeline(
                 seed=job.get("id"),
                 opening_transition=opening_transition,
                 closing_transition=closing_transition,
+                target_fps_raw=target_fps_raw,
+                clip_tbn_str=_fps_to_tbn(target_fps_raw),
             )
             a_map = a_out
             if a_out and mode != "draft" and not music_on:
