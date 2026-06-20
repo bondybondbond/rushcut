@@ -909,6 +909,22 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## UI — Partial-truth timeline elements create ruler desync (worse than no visual)
+
+**Problem:** Adding decorative card bookend tiles to `StickyFilmStrip` without updating the ruler/playhead geometry caused the ruler's `0:00` tick to map to the card tile's left edge, while the preview video played from the first footage clip. The ruler and the media player were instantly out of sync. "Decorative but non-seekable" doesn't work: the ruler IS the clock — it must agree with the playhead at every pixel.
+**Solution:** The filmstrip ruler, playhead, and any visual region blocks must all be unified on the same time coordinate system. Cards, xfade overlap zones, and silence regions must either ALL be part of the timeline geometry (with the ruler starting at film time 0 = card start), or NONE of them should be shown. Half-measures (bookend tiles outside the geometry, ruler starting after them) produce incorrect time display that reads as a bug, not a simplification.
+**Context:** `src/components/StickyFilmStrip.tsx`. Triggered when implementing #63 card bookends. Deferred to #74 which specifies a full consistent timeline where cards and xfade zones are first-class geometry elements.
+
+---
+
+## Pipeline — `inject_silence_where_needed` replaces clips in-place, never adds them
+
+**Problem:** It was assumed that `inject_silence_where_needed` in `render.py` adds a new silent clip alongside the original, increasing clip count and adding an extra xfade overlap. Code was planned to compensate for this with a `has_silent_pad` flag in `effectiveFilmMs`.
+**Solution:** `inject_silence_where_needed` (`render.py:~364`) does `updated[i] = silent` — it replaces the clip's file path in-place with a same-duration silent-audio copy. The clip count, duration, and xfade structure are completely unchanged. No `has_silent_pad` compensation is needed in any duration calculation.
+**Context:** Any session planning around silence injection in the pipeline. Check `render.py` `inject_silence_where_needed` before assuming it affects clip count or timing structure.
+
+---
+
 ## UX / product decisions (locked)
 
 - **Draft-first, configure-optional** — show the first render before any configuration. Mandatory configure screens before a draft add friction at the worst moment. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.
