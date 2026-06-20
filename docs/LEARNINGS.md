@@ -884,6 +884,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Pipeline — ThreadPoolExecutor: use per-index bool array, not shared counter
+
+**Problem:** Inside `ThreadPoolExecutor`, incrementing a shared counter with `counter[0] += 1` inside a worker is a read-modify-write race — the GIL does not protect the compound `+= 1` operation on a list element when multiple threads execute it simultaneously.
+**Solution:** Use a per-index bool array: `flags: list[bool] = [False] * n`. Each worker thread writes only to its own index (`flags[i] = True`), which is safe because thread `i` is the sole writer to index `i`. Sum after the pool joins: `count = sum(flags)`. This is the same pattern as the existing `zoom_status: list[str]` array in `render.py`.
+**Context:** Any `ThreadPoolExecutor` use in `pipeline/render.py` where a boolean per-clip outcome (e.g. "did this clip use a proxy as zoom input?") needs to be counted after the pool. The mutable-list closure `flag = [False]` / `flag[0] = True` pattern is safe only when a single nested function (not a parallel pool) is the sole writer.
+
+---
+
 ## UX / product decisions (locked)
 
 - **Draft-first, configure-optional** — show the first render before any configuration. Mandatory configure screens before a draft add friction at the worst moment. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.
