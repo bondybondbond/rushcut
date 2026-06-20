@@ -74,6 +74,7 @@ const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
 
 // Random pool for the "Surprise me" opening/closing picker — excludes "none" and "dissolve".
 // "dissolve" removed: FFmpeg noise-dither xfade renders as literal static/snow (V1.4 #60).
+// SYNC: keep in sync with _SHUFFLE_POOL in pipeline/transitions.py (same members, different names).
 const SHUFFLE_POOL: TransitionValue[] = ["crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "barn_door", "band_wipe"];
 
 const OPEN_CLOSE_OPTIONS: { value: TransitionValue; label: string }[] = [

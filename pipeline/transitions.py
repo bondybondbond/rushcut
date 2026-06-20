@@ -58,6 +58,7 @@ _TRANSITION_MAP = {
 #                          Still in _TRANSITION_MAP for explicit single-transition use.
 # Do NOT add: hblur -- heavy horizontal blur on fast-motion 4K looks like corruption.
 # Note: "zoomin" excluded -- FFmpeg zoomin zooms to a pixel band; too extreme. Re-add when fixed.
+# SYNC: keep in sync with SHUFFLE_POOL in src/pages/Arrange.tsx (same members, different names).
 _SHUFFLE_POOL = ["fade", "fadeblack", "wipeleft", "wipedown", "squeezev", "hrslice"]
 
 XFADE_DUR = 1.5  # seconds
