@@ -10,6 +10,7 @@ import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 import { buildJobConfig, readTransitionConfig } from "@/utils/buildJobConfig";
+import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref, removeRenderPref } from "@/utils/renderStore";
 import { absoluteDateTime } from "@/utils/timeAgo";
 import { resLabel, durationLabel } from "@/utils/jobMeta";
@@ -81,7 +82,8 @@ export default function Render() {
   const _cached = projectCache.get(projectId ?? "");
   const _cachedIncluded = (_cached?.clips ?? []).filter(c => c.include !== 0);
   const [inFilmCount, setInFilmCount] = useState(_cachedIncluded.length);
-  const [totalMs, setTotalMs] = useState(_cachedIncluded.reduce((s, c) => s + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)), 0));
+  // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
+  const [totalMs, setTotalMs] = useState(() => effectiveFilmMs(_cachedIncluded, readTransitionConfig(projectId ?? "")));
   const [phase, setPhase] = useState<Phase>("starting");
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -383,11 +385,8 @@ export default function Render() {
       projectCache.set(projectId, { name: data.project.name, clips: data.clips });
       const included = data.clips.filter((c) => c.include !== 0);
       const count = included.length;
-      const ms = included.reduce((sum, c) => {
-        const start = c.in_ms ?? 0;
-        const end = c.out_ms ?? c.duration_ms;
-        return sum + Math.max(0, end - start);
-      }, 0);
+      // #62: effective runtime (transition overlap subtracted), like the render.
+      const ms = effectiveFilmMs(included, readTransitionConfig(projectId));
       setInFilmCount(count);
       setTotalMs(ms);
       setProjectName(data.project.name);

@@ -15,6 +15,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
+import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { effectiveFilmMs } from "@/utils/filmDuration";
 
 function fmtMs(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -90,9 +92,10 @@ interface ClipNavStripProps {
   currentIndex: number;
   onSelect: (idx: number) => void;
   onReorder: (clips: Clip[]) => void;
+  projectId: string;
 }
 
-export function ClipNavStrip({ clips, currentIndex, onSelect, onReorder }: ClipNavStripProps) {
+export function ClipNavStrip({ clips, currentIndex, onSelect, onReorder, projectId }: ClipNavStripProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
@@ -111,11 +114,9 @@ export function ClipNavStrip({ clips, currentIndex, onSelect, onReorder }: ClipN
     onReorder(arrayMove(clips, oldIndex, newIndex));
   }
 
-  // Duration counter: sum of trimmed included clips
-  const includedMs = clips.reduce((sum, c) => {
-    if (c.include === 0) return sum;
-    return sum + (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0);
-  }, 0);
+  // Duration counter: effective runtime (transition overlap subtracted, like the render -- #62).
+  const inFilm = clips.filter((c) => c.include !== 0);
+  const includedMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId));
 
   const includedCount = clips.filter((c) => c.include !== 0).length;
 

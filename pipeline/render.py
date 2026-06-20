@@ -1206,7 +1206,13 @@ def run_pipeline(
         fade_out_s = float(config.get("music_fade_out_s", 3.0))
         music_loop = bool(config.get("music_loop", True))
         log.info("[vol] music_fade_out_s=%.1f loop=%s", fade_out_s, music_loop)
-        output = mix_music(output, sum(durations), music_filename, MUSIC_DIR, music_out,
+        # #62: time music to the REAL rendered duration, not the naive sum(durations).
+        # The render telescopes every transition by xfade_dur, so sum(durations) over-runs
+        # the actual file by ~(n-1)*1.5s; probing the just-rendered file is ground truth
+        # (covers transitions, open/close-to-black, and intro/outro cards uniformly).
+        rendered_dur = get_duration(output)
+        log.info("[music] timing music to rendered=%.4fs (naive sum=%.4fs)", rendered_dur, sum(durations))
+        output = mix_music(output, rendered_dur, music_filename, MUSIC_DIR, music_out,
                            music_volume=music_volume, movie_vol=movie_vol,
                            custom_track_path=custom_music_path_wsl,
                            fade_out_s=fade_out_s,

@@ -275,6 +275,7 @@ export default function Review() {
           currentIndex={currentIndex}
           onSelect={handleStripSelect}
           onReorder={handleStripReorder}
+          projectId={projectId ?? ""}
         />
 
         {/* Video player with focal point overlay */}

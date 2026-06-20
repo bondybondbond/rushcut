@@ -11,6 +11,7 @@ import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
 
@@ -815,7 +816,8 @@ export default function Trimmer() {
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   inFilmRef.current = inFilm;
   const inFilmCount = inFilm.length;
-  const totalMs = inFilm.reduce((sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)), 0);
+  // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
+  const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""));
 
   // Film playhead: how far we are in film-time (ms), for the StickyFilmStrip cursor
   const filmPositionMs = viewMode === "film" && inFilm[filmPlayIdx]

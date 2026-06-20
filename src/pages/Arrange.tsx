@@ -11,6 +11,7 @@ import { projectCache } from "@/utils/projectCache";
 import { fmtMs } from "@/utils/fmtMs";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
+import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import {
   parseZoom, buildZoomMode, zoomLabel, FIXED_AMOUNTS, KB_AMOUNTS,
@@ -227,11 +228,8 @@ export default function Arrange() {
 
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   const clipCount = inFilm.length;
-  const totalMs = inFilm.reduce((sum, c) => {
-    const start = c.in_ms ?? 0;
-    const end = c.out_ms ?? c.duration_ms;
-    return sum + Math.max(0, end - start);
-  }, 0);
+  // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
+  const totalMs = effectiveFilmMs(inFilm, transConfig);
 
   const selectedClip = selectedClipId ? clips.find((c) => c.id === selectedClipId) ?? null : null;
   selectedClipRef.current = selectedClip;

@@ -379,6 +379,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Pipeline — music duration must come from get_duration(output), not sum(durations)
+
+**Problem:** `render.py` Step 6 passed `sum(durations)` (the naive sum of pre-telescoped clip lengths) to `mix_music` as `video_duration_s`. With 18 crossfades at 1.5s each, the naive sum overstates the real film by ~27s, so the music fade-out is scheduled well past the actual video end and never lands.
+**Solution:** Probe the just-rendered file — `rendered_dur = get_duration(output)` — immediately before calling `mix_music`, and pass `rendered_dur` instead. The rendered file already exists at that point; probing it is ground truth that covers transitions, open/close-to-black, and intro/outro cards uniformly, regardless of future pipeline changes.
+**Context:** `render.py` Step 6, immediately before `mix_music(...)`. Never use `sum(durations)` as the `video_duration_s` argument — it is the pre-telescoped naive sum, not the output file length.
+
+---
+
 ## FFmpeg — music looping
 
 - **`asetpts=PTS-STARTPTS` must come before `atrim` when using `-stream_loop -1`** — with infinite loop, FFmpeg assigns continuously rising PTS values across loop boundaries. If `atrim=0:{duration}` runs first it sees inflated timestamps and may cut too early. Always reset timestamps first: `[1:a]asetpts=PTS-STARTPTS,atrim=0:{duration:.4f},...`. Wrong order produces silent music gaps at the expected trim point.

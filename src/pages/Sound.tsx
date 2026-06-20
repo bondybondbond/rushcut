@@ -10,6 +10,7 @@ import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
@@ -135,11 +136,16 @@ export default function Sound() {
 
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   const clipCount = inFilm.length;
+  // GEOMETRY value: naive sum drives the master-preview scrub bar, seek, fade marker,
+  // and playhead -- the preview plays proxies sequentially, so its timeline is naive (#62).
   const totalMs = inFilm.reduce((sum, c) => {
     const start = c.in_ms ?? 0;
     const end = c.out_ms ?? c.duration_ms;
     return sum + Math.max(0, end - start);
   }, 0);
+  // DISPLAY value: effective runtime (transition overlap subtracted) for the runtime
+  // label + music loop/coverage math, which times against the telescoped render (#62).
+  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""));
 
   // Keep inFilmRef current so playback callbacks always read the latest clip list
   // without needing to re-subscribe on every render.
@@ -833,14 +839,15 @@ export default function Sound() {
       ? customDurationMs
       : null;
 
-  const showComparison = source !== "none" && totalMs > 0 && selectedTrackMs !== null;
+  // #62: music coverage/loop math compares the track to the EFFECTIVE (telescoped) film.
+  const showComparison = source !== "none" && effectiveMs > 0 && selectedTrackMs !== null;
 
   const loopNote: React.ReactNode =
     !showComparison ? null
-    : selectedTrackMs! >= totalMs
+    : selectedTrackMs! >= effectiveMs
     ? <span className="text-[#22c55e]"> &mdash; long enough</span>
     : sound.musicLoop
-    ? <span> &mdash; will loop ~{Math.ceil(totalMs / selectedTrackMs!)}x</span>
+    ? <span> &mdash; will loop ~{Math.ceil(effectiveMs / selectedTrackMs!)}x</span>
     : <span> &mdash; plays once, then silence</span>;
 
   return (
@@ -848,7 +855,7 @@ export default function Sound() {
       projectId={projectId ?? ""}
       projectName={projectName}
       clipCount={clipCount}
-      totalMs={totalMs}
+      totalMs={effectiveMs}
       activeTab="sound"
       configured={configured}
       transitionValue={transitionVal}
@@ -1032,7 +1039,7 @@ export default function Sound() {
               {/* Film vs track duration comparison */}
               {showComparison && (
                 <p className="text-sm text-[#a3a3a3]">
-                  Film: {fmtMs(totalMs)} &middot; Track: {fmtMs(selectedTrackMs!)}{loopNote}
+                  Film: {fmtMs(effectiveMs)} &middot; Track: {fmtMs(selectedTrackMs!)}{loopNote}
                 </p>
               )}
             </div>
