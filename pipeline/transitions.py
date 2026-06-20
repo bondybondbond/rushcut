@@ -227,14 +227,16 @@ def build_batch_video_fc(
     """
     n = len(durations)
     scale_w, scale_h = _canvas_dims(mode, output_resolution)
-    # format=yuv420p per-input: pins every [sv{i}] to yuv420p so swscaler cannot
-    # offer yuv444p to h264_amf when inputs have mismatched color primaries
-    # (prim:reserved vs prim:unknown). The terminal _force_yuv420p_tail node alone
-    # is insufficient — a single AMF-encoded intermediate carrying prim:reserved
-    # triggers the upstream yuv444p request before the tail. See #64.
+    # format=yuv420p pins pixel format; setparams strips prim:reserved from
+    # h264_amf-encoded proxy inputs. h264_amf ignores -color_primaries bt709 and
+    # always writes prim:reserved in the bitstream. format= alone doesn't touch
+    # color metadata, so swscaler still sees prim:reserved and tries to negotiate
+    # yuv444p for AMF → exit 127 / swscaler -129. setparams overrides the tag
+    # to bt709 before xfade, so downstream AMF accepts yuv420p. See #64.
     canvas = (
         f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,"
-        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,"
+        f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
     v_out = "[vout]"
     parts = [f"[{i}:v]{canvas}[sv{i}]" for i in range(n)]
@@ -463,14 +465,16 @@ def build_filter_complex(
     # Scales to fit inside canvas (preserving AR), then pads remainder black.
     # Prevents FFmpeg dimension-mismatch crash when portrait and landscape clips
     # are mixed in the same project (e.g. 540x1080 vs 1920x1080).
-    # format=yuv420p per-input: pins every [sv{i}] to yuv420p so swscaler cannot
-    # offer yuv444p to h264_amf when inputs have mismatched color primaries
-    # (prim:reserved vs prim:unknown). The terminal _force_yuv420p_tail node alone
-    # is insufficient — a single AMF-encoded intermediate carrying prim:reserved
-    # triggers the upstream yuv444p request before the tail. See #64.
+    # format=yuv420p pins pixel format; setparams strips prim:reserved from
+    # h264_amf-encoded proxy inputs. h264_amf ignores -color_primaries bt709 and
+    # always writes prim:reserved in the bitstream. format= alone doesn't touch
+    # color metadata, so swscaler still sees prim:reserved and tries to negotiate
+    # yuv444p for AMF → exit 127 / swscaler -129. setparams overrides the tag
+    # to bt709 before xfade, so downstream AMF accepts yuv420p. See #64.
     canvas = (
         f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,"
-        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,"
+        f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
 
     v_out = "[vout]"
