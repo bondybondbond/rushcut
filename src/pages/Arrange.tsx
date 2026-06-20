@@ -72,8 +72,9 @@ const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
   band_wipe:    { a: "rc-trans-band-a 3s infinite ease-in-out",    b: "rc-trans-band-b 3s infinite ease-in-out" },
 };
 
-// Random pool for shuffle — excludes "none" (shuffle implies a visible transition)
-const SHUFFLE_POOL: TransitionValue[] = ["crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "dissolve", "barn_door", "band_wipe"];
+// Random pool for the "Surprise me" opening/closing picker — excludes "none" and "dissolve".
+// "dissolve" removed: FFmpeg noise-dither xfade renders as literal static/snow (V1.4 #60).
+const SHUFFLE_POOL: TransitionValue[] = ["crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "barn_door", "band_wipe"];
 
 const OPEN_CLOSE_OPTIONS: { value: TransitionValue; label: string }[] = [
   { value: "none",         label: "None" },

@@ -44,9 +44,21 @@ _TRANSITION_MAP = {
     "band_wipe":  "hrslice",
 }
 
-# Pool used by shuffle mode — excludes "none" (shuffle implies a visible transition)
-# Note: "zoomin" excluded — FFmpeg zoomin is too extreme (zooms to pixel band). Re-add when zoom is fixed.
-_SHUFFLE_POOL = ["fade", "fadeblack", "wipeleft", "wipedown", "dissolve", "squeezev", "hrslice"]
+# Pool used by shuffle mode — excludes "none" (shuffle implies a visible transition).
+# RULE: only add members that have been QA'd at 4K on real footage (3-frame extract per transition).
+# QA log (2026-06-20, Stagecoach 2025 4K, V1.4 #60):
+#   fade        CLEAN  -- smooth blend
+#   fadeblack   CLEAN  -- dip to near-black at mid
+#   wipeleft    CLEAN  -- clean horizontal wipe
+#   wipedown    CLEAN  -- clean vertical wipe
+#   squeezev    CLEAN  -- clean barn-door squeeze
+#   hrslice     CLEAN  -- segment renders correctly; any green-screen is the #64 mixed-encoder-concat
+#                         artifact (libx264/AMF boundary), not hrslice itself
+#   dissolve    REMOVED -- FFmpeg noise-dither xfade; renders as literal static/snow by design.
+#                          Still in _TRANSITION_MAP for explicit single-transition use.
+# Do NOT add: hblur -- heavy horizontal blur on fast-motion 4K looks like corruption.
+# Note: "zoomin" excluded -- FFmpeg zoomin zooms to a pixel band; too extreme. Re-add when fixed.
+_SHUFFLE_POOL = ["fade", "fadeblack", "wipeleft", "wipedown", "squeezev", "hrslice"]
 
 XFADE_DUR = 1.5  # seconds
 
