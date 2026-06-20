@@ -195,6 +195,20 @@ def _canvas_dims(mode: str, output_resolution: str) -> "tuple[str, str]":
     return scale_w, scale_h
 
 
+def _force_yuv420p_tail(fc: str, v_out: str) -> str:
+    """Append a format=yuv420p node feeding the terminal v_out label.
+
+    Locks the filtergraph buffersink to yuv420p so h264_amf cannot negotiate a
+    yuv444p input (swscaler -129 "Could not open encoder" -> silent libx264
+    fallback, issue #64). v_out is always terminal (end of the producer string),
+    so rpartition rewrites only the last occurrence; rstrip guards against a
+    trailing "; " producing ";;". Harmless for libx264 (it already wants yuv420p).
+    """
+    head, _, tail = fc.rpartition(v_out)        # tail is "" for a terminal label
+    rewritten = (head + "[vpix]" + tail).rstrip("; ")
+    return f"{rewritten}; [vpix]format=yuv420p{v_out}"
+
+
 def build_batch_video_fc(
     durations: list[float],
     per_cut_names: list[str],
@@ -221,7 +235,7 @@ def build_batch_video_fc(
     parts = [f"[{i}:v]{canvas}[sv{i}]" for i in range(n)]
     if n == 1:
         parts.append(f"[sv0]null{v_out}")
-        return "; ".join(parts), v_out
+        return _force_yuv420p_tail("; ".join(parts), v_out), v_out
     prev = "[sv0]"
     cumulative = 0.0
     for i in range(1, n):
@@ -234,7 +248,7 @@ def build_batch_video_fc(
         )
         prev = out_label
         cumulative += durations[i - 1]
-    return "; ".join(parts), v_out
+    return _force_yuv420p_tail("; ".join(parts), v_out), v_out
 
 
 def build_audio_only_fc(
@@ -381,7 +395,7 @@ def build_open_close_post_fc(
             parts.append(f"{a_after_open}[abc]acrossfade=d={xfade_dur:.4f}[aout]")
 
     a_out = "[aout]" if has_audio else ""
-    return "; ".join(parts), "[vout]", a_out
+    return _force_yuv420p_tail("; ".join(parts), "[vout]"), "[vout]", a_out
 
 
 def build_filter_complex(
@@ -486,7 +500,7 @@ def build_filter_complex(
         scaled_inputs = "".join(f"[sv{i}]" for i in range(n))
         video_filter = f"{pre_scale}; {scaled_inputs}concat=n={n}:v=1:a=0{v_out}"
         if not any_audio:
-            return video_filter, v_out, ""
+            return _force_yuv420p_tail(video_filter, v_out), v_out, ""
         pre_vol = _build_pre_volume(clip_volumes, durations, n)
         # apad=whole_dur: pad each clip's audio to its exact video duration.
         # CFR normalise produces video ~40-120ms longer than audio per clip;
@@ -495,7 +509,7 @@ def build_filter_complex(
         padded_a = "".join(f"[pa{i}]" for i in range(n))
         a_out = "[aout]"
         audio_filter = f"{pre_vol}; {pre_pad}; {padded_a}concat=n={n}:v=0:a=1{a_out}"
-        return f"{video_filter}; {audio_filter}", v_out, a_out
+        return _force_yuv420p_tail(f"{video_filter}; {audio_filter}", v_out), v_out, a_out
 
     # -----------------------------------------------------------------------
     # GENERAL PATH: builds [vinner] / [ainner] then wraps with open/close xfade
@@ -620,7 +634,7 @@ def build_filter_complex(
 
     if not any_audio:
         log.info("[transitions] No audio in any clip — video-only output")
-        return "; ".join(all_parts), v_out, ""
+        return _force_yuv420p_tail("; ".join(all_parts), v_out), v_out, ""
 
     a_out = "[aout]"
-    return "; ".join(all_parts), v_out, a_out
+    return _force_yuv420p_tail("; ".join(all_parts), v_out), v_out, a_out

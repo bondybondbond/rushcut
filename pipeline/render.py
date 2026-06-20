@@ -829,7 +829,11 @@ def run_pipeline(
             ffmpeg_run(cmd)
         except RuntimeError as e:
             if is_amf:
-                log.warning("[encoder] AMF encode failed: %s -- retrying with libx264", e)
+                log.warning(
+                    "[encoder] *** AMF FALLBACK (#64) *** AMF_FALLBACK=1 encode failed "
+                    "-- retrying on libx264 (slow CPU encode + mixed-encoder concat risk): %s",
+                    e,
+                )
                 amf_fallback_flag[0] = True
                 ffmpeg_run(fallback_cmd_fn())
             else:
@@ -854,7 +858,7 @@ def run_pipeline(
                 af_parts.append(loudnorm_filter())
 
         def _build_single(b_argv, c_args, i_arg, o_arg, has_aud, af_p):
-            c = b_argv + ["-y", "-i", i_arg, "-vf", f"scale=-2:{scale_h}"] + c_args
+            c = b_argv + ["-y", "-i", i_arg, "-vf", f"scale=-2:{scale_h},format=yuv420p"] + c_args
             if has_aud:
                 if af_p:
                     c += ["-af", ",".join(af_p)]
