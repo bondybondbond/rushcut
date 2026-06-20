@@ -54,6 +54,76 @@ export function readTransitionConfig(projectId: string): TransitionConfig {
   }
 }
 
+/** Resolved card colour for a peach/black/white swatch key. */
+const CARD_COLOR_MAP: Record<string, string> = { peach: "#FF8A65", black: "#0a0a0a", white: "#ffffff" };
+
+/** One side (open or close) of the cards config, resolved for display + manifest. */
+export interface CardSide {
+  /** True only when the card is enabled AND has a non-empty title -- mirrors the
+   * pipeline render gate `if intro_text:` (render.py). A card with no title never renders. */
+  show: boolean;
+  /** Trimmed card title. */
+  text: string;
+  /** Trimmed subtitle (open card only; always "" for close). */
+  subtitle: string;
+  /** Resolved background hex (#FF8A65 / #0a0a0a / #ffffff). */
+  color: string;
+}
+
+export interface CardsConfig {
+  open: CardSide;
+  close: CardSide;
+}
+
+/**
+ * Read the open/close card config from the render-pref store (localStorage key
+ * `rc_cards_${projectId}`). Single source of truth for the enabled+title gate and
+ * the colour map -- consumed by buildJobConfig (manifest), the duration model
+ * (effectiveFilmMs), and the film-strip card bookends.
+ */
+export function readCardsConfig(projectId: string): CardsConfig {
+  const empty: CardsConfig = {
+    open: { show: false, text: "", subtitle: "", color: "#0a0a0a" },
+    close: { show: false, text: "", subtitle: "", color: "#0a0a0a" },
+  };
+  try {
+    const raw = getRenderPref(`rc_cards_${projectId}`);
+    if (!raw) return empty;
+    const c = JSON.parse(raw) as {
+      start?: { enabled?: boolean; title?: string; subtitle?: string; color?: string };
+      end?: { enabled?: boolean; title?: string; color?: string };
+    };
+    const openText = (c.start?.title ?? "").trim();
+    const closeText = (c.end?.title ?? "").trim();
+    return {
+      open: {
+        show: !!c.start?.enabled && openText !== "",
+        text: openText,
+        subtitle: (c.start?.subtitle ?? "").trim(),
+        color: CARD_COLOR_MAP[c.start?.color ?? ""] ?? "#0a0a0a",
+      },
+      close: {
+        show: !!c.end?.enabled && closeText !== "",
+        text: closeText,
+        subtitle: "",
+        color: CARD_COLOR_MAP[c.end?.color ?? ""] ?? "#0a0a0a",
+      },
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * Convenience for the duration model: which cards contribute real seconds to the film.
+ * Sourced from persisted config -- used by every screen except Arrange's Cards tab,
+ * which reads live in-memory card state instead so the estimate updates as you type.
+ */
+export function cardDurationFlags(projectId: string): { open: boolean; close: boolean } {
+  const c = readCardsConfig(projectId);
+  return { open: c.open.show, close: c.close.show };
+}
+
 export const DEFAULT_CONFIG: JobConfig = {
   music_mood: "none",
   transition: "none",
@@ -107,22 +177,15 @@ export function buildJobConfig(projectId: string): JobConfig {
     config.output_resolution = res === "4k" ? "4k" : "1080p";
   } catch { /* ignore */ }
   try {
-    const raw = getRenderPref(`rc_cards_${projectId}`);
-    if (raw) {
-      const COLOR_MAP: Record<string, string> = { peach: "#FF8A65", black: "#0a0a0a", white: "#ffffff" };
-      const c = JSON.parse(raw) as {
-        start?: { enabled?: boolean; title?: string; subtitle?: string; color?: string };
-        end?: { enabled?: boolean; title?: string; color?: string };
-      };
-      if (c.start?.enabled) {
-        config.intro_text = c.start.title || "";
-        config.intro_subtitle = c.start.subtitle || "";
-        config.intro_color = COLOR_MAP[c.start.color ?? ""] ?? "#0a0a0a";
-      }
-      if (c.end?.enabled) {
-        config.outro_text = c.end.title || "";
-        config.outro_color = COLOR_MAP[c.end.color ?? ""] ?? "#0a0a0a";
-      }
+    const cards = readCardsConfig(projectId);
+    if (cards.open.show) {
+      config.intro_text = cards.open.text;
+      config.intro_subtitle = cards.open.subtitle;
+      config.intro_color = cards.open.color;
+    }
+    if (cards.close.show) {
+      config.outro_text = cards.close.text;
+      config.outro_color = cards.close.color;
     }
   } catch { /* ignore */ }
   return config;

@@ -6,6 +6,11 @@ import type { TransitionConfig } from "@/utils/buildJobConfig";
 // clamped to half the shortest clip -- see render.py / transitions.py.
 export const XFADE_DUR_MS = 1500;
 
+// Open/close text-card duration in ms. MUST stay in sync with pipeline/cards.py
+// DEFAULT_DURATION_S = 3.0 (passed as duration_s=3.0 in render.py). Cards are real
+// clips prepended/appended to the film and join the same xfade chain.
+export const CARD_DUR_MS = 3000;
+
 /** Trimmed length of a single clip in ms (out - in, floored at 0). */
 export function trimmedMs(clip: Clip): number {
   return Math.max(0, (clip.out_ms ?? clip.duration_ms) - (clip.in_ms ?? 0));
@@ -22,29 +27,43 @@ export function naiveFilmMs(inFilm: Clip[]): number {
 
 /**
  * Effective DISPLAYED runtime after subtracting transition overlap -- mirrors the
- * pipeline telescoping math (#62). This is the value shown to the user as the film
- * runtime, NOT the absolute rendered-file duration: text intro/outro cards add real
- * seconds in the render but are absent from the clips array, so card-heavy films will
- * still undercount here until #63. Backend/music truth comes from get_duration(output).
+ * pipeline telescoping math (#62/#63). This is the value shown to the user as the film
+ * runtime, NOT the absolute rendered-file duration. Open/close text cards are real 3s
+ * clips that the pipeline prepends/appends and that join the same xfade chain, so when
+ * present they add CARD_DUR_MS each AND one more xfade overlap each (#63). Pass `cards`
+ * to account for them. Backend/music truth comes from get_duration(output).
  *
  * Mirrors render.py: has_xfade = (between != "none") || shuffleBetween;
- *   total = naive - (n-1) * min(1500, min(clip)/2)
+ *   elements = clips + open-card + close-card
+ *   total = naive(elements) - (elements-1) * min(1500, min(clip)/2)
  * plus +0.1s net per open/close-to-black (black_dur - xfade_dur).
  */
-export function effectiveFilmMs(inFilm: Clip[], tc: TransitionConfig): number {
+export function effectiveFilmMs(
+  inFilm: Clip[],
+  tc: TransitionConfig,
+  cards?: { open: boolean; close: boolean },
+): number {
   const n = inFilm.length;
-  // Guard: empty selection -> 0; a single clip has no cuts and no overlap.
-  if (n === 0) return 0;
-  let total = naiveFilmMs(inFilm);
+  const cardCount = (cards?.open ? 1 : 0) + (cards?.close ? 1 : 0);
 
+  // Guard: no footage clips -> just the card seconds (nothing to crossfade between;
+  // an all-empty clip manifest errors in start_job anyway, so this is purely defensive).
+  // Preserves `return 0` when there are neither clips nor cards.
+  if (n === 0) return cardCount * CARD_DUR_MS;
+
+  let total = naiveFilmMs(inFilm) + cardCount * CARD_DUR_MS;
+
+  // Cards count as elements in the xfade chain, so each adds one more (elements-1) overlap.
+  const elementCount = n + cardCount;
   const hasOverlap = tc.between !== "none" || tc.shuffleBetween;
-  if (hasOverlap && n >= 2) {
+  if (hasOverlap && elementCount >= 2) {
     // Guard: clamp against the shortest *non-zero* clip so a pathological
-    // zero-length trim can't drive xfade_dur to 0 or negative.
+    // zero-length trim can't drive xfade_dur to 0 or negative. Cards are 3s,
+    // never the min, so the clamp stays based on real clip durations.
     const positiveDurs = inFilm.map(trimmedMs).filter((d) => d > 0);
     if (positiveDurs.length > 0) {
       const xfadeMs = Math.min(XFADE_DUR_MS, Math.min(...positiveDurs) / 2);
-      total -= (n - 1) * xfadeMs;
+      total -= (elementCount - 1) * xfadeMs;
     }
   }
 

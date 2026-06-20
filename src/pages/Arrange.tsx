@@ -228,8 +228,15 @@ export default function Arrange() {
 
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   const clipCount = inFilm.length;
-  // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
-  const totalMs = effectiveFilmMs(inFilm, transConfig);
+  // #63: cards are real 3s clips -- source from live in-memory cardsState (not localStorage)
+  // so the runtime + bookends update instantly as the user toggles/types on the Cards tab.
+  // Mirrors the pipeline render gate: a card counts only when enabled AND titled.
+  const cardFlags = {
+    open: cardsState.start.enabled && cardsState.start.title.trim() !== "",
+    close: cardsState.end.enabled && cardsState.end.title.trim() !== "",
+  };
+  // #62/#63: displayed runtime subtracts transition overlap (telescoped) + adds card seconds.
+  const totalMs = effectiveFilmMs(inFilm, transConfig, cardFlags);
 
   const selectedClip = selectedClipId ? clips.find((c) => c.id === selectedClipId) ?? null : null;
   selectedClipRef.current = selectedClip;

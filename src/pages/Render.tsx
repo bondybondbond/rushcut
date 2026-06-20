@@ -9,7 +9,7 @@ import type { ProjectWithClips, JobConfig, PipelineProgressEvent, Job } from "@/
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
-import { buildJobConfig, readTransitionConfig } from "@/utils/buildJobConfig";
+import { buildJobConfig, readTransitionConfig, cardDurationFlags } from "@/utils/buildJobConfig";
 import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref, removeRenderPref } from "@/utils/renderStore";
 import { absoluteDateTime } from "@/utils/timeAgo";
@@ -83,7 +83,7 @@ export default function Render() {
   const _cachedIncluded = (_cached?.clips ?? []).filter(c => c.include !== 0);
   const [inFilmCount, setInFilmCount] = useState(_cachedIncluded.length);
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
-  const [totalMs, setTotalMs] = useState(() => effectiveFilmMs(_cachedIncluded, readTransitionConfig(projectId ?? "")));
+  const [totalMs, setTotalMs] = useState(() => effectiveFilmMs(_cachedIncluded, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "")));
   const [phase, setPhase] = useState<Phase>("starting");
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -385,8 +385,8 @@ export default function Render() {
       projectCache.set(projectId, { name: data.project.name, clips: data.clips });
       const included = data.clips.filter((c) => c.include !== 0);
       const count = included.length;
-      // #62: effective runtime (transition overlap subtracted), like the render.
-      const ms = effectiveFilmMs(included, readTransitionConfig(projectId));
+      // #62/#63: effective runtime (transition overlap subtracted + card seconds added), like the render.
+      const ms = effectiveFilmMs(included, readTransitionConfig(projectId), cardDurationFlags(projectId));
       setInFilmCount(count);
       setTotalMs(ms);
       setProjectName(data.project.name);

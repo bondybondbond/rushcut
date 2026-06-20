@@ -9,7 +9,7 @@ import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
-import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readCardsConfig } from "@/utils/buildJobConfig";
 import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
@@ -143,10 +143,14 @@ export default function Sound() {
     const end = c.out_ms ?? c.duration_ms;
     return sum + Math.max(0, end - start);
   }, 0);
-  // DISPLAY value: effective runtime (transition overlap subtracted) for the runtime
-  // label + music loop/coverage math, which times against the telescoped render (#62).
-  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""));
-
+  // DISPLAY value: effective runtime (transition overlap subtracted + card seconds added)
+  // for the runtime label + music loop/coverage math, which times against the telescoped
+  // render (#62/#63). Read cards once; reuse for both the duration and the strip bookends.
+  const cardsCfg = readCardsConfig(projectId ?? "");
+  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), {
+    open: cardsCfg.open.show,
+    close: cardsCfg.close.show,
+  });
   // Keep inFilmRef current so playback callbacks always read the latest clip list
   // without needing to re-subscribe on every render.
   inFilmRef.current = inFilm;

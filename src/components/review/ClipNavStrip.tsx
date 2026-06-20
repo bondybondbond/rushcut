@@ -15,7 +15,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
-import { readTransitionConfig } from "@/utils/buildJobConfig";
+import { readTransitionConfig, cardDurationFlags } from "@/utils/buildJobConfig";
 import { effectiveFilmMs } from "@/utils/filmDuration";
 
 function fmtMs(ms: number): string {
@@ -116,7 +116,7 @@ export function ClipNavStrip({ clips, currentIndex, onSelect, onReorder, project
 
   // Duration counter: effective runtime (transition overlap subtracted, like the render -- #62).
   const inFilm = clips.filter((c) => c.include !== 0);
-  const includedMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId));
+  const includedMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId), cardDurationFlags(projectId));
 
   const includedCount = clips.filter((c) => c.include !== 0).length;
 
