@@ -719,6 +719,12 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
             "-qp_i", "30",
             "-qp_p", "30",
             "-quality", "speed",
+            // Normalize color primaries so AMF-encoded proxies don't carry
+            // prim:reserved. Without these, downstream AMF encodes see prim:reserved
+            // on the input and request yuv444p -> swscaler -129 -> fallback (#64).
+            "-colorspace", "bt709",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
         ]);
     } else {
         args.extend(["-preset", "ultrafast", "-crf", "23"]);
@@ -801,6 +807,12 @@ fn generate_proxy_file_normal_priority(src: &str, dst: &str, threads: u32) -> bo
             "-qp_i", "30",
             "-qp_p", "30",
             "-quality", "speed",
+            // Normalize color primaries so AMF-encoded proxies don't carry
+            // prim:reserved. Without these, downstream AMF encodes see prim:reserved
+            // on the input and request yuv444p -> swscaler -129 -> fallback (#64).
+            "-colorspace", "bt709",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
         ]);
     } else {
         args.extend([

@@ -239,6 +239,12 @@ def apply_zoom(
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-profile:v", "main",
+        # Normalize color primaries on output so zoom-cache files don't carry
+        # prim:reserved inherited from AMF-encoded proxy inputs. Prevents
+        # downstream AMF encodes (U1g segments) from requesting yuv444p.
+        "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
         *extra_args,
         "-c:a", "copy",
         str(out_path),
