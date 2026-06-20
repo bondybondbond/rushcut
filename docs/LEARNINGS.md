@@ -27,6 +27,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — background `until` monitor output is unreliable; read the log directly when user says "done"
+
+**Problem:** A background Bash `until` poll loop writing to a temp file produces an empty output file when the loop exits — the final `tail` command runs but its output goes to the background task file which is already "done" from the harness perspective. When the user says "it's finished", the background task's output file is empty or stale.
+**Solution:** When the user says a long-running operation (render, build, proxy gen) is done, always read the source log directly (`wsl -- tail -N /mnt/c/.../pipeline-latest.log`) rather than checking the background task output file. The source log is authoritative; the monitor is just a convenience trigger.
+**Context:** Any session using `run_in_background: true` with an `until` polling loop. The monitor is useful for being notified when the condition is first met — but for reading results, go to the source.
+
+---
+
 ## Workflow — preview_* and chrome-devtools MCP both conflict with WDIO on port 9222
 
 **Problem:** Calling any `mcp__chrome-devtools__*` tool OR any `preview_*` MCP tool (including `preview_start`, `preview_screenshot`) starts a Chrome/Edge browser process that squats port 9222 for the lifetime of the Claude Code session. WDIO's `waitForPort(9222)` resolves to this MCP browser instead of the Tauri WebView2 — msedgedriver attaches to the wrong target and `getUrl()` always returns `about:blank`.
