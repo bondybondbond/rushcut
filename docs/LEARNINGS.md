@@ -868,6 +868,22 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Pipeline — Zoom warm/render race: both processes encode the same cache key concurrently
+
+**Problem:** `warm_zoom.py` and `render.py` `_zoom_worker` are independent cross-process producers writing to the same zoom cache directory. When the user edits zoom settings and navigates straight to Render before the `BELOW_NORMAL`-priority warm finishes, both processes find a cache miss for the same key and start concurrent 4K Ken Burns encodes — wasted double work plus the full cold penalty. Confirmed by `[zoom-coord]` timestamped logs showing warm `encode_start` at T+0 and render `encode_start` at T+14s for the same SHA1 key.
+**Solution:** Coordinate via a per-key filesystem lock in `pipeline/zoom_cache.py` (`acquire_or_wait`). The loser polls for the mp4 to appear and returns `"served"` when it does. The winner gets `"own"`, encodes, publishes via `os.replace()` (atomic), then releases. Both processes import from `zoom_cache.py` — the same helper path covers both directions (render waits on warm, and warm inherits from render if render got there first). Count `"served"` results as `zoom_cache_hits` in the ANALYSIS line so the metric is honest. Lock file contains `{pid, hostname, started_at, key}` for diagnosability. Stale-lock reclaim uses `os.replace(lock → lock.reclaim.{mypid})` — atomic rename, not check-then-delete (avoids TOCTTOU race). Bounded `timeout_s=300` wait with fallback to encode rather than blocking forever.
+**Context:** `pipeline/zoom_cache.py` (new helper), `pipeline/render.py` `_zoom_worker` (~line 662), `pipeline/warm_zoom.py` `_warm_one` (~line 100). The Rust `{project_id}:zoom` HashSet guard prevents concurrent warm jobs within the same process but has no effect on the separate render WSL process. Fast path: if the mp4 already exists and `is_valid_proxy()` passes, `acquire_or_wait` returns `"served"` immediately without touching the lock.
+
+---
+
+## Pipeline — TIMING lines go to stdout, not to pipeline-latest.log
+
+**Problem:** `grep TIMING pipeline-latest.log` returns nothing. `TIMING:zoom=...s` and other structured timing lines are emitted via `print(..., flush=True)` in `run.py`, which Rust captures from stdout and stores in `jobs.analysis_summary` and `render-timing-log.jsonl`. The log file captures only `log.info()` / `log.warning()` calls from the Python `logging` module.
+**Solution:** To read timing values mid-session, check the Render screen UI (shows stage times live) or read `render-timing-log.jsonl` after the render completes. The `zoom_cache_hits` count IS available in the log via `[zoom-cache] N hits / M invalid / K misses` (a `log.info()` call). The ANALYSIS string is accessible via `gh` or by reading `jobs.analysis_summary` via Tauri invoke after the run.
+**Context:** Any session inspecting pipeline performance or A/V sync timing. Do not grep `pipeline-latest.log` for `TIMING` — grep it for `[zoom-cache]`, `[sync-check]`, or `[render]` stage messages instead.
+
+---
+
 ## UX / product decisions (locked)
 
 - **Draft-first, configure-optional** — show the first render before any configuration. Mandatory configure screens before a draft add friction at the worst moment. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.

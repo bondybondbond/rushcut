@@ -24,6 +24,7 @@ import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import subprocess
@@ -47,6 +48,7 @@ from .transitions import (
 from .trim import trim
 from .utils import FFMPEG, ffmpeg_run, ffprobe_json, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import apply_zoom
+from .zoom_cache import acquire_or_wait, release_lock
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +259,19 @@ def _prune_zoom_cache(cache_dir: Path) -> None:
 
 # Bump when the Ken Burns formula changes to invalidate stale cache entries.
 _KENBURNS_CACHE_VER = "2"
+
+
+def zoom_coord_log(who: str, event: str, key: str, clip_idx: int, resolution: str) -> None:
+    """#15 Step 0 instrumentation: emit a uniform, greppable correlation line so
+    warm (zoom-bg.log) and render (pipeline-*.log) activity on the SAME cache key
+    can be lined up by timestamp. `key` is the FULL sha1 (not truncated) so both
+    producers print identical keys. ASCII only. who="warm"|"render".
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    log.info(
+        "[zoom-coord] ts=%s who=%s event=%s clip=%d res=%s key=%s",
+        ts, who, event, clip_idx, resolution, key,
+    )
 
 
 def _zoom_cache_key(
@@ -649,6 +664,7 @@ def run_pipeline(
                     zoomed[i] = cache_file
                     zoom_status[i] = "hit"
                     log.info("[zoom-cache] clip %d: HIT %s", i, key)
+                    zoom_coord_log("render", "hit", key, i, output_resolution)
                     return
                 log.info("[zoom-cache] clip %d: INVALID (re-encoding) %s", i, key)
                 try:
@@ -658,20 +674,40 @@ def run_pipeline(
                 zoom_status[i] = "invalid"
             else:
                 log.info("[zoom-cache] clip %d: MISS %s", i, key)
+                zoom_coord_log("render", "miss", key, i, output_resolution)
                 zoom_status[i] = "miss"
+
+            # Coordinate with warm_zoom.py: acquire the per-key lock before encoding.
+            # If the warm already holds the lock and publishes while we wait, we get
+            # "served" and count it as a hit -- no double-encode. If we get "own", we
+            # are the exclusive encoder for this key.
+            lock_path = zoom_cache_dir / f"{key}.lock"
+            lock_result = acquire_or_wait(zoom_cache_dir, key, timeout_s=300)
+            if lock_result == "served":
+                # Warm (or another render worker) already published this key.
+                zoomed[i] = cache_file
+                zoom_status[i] = "hit"
+                log.info("[zoom-cache] clip %d: SERVED by warm %s", i, key)
+                zoom_coord_log("render", "served", key, i, output_resolution)
+                return
 
             # Encode to a temp file colocated in the cache dir, then publish via
             # os.replace() — an atomic rename on the same filesystem, so a
-            # concurrent job (two-instance rule) never reads a half-written file.
+            # concurrent warm job never reads a half-written file.
             tmp_cache = zoom_cache_dir / f"{key}.tmp.{os.getpid()}.{i}.mp4"
-            apply_zoom(
-                p, tmp_cache,
-                focal_x=fx, focal_y=fy,
-                zoom_mode=effective_mode,
-                threads=threads_per_worker,
-            )
-            os.replace(tmp_cache, cache_file)
-            zoomed[i] = cache_file
+            zoom_coord_log("render", "encode_start", key, i, output_resolution)
+            try:
+                apply_zoom(
+                    p, tmp_cache,
+                    focal_x=fx, focal_y=fy,
+                    zoom_mode=effective_mode,
+                    threads=threads_per_worker,
+                )
+                os.replace(tmp_cache, cache_file)
+                zoom_coord_log("render", "publish", key, i, output_resolution)
+                zoomed[i] = cache_file
+            finally:
+                release_lock(lock_path)
 
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_ZOOM) as pool:
             futures = [pool.submit(_zoom_worker, i, p, cm)

@@ -83,30 +83,32 @@ def _warm_one(
         _zoom_cache_key,
         decide_clip_source,
         pretrim_one_clip,
+        zoom_coord_log,
     )
     from pipeline.proxy import is_valid_proxy
     from pipeline.normalise import normalise
     from pipeline.trim import trim
     from pipeline.zoom import apply_zoom
     from pipeline.utils import get_duration
+    from pipeline.zoom_cache import acquire_or_wait, release_lock
 
     orig_in_ms = clip_meta.get("in_ms")
     orig_out_ms = clip_meta.get("out_ms")
 
     key = _zoom_cache_key(src_path, orig_in_ms, orig_out_ms, zoom_mode, focal_x, focal_y, resolution)
     cache_file = cache_dir / f"{key}.mp4"
+    zoom_coord_log("warm", "start", key, clip_idx, resolution)
 
-    if cache_file.exists():
-        if is_valid_proxy(str(cache_file)):
-            log.info("[warm-zoom] clip %d @ %s: HIT key=%s", clip_idx, resolution, key[:16])
-            return "hit"
-        log.info("[warm-zoom] clip %d @ %s: INVALID (re-encoding) key=%s", clip_idx, resolution, key[:16])
-        try:
-            cache_file.unlink()
-        except OSError:
-            pass
-    else:
-        log.info("[warm-zoom] clip %d @ %s: MISS key=%s", clip_idx, resolution, key[:16])
+    # Coordinate with render.py _zoom_worker via per-key filesystem lock so the two
+    # processes never double-encode the same key. acquire_or_wait() returns:
+    #   "served" -> render already published it (or it was already cached) -- skip.
+    #   "own"    -> we hold the lock; encode and publish, then release.
+    lock_path = cache_dir / f"{key}.lock"
+    lock_result = acquire_or_wait(cache_dir, key, timeout_s=300)
+    if lock_result == "served":
+        log.info("[warm-zoom] clip %d @ %s: HIT (served by render) key=%s", clip_idx, resolution, key[:16])
+        zoom_coord_log("warm", "served", key, clip_idx, resolution)
+        return "hit"
 
     use_proxy, proxy_wsl, reason = decide_clip_source(clip_meta, resolution, target_fps_int)
     log.info("[warm-zoom] clip %d @ %s: %s", clip_idx, resolution, reason)
@@ -144,9 +146,12 @@ def _warm_one(
             else:
                 prepped = normed
 
+        zoom_coord_log("warm", "encode_start", key, clip_idx, resolution)
         apply_zoom(prepped, tmp_cache, focal_x=focal_x, focal_y=focal_y, zoom_mode=zoom_mode)
         os.replace(tmp_cache, cache_file)
+        zoom_coord_log("warm", "publish", key, clip_idx, resolution)
         log.info("[warm-zoom] clip %d @ %s: ENCODED key=%s", clip_idx, resolution, key[:16])
+        release_lock(lock_path)
         return "encoded"
 
     except Exception as exc:
@@ -155,6 +160,7 @@ def _warm_one(
             tmp_cache.unlink(missing_ok=True)
         except OSError:
             pass
+        release_lock(lock_path)
         return "error"
 
 
