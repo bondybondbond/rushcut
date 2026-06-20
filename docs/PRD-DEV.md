@@ -34,7 +34,7 @@ Each batch series has a distinct purpose. When choosing where a new item belongs
 |--------|---------|--------|
 | **U5** | Trim-screen playback UX — seek responsiveness, clip-to-clip transitions, dual-buffer improvements | U5a/b/c DONE |
 | **U6** | Music playback improvements — seek dropout fix, loop toggle | DONE (incl. U6a/U6b) |
-| **V1.x** | Critical stability bugs — crashes, wrong output content, data integrity, render failures | V1.1/V1.2 DONE · V1.3 next |
+| **V1.x** | Critical stability bugs — crashes, wrong output content, data integrity, render failures | V1.1–V1.4 DONE · V1.5 next |
 | **V2.x** | UX polish — visual accuracy, discoverability, small quality-of-life improvements | V2.1–V2.3 queued |
 | **V3** | Advanced editor features — multi-version renders, add/remove clips, film-tab trim handles, branding | Deferred |
 | **V4.x** | Pipeline architecture — clean render intermediate (DaVinci-style cache), parallel decode+encode | Deferred |

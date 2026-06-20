@@ -475,6 +475,22 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Shuffle transition pool — two separate definitions that must stay in sync
+
+**Problem:** `pipeline/transitions.py::_SHUFFLE_POOL` (FFmpeg xfade names: `"fade"`, `"wipeleft"`, etc.) and `src/pages/Arrange.tsx::SHUFFLE_POOL` (UI/Rust names: `"crossfade"`, `"wipe"`, etc.) are separate lists that represent the same curated set under different naming conventions. `dissolve` was present in both and caused literal static/snow in renders before V1.4 caught it.
+**Solution:** Any addition or removal must touch both files. Each file has a `// SYNC:` comment pointing to the other. UI names map to pipeline names via `_TRANSITION_MAP` in `transitions.py` — verify the mapping exists before adding a new member.
+**Context:** `pipeline/transitions.py` line ~61 (`_SHUFFLE_POOL`) and `src/pages/Arrange.tsx` line ~77 (`SHUFFLE_POOL`). New members require 4K QA before merging — see the provenance comment above `_SHUFFLE_POOL` for the current QA log format.
+
+---
+
+## xfade transition QA — never assume a named xfade is visually safe
+
+**Problem:** FFmpeg's `dissolve` xfade is a noise-dither blend that renders as literal static/snow by design. It was in the shuffle pool undetected until a user reported snow at one cut. Other xfades (`hrslice`, `zoomin`) have their own failure modes at 4K: `hrslice` triggers the mixed-encoder-concat green-frame bug (#64) at AMF/libx264 segment boundaries; `zoomin` zooms to a pixel band.
+**Solution:** Treat every new xfade transition name as opt-in — run a real 4K render on target footage, extract 3 frames per transition (start, mid, end of xfade window), and verify clean before adding to `_SHUFFLE_POOL`. Append to the QA log comment above the pool definition.
+**Context:** `pipeline/transitions.py::_SHUFFLE_POOL`. The diagnostic method: temporarily set `_SHUFFLE_POOL = ["<member>"]` (single item) and run a real render — do NOT test via the `transition` parameter, which bypasses the shuffle code path entirely. Manual libx264 render via `run.py` is fine for visual QA; AMF is NOT needed for the transition itself (only needed to expose the #64 concat boundary artifact).
+
+---
+
 ## Python / tooling
 
 - **`FFMPEG_BIN`/`FFPROBE_BIN` env vars** — hardcoding `/usr/local/bin/ffmpeg` blocks local testing without Docker. Read from env vars with Lambda-path as default; also makes CI flexible.
