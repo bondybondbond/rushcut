@@ -876,11 +876,11 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Pipeline — TIMING lines go to stdout, not to pipeline-latest.log
+## Pipeline — TIMING and ANALYSIS lines go to stdout, not to pipeline-latest.log
 
-**Problem:** `grep TIMING pipeline-latest.log` returns nothing. `TIMING:zoom=...s` and other structured timing lines are emitted via `print(..., flush=True)` in `run.py`, which Rust captures from stdout and stores in `jobs.analysis_summary` and `render-timing-log.jsonl`. The log file captures only `log.info()` / `log.warning()` calls from the Python `logging` module.
-**Solution:** To read timing values mid-session, check the Render screen UI (shows stage times live) or read `render-timing-log.jsonl` after the render completes. The `zoom_cache_hits` count IS available in the log via `[zoom-cache] N hits / M invalid / K misses` (a `log.info()` call). The ANALYSIS string is accessible via `gh` or by reading `jobs.analysis_summary` via Tauri invoke after the run.
-**Context:** Any session inspecting pipeline performance or A/V sync timing. Do not grep `pipeline-latest.log` for `TIMING` — grep it for `[zoom-cache]`, `[sync-check]`, or `[render]` stage messages instead.
+**Problem:** `grep "TIMING:\|ANALYSIS:" pipeline-latest.log` returns nothing. `TIMING:zoom=...s`, `ANALYSIS:clips_used=...`, `DONE:/path`, and `PROGRESS:N` lines are emitted via `print(..., flush=True)`, which Rust captures from stdout and stores in `jobs.analysis_summary` (DB) and `render-timing-log.jsonl`. The log file captures only `log.info()` / `log.warning()` calls from the Python `logging` module.
+**Solution:** To read the ANALYSIS string for a completed job, query the DB directly: `wsl -d Ubuntu-24.04 -u root -- sqlite3 /mnt/c/Users/Manasak/AppData/Roaming/rushcut/rushcut.db "SELECT analysis_summary FROM jobs WHERE id='<job-id>';"` — the job ID is the UUID in `pipeline-latest.log`'s symlink target. The `zoom_cache_hits` count IS available in the log via `[zoom-cache] N hits / M invalid / K misses` (a `log.info()` call). For timing values, read `render-timing-log.jsonl` or the Render screen UI.
+**Context:** Any session inspecting pipeline performance or A/V sync timing. Do not grep `pipeline-latest.log` for `TIMING` or `ANALYSIS` — grep it for `[zoom-cache]`, `[sync-check]`, or `[render]` stage messages instead. The job UUID is the symlink target: `ls -la pipeline-latest.log` reveals it.
 
 ---
 

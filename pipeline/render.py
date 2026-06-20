@@ -613,6 +613,7 @@ def run_pipeline(
     report(55)
     t_zoom = time.time()
     zoom_cache_hits = 0
+    zoom_proxy_input = 0  # overwritten after pool if zoom runs; safe when zoom is skipped
     # "none" (the DB default string) is truthy in Python but means no zoom.
     # Only count clips with an actual zoom mode as having per-clip zoom.
     has_per_clip_zoom = any(
@@ -632,6 +633,7 @@ def run_pipeline(
         n = len(current_paths)
         zoomed: list = [None] * n
         zoom_status: list[str] = [""] * n  # "hit" | "invalid" | "miss" | "passthrough"
+        zoom_proxy_inputs: list[bool] = [False] * n  # per-index, safe across threads
         # Cap each worker's threads so MAX_PARALLEL_ZOOM concurrent encoders
         # don't oversubscribe cores (mirrors normalise.py).
         threads_per_worker = max(1, (os.cpu_count() or 4) // MAX_PARALLEL_ZOOM)
@@ -651,6 +653,10 @@ def run_pipeline(
                 zoomed[i] = p
                 zoom_status[i] = "passthrough"
                 return
+
+            # Telemetry: flag zoomed clips whose decode input is a proxy (not a normalise pass).
+            if i in proxy_clip_indices:
+                zoom_proxy_inputs[i] = True
 
             # Key on the ORIGINAL clips[i] offsets — see _zoom_cache_key docstring.
             key = _zoom_cache_key(
@@ -719,6 +725,7 @@ def run_pipeline(
         zoom_cache_hits = sum(1 for s in zoom_status if s == "hit")
         zoom_cache_invalid = sum(1 for s in zoom_status if s == "invalid")
         zoom_cache_miss = sum(1 for s in zoom_status if s == "miss")
+        zoom_proxy_input = sum(zoom_proxy_inputs)
         log.info("[zoom-cache] %d hits / %d invalid / %d misses",
                  zoom_cache_hits, zoom_cache_invalid, zoom_cache_miss)
     else:
@@ -1327,6 +1334,8 @@ def run_pipeline(
             f",output_resolution={output_resolution}"
             f",volume_custom={volume_custom}"
             f",zoom_cache_hits={zoom_cache_hits}"
+            f",zoom_proxy_input={zoom_proxy_input}"
+            f",per_clip_zoom_clips={sum(1 for c in pipeline_clips if c.get('zoom_mode') and c.get('zoom_mode') != 'none')}"
             f",encoder={encoder_name}"
             f",amf_fallback={1 if amf_fallback_flag[0] else 0}"
         )
