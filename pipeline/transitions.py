@@ -209,12 +209,26 @@ def _force_yuv420p_tail(fc: str, v_out: str) -> str:
     return f"{rewritten}; [vpix]format=yuv420p{v_out}"
 
 
+def _sv_node(i: int, canvas: str, zoom_vfs: "list[str | None] | None") -> str:
+    """Per-clip pre-scale node `[{i}:v]...[sv{i}]`.
+
+    When a zoom vf is supplied for this clip (embed-zoom path, issue #67), it is
+    prepended BEFORE the fixed canvas: the zoom (kenburns scale=eval=frame,crop or
+    static crop+scale) outputs source dims, the canvas scale-fit is then identity,
+    and the trailing format/setparams still normalise colour for downstream AMF.
+    """
+    z = zoom_vfs[i] if (zoom_vfs and i < len(zoom_vfs) and zoom_vfs[i]) else None
+    pre = f"{z}," if z else ""
+    return f"[{i}:v]{pre}{canvas}[sv{i}]"
+
+
 def build_batch_video_fc(
     durations: list[float],
     per_cut_names: list[str],
     mode: str,
     output_resolution: str,
     xfade_dur: float = XFADE_DUR,
+    zoom_vfs: "list[str | None] | None" = None,
 ) -> "tuple[str, str]":
     """Video-only filter_complex for ONE batch of clips (U1g segmented render).
 
@@ -239,7 +253,7 @@ def build_batch_video_fc(
         f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
     v_out = "[vout]"
-    parts = [f"[{i}:v]{canvas}[sv{i}]" for i in range(n)]
+    parts = [_sv_node(i, canvas, zoom_vfs) for i in range(n)]
     if n == 1:
         parts.append(f"[sv0]null{v_out}")
         return _force_yuv420p_tail("; ".join(parts), v_out), v_out
@@ -420,6 +434,7 @@ def build_filter_complex(
     closing_transition: str = "none",
     target_fps_raw: str = "30000/1001",
     clip_tbn_str: str = "1/30000",
+    zoom_vfs: "list[str | None] | None" = None,
 ) -> tuple[str, str, str]:
     """
     Build filter_complex string for N clips with xfade transitions.
@@ -510,7 +525,7 @@ def build_filter_complex(
     # -----------------------------------------------------------------------
     if transition == "none" and not shuffle_between and not has_open and not has_close:
         any_audio = any(audio_flags)
-        pre_scale = "; ".join(f"[{i}:v]{canvas}[sv{i}]" for i in range(n))
+        pre_scale = "; ".join(_sv_node(i, canvas, zoom_vfs) for i in range(n))
         scaled_inputs = "".join(f"[sv{i}]" for i in range(n))
         video_filter = f"{pre_scale}; {scaled_inputs}concat=n={n}:v=1:a=0{v_out}"
         if not any_audio:
@@ -533,7 +548,7 @@ def build_filter_complex(
 
     # Pre-scale every clip input to fixed canvas — [sv0],[sv1],...
     for i in range(n):
-        all_parts.append(f"[{i}:v]{canvas}[sv{i}]")
+        all_parts.append(_sv_node(i, canvas, zoom_vfs))
 
     # --- Between-clips video ---
     # Label for the output of the between-clip stage.

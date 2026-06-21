@@ -150,6 +150,49 @@ def _kenburns_vf(iw: int, ih: int, clip_dur: float,
     return vf, m
 
 
+def build_zoom_vf(
+    clip_path: Path,
+    zoom_mode: str | None,
+    focal_x: float | None = None,
+    focal_y: float | None = None,
+) -> str | None:
+    """Pure vf-string builder for the embed-zoom path (issue #67 benchmark).
+
+    Returns the SAME filtergraph string that apply_zoom() would bake into a
+    zoom-cache file -- so injecting it directly into the render filter_complex
+    produces visually identical zoom WITHOUT the separate pre-encode pass.
+    Probes the input clip (dims + duration) exactly like apply_zoom so the
+    kenburns motion basis matches the pre-encode path byte-for-byte.
+
+    Returns None for a no-op ("none"/empty) zoom_mode.
+    """
+    if not zoom_mode or zoom_mode == "none":
+        return None
+
+    fx = max(0.0, min(1.0, focal_x if focal_x is not None else 0.5))
+    fy = max(0.0, min(1.0, focal_y if focal_y is not None else 0.5))
+    iw, ih, clip_dur = _probe(clip_path)
+
+    kb = _parse_kenburns(zoom_mode)
+    if kb is not None:
+        vf, _motion_s = _kenburns_vf(iw, ih, clip_dur, kb, fx, fy)
+        return vf
+
+    # Static crop-in -- mirror apply_zoom()'s static branch exactly.
+    zoom = ZOOM_PRESETS.get(zoom_mode, 1.3)
+    crop_w = int(iw / zoom)
+    crop_h = int(ih / zoom)
+    crop_w = crop_w - (crop_w % 2)
+    crop_h = crop_h - (crop_h % 2)
+    raw_x = fx * (iw - crop_w)
+    raw_y = fy * (ih - crop_h)
+    x = int(max(0, min(raw_x, iw - crop_w)))
+    y = int(max(0, min(raw_y, ih - crop_h)))
+    scale_w = iw - (iw % 2)
+    scale_h = ih - (ih % 2)
+    return f"crop={crop_w}:{crop_h}:{x}:{y},scale={scale_w}:{scale_h}"
+
+
 def apply_zoom(
     clip_path: Path,
     out_path: Path,

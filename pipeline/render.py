@@ -47,7 +47,7 @@ from .transitions import (
 )
 from .trim import trim
 from .utils import FFMPEG, ffmpeg_run, ffprobe_json, get_duration, get_frame_size, has_audio, log_av_sync
-from .zoom import apply_zoom
+from .zoom import apply_zoom, build_zoom_vf
 from .zoom_cache import acquire_or_wait, release_lock
 
 log = logging.getLogger(__name__)
@@ -622,7 +622,33 @@ def run_pipeline(
     )
     global_zoom = config.get("zoom", False) and mode == "final"
 
-    if has_per_clip_zoom or global_zoom:
+    # issue #67 benchmark: when the embed sentinel file is present, run zoom LIVE
+    # inside the render filter_complex (per-clip vf injected into [sv{i}]) instead
+    # of pre-encoding a zoom-cache MP4 per clip. Toggled by an atomic file so the
+    # same binary/branch A/B-tests both paths without a rebuild or checkout.
+    zoom_vfs = None  # per-clip vf strings (embed path); None => pre-encode path below
+    _EMBED_ZOOM = os.path.exists(
+        "/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/embed_zoom.flag"
+    )
+
+    if (has_per_clip_zoom or global_zoom) and _EMBED_ZOOM and mode == "final":
+        log.info("[render] Step 3: zoom EMBED (#67) -- live in filter_complex, no pre-encode")
+        zoom_vfs = [None] * len(current_paths)
+        built = 0
+        for i, (p, cm) in enumerate(zip(current_paths, pipeline_clips)):
+            cz = cm.get("zoom_mode")
+            if cz and cz != "none":
+                eff, fx, fy = cz, cm.get("focal_x"), cm.get("focal_y")
+            elif global_zoom:
+                eff, fx, fy = "gentle", None, None
+            else:
+                continue
+            zoom_vfs[i] = build_zoom_vf(p, eff, fx, fy)
+            if zoom_vfs[i]:
+                built += 1
+        log.info("[zoom-embed] built %d/%d vf strings (input=%s)",
+                 built, len(current_paths), "trimmed/proxy clips")
+    elif has_per_clip_zoom or global_zoom:
         log.info("[render] Step 3: zoom (per_clip=%s, global=%s)", has_per_clip_zoom, global_zoom)
 
         zoom_cache_dir = _resolve_zoom_cache_dir()
@@ -962,7 +988,8 @@ def run_pipeline(
                 # Global cut between clip k and k+1 == per_cut_names[k]; this
                 # batch's cuts are the global cuts idxs[0]..idxs[-2].
                 bnames = [per_cut_names[k] for k in idxs[:-1]]
-                vfc, v_out_b = build_batch_video_fc(bdurs, bnames, mode, output_resolution, xf)
+                bzoom = [zoom_vfs[k] for k in idxs] if zoom_vfs else None
+                vfc, v_out_b = build_batch_video_fc(bdurs, bnames, mode, output_resolution, xf, zoom_vfs=bzoom)
 
                 # Drop the leading (pre-window) part INSIDE the filter graph -- a
                 # "-c copy" trim snaps to GOP keyframes and drifts whole seconds
@@ -1197,6 +1224,7 @@ def run_pipeline(
                 closing_transition=closing_transition,
                 target_fps_raw=target_fps_raw,
                 clip_tbn_str=_fps_to_tbn(target_fps_raw),
+                zoom_vfs=zoom_vfs,
             )
             a_map = a_out
             if a_out and mode != "draft" and not music_on:
