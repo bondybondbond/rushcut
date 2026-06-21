@@ -238,6 +238,16 @@ export default function Arrange() {
   // #62/#63: displayed runtime subtracts transition overlap (telescoped) + adds card seconds.
   const totalMs = effectiveFilmMs(inFilm, transConfig, cardFlags);
 
+  // #74: live card tiles for the filmstrip — sourced from in-memory cardsState so the strip
+  // updates as the user toggles/types on the Cards tab (same source as cardFlags above).
+  const cardColorHex = (id: CardColor) => CARD_COLORS.find((c) => c.id === id)?.hex ?? "#0a0a0a";
+  const openCardStrip = cardFlags.open
+    ? { color: cardColorHex(cardsState.start.color), text: cardsState.start.title.trim() }
+    : null;
+  const closeCardStrip = cardFlags.close
+    ? { color: cardColorHex(cardsState.end.color), text: cardsState.end.title.trim() }
+    : null;
+
   const selectedClip = selectedClipId ? clips.find((c) => c.id === selectedClipId) ?? null : null;
   selectedClipRef.current = selectedClip;
 
@@ -608,7 +618,7 @@ export default function Arrange() {
   // Render-time position of the current clip playback — drives the StickyFilmStrip playhead.
   // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71).
   const filmPlayheadMs = selectedIndex >= 0 && selectedClip
-    ? filmTimeAtClipStart(inFilm, selectedIndex, xfadeOverlapMs)
+    ? filmTimeAtClipStart(inFilm, selectedIndex, xfadeOverlapMs, cardFlags.open)
       + Math.max(0, currentMs - (selectedClip.in_ms ?? 0))
     : undefined;
 
@@ -818,6 +828,8 @@ export default function Arrange() {
           onReorder={handleReorder}
           playheadMs={tab === "zoom" ? filmPlayheadMs : undefined}
           xfadeOverlapMs={xfadeOverlapMs}
+          openCard={openCardStrip}
+          closeCard={closeCardStrip}
         />
       }
     >

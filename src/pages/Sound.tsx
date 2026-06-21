@@ -875,6 +875,8 @@ export default function Sound() {
           clips={clips}
           projectId={projectId!}
           xfadeOverlapMs={clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""))}
+          openCard={cardsCfg.open.show ? { color: cardsCfg.open.color, text: cardsCfg.open.text } : null}
+          closeCard={cardsCfg.close.show ? { color: cardsCfg.close.color, text: cardsCfg.close.text } : null}
         />
       }
     >

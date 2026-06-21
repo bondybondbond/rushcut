@@ -18,6 +18,32 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
 import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
+import { CARD_DUR_MS, trimmedMs } from "@/utils/filmDuration";
+
+/** Resolved card data for a strip card tile (#74). */
+export interface StripCard {
+  /** Background hex (#FF8A65 / #0a0a0a / #ffffff) — already resolved by readCardsConfig. */
+  color: string;
+  /** Card title — used only for the tile tooltip; the tile shows the Intro/Outro badge. */
+  text: string;
+}
+
+/**
+ * Badge/stamp text colour for a card tile: dark on light fills (white/peach), light on
+ * dark. Mirrors Pillow's _luminance gate (DESIGN.md "CSS preview card"). Co-located —
+ * small enough that a shared util would be premature.
+ */
+function cardTextColor(hex: string): string {
+  if (hex.startsWith("#") && hex.length === 7) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const lin = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    const lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    return lum > 0.179 ? "#0a0a0a" : "#e5e5e5";
+  }
+  return "#e5e5e5";
+}
 
 interface StickyFilmStripProps {
   clips: Clip[];
@@ -45,6 +71,14 @@ interface StickyFilmStripProps {
    * their telescoped contribution but do not draw the overlap shape (that is #74).
    */
   xfadeOverlapMs?: number;
+  /**
+   * Open text card (#74). When set (enabled + titled), a 3s card tile is prepended at film
+   * time 0 and the ruler/playhead/seek geometry becomes card-inclusive so the strip length
+   * matches the card-inclusive top-bar runtime (effectiveFilmMs). Null/undefined = no card.
+   */
+  openCard?: StripCard | null;
+  /** Close text card (#74). Same as openCard but appended after the last clip. */
+  closeCard?: StripCard | null;
 }
 
 // Zoom range: ~8px/s minimum, 2000px/s maximum
@@ -190,6 +224,50 @@ function SortableFilmTile({
   );
 }
 
+/**
+ * One card tile (#74) — open or close text card, drawn as a 3s block in the film colour.
+ * Non-sortable, non-deletable: cards are structural film elements, not footage. Flanks the
+ * SortableContext as a direct flex child so its width participates in the same gap layout.
+ */
+function CardStripTile({
+  kind,
+  color,
+  text,
+  width,
+}: {
+  kind: "open" | "close";
+  color: string;
+  text: string;
+  width: number;
+}) {
+  const fg = cardTextColor(color);
+  const label = kind === "open" ? "Intro" : "Outro";
+  return (
+    <div
+      data-testid={`filmstrip-card-${kind}`}
+      className="relative flex-shrink-0 overflow-hidden border-2 border-[#99B3FF]/40"
+      style={{ width, height: CLIP_HEIGHT, background: color }}
+      title={text}
+    >
+      {/* Intro/Outro badge — top-left, full word */}
+      <div
+        className="absolute top-0.5 left-0.5 px-1 h-4 rounded flex items-center justify-center z-10 pointer-events-none"
+        style={{ background: fg === "#0a0a0a" ? "rgba(10,10,10,0.12)" : "rgba(229,229,229,0.15)" }}
+      >
+        <span className="text-[10px] font-bold leading-none select-none" style={{ color: fg }}>
+          {label}
+        </span>
+      </div>
+      {/* Duration stamp — bottom, mirrors the clip-tile treatment */}
+      <div className="absolute bottom-0 inset-x-0 pt-3 px-1 pb-0.5 pointer-events-none">
+        <span className="text-[10px] font-mono select-none" style={{ color: fg }}>
+          {fmtMs(CARD_DUR_MS)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function StickyFilmStrip({
   clips,
   projectId: _projectId,
@@ -200,6 +278,8 @@ export function StickyFilmStrip({
   playheadMs,
   onSeek,
   xfadeOverlapMs = 0,
+  openCard = null,
+  closeCard = null,
 }: StickyFilmStripProps) {
   const [pxPerMs, setPxPerMs] = useState<number>(DEFAULT_PX_PER_MS);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -222,59 +302,83 @@ export function StickyFilmStrip({
     .filter((c) => c.include === 1)
     .sort((a, b) => a.sort_order - b.sort_order);
 
-  // Render-time (telescoped) width per clip in ms (#71). Every clip but the last has its
-  // tail consumed by the crossfade into the next cut, so it contributes one xfade less.
-  // This makes totalMs == the telescoped runtime shown in the top bar instead of the naive
-  // sum. xfadeOverlapMs is 0 when no crossfade is active -> identical to the old behaviour.
-  const renderMsArr = inFilm.map((c, i) => {
-    const trimmed = Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0));
-    return Math.max(0, trimmed - (i < inFilm.length - 1 ? xfadeOverlapMs : 0));
-  });
+  // Card tiles join the film as first-class 3s elements (#74) — only when there is footage to
+  // bracket. The open card leads at film time 0; the close card trails the last clip. Both
+  // count as elements in the xfade chain exactly like effectiveFilmMs, so the ruler length
+  // matches the card-inclusive top-bar runtime.
+  const showOpen = !!openCard && inFilm.length > 0;
+  const showClose = !!closeCard && inFilm.length > 0;
 
-  // Total film time in render (telescoped) ms — drives the ruler extent + auto-fit scale.
+  type Seg =
+    | { kind: "card-open" | "card-close"; nativeMs: number; card: StripCard }
+    | { kind: "clip"; nativeMs: number; clip: Clip };
+
+  const segments: Seg[] = [
+    ...(showOpen ? [{ kind: "card-open" as const, nativeMs: CARD_DUR_MS, card: openCard! }] : []),
+    ...inFilm.map((c) => ({ kind: "clip" as const, nativeMs: trimmedMs(c), clip: c })),
+    ...(showClose ? [{ kind: "card-close" as const, nativeMs: CARD_DUR_MS, card: closeCard! }] : []),
+  ];
+
+  // Segment index of the first clip (0, or 1 when an open card leads). Lets the clip-tile
+  // render loop map clip index -> segment index for its width.
+  const clipSegBase = showOpen ? 1 : 0;
+
+  // Render-time (telescoped) width per SEGMENT in ms (#71/#74). Every element but the last has
+  // its tail consumed by the crossfade into the next element, so it contributes one xfade less.
+  // This makes totalMs == the telescoped + card-inclusive runtime shown in the top bar.
+  // xfadeOverlapMs is 0 when no crossfade is active -> identical to the pre-card behaviour.
+  const renderMsArr = segments.map((s, i) =>
+    Math.max(0, s.nativeMs - (i < segments.length - 1 ? xfadeOverlapMs : 0)),
+  );
+
+  // Total film time in render (telescoped, card-inclusive) ms — drives the ruler + auto-fit.
   const totalMs = renderMsArr.reduce((sum, m) => sum + m, 0);
 
-  // Per-clip widths: proportional to telescoped (render-time) duration, min-clamped
-  const clipWidths = renderMsArr.map((m) => Math.max(MIN_CLIP_WIDTH, Math.round(m * pxPerMs)));
+  // Per-segment widths: proportional to telescoped (render-time) duration, min-clamped.
+  const segWidths = renderMsArr.map((m) => Math.max(MIN_CLIP_WIDTH, Math.round(m * pxPerMs)));
 
-  const totalTrackPx = clipWidths.reduce((s, w) => s + w + GAP_PX, 0)
+  // Per-clip widths (the clip subset of segWidths) for the clip-tile render loop.
+  const clipWidths = inFilm.map((_, i) => segWidths[clipSegBase + i]);
+
+  const totalTrackPx = segWidths.reduce((s, w) => s + w + GAP_PX, 0)
     + Math.round(TRAIL_PAD_MS * pxPerMs);
 
-  // Cumulative pixel offsets per clip (for ruler alignment)
-  const clipOffsets: number[] = [];
+  // Cumulative pixel offsets per segment (for ruler/playhead alignment)
+  const segOffsets: number[] = [];
   {
     let cur = 0;
-    for (const w of clipWidths) {
-      clipOffsets.push(cur);
+    for (const w of segWidths) {
+      segOffsets.push(cur);
       cur += w + GAP_PX;
     }
   }
 
-  // Map render-time (ms) -> pixel position using telescoped per-clip widths
+  // Map render-time (ms) -> pixel position using telescoped per-segment widths
   function filmTimeToPx(ms: number): number {
     let filmMs = 0;
-    for (let i = 0; i < inFilm.length; i++) {
-      const clipMs = renderMsArr[i];
-      if (ms <= filmMs + clipMs) {
-        const t = clipMs > 0 ? (ms - filmMs) / clipMs : 0;
-        return clipOffsets[i] + t * clipWidths[i];
+    for (let i = 0; i < segments.length; i++) {
+      const segMs = renderMsArr[i];
+      if (ms <= filmMs + segMs) {
+        const t = segMs > 0 ? (ms - filmMs) / segMs : 0;
+        return segOffsets[i] + t * segWidths[i];
       }
-      filmMs += clipMs;
+      filmMs += segMs;
     }
     return totalTrackPx;
   }
 
-  // Inverse: pixel offset in the track → render-time ms
+  // Inverse: pixel offset in the track → render-time ms. The SAME mapping backs both the
+  // ruler paint and the click-seek hitbox (handleClick), so visuals and seek cannot drift.
   function pxToFilmMs(px: number): number {
     let cur = 0;
-    for (let i = 0; i < inFilm.length; i++) {
-      const w = clipWidths[i];
-      const clipMs = renderMsArr[i];
+    for (let i = 0; i < segments.length; i++) {
+      const w = segWidths[i];
+      const segMs = renderMsArr[i];
       if (px <= cur + w) {
         const t = w > 0 ? (px - cur) / w : 0;
         let filmMs = 0;
         for (let j = 0; j < i; j++) filmMs += renderMsArr[j];
-        return Math.round(filmMs + t * clipMs);
+        return Math.round(filmMs + t * segMs);
       }
       cur += w + GAP_PX;
     }
@@ -543,22 +647,40 @@ export function StickyFilmStrip({
                 <span className="text-[#e5e5e5]/30 text-sm whitespace-nowrap">No clips yet</span>
               </div>
             ) : (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                <SortableContext items={inFilm.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
-                  {inFilm.map((clip, idx) => (
-                    <SortableFilmTile
-                      key={clip.id}
-                      clip={clip}
-                      index={idx}
-                      width={clipWidths[idx]}
-                      isActive={clip.id === activeId}
-                      reorderable={reorderable}
-                      onSelectClip={onSelectClip}
-                      onDeleteClip={onDeleteClip}
-                    />
-                  ))}
-                </SortableContext>
-              </DndContext>
+              <>
+                {showOpen && openCard && (
+                  <CardStripTile
+                    kind="open"
+                    color={openCard.color}
+                    text={openCard.text}
+                    width={segWidths[0]}
+                  />
+                )}
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                  <SortableContext items={inFilm.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
+                    {inFilm.map((clip, idx) => (
+                      <SortableFilmTile
+                        key={clip.id}
+                        clip={clip}
+                        index={idx}
+                        width={clipWidths[idx]}
+                        isActive={clip.id === activeId}
+                        reorderable={reorderable}
+                        onSelectClip={onSelectClip}
+                        onDeleteClip={onDeleteClip}
+                      />
+                    ))}
+                  </SortableContext>
+                </DndContext>
+                {showClose && closeCard && (
+                  <CardStripTile
+                    kind="close"
+                    color={closeCard.color}
+                    text={closeCard.text}
+                    width={segWidths[segWidths.length - 1]}
+                  />
+                )}
+              </>
             )}
           </div>
         </div>

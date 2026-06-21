@@ -10,8 +10,8 @@ import { TrimBar } from "@/components/trimmer/TrimBar";
 import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
-import { readTransitionConfig, cardDurationFlags } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart } from "@/utils/filmDuration";
+import { readTransitionConfig, cardDurationFlags, readCardsConfig } from "@/utils/buildJobConfig";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, CARD_DUR_MS } from "@/utils/filmDuration";
 import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
 
@@ -47,6 +47,11 @@ export default function Trimmer() {
 
   const [viewMode, setViewMode] = useState<"clip" | "film">("clip");
   const [filmPlayIdx, setFilmPlayIdx] = useState(0);
+  // #74 B-lite: when the user clicks an open/close card region on the filmstrip, park the
+  // playhead at that card-inclusive film-time and show the card colour over the preview.
+  // Applies only while paused (gated below) — pressing play clears it and resumes the clip,
+  // so this never touches the dual-buffer / autoplay subsystem (continuous card-hold is #74-followup).
+  const [cardHold, setCardHold] = useState<{ filmMs: number; color: string } | null>(null);
   const filmModeRef = useRef(false);
   const filmPlayIdxRef = useRef(0);
   const inFilmRef = useRef<Clip[]>([]);
@@ -507,6 +512,11 @@ export default function Trimmer() {
     return getClipVideo(activeClipSlotRef.current);
   }
 
+  /** The film-mode video element currently revealed to the user (null if no slot is active). */
+  function activeFilmVideo() {
+    return activeFilmSlotRef.current ? getFilmVideo(activeFilmSlotRef.current) : null;
+  }
+
   /**
    * Reveal `slot`, hide the other — in one synchronous call so BOTH clip slots are never
    * invisible while clip mode is active (LEARNINGS: dual-buffer must not blank the frame).
@@ -824,14 +834,37 @@ export default function Trimmer() {
     const wasPlaying = isPlaying;
     const clips_ = inFilmRef.current;
     const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
-    let elapsed = 0;
+
+    // #74: cards bracket the film as first-class 3s elements. `filmMs` from the strip is
+    // card-inclusive, so map the card regions explicitly. The open card leads at
+    // [0, CARD_DUR_MS - xfade); the clip chain telescopes EXACTLY like the strip segments
+    // (every element but the last loses one xfade), and a close card (when present) makes the
+    // last clip telescope too. Clicking a card region parks the playhead + shows the colour
+    // overlay; it must NOT mis-seek a video (B-lite — no autoplay-through-card here).
+    const cards = readCardsConfig(projectId ?? "");
+    const hasOpen = cards.open.show && clips_.length > 0;
+    const hasClose = cards.close.show && clips_.length > 0;
+    const leadMs = hasOpen ? Math.max(0, CARD_DUR_MS - xfadeMs) : 0;
+
+    if (hasOpen && filmMs < leadMs) {
+      // Open-card region — park playhead on the card colour, leave the video paused.
+      activeFilmVideo()?.pause();
+      setCardHold({ filmMs, color: cards.open.color });
+      return;
+    }
+
+    // Clip-region (and close-card-region) walk in card-inclusive film-time.
+    let elapsed = leadMs;
     for (let i = 0; i < clips_.length; i++) {
       const trimmed = Math.max(
         0,
         (clips_[i].out_ms ?? clips_[i].duration_ms) - (clips_[i].in_ms ?? 0)
       );
-      const clipMs = Math.max(0, trimmed - (i < clips_.length - 1 ? xfadeMs : 0));
-      if (filmMs < elapsed + clipMs || i === clips_.length - 1) {
+      // A clip telescopes unless it is the very last film element (i.e. last clip AND no close card).
+      const isLastElement = i === clips_.length - 1 && !hasClose;
+      const clipMs = Math.max(0, trimmed - (!isLastElement ? xfadeMs : 0));
+      if (filmMs < elapsed + clipMs || (i === clips_.length - 1 && !hasClose)) {
+        setCardHold(null); // leaving any card region
         const offsetInClip = Math.max(0, filmMs - elapsed);
         const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
         filmModeRef.current = true;
@@ -856,6 +889,12 @@ export default function Trimmer() {
       }
       elapsed += clipMs;
     }
+
+    // Past the last clip with a close card present — close-card region. Park on its colour.
+    if (hasClose) {
+      activeFilmVideo()?.pause();
+      setCardHold({ filmMs, color: cards.close.color });
+    }
   }
 
   /**
@@ -869,10 +908,18 @@ export default function Trimmer() {
     const target = filmPlayIdxRef.current + dir;
     if (target < 0 || target >= list.length) return;
     diagLog(`film-nav dir=${dir} target=${target}`);
-    // Render-time start of the target clip — seekFilmTo consumes telescoped render-time (#71).
+    // Render-time start of the target clip — seekFilmTo consumes card-inclusive telescoped
+    // render-time (#71/#74), so pass the open-card lead via hasOpenCard.
     const xfadeMs = clampedXfadeMs(list, readTransitionConfig(projectId ?? ""));
-    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs));
+    const hasOpen = readCardsConfig(projectId ?? "").open.show && list.length > 0;
+    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, hasOpen));
   }
+
+  // #74: a card-region park is a paused, film-mode-only state. Clear it the moment playback
+  // starts or the user leaves film mode, so the overlay/playhead override never lingers.
+  useEffect(() => {
+    if (isPlaying || viewMode !== "film") setCardHold(null);
+  }, [isPlaying, viewMode]);
 
   // Enter/exit film mode
   useEffect(() => {
@@ -917,11 +964,27 @@ export default function Trimmer() {
   // Render-time (telescoped) overlap per cut — shared by the playhead, seek + ruler (#71).
   const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
 
+  // #74: card tiles for the filmstrip. Cards are edited on Arrange and persisted to the store,
+  // so Trimmer reads them via readCardsConfig (no live in-memory state here).
+  const filmCards = readCardsConfig(projectId ?? "");
+  const openCardStrip = filmCards.open.show
+    ? { color: filmCards.open.color, text: filmCards.open.text }
+    : null;
+  const closeCardStrip = filmCards.close.show
+    ? { color: filmCards.close.color, text: filmCards.close.text }
+    : null;
+
   // Film playhead: how far we are in render-time (ms), for the StickyFilmStrip cursor.
-  // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71).
-  const filmPositionMs = viewMode === "film" && inFilm[filmPlayIdx]
-    ? filmTimeAtClipStart(inFilm, filmPlayIdx, filmXfadeOverlapMs)
-      + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
+  // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71); the
+  // open card adds its lead time so the playhead stays aligned with the card-inclusive ruler (#74).
+  // When parked on a card region (paused), the cardHold position overrides the clip-derived one.
+  const filmPositionMs = viewMode === "film"
+    ? (cardHold && !isPlaying
+        ? cardHold.filmMs
+        : inFilm[filmPlayIdx]
+          ? filmTimeAtClipStart(inFilm, filmPlayIdx, filmXfadeOverlapMs, openCardStrip !== null)
+            + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
+          : undefined)
     : undefined;
   const configured = useConfiguredTabs(projectId ?? "");
   const transitionVal = (() => { try { const tc = readTransitionConfig(projectId ?? ""); return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null); } catch { return null; } })();
@@ -1030,6 +1093,8 @@ export default function Trimmer() {
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
           xfadeOverlapMs={filmXfadeOverlapMs}
+          openCard={openCardStrip}
+          closeCard={closeCardStrip}
         />
       }
     >
@@ -1183,6 +1248,14 @@ export default function Trimmer() {
               <div className="absolute top-2 left-2 bg-black/60 text-[#e5e5e5] text-xs px-2 py-0.5 rounded pointer-events-none z-10">
                 {sourceIdx + 1} / {sourceClips.length}
               </div>
+            )}
+            {/* #74: card-colour hold — shown when the playhead is parked on an open/close card
+                region (paused, film mode). Solid colour mirrors the strip card tile. */}
+            {viewMode === "film" && cardHold && !isPlaying && (
+              <div
+                className="absolute inset-0 z-20 pointer-events-none"
+                style={{ background: cardHold.color }}
+              />
             )}
           </div>
             <button

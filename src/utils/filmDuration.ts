@@ -99,10 +99,23 @@ export function clampedXfadeMs(inFilm: Clip[], tc: TransitionConfig): number {
  * This is the ONE boundary formula shared by every screen's playhead feed (Trimmer,
  * Arrange, Sound) so they cannot fork into slightly different telescoping math (#71).
  * Pass the xfade value from clampedXfadeMs(inFilm, tc).
+ *
+ * When `hasOpenCard` is true (#74) an open text card is the first element of the film, so
+ * it adds CARD_DUR_MS of lead time AND one more overlap (the card->clip-1 cut). The ruler
+ * then starts at film-time 0 = card start, and this offset keeps every screen's playhead
+ * aligned to the card-inclusive ruler. Defaults to false -> byte-identical to the pre-#74
+ * formula for no-open-card projects.
  */
-export function filmTimeAtClipStart(inFilm: Clip[], index: number, xfadeMs: number): number {
+export function filmTimeAtClipStart(
+  inFilm: Clip[],
+  index: number,
+  xfadeMs: number,
+  hasOpenCard = false,
+): number {
   const lim = Math.min(index, inFilm.length);
   let naive = 0;
   for (let i = 0; i < lim; i++) naive += trimmedMs(inFilm[i]);
-  return Math.max(0, naive - lim * xfadeMs);
+  const lead = hasOpenCard ? CARD_DUR_MS : 0;
+  const cuts = lim + (hasOpenCard ? 1 : 0);
+  return Math.max(0, lead + naive - cuts * xfadeMs);
 }
