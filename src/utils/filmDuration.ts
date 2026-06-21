@@ -73,3 +73,36 @@ export function effectiveFilmMs(
 
   return Math.max(0, total);
 }
+
+/**
+ * The single source of the per-cut crossfade overlap value (#71). Mirrors the clamp
+ * inside effectiveFilmMs and the pipeline (transitions.py clamps xfade_dur to
+ * min(1.5s, shortest_clip / 2)). Returns 0 when no crossfade/shuffle is active or there
+ * is nothing to overlap (< 2 clips, or no positive-duration clips).
+ *
+ * Callers pass the result BOTH to StickyFilmStrip (`xfadeOverlapMs` prop) AND to
+ * filmTimeAtClipStart for the playhead, so the ruler and the playhead share exactly one
+ * overlap decision and cannot drift apart.
+ */
+export function clampedXfadeMs(inFilm: Clip[], tc: TransitionConfig): number {
+  if (inFilm.length < 2) return 0;
+  const hasOverlap = tc.between !== "none" || tc.shuffleBetween;
+  if (!hasOverlap) return 0;
+  const positiveDurs = inFilm.map(trimmedMs).filter((d) => d > 0);
+  if (positiveDurs.length === 0) return 0;
+  return Math.min(XFADE_DUR_MS, Math.min(...positiveDurs) / 2);
+}
+
+/**
+ * Render-time (telescoped) start of clip `index` in film-time ms: the naive cumulative
+ * start of the preceding clips minus the overlap consumed by the `index` preceding cuts.
+ * This is the ONE boundary formula shared by every screen's playhead feed (Trimmer,
+ * Arrange, Sound) so they cannot fork into slightly different telescoping math (#71).
+ * Pass the xfade value from clampedXfadeMs(inFilm, tc).
+ */
+export function filmTimeAtClipStart(inFilm: Clip[], index: number, xfadeMs: number): number {
+  const lim = Math.min(index, inFilm.length);
+  let naive = 0;
+  for (let i = 0; i < lim; i++) naive += trimmedMs(inFilm[i]);
+  return Math.max(0, naive - lim * xfadeMs);
+}

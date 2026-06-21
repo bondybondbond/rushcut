@@ -36,6 +36,15 @@ interface StickyFilmStripProps {
   playheadMs?: number;
   /** Called when user clicks a position in the timeline; arg is film-time ms. */
   onSeek?: (filmMs: number) => void;
+  /**
+   * Per-cut crossfade overlap in ms (#71). When > 0 the ruler/playhead/seek geometry is
+   * telescoped so the timeline reads true render time instead of the naive sum of clip
+   * durations. The caller computes this once via clampedXfadeMs(inFilm, tc) and passes the
+   * final number — this component does no transition reasoning. Default 0 (no overlap).
+   * NOTE: this makes the strip time-correct, NOT overlap-visual-correct: tiles narrow to
+   * their telescoped contribution but do not draw the overlap shape (that is #74).
+   */
+  xfadeOverlapMs?: number;
 }
 
 // Zoom range: ~8px/s minimum, 2000px/s maximum
@@ -190,6 +199,7 @@ export function StickyFilmStrip({
   onReorder,
   playheadMs,
   onSeek,
+  xfadeOverlapMs = 0,
 }: StickyFilmStripProps) {
   const [pxPerMs, setPxPerMs] = useState<number>(DEFAULT_PX_PER_MS);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -212,17 +222,20 @@ export function StickyFilmStrip({
     .filter((c) => c.include === 1)
     .sort((a, b) => a.sort_order - b.sort_order);
 
-  const totalMs = inFilm.reduce((sum, c) => {
-    const start = c.in_ms ?? 0;
-    const end = c.out_ms ?? c.duration_ms;
-    return sum + Math.max(0, end - start);
-  }, 0);
-
-  // Per-clip widths: proportional to trimmed duration, min-clamped
-  const clipWidths = inFilm.map((c) => {
-    const trimmedMs = Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0));
-    return Math.max(MIN_CLIP_WIDTH, Math.round(trimmedMs * pxPerMs));
+  // Render-time (telescoped) width per clip in ms (#71). Every clip but the last has its
+  // tail consumed by the crossfade into the next cut, so it contributes one xfade less.
+  // This makes totalMs == the telescoped runtime shown in the top bar instead of the naive
+  // sum. xfadeOverlapMs is 0 when no crossfade is active -> identical to the old behaviour.
+  const renderMsArr = inFilm.map((c, i) => {
+    const trimmed = Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0));
+    return Math.max(0, trimmed - (i < inFilm.length - 1 ? xfadeOverlapMs : 0));
   });
+
+  // Total film time in render (telescoped) ms — drives the ruler extent + auto-fit scale.
+  const totalMs = renderMsArr.reduce((sum, m) => sum + m, 0);
+
+  // Per-clip widths: proportional to telescoped (render-time) duration, min-clamped
+  const clipWidths = renderMsArr.map((m) => Math.max(MIN_CLIP_WIDTH, Math.round(m * pxPerMs)));
 
   const totalTrackPx = clipWidths.reduce((s, w) => s + w + GAP_PX, 0)
     + Math.round(TRAIL_PAD_MS * pxPerMs);
@@ -237,14 +250,11 @@ export function StickyFilmStrip({
     }
   }
 
-  // Map film time (ms) -> pixel position using actual clip widths
+  // Map render-time (ms) -> pixel position using telescoped per-clip widths
   function filmTimeToPx(ms: number): number {
     let filmMs = 0;
     for (let i = 0; i < inFilm.length; i++) {
-      const clipMs = Math.max(
-        0,
-        (inFilm[i].out_ms ?? inFilm[i].duration_ms) - (inFilm[i].in_ms ?? 0)
-      );
+      const clipMs = renderMsArr[i];
       if (ms <= filmMs + clipMs) {
         const t = clipMs > 0 ? (ms - filmMs) / clipMs : 0;
         return clipOffsets[i] + t * clipWidths[i];
@@ -254,24 +264,16 @@ export function StickyFilmStrip({
     return totalTrackPx;
   }
 
-  // Inverse: pixel offset in the track → film-time ms
+  // Inverse: pixel offset in the track → render-time ms
   function pxToFilmMs(px: number): number {
     let cur = 0;
     for (let i = 0; i < inFilm.length; i++) {
       const w = clipWidths[i];
-      const clipMs = Math.max(
-        0,
-        (inFilm[i].out_ms ?? inFilm[i].duration_ms) - (inFilm[i].in_ms ?? 0)
-      );
+      const clipMs = renderMsArr[i];
       if (px <= cur + w) {
         const t = w > 0 ? (px - cur) / w : 0;
         let filmMs = 0;
-        for (let j = 0; j < i; j++) {
-          filmMs += Math.max(
-            0,
-            (inFilm[j].out_ms ?? inFilm[j].duration_ms) - (inFilm[j].in_ms ?? 0)
-          );
-        }
+        for (let j = 0; j < i; j++) filmMs += renderMsArr[j];
         return Math.round(filmMs + t * clipMs);
       }
       cur += w + GAP_PX;

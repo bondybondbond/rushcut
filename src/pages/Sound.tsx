@@ -10,7 +10,7 @@ import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
 import { readTransitionConfig, readCardsConfig } from "@/utils/buildJobConfig";
-import { effectiveFilmMs } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
@@ -874,6 +874,7 @@ export default function Sound() {
         <StickyFilmStrip
           clips={clips}
           projectId={projectId!}
+          xfadeOverlapMs={clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""))}
         />
       }
     >

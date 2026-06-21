@@ -11,7 +11,7 @@ import { StickyFilmStrip } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig, cardDurationFlags } from "@/utils/buildJobConfig";
-import { effectiveFilmMs } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart } from "@/utils/filmDuration";
 import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
 
@@ -813,17 +813,24 @@ export default function Trimmer() {
     }
   }
 
-  /** Seek the film to a specific film-time ms (called from timeline click). */
+  /**
+   * Seek the film to a specific render-time ms (called from timeline click / nav).
+   * `filmMs` is telescoped render-time (matches the StickyFilmStrip ruler), so the walk
+   * accumulates per-clip render widths (trimmed - xfade, last clip keeps full length).
+   * The within-clip offset still maps 1:1 to playback time, so seekToMs = in_ms + offset.
+   */
   function seekFilmTo(filmMs: number) {
     diagLog(`film-seek filmMs=${filmMs} playing=${isPlaying}`);
     const wasPlaying = isPlaying;
     const clips_ = inFilmRef.current;
+    const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
     let elapsed = 0;
     for (let i = 0; i < clips_.length; i++) {
-      const clipMs = Math.max(
+      const trimmed = Math.max(
         0,
         (clips_[i].out_ms ?? clips_[i].duration_ms) - (clips_[i].in_ms ?? 0)
       );
+      const clipMs = Math.max(0, trimmed - (i < clips_.length - 1 ? xfadeMs : 0));
       if (filmMs < elapsed + clipMs || i === clips_.length - 1) {
         const offsetInClip = Math.max(0, filmMs - elapsed);
         const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
@@ -862,11 +869,9 @@ export default function Trimmer() {
     const target = filmPlayIdxRef.current + dir;
     if (target < 0 || target >= list.length) return;
     diagLog(`film-nav dir=${dir} target=${target}`);
-    let filmStart = 0;
-    for (let i = 0; i < target; i++) {
-      filmStart += Math.max(0, (list[i].out_ms ?? list[i].duration_ms) - (list[i].in_ms ?? 0));
-    }
-    seekFilmTo(filmStart);
+    // Render-time start of the target clip — seekFilmTo consumes telescoped render-time (#71).
+    const xfadeMs = clampedXfadeMs(list, readTransitionConfig(projectId ?? ""));
+    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs));
   }
 
   // Enter/exit film mode
@@ -909,12 +914,14 @@ export default function Trimmer() {
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
   const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? ""));
 
-  // Film playhead: how far we are in film-time (ms), for the StickyFilmStrip cursor
+  // Render-time (telescoped) overlap per cut — shared by the playhead, seek + ruler (#71).
+  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
+
+  // Film playhead: how far we are in render-time (ms), for the StickyFilmStrip cursor.
+  // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71).
   const filmPositionMs = viewMode === "film" && inFilm[filmPlayIdx]
-    ? inFilm.slice(0, filmPlayIdx).reduce(
-        (sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)),
-        0
-      ) + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
+    ? filmTimeAtClipStart(inFilm, filmPlayIdx, filmXfadeOverlapMs)
+      + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
     : undefined;
   const configured = useConfiguredTabs(projectId ?? "");
   const transitionVal = (() => { try { const tc = readTransitionConfig(projectId ?? ""); return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null); } catch { return null; } })();
@@ -1022,6 +1029,7 @@ export default function Trimmer() {
           onReorder={handleReorder}
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
+          xfadeOverlapMs={filmXfadeOverlapMs}
         />
       }
     >

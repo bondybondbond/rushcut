@@ -11,7 +11,7 @@ import { projectCache } from "@/utils/projectCache";
 import { fmtMs } from "@/utils/fmtMs";
 import { readTransitionConfig } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
-import { effectiveFilmMs } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import {
   parseZoom, buildZoomMode, zoomLabel, FIXED_AMOUNTS, KB_AMOUNTS,
@@ -602,12 +602,14 @@ export default function Arrange() {
   // Prev/Next clip navigation helpers.
   const selectedIndex = selectedClipId ? inFilm.findIndex((c) => c.id === selectedClipId) : -1;
 
-  // Film-time position of the current clip playback — drives the StickyFilmStrip playhead.
+  // Render-time (telescoped) overlap per cut — shared by the playhead + the filmstrip ruler.
+  const xfadeOverlapMs = clampedXfadeMs(inFilm, transConfig);
+
+  // Render-time position of the current clip playback — drives the StickyFilmStrip playhead.
+  // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71).
   const filmPlayheadMs = selectedIndex >= 0 && selectedClip
-    ? inFilm.slice(0, selectedIndex).reduce(
-        (sum, c) => sum + Math.max(0, (c.out_ms ?? c.duration_ms) - (c.in_ms ?? 0)),
-        0
-      ) + Math.max(0, currentMs - (selectedClip.in_ms ?? 0))
+    ? filmTimeAtClipStart(inFilm, selectedIndex, xfadeOverlapMs)
+      + Math.max(0, currentMs - (selectedClip.in_ms ?? 0))
     : undefined;
 
   const prevClip = useCallback(() => {
@@ -815,6 +817,7 @@ export default function Arrange() {
           onSelectClip={tab === "zoom" || tab === "sound" ? setSelectedClipId : undefined}
           onReorder={handleReorder}
           playheadMs={tab === "zoom" ? filmPlayheadMs : undefined}
+          xfadeOverlapMs={xfadeOverlapMs}
         />
       }
     >
