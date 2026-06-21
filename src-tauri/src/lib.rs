@@ -1682,7 +1682,8 @@ async fn generate_proxies_cmd(
 /// U4: Warm the per-clip zoom cache for all include=1 zoom clips in a project.
 ///
 /// Builds a minimal manifest (job_id + clips), writes it to TEMP, and spawns
-/// `warm_zoom.py` via WSL at BELOW_NORMAL priority. Returns immediately — the
+/// `warm_zoom.py` via WSL at NORMAL priority (#50: was BELOW_NORMAL — too slow,
+/// the warm finished after the render started cold). Returns immediately — the
 /// warm job runs entirely in the background with no UI feedback.
 ///
 /// A `{project_id}:zoom` key in the shared HashSet guards against duplicate batches
@@ -1763,7 +1764,10 @@ async fn warm_zoom_cache_cmd(
 
     tauri::async_runtime::spawn(async move {
         use std::os::windows::process::CommandExt;
-        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        // #50: warm at NORMAL priority (was BELOW_NORMAL) so the cache finishes during the
+        // Arrange->Sound->Render dwell instead of completing after the render starts cold.
+        // Warm is short (~15-20s in WSL) and only briefly competes with proxy playback.
+        const NORMAL_PRIORITY_CLASS: u32 = 0x00000020;
 
         let log_path = std::env::temp_dir().join("rushcut").join("zoom-bg.log");
         let stderr_file = std::fs::OpenOptions::new()
@@ -1782,7 +1786,7 @@ async fn warm_zoom_cache_cmd(
             "--manifest-path", &wsl_manifest,
         ])
         .stdout(std::process::Stdio::null())
-        .creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+        .creation_flags(NORMAL_PRIORITY_CLASS);
 
         if let Some(f) = stderr_file {
             cmd.stderr(std::process::Stdio::from(f));

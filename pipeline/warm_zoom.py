@@ -2,7 +2,7 @@
 """
 pipeline/warm_zoom.py -- Background zoom cache warmer.
 
-CLI (invoked by Rust warm_zoom_cache_cmd at BELOW_NORMAL priority):
+CLI (invoked by Rust warm_zoom_cache_cmd at NORMAL priority -- #50):
   wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/apps/rushcut/pipeline/warm_zoom.py \\
       --manifest-path <wsl_path>
 
@@ -30,8 +30,10 @@ Resolution scope: warms BOTH "1080p" and "4k" -- different cache keys, same vide
 content (zoom operates at source resolution via the proxy). Guarantees a cache HIT
 regardless of which resolution the user chooses at render time.
 
-Serial clip processing: one clip at a time, no ThreadPoolExecutor. Background
-warming must not spike CPU and degrade UI responsiveness during an active session.
+Parallel clip processing: ThreadPoolExecutor(max_workers=2). Two concurrent FFmpeg
+encodes run simultaneously so warm time drops from sum(all encodes) to roughly
+max(longest pair). Conservative 2-worker cap keeps background warm from starving a
+concurrent render or UI. Raise to 4 only once logs confirm stable timing (#50 phase 2).
 """
 
 import argparse
@@ -39,6 +41,7 @@ import json
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -217,28 +220,40 @@ def main() -> None:
     tmp = TMP_BASE / job_id
     tmp.mkdir(parents=True, exist_ok=True)
 
+    # Flatten (clip_idx, clip, resolution) into a single work queue so all pairs
+    # can be dispatched in one executor pass. Temp file names include clip_idx and
+    # resolution so concurrent workers never collide on the same tmp path.
+    work_items = [
+        (clip_idx, clip, resolution)
+        for clip_idx, clip in zoom_clips
+        for resolution in WARM_RESOLUTIONS
+    ]
+
     hits = encoded = errors = 0
 
-    for clip_idx, clip in zoom_clips:
-        src_path = Path(win_to_wsl(clip["local_path"]))
-        zoom_mode = clip["zoom_mode"]
-        focal_x = clip.get("focal_x")
-        focal_y = clip.get("focal_y")
-
-        for resolution in WARM_RESOLUTIONS:
-            result = _warm_one(
+    # max_workers=2: conservative cap. Two concurrent FFmpeg libx264 encodes at NORMAL
+    # priority sit comfortably on this machine without starving a concurrent render.
+    # Raise to 4 only after confirming stable timing under load (#50 phase 2).
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(
+                _warm_one,
                 clip_idx=clip_idx,
-                src_path=src_path,
+                src_path=Path(win_to_wsl(clip["local_path"])),
                 clip_meta=clip,
-                zoom_mode=zoom_mode,
-                focal_x=focal_x,
-                focal_y=focal_y,
+                zoom_mode=clip["zoom_mode"],
+                focal_x=clip.get("focal_x"),
+                focal_y=clip.get("focal_y"),
                 resolution=resolution,
                 cache_dir=cache_dir,
                 tmp=tmp,
                 target_fps_raw=target_fps_raw,
                 target_fps_int=target_fps_int,
-            )
+            ): (clip_idx, resolution)
+            for clip_idx, clip, resolution in work_items
+        }
+        for future in as_completed(futures):
+            result = future.result()
             if result == "hit":
                 hits += 1
             elif result == "encoded":
