@@ -10,7 +10,7 @@ import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
 import { readTransitionConfig, readCardsConfig } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, trimmedMs, CARD_DUR_MS } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
@@ -120,11 +120,13 @@ export default function Sound() {
   const progressBarFillRef = useRef<HTMLDivElement>(null); // imperative progress bar fill (avoids re-render)
   const elapsedLabelRef = useRef<HTMLSpanElement>(null);   // imperative elapsed-time label
   const hasPlayedRef = useRef(false);                      // true once playback has started; hides "Press play" overlay after film ends
+  const lastPlayheadUpdateRef = useRef(0);                 // timestamp of last filmPlayheadMs state write (throttle to ~10fps)
 
   // Rough-mix playback state
   const [isFilmPlaying, setIsFilmPlaying] = useState(false);
   const [isFilmPaused, setIsFilmPaused] = useState(false);
   const [filmPlayIdx, setFilmPlayIdx] = useState(0);    // drives "Clip N / M" label
+  const [filmPlayheadMs, setFilmPlayheadMs] = useState<number | undefined>(undefined); // strip needle position (telescoped)
   // #51: transient note shown when a clip's proxy is missing and we fell back to the source file
   const [proxyFallbackNote, setProxyFallbackNote] = useState(false);
   const proxyNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -510,6 +512,16 @@ export default function Sound() {
     const offsetInClip = Math.max(0, currentTimeSec - (clip.in_ms ?? 0) / 1000) * 1000;
     const elapsedMs = clipStartMsRef.current + offsetInClip;
 
+    // Strip playhead needle — throttled to ~10fps so the state write is cheap.
+    // Converts naive elapsed → telescoped strip-time via filmTimeAtClipStart.
+    const now = performance.now();
+    if (now - lastPlayheadUpdateRef.current >= 100) {
+      lastPlayheadUpdateRef.current = now;
+      const xfMs = clampedXfadeMs(inFilmRef.current, readTransitionConfig(projectId ?? ""));
+      const cardLead = cardsCfg.open.show ? CARD_DUR_MS : 0;
+      setFilmPlayheadMs(cardLead + filmTimeAtClipStart(inFilmRef.current, filmPlayIdxRef.current, xfMs, false) + offsetInClip);
+    }
+
     // Imperative DOM updates — avoid React re-render at 4-66Hz timeupdate rate
     if (progressBarFillRef.current && totalMs > 0) {
       progressBarFillRef.current.style.width = `${Math.min(100, (elapsedMs / totalMs) * 100)}%`;
@@ -589,6 +601,7 @@ export default function Sound() {
     // Do NOT call setSlotVisible("none") here — leave the last frame visible in the active slot.
     // startFilmPlayback resets activeFilmSlotRef and slotGenRef when restarting.
     setFilmPlayIdx(0);
+    setFilmPlayheadMs(undefined);
     if (progressBarFillRef.current) progressBarFillRef.current.style.width = "0%";
     if (elapsedLabelRef.current) elapsedLabelRef.current.textContent = `${fmtMs(0)} / ${fmtMs(totalMs)}`;
   }
@@ -707,6 +720,45 @@ export default function Sound() {
       crossSeekToClip(idx, seekMs);
     }
     clipStartMsRef.current = acc;
+  }
+
+  // Strip click-to-seek: converts telescoped strip position to Sound's naive internal time.
+  // Card regions snap to the adjacent clip boundary (Sound has no card video yet — #76).
+  function handleStripSeek(telescopedMs: number) {
+    const clips = inFilmRef.current;
+    if (clips.length === 0) return;
+    const xfMs = clampedXfadeMs(clips, readTransitionConfig(projectId ?? ""));
+    const hasOpenCard = cardsCfg.open.show;
+    const hasCloseCard = cardsCfg.close.show;
+    const cardLead = hasOpenCard ? CARD_DUR_MS : 0;
+
+    // Open card region → seek to start of footage
+    if (hasOpenCard && telescopedMs < cardLead) {
+      setFilmPlayheadMs(cardLead);
+      seekToFilmMs(0);
+      return;
+    }
+
+    // Close card region → snap to last clip boundary
+    if (hasCloseCard && telescopedMs >= effectiveMs - CARD_DUR_MS) {
+      setFilmPlayheadMs(effectiveMs - CARD_DUR_MS);
+      seekToFilmMs(totalMs);
+      return;
+    }
+
+    // Footage region: convert telescoped → naive via filmTimeAtClipStart
+    const relMs = telescopedMs - cardLead;
+    for (let i = 0; i < clips.length; i++) {
+      const clipTStart = filmTimeAtClipStart(clips, i, xfMs, false);
+      const nextTStart = i < clips.length - 1 ? filmTimeAtClipStart(clips, i + 1, xfMs, false) : Infinity;
+      if (relMs < nextTStart || i === clips.length - 1) {
+        const offsetInClip = Math.max(0, relMs - clipTStart);
+        const naiveStart = clips.slice(0, i).reduce((sum, c) => sum + trimmedMs(c), 0);
+        setFilmPlayheadMs(telescopedMs);
+        seekToFilmMs(naiveStart + Math.min(offsetInClip, trimmedMs(clips[i])));
+        return;
+      }
+    }
   }
 
   function startCustomPreview() {
@@ -877,6 +929,8 @@ export default function Sound() {
           xfadeOverlapMs={clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""))}
           openCard={cardsCfg.open.show ? { color: cardsCfg.open.color, text: cardsCfg.open.text } : null}
           closeCard={cardsCfg.close.show ? { color: cardsCfg.close.color, text: cardsCfg.close.text } : null}
+          playheadMs={filmPlayheadMs}
+          onSeek={handleStripSeek}
         />
       }
     >
