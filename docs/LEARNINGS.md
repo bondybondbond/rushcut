@@ -946,3 +946,27 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 - **Draft-first, configure-optional** — show the first render before any configuration. Mandatory configure screens before a draft add friction at the worst moment. Pattern: Upload → render with smart defaults → Preview → Configure only if user wants to tweak.
 - **StepIndicator = mandatory steps only** — optional pages (e.g. Configure as a drawer) must not appear as steps; they signal mandatory work that doesn't exist.
 - **Lock copy before prompting Claude** — if copy isn't in the prompt, Claude invents it. Copy drift across pages wastes multiple correction rounds.
+
+---
+
+## Pipeline — Embed zoom in filter_complex: AMF absorbs `scale=eval=frame` with zero render overhead
+
+**Problem:** The pre-encode+cache model (libx264 ultrafast per zoomed clip, then decode those files in the render step) was assumed to be necessary to keep the render filter_complex cheap. The benchmark concern was that adding `scale=w=...:eval=frame,crop=...` Ken Burns expressions inline would inflate `t_render_s`.
+**Solution:** It does not inflate `t_render_s`. AMF absorbs per-frame scale+crop as part of the hardware encode pass at no measurable cost. Benchmark (19 clips, 4K, 15 zoomed, 6 U1g batches): baseline `t_zoom_s=520s, t_render_s=259s, t_total_s=826s`; embed `t_zoom_s=2s, t_render_s=259s, t_total_s=303s` (-63%). Memory: baseline peak 1824 MB available (concurrent libx264 workers); embed peak 11006 MB (no workers). Static crop (`crop=W:H:X:Y,scale=3840:2160`) and KB (`scale=w=...:eval=frame,crop=3840:2160:literal_x:literal_y`) both absorbed equally.
+**Context:** `pipeline/render.py` Step 3 (zoom), `pipeline/transitions.py` `build_batch_video_fc` / `build_filter_complex`, `pipeline/zoom.py` `build_zoom_vf`. Embed path code is on branch `bench/embed-zoom-67`; productionize by removing sentinel and deleting pre-encode dead code (`zoom_cache.py`, `warm_zoom.py`, `warm_zoom_cache_cmd`).
+
+---
+
+## Pipeline — Pre-encode zoom (libx264 ultrafast) loses ~10 frames per clip at boundaries
+
+**Problem:** The zoom pre-encode step in `render.py` Step 3 runs `apply_zoom()` which encodes trimmed clips to libx264 ultrafast MP4 cache files. These files end up ~0.35s shorter than the source trim clips (10 frames at 30fps), causing the final render output to be shorter by ~0.35s per zoomed clip (5.2s for 15 clips).
+**Solution:** This is a codec-precision / B-frame flushing artefact of libx264 ultrafast. The embed approach (which uses trimmed clips directly, applying zoom inline) preserves the full trim content and is the correct output. When productionizing embed, the pre-encode step is removed entirely.
+**Context:** `pipeline/zoom.py` `apply_zoom()`, `pipeline/render.py` Step 3. Identified by comparing frame counts: baseline golden=4124 frames (137.6s), embed=4280 frames (142.8s) on the same 19-clip Stagecoach project.
+
+---
+
+## Pipeline — `_localise_inputs()` copies `/mnt/c/...` paths to `render_in_{i}.mp4` before render
+
+**Problem:** When an input clip's `current_paths[i]` still points to a `/mnt/c/.../proxies/XXX.mp4` path (e.g. clip is not trimmed because it uses the full proxy duration), the path is not in WSL tmpfs. Opening 17+ such paths concurrently via the WSL 9P driver can flood the kernel page-cache allocator and cause WSL VM restart (exit 15).
+**Solution:** `_localise_inputs()` in `render.py` (called immediately before the U1g render) copies any `/mnt/c/...` input to `render_in_{i}.mp4` in the job's WSL tmpfs dir. This is why `render_in_N.mp4` appears in ffmpeg commands even for clips that were not zoom-pre-encoded. If investigating a `render_in_N.mp4` reference in a log, check whether it came from Step 3 zoom encode or from `_localise_inputs()` — look for the `[render] localise input N: PROXY_HASH.mp4` log line to distinguish.
+**Context:** `pipeline/render.py` `_localise_inputs()` (~line 918), called at line 932. Triggered for any clip whose `current_paths[i]` is still a `/mnt/c/` path after Steps 1–3 (typically: clips skipped by B-0 pre-trim because the proxy is already within the trim range, and not zoom-pre-encoded).
