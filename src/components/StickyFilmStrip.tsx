@@ -33,7 +33,7 @@ export interface StripCard {
  * dark. Mirrors Pillow's _luminance gate (DESIGN.md "CSS preview card"). Co-located —
  * small enough that a shared util would be premature.
  */
-function cardTextColor(hex: string): string {
+export function cardTextColor(hex: string): string {
   if (hex.startsWith("#") && hex.length === 7) {
     const r = parseInt(hex.slice(1, 3), 16) / 255;
     const g = parseInt(hex.slice(3, 5), 16) / 255;

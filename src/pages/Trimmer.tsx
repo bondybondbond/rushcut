@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Clip, ProjectWithClips } from "@/types/project";
 import { MediaPantry } from "@/components/trimmer/MediaPantry";
 import { TrimBar } from "@/components/trimmer/TrimBar";
-import { StickyFilmStrip } from "@/components/StickyFilmStrip";
+import { StickyFilmStrip, cardTextColor } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig, cardDurationFlags, readCardsConfig } from "@/utils/buildJobConfig";
@@ -51,7 +51,7 @@ export default function Trimmer() {
   // playhead at that card-inclusive film-time and show the card colour over the preview.
   // Applies only while paused (gated below) — pressing play clears it and resumes the clip,
   // so this never touches the dual-buffer / autoplay subsystem (continuous card-hold is #74-followup).
-  const [cardHold, setCardHold] = useState<{ filmMs: number; color: string } | null>(null);
+  const [cardHold, setCardHold] = useState<{ filmMs: number; color: string; text: string } | null>(null);
   const filmModeRef = useRef(false);
   const filmPlayIdxRef = useRef(0);
   const inFilmRef = useRef<Clip[]>([]);
@@ -849,7 +849,7 @@ export default function Trimmer() {
     if (hasOpen && filmMs < leadMs) {
       // Open-card region — park playhead on the card colour, leave the video paused.
       activeFilmVideo()?.pause();
-      setCardHold({ filmMs, color: cards.open.color });
+      setCardHold({ filmMs, color: cards.open.color, text: cards.open.text });
       return;
     }
 
@@ -893,7 +893,7 @@ export default function Trimmer() {
     // Past the last clip with a close card present — close-card region. Park on its colour.
     if (hasClose) {
       activeFilmVideo()?.pause();
-      setCardHold({ filmMs, color: cards.close.color });
+      setCardHold({ filmMs, color: cards.close.color, text: cards.close.text });
     }
   }
 
@@ -1250,12 +1250,25 @@ export default function Trimmer() {
               </div>
             )}
             {/* #74: card-colour hold — shown when the playhead is parked on an open/close card
-                region (paused, film mode). Solid colour mirrors the strip card tile. */}
+                region (paused, film mode). Solid colour mirrors the strip card tile.
+                Text is interim: the final preview uses card preview proxies (#76). */}
             {viewMode === "film" && cardHold && !isPlaying && (
               <div
-                className="absolute inset-0 z-20 pointer-events-none"
+                className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center"
                 style={{ background: cardHold.color }}
-              />
+              >
+                {cardHold.text && (
+                  <p
+                    className="text-center px-8 font-semibold select-none"
+                    style={{
+                      color: cardTextColor(cardHold.color),
+                      fontSize: "clamp(1.25rem, 3vw, 2.5rem)",
+                    }}
+                  >
+                    {cardHold.text}
+                  </p>
+                )}
+              </div>
             )}
           </div>
             <button
