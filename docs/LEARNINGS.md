@@ -537,6 +537,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Sound.tsx — intentionally naive timeline; filmstrip seek requires a conversion layer
+
+**Problem:** Sound's master preview plays proxies sequentially with no xfade blending, so its internal timeline (`totalMs`, `clipStartMsRef`, `seekToFilmMs`) accumulates raw clip durations without xfade subtraction. The StickyFilmStrip uses telescoped (card-inclusive, xfade-subtracted) time. Wiring strip click directly to `seekToFilmMs` gives seeks that are off by `xfadeMs × (n−1)` for multi-clip projects with transitions, plus a 3s card lead when an open card is enabled.
+**Solution:** Introduce a call-site conversion function (`handleStripSeek`) that maps strip telescoped-ms → clip index + within-clip offset via `filmTimeAtClipStart` iteration, then calls `seekToFilmMs` with the naive accumulated position. Card regions (open/close) snap to the adjacent clip boundary. The scrub bar is internally consistent (both input and `seekToFilmMs` speak naive) so it does NOT need the conversion — leave it alone to avoid double-conversion.
+**Context:** `src/pages/Sound.tsx` `handleStripSeek` (added #74 follow-up). The scrub bar and filmstrip playhead will show slightly different positions for the same playback moment when transitions are active — this is a known acceptable caveat until Sound gets a full telescoped-time rewrite. Also: `playheadMs` state for the strip needle is throttled to ~10fps (100ms) inside `handleFilmTimeUpdate` to avoid the full 4-66Hz re-render load flagged in the existing imperative-DOM comment.
+
+---
+
 ## WebView2 — GPU compositor presents frame 0 first; rVFC `metadata.mediaTime` is the only reliable gate
 
 **Problem:** After a video `src` change + `load()` + seek, WebView2's GPU compositor presents frame 0 as the first composited frame before the seek-target keyframe is decoded. Neither `seeked` nor `v.play().then(...)` (Option F) nor a bare rVFC callback (Option C) reliably guards against this — they all fire before the seek-target frame is compositor-committed. Option F specifically: `.play().then()` resolves when audio starts, not when video frame is presented; `.pause()` then freezes at frame 0; reveal shows frame 0.

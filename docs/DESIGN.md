@@ -646,7 +646,34 @@ function cardTextColor(hex: string): string {
 }
 ```
 
-Keep `cardTextColor` co-located per file — it's small enough that a shared util would be premature.
+`cardTextColor` is exported from `StickyFilmStrip.tsx` and imported wherever card text must contrast against the card background (Trimmer card-hold overlay). Two-tone return values: `"#0a0a0a"` (dark) for lum > 0.179, `"#e5e5e5"` (light) for lum ≤ 0.179. Note: the function in DESIGN.md above uses `"#000000"` / `"#ffffff"` — the live implementation uses the near-black/near-white tokens from the design system (`#0a0a0a` / `#e5e5e5`). Use the live version.
+
+### Card-hold colour overlay (Trimmer film mode)
+
+Full-screen overlay over the video player when the playhead parks inside a card region (open/close card). Pattern: `position:absolute inset-0`, bg = card hex (inline style), `zIndex` above video, centred flex column with title + subtitle.
+
+```tsx
+{cardHold && (
+  <div className="absolute inset-0 flex items-center justify-center z-10" style={{ background: cardHold.color }}>
+    {(cardHold.text || cardHold.subtitle) && (
+      <div className="flex flex-col items-center gap-2 px-8 select-none">
+        {cardHold.text && (
+          <p className="text-center font-semibold" style={{ color: cardTextColor(cardHold.color), fontSize: "clamp(1.25rem, 3vw, 2.5rem)" }}>
+            {cardHold.text}
+          </p>
+        )}
+        {cardHold.subtitle && (
+          <p className="text-center font-normal" style={{ color: cardTextColor(cardHold.color), fontSize: "clamp(0.875rem, 1.8vw, 1.5rem)", opacity: 0.75 }}>
+            {cardHold.subtitle}
+          </p>
+        )}
+      </div>
+    )}
+  </div>
+)}
+```
+
+Title: `font-semibold`, `clamp(1.25rem, 3vw, 2.5rem)`. Subtitle: `font-normal`, `clamp(0.875rem, 1.8vw, 1.5rem)`, `opacity: 0.75`. Both use `cardTextColor(hex)` for auto-contrast. Gap between title and subtitle: `gap-2`. Padding: `px-8`. Text is `select-none`.
 
 ---
 
