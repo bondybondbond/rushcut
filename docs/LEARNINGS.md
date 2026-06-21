@@ -529,6 +529,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Dual-buffer port to a new mode — `isValid` guard + `pendingStartMsRef` pattern
+
+**Problem:** Porting `gateFrameRevealThen` to a second mode (e.g. clip mode alongside film mode) requires decoupling the gate's staleness guard from a hard-coded mode ref. Also, when a third path switches to the *same* clip at a *different* seek position (e.g. `handleFilmSelect` jumps to a specific cut's `in_ms`), `setSelectedClip` does not re-fire the load effect because the clip ID hasn't changed — so the start position gets lost.
+**Solution:** (1) Add an `isValid: () => boolean` param to `gateFrameRevealThen`; each caller passes its own staleness closure (`() => !filmModeRef.current && clipSlotGenRef.current[slot] === thisGen`). (2) Use a `pendingStartMsRef = useRef<number | null>(null)` to carry cut-specific seek positions across the effect boundary: set it *before* `setSelectedClip`, consume + clear it at the top of the load effect. For the same-clip/different-cut case, skip the load effect entirely and seek the active slot directly. (3) The `setClipSlotVisible(slot)` call must **atomically** reveal the incoming slot and hide the outgoing slot — never use two separate calls or there is a one-frame blank between them.
+**Context:** `src/pages/Trimmer.tsx` clip-mode dual-buffer (#10). Applies to any future mode that reuses `gateFrameRevealThen`.
+
+---
+
 ## WebView2 — GPU compositor presents frame 0 first; rVFC `metadata.mediaTime` is the only reliable gate
 
 **Problem:** After a video `src` change + `load()` + seek, WebView2's GPU compositor presents frame 0 as the first composited frame before the seek-target keyframe is decoded. Neither `seeked` nor `v.play().then(...)` (Option F) nor a bare rVFC callback (Option C) reliably guards against this — they all fire before the seek-target frame is compositor-committed. Option F specifically: `.play().then()` resolves when audio starts, not when video frame is presented; `.pause()` then freezes at frame 0; reveal shows frame 0.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Play, Pause, ChevronLeft, ChevronRight } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -43,7 +43,6 @@ export default function Trimmer() {
   const [volume, setVolume] = useState(0.8);
   const [videoCanPlay, setVideoCanPlay] = useState(false);
   const [sourceFailed, setSourceFailed] = useState(false);
-  const lastPaintedProxy = useRef<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const [viewMode, setViewMode] = useState<"clip" | "film">("clip");
@@ -59,9 +58,18 @@ export default function Trimmer() {
   // Incremented each time loadIntoSlot runs for a slot — invalidates stale rVFC callbacks
   const slotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 });
 
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // Dual-buffer clip preview (#10): two persistent video elements for clip mode, same
+  // ping-pong pattern as the film engine — keeps the outgoing frame visible while the
+  // next clip decodes, so Prev/Next/pantry switches never flash black.
+  const clipVideoARef = useRef<HTMLVideoElement>(null);
+  const clipVideoBRef = useRef<HTMLVideoElement>(null);
+  const activeClipSlotRef = useRef<"a" | "b">("a");
+  const clipSlotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 });
+  // Set by handlers (e.g. handleFilmSelect) to override the load seek target before
+  // setSelectedClip fires the load effect; consumed + cleared by that effect.
+  const pendingClipStartMsRef = useRef<number | null>(null);
+
   const videoContainerRef = useRef<HTMLDivElement>(null);
-  const clipCoverRef = useRef<HTMLDivElement>(null);
   const [videoHeight, setVideoHeight] = useState<number | null>(null);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   const isSaving = useRef(false);
@@ -193,7 +201,8 @@ export default function Trimmer() {
   }, [projectId]);
 
   useEffect(() => {
-    if (videoRef.current) videoRef.current.volume = volume;
+    if (clipVideoARef.current) clipVideoARef.current.volume = volume;
+    if (clipVideoBRef.current) clipVideoBRef.current.volume = volume;
     if (filmVideoARef.current) filmVideoARef.current.volume = volume;
     if (filmVideoBRef.current) filmVideoBRef.current.volume = volume;
   }, [volume]);
@@ -201,61 +210,23 @@ export default function Trimmer() {
   // #29: keep sourceFailedRef in sync for the once-registered proxy-progress listener.
   useEffect(() => { sourceFailedRef.current = sourceFailed; }, [sourceFailed]);
 
-  // Both film slots start hidden; setSlotVisible manages visibility imperatively (avoids React async paint race)
+  // All four slots (film A/B + clip A/B) start hidden; visibility is managed imperatively
+  // via setSlotVisible / setClipSlotVisible (avoids the React async-paint opacity race).
   useEffect(() => {
     if (filmVideoARef.current) { filmVideoARef.current.style.opacity = "0"; filmVideoARef.current.style.pointerEvents = "none"; }
     if (filmVideoBRef.current) { filmVideoBRef.current.style.opacity = "0"; filmVideoBRef.current.style.pointerEvents = "none"; }
+    if (clipVideoARef.current) { clipVideoARef.current.style.opacity = "0"; clipVideoARef.current.style.pointerEvents = "none"; }
+    if (clipVideoBRef.current) { clipVideoBRef.current.style.opacity = "0"; clipVideoBRef.current.style.pointerEvents = "none"; }
   }, []);
 
-  // Show cover synchronously before browser paints the new clip's poster image —
-  // useLayoutEffect fires after DOM update but before paint, so poster never flashes.
-  // paintAndPlay() (useEffect below) hides the cover after seeked confirms the right frame.
-  useLayoutEffect(() => {
-    if (!selectedClip || !clipCoverRef.current) return;
-    clipCoverRef.current.style.display = "block";
-  }, [selectedClip?.id, selectedClip?.proxy_path]); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // Drive every clip-mode switch (Prev/Next, MediaPantry, film-clip review, initial mount,
+  // proxy-arrival) through one central load path. Skipped while film mode owns the slots.
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v || !selectedClip) return;
-    const currentSrc = selectedClip.proxy_path ?? selectedClip.local_path;
-    const isNewSrc = lastPaintedProxy.current !== currentSrc;
-    lastPaintedProxy.current = currentSrc;
-    if (isNewSrc) diagLog(`clip-switch id=${selectedClip.id} readyState=${v.readyState}`);
-
-    function paintAndPlay() {
-      if (!v) return;
-      const target = inMs / 1000;
-      v.currentTime = target > 0 ? target : 0.05;
-      // WebView2 requires play/pause to decode and display the first frame.
-      // Mute + show cover div before play so neither audio nor advancing frames are
-      // visible. Cover is a separate ref not managed by React's style prop, so
-      // hiding/showing it imperatively doesn't conflict with React's opacity diff.
-      v.muted = true;
-      const cover = clipCoverRef.current;
-      if (cover) cover.style.display = "block";
-      v.play().then(() => {
-        v.pause();
-        v.currentTime = inMs / 1000;
-        v.addEventListener("seeked", () => {
-          v.muted = false;
-          if (cover) cover.style.display = "none";
-          setIsPlaying(false);
-        }, { once: true });
-      }).catch(() => {
-        v.muted = false;
-        if (cover) cover.style.display = "none";
-        v.currentTime = inMs / 1000;
-        setIsPlaying(false);
-      });
-    }
-
-    if (v.readyState >= 2) {
-      paintAndPlay();
-    } else {
-      v.addEventListener("loadeddata", paintAndPlay, { once: true });
-      return () => v.removeEventListener("loadeddata", paintAndPlay);
-    }
+    if (!selectedClip || filmModeRef.current) return;
+    const startMs = pendingClipStartMsRef.current ?? undefined;
+    pendingClipStartMsRef.current = null;
+    diagLog(`clip-switch id=${selectedClip.id} start=${startMs ?? "in_ms"}`);
+    loadClipIntoSlot(selectedClip, startMs);
   }, [selectedClip?.id, selectedClip?.proxy_path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const clip = selectedClip;
@@ -438,36 +409,44 @@ export default function Trimmer() {
   function handleSeek(ms: number) {
     diagLog(`clip-seek ms=${ms} playing=${isPlaying}`);
     isSeekingRef.current = true;
-    if (videoRef.current) videoRef.current.currentTime = ms / 1000;
+    const v = activeClipVideo();
+    if (v) v.currentTime = ms / 1000;
     setCurrentMs(ms);
     // U5a: if already playing, continue playing after seek. If paused, stay paused.
-    if (isPlaying && videoCanPlay && videoRef.current) {
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    if (isPlaying && videoCanPlay && v) {
+      v.play().then(() => setIsPlaying(true)).catch(() => {});
     }
   }
 
   async function handleFilmSelect(filmClip: Clip) {
     const sourceRow = clips.find(c => c.include === 0 && c.local_path === filmClip.local_path);
     const workClip = sourceRow ?? filmClip;
+    const startMs = filmClip.in_ms ?? 0;
     if (workClip.id !== clip?.id) {
       await saveCurrentClip();
+      // Hand the film-cut's in-point to the load effect so the dual-buffer seeks there
+      // (the source row's stored in_ms can differ from this specific cut's).
+      pendingClipStartMsRef.current = startMs;
       setSelectedClip(workClip);
       setIsPlaying(false);
       setVideoCanPlay(false);
       setSourceFailed(false);
       generatingProxyRef.current.delete(workClip.id);
+    } else {
+      // Same source already loaded — no reload, just seek the active slot.
+      const v = activeClipVideo();
+      if (v) v.currentTime = startMs / 1000;
     }
     setInMs(filmClip.in_ms ?? 0);
     setOutMs(filmClip.out_ms ?? filmClip.duration_ms);
-    setCurrentMs(filmClip.in_ms ?? 0);
+    setCurrentMs(startMs);
     setFilmActiveId(filmClip.id);
-    if (videoRef.current) videoRef.current.currentTime = (filmClip.in_ms ?? 0) / 1000;
   }
 
   function togglePlay() {
     const v = viewMode === "film"
       ? getFilmVideo(activeFilmSlotRef.current)
-      : videoRef.current;
+      : activeClipVideo();
     if (!v) return;
     diagLog(`toggle-play mode=${viewMode} wasPaused=${v.paused}`);
     if (v.paused) {
@@ -517,17 +496,112 @@ export default function Trimmer() {
     if (vB) { vB.style.opacity = slot === "b" ? "1" : "0"; vB.style.pointerEvents = slot === "b" ? "" : "none"; }
   }
 
+  // --- Dual-buffer clip preview (#10) ---
+
+  function getClipVideo(slot: "a" | "b") {
+    return slot === "a" ? clipVideoARef.current : clipVideoBRef.current;
+  }
+
+  /** The clip-mode video element currently revealed to the user. */
+  function activeClipVideo() {
+    return getClipVideo(activeClipSlotRef.current);
+  }
+
+  /**
+   * Reveal `slot`, hide the other — in one synchronous call so BOTH clip slots are never
+   * invisible while clip mode is active (LEARNINGS: dual-buffer must not blank the frame).
+   */
+  function setClipSlotVisible(slot: "a" | "b") {
+    const vA = clipVideoARef.current;
+    const vB = clipVideoBRef.current;
+    if (vA) { vA.style.opacity = slot === "a" ? "1" : "0"; vA.style.pointerEvents = slot === "a" ? "" : "none"; }
+    if (vB) { vB.style.opacity = slot === "b" ? "1" : "0"; vB.style.pointerEvents = slot === "b" ? "" : "none"; }
+  }
+
+  function hideBothClipSlots() {
+    if (clipVideoARef.current) { clipVideoARef.current.style.opacity = "0"; clipVideoARef.current.style.pointerEvents = "none"; }
+    if (clipVideoBRef.current) { clipVideoBRef.current.style.opacity = "0"; clipVideoBRef.current.style.pointerEvents = "none"; }
+  }
+
+  function handleClipSlotError(erroredClip: Clip | null) {
+    if (filmModeRef.current) return;
+    setSourceFailed(true);
+    setVideoCanPlay(false);
+    if (erroredClip && !erroredClip.proxy_path && !generatingProxyRef.current.has(erroredClip.id)) {
+      generatingProxyRef.current.add(erroredClip.id);
+      invoke("generate_proxy_for_clip", { projectId, clipId: erroredClip.id }).catch(() => {});
+    }
+  }
+
+  /**
+   * Load `clipToLoad` into the OPPOSITE clip slot, seek to startMs (defaults to in_ms),
+   * gate the reveal on the new slot rendering the target frame, then swap visibility.
+   * The outgoing slot stays at opacity 1 the whole time — no black flash. Mirrors the
+   * film engine's crossSeekToClip, minus film-only playback/preload concerns.
+   */
+  function loadClipIntoSlot(clipToLoad: Clip, startMs?: number, shouldPlay = false) {
+    const currentSlot = activeClipSlotRef.current;
+    const targetSlot: "a" | "b" = currentSlot === "a" ? "b" : "a";
+    const newV = getClipVideo(targetSlot);
+    const oldV = getClipVideo(currentSlot);
+    if (!newV) return;
+
+    const seekMs = startMs !== undefined ? startMs : (clipToLoad.in_ms ?? 0);
+    const src = convertFileSrc(clipToLoad.proxy_path ?? clipToLoad.local_path);
+
+    // Bump generation so any in-flight rVFC from a previous load on this slot is invalidated.
+    clipSlotGenRef.current[targetSlot]++;
+    const thisGen = clipSlotGenRef.current[targetSlot];
+    const isValid = () => !filmModeRef.current && clipSlotGenRef.current[targetSlot] === thisGen;
+
+    diagLog(`clip-load id=${clipToLoad.id} from=${currentSlot} to=${targetSlot} seekMs=${seekMs}`);
+
+    // Do NOT touch the outgoing slot's opacity — leave its frame visible until reveal.
+    newV.muted = true; // suppress audio blip during rVFC frame-detect
+    newV.volume = volume;
+    newV.src = src;
+    newV.addEventListener("loadedmetadata", () => {
+      if (!isValid()) return;
+      newV.addEventListener("seeked", () => {
+        if (!isValid()) return;
+        gateFrameRevealThen(newV, targetSlot, thisGen, seekMs / 1000, isValid, () => {
+          setClipSlotVisible(targetSlot); // reveals new + hides old atomically
+          activeClipSlotRef.current = targetSlot;
+          newV.muted = false;
+          if (shouldPlay) {
+            setIsPlaying(true);
+          } else {
+            newV.pause(); // gateFrameRevealThen called play() to drive rVFC — undo it
+            setIsPlaying(false);
+          }
+          oldV?.pause();
+          setSourceFailed(false);
+          setVideoCanPlay(true);
+          setCurrentMs(seekMs);
+        });
+      }, { once: true });
+      newV.currentTime = seekMs / 1000;
+    }, { once: true });
+    newV.load();
+  }
+
   /**
    * Plays `v` and reveals via `onReady` only once rVFC presents a frame whose
    * mediaTime is at/near `targetSec` — prevents frame-0 leak after src+seek on
    * WebView2 (compositor may present the loaded frame before the seeked frame
    * is decoded). slotGenRef gate invalidates stale callbacks when superseded.
    */
+  /**
+   * `isValid` decouples this gate from any one mode: callers pass their own staleness
+   * guard (film: `filmModeRef.current && slotGenRef[slot]===gen`; clip: `!filmModeRef.current
+   * && clipSlotGenRef[slot]===gen`). The gate itself only handles the rVFC frame-ready reveal.
+   */
   function gateFrameRevealThen(
     v: HTMLVideoElement,
     slot: "a" | "b",
     thisGen: number,
     targetSec: number,
+    isValid: () => boolean,
     onReady: () => void,
   ) {
     const TOLERANCE_SEC = 0.05;
@@ -541,7 +615,7 @@ export default function Trimmer() {
     }).requestVideoFrameCallback;
 
     function check(_now: number, metadata: { mediaTime: number }) {
-      if (!filmModeRef.current || slotGenRef.current[slot] !== thisGen) return;
+      if (!isValid()) return;
       const frameTime = metadata?.mediaTime ?? v.currentTime;
       if (frameTime >= targetSec - TOLERANCE_SEC) {
         diagLog(`gate-ok slot=${slot} gen=${thisGen} fires=${waits + 1}`);
@@ -563,7 +637,7 @@ export default function Trimmer() {
     } else {
       diagLog(`gate-noRVFC slot=${slot} gen=${thisGen}`);
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        if (filmModeRef.current && slotGenRef.current[slot] === thisGen) onReady();
+        if (isValid()) onReady();
       }));
     }
   }
@@ -589,7 +663,9 @@ export default function Trimmer() {
       if (!filmModeRef.current || !v || slotGenRef.current[slot] !== thisGen) return;
       activeFilmSlotRef.current = slot;
       v.muted = true; // suppress audio blip during rVFC frame-detect (same pattern as crossSeekToClip)
-      gateFrameRevealThen(v, slot, thisGen, seekMs / 1000, () => {
+      gateFrameRevealThen(v, slot, thisGen, seekMs / 1000,
+        () => filmModeRef.current && slotGenRef.current[slot] === thisGen,
+        () => {
         setSlotVisible(slot);
         if (!shouldPlay) v.pause();
         v.muted = false;
@@ -644,7 +720,9 @@ export default function Trimmer() {
       newV.addEventListener("seeked", () => {
         if (slotGenRef.current[targetSlot] !== thisGen || !filmModeRef.current) return;
         newV.muted = true; // suppress audio during rVFC frame-detect phase
-        gateFrameRevealThen(newV, targetSlot, thisGen, seekMs / 1000, () => {
+        gateFrameRevealThen(newV, targetSlot, thisGen, seekMs / 1000,
+          () => filmModeRef.current && slotGenRef.current[targetSlot] === thisGen,
+          () => {
           filmPlayIdxRef.current = idx;
           setFilmPlayIdx(idx);
           setCurrentMs(seekMs); // cursor lands at click position before onTimeUpdate resumes
@@ -795,7 +873,10 @@ export default function Trimmer() {
   useEffect(() => {
     filmModeRef.current = viewMode === "film";
     if (viewMode === "film") {
-      if (videoRef.current) videoRef.current.pause();
+      // Leaving clip mode: pause + hide the clip slots (clip mode is no longer active, so
+      // blanking them here does not violate the never-blank-while-active rule).
+      activeClipVideo()?.pause();
+      hideBothClipSlots();
       setIsPlaying(false);
       activeFilmSlotRef.current = "a";
       setFilmPlayIdx(0);
@@ -803,9 +884,18 @@ export default function Trimmer() {
       if (inFilmRef.current.length > 0) loadIntoSlot(0, "a", undefined, false);
       else setSlotVisible("a");
     } else {
-      // Pause film videos; clip video restores naturally (its src was never changed)
+      // Entering clip mode: pause + hide film slots, then re-reveal the active clip slot.
+      // The clip slots' src/decoded frame were never touched while in film mode, so the
+      // last frame is still intact — reveal it (no reload, no flash). Reveal BEFORE the
+      // film slots vanish so there is never a blank moment.
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
+      const activeClip = getClipVideo(activeClipSlotRef.current);
+      if (activeClip?.src) {
+        setClipSlotVisible(activeClipSlotRef.current);
+      } else if (selectedClip) {
+        loadClipIntoSlot(selectedClip); // never loaded yet (e.g. mounted straight into film)
+      }
       setSlotVisible("none");
       setIsPlaying(false);
     }
@@ -985,46 +1075,48 @@ export default function Trimmer() {
             ref={videoContainerRef}
             className="rounded-xl overflow-hidden bg-black relative flex-1 min-h-0 h-full"
           >
-            {/* Cover shown during clip repaint window (play/pause/seek) — imperatively managed, z-50 over all video slots */}
-            <div ref={clipCoverRef} className="absolute inset-0 bg-black z-50" style={{ display: "none" }} />
-
-            {/* ── Clip mode video ── */}
+            {/* ── Clip mode video A (dual-buffer, #10) — src/opacity set imperatively ── */}
             <video
-              ref={videoRef}
-              key={clip.id}
-              src={clip.proxy_path ? convertFileSrc(clip.proxy_path) : convertFileSrc(clip.local_path)}
-              poster={clip.thumbnail_data ?? undefined}
+              ref={clipVideoARef}
               preload="auto"
               playsInline
               className="absolute inset-0 w-full h-full object-contain cursor-pointer"
-              style={{
-                opacity: viewMode === "clip" && !sourceFailed ? 1 : 0,
-                pointerEvents: viewMode === "clip" ? undefined : "none",
-              }}
               onClick={togglePlay}
-              onPause={() => setIsPlaying(false)}
-              onPlay={() => setIsPlaying(true)}
+              onPause={() => { if (viewMode === "clip" && activeClipSlotRef.current === "a") setIsPlaying(false); }}
+              onPlay={() => { if (viewMode === "clip" && activeClipSlotRef.current === "a") setIsPlaying(true); }}
               onTimeUpdate={(e) => {
-                if (viewMode !== "clip") return;
-                const sec = (e.currentTarget as HTMLVideoElement).currentTime;
-                const ms = Math.round(sec * 1000);
-                if (!isSeekingRef.current) setCurrentMs(ms);
-                // U5b item 4a: no loop-back at outMs — playback runs freely to the
-                // clip's natural end. In/out markers are the cut boundary, not a cage.
+                if (viewMode !== "clip" || activeClipSlotRef.current !== "a") return;
+                if (!isSeekingRef.current) setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000));
               }}
               onSeeked={(e) => {
+                if (activeClipSlotRef.current !== "a") return;
                 isSeekingRef.current = false;
                 if (viewMode === "clip") setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000));
               }}
-              onCanPlay={() => setVideoCanPlay(true)}
-              onError={() => {
-                setSourceFailed(true);
-                setVideoCanPlay(false);
-                if (!clip.proxy_path && !generatingProxyRef.current.has(clip.id)) {
-                  generatingProxyRef.current.add(clip.id);
-                  invoke("generate_proxy_for_clip", { projectId, clipId: clip.id }).catch(() => {});
-                }
+              onCanPlay={() => { if (!filmModeRef.current) setVideoCanPlay(true); }}
+              onError={() => handleClipSlotError(clip)}
+            />
+
+            {/* ── Clip mode video B (dual-buffer, #10) ── */}
+            <video
+              ref={clipVideoBRef}
+              preload="auto"
+              playsInline
+              className="absolute inset-0 w-full h-full object-contain cursor-pointer"
+              onClick={togglePlay}
+              onPause={() => { if (viewMode === "clip" && activeClipSlotRef.current === "b") setIsPlaying(false); }}
+              onPlay={() => { if (viewMode === "clip" && activeClipSlotRef.current === "b") setIsPlaying(true); }}
+              onTimeUpdate={(e) => {
+                if (viewMode !== "clip" || activeClipSlotRef.current !== "b") return;
+                if (!isSeekingRef.current) setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000));
               }}
+              onSeeked={(e) => {
+                if (activeClipSlotRef.current !== "b") return;
+                isSeekingRef.current = false;
+                if (viewMode === "clip") setCurrentMs(Math.round((e.currentTarget as HTMLVideoElement).currentTime * 1000));
+              }}
+              onCanPlay={() => { if (!filmModeRef.current) setVideoCanPlay(true); }}
+              onError={() => handleClipSlotError(clip)}
             />
 
             {/* ── Film video A (dual-buffer) ── */}
