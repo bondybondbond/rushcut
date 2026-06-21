@@ -85,7 +85,7 @@ export default function Trimmer() {
   const sourceFailedRef = useRef(false);
   // U4d: fire the background zoom warm at most once per Trimmer session (per mount).
   // Project entry is the earliest chokepoint to warm a re-render's zoom cache.
-  const warmFiredRef = useRef(false);
+
   // Seek-in-progress flag: suppresses onTimeUpdate from overwriting setCurrentMs while
   // the browser is still seeking (prevents the playhead "jump forward then back" stutter).
   const isSeekingRef = useRef(false);
@@ -108,14 +108,6 @@ export default function Trimmer() {
         const anyWork = data.clips.some((c) => !c.thumbnail_data || !c.waveform_data);
         if (anyWork) {
           invoke("generate_proxies_cmd", { projectId }).catch(() => {});
-        }
-        // U4d: warm the zoom cache on project entry, but only when reusable zoom
-        // work already exists (re-renders). No-op for first-time edits with no zoom.
-        // Once per Trimmer session; Rust {project_id}:zoom guard dedupes against the
-        // Render-submit backstop. BELOW_NORMAL priority -> negligible foreground cost.
-        if (!warmFiredRef.current && data.clips.some((c) => c.include !== 0 && c.zoom_mode != null)) {
-          warmFiredRef.current = true;
-          invoke("warm_zoom_cache_cmd", { projectId }).catch(() => {});
         }
       })
       .catch(() => {})

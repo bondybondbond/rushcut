@@ -221,9 +221,6 @@ export default function Arrange() {
   const cardsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // U4: tracks the previous tab so the tab-switch effect can detect zoom-tab-leave.
   const prevTabRef = useRef<ArrangeTab>("zoom");
-  // U4: debounce handle for zoom-param-change warm trigger (1.5s settle time).
-  const zoomWarmDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const configured = useConfiguredTabs(projectId ?? "");
 
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
@@ -277,15 +274,6 @@ export default function Arrange() {
       .catch(() => {});
   }, [projectId]);
 
-  // U4: backstop warm on Arrange unmount + debounce cleanup.
-  useEffect(() => {
-    if (!projectId) return;
-    return () => {
-      if (zoomWarmDebounceRef.current) clearTimeout(zoomWarmDebounceRef.current);
-      invoke("warm_zoom_cache_cmd", { projectId }).catch(() => {});
-    };
-  }, [projectId]);
-
   // Persist cardsState to the render-pref store (debounced for text changes, but we call this
   // from both instant (toggle/swatch) and debounced (text input) paths).
   const saveCardsState = useCallback((next: CardsState) => {
@@ -298,11 +286,6 @@ export default function Arrange() {
     if (tab !== "zoom") {
       videoRef.current?.pause();
       setIsPlaying(false);
-      // U4: leaving the zoom tab — kick off background warm immediately.
-      if (prevTabRef.current === "zoom" && projectId) {
-        if (zoomWarmDebounceRef.current) clearTimeout(zoomWarmDebounceRef.current);
-        invoke("warm_zoom_cache_cmd", { projectId }).catch(() => {});
-      }
     }
     if (tab !== "sound") {
       soundVideoRef.current?.pause();
@@ -499,13 +482,6 @@ export default function Arrange() {
       });
     } catch (err) {
       console.error("[arrange] update_clip_review_cmd failed", err);
-    }
-    // U4: debounced warm on zoom/focal param change — fires 500ms after params settle.
-    if (projectId && ("zoom_mode" in patch || "focal_x" in patch || "focal_y" in patch)) {
-      if (zoomWarmDebounceRef.current) clearTimeout(zoomWarmDebounceRef.current);
-      zoomWarmDebounceRef.current = setTimeout(() => {
-        invoke("warm_zoom_cache_cmd", { projectId }).catch(() => {});
-      }, 500);
     }
   }
 

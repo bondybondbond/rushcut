@@ -170,10 +170,6 @@ export default function Sound() {
 
   useEffect(() => {
     if (!projectId) return;
-    // #50: additive zoom-cache warm on Sound mount (backup to Arrange triggers + Render backstop).
-    // Gives the warm the full Sound-screen dwell to finish before the user reaches Render, closing
-    // the Arrange->Sound->Render gap. The Rust {project_id}:zoom guard dedupes the Arrange-unmount fire.
-    invoke("warm_zoom_cache_cmd", { projectId }).catch(() => {});
     invoke<ProjectWithClips>("get_project", { projectId })
       .then((data) => {
         projectCache.set(projectId, { name: data.project.name, clips: data.clips });

@@ -266,13 +266,6 @@ export default function Render() {
     // settled, so it passes the freshly-loaded value. All other callers fire
     // after has4K is set and can rely on the closure.
     const is4k = is4kOverride ?? has4K;
-    // U4d: backstop zoom warm — covers done-project direct opens (Smart Open routes
-    // straight to /render, skipping Trimmer's entry warm). Fire-and-forget, once per
-    // submit attempt; the Rust {project_id}:zoom guard dedupes against any Trimmer fire.
-    // Does NOT gate the render — it warms in parallel for this and the next render.
-    if (inFilmCount > 0) {
-      invoke("warm_zoom_cache_cmd", { projectId: pid }).catch(() => {});
-    }
     // T5: show the spinner immediately on entry. The proxy-readiness round-trip
     // (and, for a partial-proxy 4K render, the wait that follows) can take a few
     // seconds; without this the 4K gate stayed on screen and the button looked

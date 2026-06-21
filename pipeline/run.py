@@ -175,11 +175,6 @@ def main() -> None:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from pipeline.render import run_pipeline
 
-        # Zoom cache lives next to render-timing-log.jsonl (Windows-backed NTFS
-        # via /mnt/c) so it survives WSL --shutdown -- /tmp tmpfs was clearing
-        # the cache on every reboot, giving zoom_cache_hits=0 on every render.
-        os.environ["RUSHCUT_ZOOM_CACHE_DIR"] = str(manifest_path.parent / "zoom-cache")
-
         tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage, on_analysis=on_analysis)
 
         shutil.copy2(str(tmp_output), str(output_wsl))
@@ -217,7 +212,6 @@ def main() -> None:
                     "t_normalise_s":   float(_a.get("normalise_s", 0)),
                     "t_trim_s":        float(_a.get("trim_s", 0)),
                     "t_zoom_s":        float(_a.get("zoom_s", 0)),
-                    "zoom_cache_hits": int(_a.get("zoom_cache_hits", 0)),
                     "t_render_s":      float(_a.get("render_s", 0)),
                     "t_music_s":       float(_a.get("music_s", 0)),
                     "t_loudnorm_s":    float(_a.get("loudnorm_s", 0)),
