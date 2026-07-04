@@ -7,10 +7,17 @@ Pipeline order:
   3.  zoom           -> (if config.zoom, final mode only)
   4.  cards          -> prepend intro, append outro (if text provided)
   5.  render         -> filter_complex xfade + scale, or single-clip shortcut
-  6.  mix_music      -> (if config.music_mood != "none")
+                        == the clean, treatment-free intermediate (V4.1 cache point)
+  6.  audio treatment-> music mix and/or loudnorm applied on top of the clean
+                        intermediate (_apply_audio_treatment)
 
-  Single-pass EBU R128 loudnorm (-14 LUFS, final mode only) is fused into the
-  step 5 encode (music off) or the step 6 encode (music on) -- no separate pass.
+  V4.1 render cache (#19): Step 5 produces a clean merged intermediate (video +
+  transitions + zoom + cards + clean clip audio, NO music, NO loudnorm) that is
+  cached keyed by a signature over the video-affecting inputs only. A re-render
+  changing only music/audio hits the cache and skips Steps 1-5. Single-pass EBU
+  R128 loudnorm (-14 LUFS, final mode only) is applied exactly once in step 6 --
+  fused into the music mix when music is on, or a dedicated -c:v copy audio pass
+  when music is off.
 
 Entry points:
   run_pipeline(job, clips, clip_paths, ...) -> Path
@@ -34,6 +41,7 @@ from .loudnorm import loudnorm_filter
 from .music import mix_music
 from .normalise import normalise
 from .proxy import is_valid_proxy
+from . import render_cache
 from .transitions import (
     build_filter_complex,
     build_batch_video_fc,
@@ -369,9 +377,64 @@ def run_pipeline(
         Path(config["custom_music_path"])
         if music_mood == "custom" and config.get("custom_music_path") else None
     )
-    # When music is on, loudnorm fuses into the step 6 music encode; when off,
-    # it fuses into the step 5 render encode. Exactly one site applies it.
+    # V4.1: loudnorm no longer fuses into Step 5. Step 5 produces the clean,
+    # cacheable intermediate; loudnorm is applied exactly once in the final
+    # audio-treatment step below (music on -> inside mix_music; music off ->
+    # a dedicated -c:v copy pass). music_on still selects which branch runs.
     music_on = bool(music_filename or custom_music_path_wsl)
+
+    def _apply_audio_treatment(clean: Path) -> Path:
+        """V4.1: apply music + loudnorm on top of the clean intermediate.
+
+        The cheap, music-agnostic layer that runs on BOTH a fresh render and a
+        render-cache hit. Loudnorm is applied exactly once (never doubled):
+          - music on  -> loudnorm fuses into the mix_music encode
+          - music off -> a dedicated -c:v copy audio-only loudnorm pass (fast)
+          - draft / no audio -> passthrough (no loudnorm)
+        Emits the TIMING:music line so both paths report consistently.
+        """
+        report_stage("Mixing music")
+        report(80)
+        t_audio = time.time()
+        if music_filename or custom_music_path_wsl:
+            log.info("[render] Step 6: mix music (mood=%s)", music_mood)
+            music_out = tmp / "with_music.mp4"
+            music_volume = float(config.get("music_volume", 0.4))
+            movie_vol = _MOVIE_VOL.get(round(music_volume, 1), 0.7)
+            log.info("[vol] music_vol=%.2f movie_vol=%.2f", music_volume, movie_vol)
+            fade_out_s = float(config.get("music_fade_out_s", 3.0))
+            music_loop = bool(config.get("music_loop", True))
+            log.info("[vol] music_fade_out_s=%.1f loop=%s", fade_out_s, music_loop)
+            # #62: time music to the REAL rendered duration (probe = ground truth;
+            # covers transitions, open/close-to-black, and cards uniformly).
+            rendered_dur = get_duration(clean)
+            log.info("[music] timing music to rendered=%.4fs", rendered_dur)
+            out = mix_music(clean, rendered_dur, music_filename, MUSIC_DIR, music_out,
+                            music_volume=music_volume, movie_vol=movie_vol,
+                            custom_track_path=custom_music_path_wsl,
+                            fade_out_s=fade_out_s,
+                            loop=music_loop,
+                            apply_loudnorm=(mode != "draft"))
+        elif mode != "draft" and has_audio(str(clean)):
+            # Music off: loudnorm was deferred out of Step 5 -> apply it now as an
+            # audio-only pass. -c:v copy keeps the (cached) video bit-identical, so
+            # this is a fast remux rather than a full re-encode.
+            log.info("[render] Step 6: loudnorm-only pass (music off)")
+            ln_out = tmp / "loudnorm.mp4"
+            ffmpeg_run([
+                FFMPEG, "-y", "-i", str(clean),
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-c:v", "copy",
+                "-af", loudnorm_filter(),
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+                str(ln_out),
+            ])
+            out = ln_out
+        else:
+            log.info("[render] Step 6: audio treatment skipped (draft or no audio)")
+            out = clean
+        print(f"TIMING:music={time.time() - t_audio:.1f}s", flush=True)
+        return out
 
     # ANALYSIS counters -- all clips used, no motion filtering.
     clips_total = len(clip_paths)
@@ -390,6 +453,57 @@ def run_pipeline(
     target_fps_raw = _probe_fps(clip_paths[0]) if clip_paths else "25"
     target_fps_int = round_to_standard_fps(target_fps_raw)
     log.info("[Q2] target_fps=%d (source %s from clip 0)", target_fps_int, target_fps_raw)
+
+    # V4.1 render cache (#19): the clean merged intermediate depends only on
+    # video-affecting inputs (clip trim/order/zoom/volume, transitions, cards,
+    # resolution, fps) -- never on music. Compute the signature from the ORIGINAL
+    # manifest `clips` (absolute in_ms/out_ms); pipeline_clips is mutated by the
+    # B-0 pre-trim below and would drift the signature between identical renders.
+    # Cache only in final mode; disabled when shuffle_between is on (its cut
+    # selection is seeded per-render by job.id, so the intermediate is not yet
+    # reproducible across renders -- see plan follow-up).
+    cache_sig = render_cache.signature(clips, config, output_resolution, mode, target_fps_raw)
+    use_cache = (mode == "final") and not config.get("shuffle_between", False)
+    if use_cache and render_cache.is_valid(render_cache.cache_path(cache_sig)):
+        cache_file = render_cache.cache_path(cache_sig)
+        log.info("[cache] HIT %s -> %s", cache_sig, cache_file.name)
+        print("TIMING:cache=hit", flush=True)
+        report_stage("Preparing clips")
+        report(72)
+        # Copy the cached clean intermediate into the job tmp dir, then apply the
+        # cheap music/loudnorm layer on top -- Steps 1-5 are skipped entirely.
+        output = tmp / "render.mp4"
+        shutil.copy2(str(cache_file), str(output))  # /mnt/c -> tmpfs copy is safe
+        output = _apply_audio_treatment(output)
+        report(95)
+        log.info("[render] Pipeline complete (cache hit): %s", output)
+        try:
+            total_s = time.time() - t_wall_start
+            output_duration_s = get_duration(output)
+            music_on_a = 0 if config.get("music_mood", "none") == "none" else 1
+            report_analysis(
+                f"clips_used={clips_used}"
+                f",clips_total={clips_total}"
+                f",clips_excluded={clips_excluded}"
+                f",output_duration_s={output_duration_s:.1f}"
+                f",normalise_s=0"
+                f",render_s=0"
+                f",total_s={total_s:.0f}"
+                f",music={music_on_a}"
+                f",transition={config.get('transition', 'none')}"
+                f",output_resolution={output_resolution}"
+                f",render_cache=hit"
+            )
+        except Exception as e:
+            log.warning("[render] ANALYSIS emit failed (cache hit): %s", e)
+            report_analysis(
+                f"clips_used={clips_used},clips_total={clips_total},render_cache=hit"
+            )
+        return output
+    cache_status = "miss" if use_cache else "off"
+    if use_cache:
+        log.info("[cache] MISS %s", cache_sig)
+    print(f"TIMING:cache={cache_status}", flush=True)
 
     # Pre-trim: extract only the needed segment from each source clip before normalise.
     # DJI clips can be 60-120s; user typically uses 5-30s. Normalising the full clip
@@ -658,16 +772,15 @@ def run_pipeline(
         out_arg = to_win_path(output)           if is_amf else str(output)
 
         # Per-clip volume multiplier (Batch J). volume=0 is valid — produces silence.
-        # loudnorm fuses into -af when final mode + music off (with music it
-        # fuses into the step 6 encode instead) — no separate pass either way.
+        # V4.1: loudnorm is NOT applied here anymore. Step 5 produces the clean,
+        # treatment-free intermediate (cacheable); loudnorm is deferred to the
+        # final _apply_audio_treatment step so the cache is music-agnostic.
         af_parts = []
         if audio_flags[0]:
             vol0 = clip_volumes[0] if clip_volumes else 1.0
             if abs(vol0 - 1.0) > 1e-6:
                 af_parts.append(f"volume={vol0:.4f}")
                 log.info("[J] single-clip volume=%.4f", vol0)
-            if mode != "draft" and not music_on:
-                af_parts.append(loudnorm_filter())
 
         def _build_single(b_argv, c_args, i_arg, o_arg, has_aud, af_p):
             c = b_argv + ["-y", "-i", i_arg, "-vf", f"scale=-2:{scale_h},format=yuv420p"] + c_args
@@ -853,8 +966,9 @@ def run_pipeline(
             ])
 
             # Single-pass audio over ALL clips (cheap; no 4K frame buffers).
-            # Loudnorm fuses here only when music is off (mirrors monolithic).
-            ln = loudnorm_filter() if (mode != "draft" and not music_on) else None
+            # V4.1: no loudnorm here -- Step 5 is the clean, cacheable intermediate;
+            # loudnorm is deferred to the final _apply_audio_treatment step.
+            ln = None
             afc, a_out_lbl = build_audio_only_fc(durations, audio_flags, clip_volumes, xf, ln)
 
             # Issue #31: when open/close-to-black is enabled, mux to an inner
@@ -1012,10 +1126,9 @@ def run_pipeline(
                 clip_tbn_str=_fps_to_tbn(target_fps_raw),
                 zoom_vfs=zoom_vfs,
             )
+            # V4.1: no loudnorm fused here -- Step 5 output is the clean, cacheable
+            # intermediate; loudnorm is deferred to the final _apply_audio_treatment.
             a_map = a_out
-            if a_out and mode != "draft" and not music_on:
-                fc += f"; {a_out}{loudnorm_filter()}[aloud]"
-                a_map = "[aloud]"
             log.info("[render] filter_complex:\n  %s", fc)
 
             def _build_multi(b_argv, c_args, paths, out_path):
@@ -1054,38 +1167,19 @@ def run_pipeline(
     render_s = time.time() - t0
     print(f"TIMING:render={render_s:.1f}s encoder={encoder_name}", flush=True)
 
-    # 6. Mix music.
-    report_stage("Mixing music")
-    report(80)
-    t0 = time.time()
-    if music_filename or custom_music_path_wsl:
-        log.info("[render] Step 6: mix music (mood=%s)", music_mood)
-        music_out = tmp / "with_music.mp4"
-        music_volume = float(config.get("music_volume", 0.4))
-        movie_vol = _MOVIE_VOL.get(round(music_volume, 1), 0.7)
-        log.info("[vol] music_vol=%.2f movie_vol=%.2f", music_volume, movie_vol)
-        fade_out_s = float(config.get("music_fade_out_s", 3.0))
-        music_loop = bool(config.get("music_loop", True))
-        log.info("[vol] music_fade_out_s=%.1f loop=%s", fade_out_s, music_loop)
-        # #62: time music to the REAL rendered duration, not the naive sum(durations).
-        # The render telescopes every transition by xfade_dur, so sum(durations) over-runs
-        # the actual file by ~(n-1)*1.5s; probing the just-rendered file is ground truth
-        # (covers transitions, open/close-to-black, and intro/outro cards uniformly).
-        rendered_dur = get_duration(output)
-        log.info("[music] timing music to rendered=%.4fs (naive sum=%.4fs)", rendered_dur, sum(durations))
-        output = mix_music(output, rendered_dur, music_filename, MUSIC_DIR, music_out,
-                           music_volume=music_volume, movie_vol=movie_vol,
-                           custom_track_path=custom_music_path_wsl,
-                           fade_out_s=fade_out_s,
-                           loop=music_loop,
-                           apply_loudnorm=(mode != "draft"))
-    else:
-        log.info("[render] Step 6: music skipped")
-    music_s = time.time() - t0
-    print(f"TIMING:music={music_s:.1f}s", flush=True)
+    # V4.1: Step 5 output is the clean, treatment-free intermediate. Publish it to
+    # the render cache (miss path) BEFORE the music/loudnorm layer is applied, so a
+    # later re-render that only changes music can reuse it.
+    if use_cache:
+        render_cache.write(output, cache_sig)
 
-    # 7. Loudnorm — fused into the Step 5 (music-off) / Step 6 (music-on) encode.
-    # No separate pass; single-pass loudnorm rides the encode that already runs.
+    # 6. Music + loudnorm -- the cheap, cache-on-top layer (shared with cache hit).
+    t0 = time.time()
+    output = _apply_audio_treatment(output)
+    music_s = time.time() - t0
+
+    # 7. Loudnorm is applied exactly once inside _apply_audio_treatment (music on ->
+    # mix_music; music off -> dedicated -c:v copy pass). No separate pass here.
     report(88)
     loudnorm_s = 0.0
     print(f"TIMING:loudnorm={loudnorm_s:.1f}s", flush=True)
@@ -1155,6 +1249,7 @@ def run_pipeline(
             f",per_clip_zoom_clips={sum(1 for c in pipeline_clips if c.get('zoom_mode') and c.get('zoom_mode') != 'none')}"
             f",encoder={encoder_name}"
             f",amf_fallback={1 if amf_fallback_flag[0] else 0}"
+            f",render_cache={cache_status}"
         )
     except Exception as e:
         log.warning("[render] ANALYSIS emit failed: %s", e)

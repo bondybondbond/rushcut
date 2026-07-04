@@ -355,7 +355,9 @@ gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { proje
 
 **[TRAP] Field/option IDs drift over time — verify before trusting this table.** Query current state before a batch of mutations: `gh api graphql -f query='{ node(id: "PVT_kwHOC1IP7s4BanXt") { ... on ProjectV2 { fields(first: 20) { nodes { ... on ProjectV2SingleSelectField { name id options { id name } } } } } } }'`
 
-**Target Batch** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrsY`):
+**[TRAP] "Target Batch" field no longer exists on the project (confirmed removed 2026-07-04).** Querying all 19 fields on `PVT_kwHOC1IP7s4BanXt` (`fields(first: 30) { nodes { ... on ProjectV2FieldCommon { name id } } }`) shows no "Target Batch" field at all — only Title/Assignees/Status/Labels/Linked pull requests/Milestone/Repository/Reviewers/Parent issue/Sub-issues progress/Created/Updated/Closed/Prio/RICE Score/Area/Start Date/Target Date. The field ID below (`PVTSSF_lAHOC1IP7s4BanXtzhVdrsY`) now 404s ("Could not resolve to a node"). Do not attempt to set Target Batch on new issues until this is re-added (or confirm via the field-list query above first) — the swimlane table below is kept for historical option-name reference only.
+
+**Target Batch** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrsY` — STALE, see TRAP above):
 `5162bb0a`=U5c — Dual-monitor freeze
 `0c7f24e6`=U6 — Music seek + loop
 `38f62851`=U6a — Master preview bug fixes
