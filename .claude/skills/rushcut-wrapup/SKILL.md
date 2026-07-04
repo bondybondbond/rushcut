@@ -285,7 +285,7 @@ Labels are plain GitHub repo labels (`gh issue create --label "..."`), not a Pro
 | `proxy` | Proxy generation / background encode |
 | `ai` | AI Director / smart defaults |
 | `photos` | Photo montage / Ken Burns photo sequences |
-| `tooling` | Claude Code skills/agents, dev-workflow, WDIO/E2E test infra — not user-facing |
+| `tooling` | Engineering-facing, not user-facing: Claude Code skills/agents, dev-workflow, WDIO/E2E test infra, app-level infra/housekeeping not tied to a screen (temp cleanup, process/instance management, diagnostics export, branding/app-icon) |
 | `platform` | Cloud, auth, billing, Phase 3 infra |
 
 **Rules:**
