@@ -36,6 +36,12 @@
 
 ---
 
+## Efficiency rules
+
+- **Verify incrementally, not at wrapup.** Run the relevant acceptance check (targeted render, smoke test, script) right after the step that could break it lands — not once in a bundled pass near the end of the session. A big batch of steps followed by one big verification pass finds regressions 5+ steps too late and after the damage compounds.
+
+---
+
 ## Docs model (what lives where)
 
 Four buckets — keep them separate; never let one accumulate another's content:
