@@ -129,47 +129,29 @@ For UI checks, always include at minimum:
 
 ## Step 7 — In-build eval cadence
 
-After implementing each screen or component (not at the end of the whole batch), run a targeted eval on **only that changed screen**.
+After implementing each screen or component (not at the end of the whole batch), get an independent review of **only that changed screen** — do not grade your own work.
 
 **This step is MANDATORY and non-negotiable. E2E spec passing does NOT substitute for it.**
 E2E tests verify DOM structure and element presence. They do NOT verify visual rendering —
-broken images, invisible overlays, wrong colours, and corrupt data all pass E2E. Screenshots
-are the only way to confirm what the user will actually see.
+broken images, invisible overlays, wrong colours, and corrupt data all pass E2E.
 
-1. Launch app if not running (`mcp__chrome-devtools__list_pages` to check, `preview_start` or launch binary if needed)
-2. Navigate to the changed screen using `mcp__chrome-devtools__navigate_page`
-3. `mcp__chrome-devtools__take_screenshot` — Screenshot A: **IMMEDIATE** load state (thumbnails should be visible NOW from scan.py DB data — no pipeline wait needed)
-4. **Pipeline-dependent assets (waveforms, proxies):** If the screen has assets that require the proxy pipeline (waveforms, video playback), you MUST wait for the pipeline to complete before screenshotting them. Do NOT skip this wait and claim success.
-   - **How to wait:** Watch for the "Preview optimised" green indicator in the Trimmer status row (polls every 4s). Use `mcp__chrome-devtools__wait_for` with a selector matching that element, or poll with `mcp__chrome-devtools__take_screenshot` every 10s until waveform is visible. Maximum wait: 120s for a 3-clip project.
-   - **Thumbnails specifically:** These come from scan.py and are in the DB at load time. If thumbnails are NOT visible in Screenshot A (immediately on load), the fix has NOT worked — do not wait for the pipeline.
-5. `mcp__chrome-devtools__take_screenshot` — Screenshot B: post-pipeline state (waveform visible, video playing)
-6. Perform the primary interaction for that screen
-7. `mcp__chrome-devtools__take_screenshot` — Screenshot C: post-interaction state
-8. Check the acceptance checks defined above — mark each `[x]` or `[FAIL: reason]`
-9. `mcp__chrome-devtools__list_console_messages` — note any errors
-
-**Special rules for specific change types:**
-- **Thumbnail / image rendering fixes:** Screenshot A (immediate load) must show actual image content in pantry tiles and filmstrip, not placeholder icons or broken img elements. Thumbnails come from scan.py — they are in the DB and must be visible with zero pipeline wait. If tiles show a broken-image icon or the placeholder SVG at load time, the fix has NOT worked — do not mark as passing.
-- **Waveform / overlay changes:** Screenshot B (post-pipeline) must show the waveform visibly rendered on the TrimBar. You MUST wait for the pipeline to emit WAVEFORM_DONE events (watch for waveform texture in the TrimBar). If the TrimBar looks identical to before (no waveform texture) in Screenshot B, the fix has NOT worked.
-- **Video playback (proxy):** Screenshot B must show a video frame playing, not a spinner. Use `mcp__chrome-devtools__click` on the play button and wait before screenshotting.
-- **Colour / text changes:** Screenshot must confirm actual hex values match the design system — do not rely on Tailwind class names alone (a class can be applied and still render wrong).
-
-**Diagnose before fixing.** If a check fails: read the source, understand why, then fix. Do not guess and re-screenshot in a loop.
-
-### Step 7.9 — Show screenshots to user for sign-off (MANDATORY)
-
-After all acceptance checks are marked and screenshots A/B/C are taken, **show the screenshots to the user directly**. Do not summarise or describe them — display the actual images. Then state:
-
-- Which acceptance checks passed `[x]`
-- Which failed `[FAIL: reason]`
-- Whether this constitutes a pass against the user's original success description
-
-Then explicitly ask: **"Does this match what you described as success? If yes, I'll proceed to wrapup. If no, describe what's still missing."**
-
-**This step is non-negotiable. Completion is NOT declared until the user confirms the screenshots show success.** If the user says something is wrong or missing, treat it as a `[FAIL]` on the relevant check and iterate — do not move to wrapup.
+1. Immediately after finishing the screen, invoke the `rushcut-qa-reviewer` subagent via the Agent tool with `run_in_background: true`. Pass it only:
+   - `git diff HEAD -- <scoped path>` for this screen
+   - The screen name / route
+   - The acceptance checks for this screen from Step 6
+   Do **not** pass it your reasoning, the plan, or why you built it this way — it must stay cold-context.
+2. Then continue straight into researching/implementing the **next** screen using `Read`/`Grep`/`Edit`/`Write` only. Do not call any `preview_*` tool yourself while a reviewer run is in flight for a prior screen — the reviewer owns the browser for the duration of its background run, and only hands it back on its completion notification. You can draft/code the next screen while waiting, but you cannot visually build-eval it until the browser comes back.
+3. When the reviewer's completion notification arrives, read its verdict (see the schema in `rushcut-qa-reviewer.md`) and proceed to Step 7.9.
 
 Do NOT run `/rushcut-eval` (full smoke test) during build — that is wrapup's job.
 Do NOT run `/rushcut-wrapup` — the user will decide when to wrap.
+
+### Step 7.9 — Read verdict and get user sign-off (MANDATORY)
+
+1. Relay the reviewer's verdict to the user: which checks passed, which failed and why (use the reviewer's own `message` text — it's already concrete, not vibes).
+2. A confirmatory screenshot taken by you (the orchestrator) is **optional, not mandatory** — the reviewer already did the visual work and its own screenshots aren't shown to the user automatically. Take one yourself only if the user asks to see it directly.
+3. On `status: "pass"` — ask the user: **"Does this match what you described as success? If yes, I'll proceed to wrapup. If no, describe what's still missing."** Completion is not declared until the user confirms.
+4. **Hard rule — max 1 retry, no exceptions:** if the verdict is not `pass`, fix the code (when the verdict was `fail`) and re-invoke `rushcut-qa-reviewer` exactly once. Model for that one retry: `sonnet` if the verdict was `blocked` or the fail reason was ambiguous, otherwise `haiku` (the default). There is no second retry under any circumstance. If the re-invoked verdict is still not a clean `pass`, stop looping and surface an explicit accept/defer decision to the user instead of trying again.
 
 ---
 

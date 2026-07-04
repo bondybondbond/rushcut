@@ -128,12 +128,12 @@ Scan the session for any gaps, known limitations, observed bugs, potential impro
 
 1. **New actionable item** → create a GitHub Issue and add to project:
    ```powershell
-   $url = gh issue create --title "Short title" --body "Description." --label "bug" --repo bondybondbond/rushcut
+   $url = gh issue create --title "Short title" --body "Description." --label "<screen or subsystem label — see Labels assignment below>" --repo bondybondbond/rushcut
    $num = $url -replace '.*/issues/', ''
    gh project item-add 1 --owner bondybondbond --url $url
    # Then set fields — see GraphQL pattern below
    ```
-   Set Priority, RICE Score, Theme, Target Batch. Do not ask — assign based on the guides below.
+   **Minimum required fields on every issue — do not skip any of these:** Prio, Status, Labels, Area, RICE Score. Target Batch is additional (assign when a swimlane clearly fits; skip if none do — see "Doesn't fit" row). Do not ask the user to fill these in — assign based on the guides below.
 
 2. **Item shipped this session** → add a closing comment with key session insights, then close:
    ```powershell
@@ -248,17 +248,51 @@ Then add the new option to the swimlane legend table in `docs/PRD-DEV.md` and to
 
 ---
 
-### Theme assignment
+### Area assignment (main development category — field display name is "Area", was "Theme")
 
-| Theme | Use when |
-|-------|----------|
+| Area | Use when |
+|------|----------|
 | Bug | Wrong behaviour, crash, silent failure, incorrect output |
 | UX | Visual accuracy, interaction pattern, copy, discoverability |
 | Feature | New capability that doesn't exist yet |
 | Performance | Speed, memory usage, render time, proxy throughput |
 | Pipeline | FFmpeg, Python pipeline, proxy gen, normalise |
-| E2E | Test infrastructure, WDIO specs, eval skill |
-| Infrastructure | Build system, DB schema, temp cleanup, Rust tooling |
+| Infrastructure | Build system, DB schema, temp cleanup, Rust tooling, test infra (WDIO/E2E) |
+
+**Note:** "E2E" is no longer a separate Area option (removed at some point) — E2E/test-infra items now go under **Infrastructure**.
+
+### Labels assignment (GitHub issue labels — sub-category within Area, required on every issue)
+
+Labels are plain GitHub repo labels (`gh issue create --label "..."`), not a ProjectV2 custom field — set via the `--label` flag at creation time, or `gh issue edit <number> --add-label "..." --repo bondybondbond/rushcut` afterward.
+
+**Two-axis taxonomy, no overlap:** Area says *what kind* of work it is (bug/feature/perf/etc.). Labels say *which screen or subsystem* it's about. Labels must **never** duplicate Area's own vocabulary (`bug`, `enhancement`, `ux`, `performance`, `infrastructure` are Area's job, not a Label's) — always pick a screen/subsystem label instead, alongside the Area value. This is also why Labels work as a **swimlane/grouping axis on the roadmap**: grouping by Label shows you "everything touching Trimmer" or "everything touching Zoom" regardless of whether it's a bug, a feature, or a perf issue — Area alone can't answer that.
+
+**Screen labels** (which UI screen):
+| Label | Use when |
+|-------|----------|
+| `upload` | Upload/scan/import screen |
+| `trimmer` | Trim screen — filmstrip, TrimBar, focal point/review |
+| `arrange` | Arrange/gap-editor screen — sequencing, transitions UI |
+| `sound` | Sound screen — music, mix, ducking |
+| `render` | Render screen — output/export, stage labels |
+| `library` | Library/project list screen |
+
+**Subsystem labels** (cross-cutting engine/pipeline concerns, not tied to one screen):
+| Label | Use when |
+|-------|----------|
+| `zoom` | Ken Burns / zoom effect (touches both Trimmer review and the render filter chain) |
+| `transitions` | Transition/xfade engine (touches both Arrange UI and the render filter chain) |
+| `proxy` | Proxy generation / background encode |
+| `ai` | AI Director / smart defaults |
+| `photos` | Photo montage / Ken Burns photo sequences |
+| `tooling` | Claude Code skills/agents, dev-workflow, WDIO/E2E test infra — not user-facing |
+| `platform` | Cloud, auth, billing, Phase 3 infra |
+
+**Rules:**
+- Always apply **at least one** screen or subsystem label — this is one of the five minimum required fields, not optional.
+- Apply **more than one** when genuinely cross-cutting (e.g. a zoom bug that also affects the Render screen's output → `zoom` + `render`). Don't force a single label if two are accurate.
+- **Legacy labels are deprecated for new issues:** `bug`, `enhancement`, `ux`, `performance`, `infrastructure` still exist and remain on older issues (kept for history — do not mass-strip them), but stop applying them going forward. Area already captures that dimension; re-applying it as a Label is exactly the overlap this taxonomy removes. If you notice an old issue still needs re-tagging with a screen/subsystem label, that's a fine opportunistic fix, but a full backlog retag is a separate task — don't do it inline during a wrapup unless asked.
+- `documentation`, `duplicate`, `good first issue`, `help wanted`, `invalid`, `question`, `wontfix` are GitHub defaults, unrelated to this taxonomy — use only when literally applicable (e.g. `wontfix` on a closed-as-rejected issue).
 
 ---
 
@@ -293,12 +327,14 @@ gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { proje
 # RICE Score (replace 55 with actual score)
 gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTF_lAHOC1IP7s4BanXtzhVdrrY`", value: { number: 55 } }) { projectV2Item { id } } }"
 
-# Theme (replace option ID per table below)
+# Area (replace option ID per table below)
 gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTSSF_lAHOC1IP7s4BanXtzhVdrrc`", value: { singleSelectOptionId: `"df6fc6c2`" } }) { projectV2Item { id } } }"
 
-# Target Batch (replace option ID per table below)
+# Target Batch — additional, not part of the 5 required minimum fields; assign only if a swimlane clearly fits
 gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { projectId: `"$pid`", itemId: `"$itemId`", fieldId: `"PVTSSF_lAHOC1IP7s4BanXtzhVdrsY`", value: { singleSelectOptionId: `"bf4709a5`" } }) { projectV2Item { id } } }"
 ```
+
+**Labels are not part of this GraphQL pattern** — set them via `gh issue create --label "..."` at creation time or `gh issue edit <number> --add-label "..." --repo bondybondbond/rushcut` afterward (see Labels assignment table above). They're a required minimum field, just set through a different command than the other four.
 
 ---
 
@@ -306,16 +342,18 @@ gh api graphql -f query="mutation { updateProjectV2ItemFieldValue(input: { proje
 
 **Project ID:** `PVT_kwHOC1IP7s4BanXt`
 
-**Status** (`PVTSSF_lAHOC1IP7s4BanXtzhVdroo`):
-`f75ad846`=Backlog · `47fc9ee4`=In Progress · `98236657`=Done · `34c38c83`=Planned · `0bd9395d`=Deferred · `bf262634`=On Hold
+**Status** (`PVTSSF_lAHOC1IP7s4BanXtzhVdroo`) — verified 2026-07-04, "Planned"/"Deferred" options no longer exist:
+`f75ad846`=Backlog · `47fc9ee4`=In Progress · `98236657`=Done · `0bd9395d`=On Hold
 
-**Priority** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrrU`):
+**Priority** — field display name is now "Prio" (`PVTSSF_lAHOC1IP7s4BanXtzhVdrrU`):
 `7eacb906`=P0-Critical · `69fc2074`=P1-High · `279fea12`=P2-Medium · `157b2fd6`=P3-Low
 
 **RICE Score** (`PVTF_lAHOC1IP7s4BanXtzhVdrrY`): number field
 
-**Theme** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrrc`):
-`fe228fee`=Feature · `df6fc6c2`=Bug · `8c8ea89a`=Performance · `5d406e8e`=UX · `84bf01bd`=Pipeline · `384d8bd9`=E2E · `5f5e44fd`=Infrastructure
+**Theme** — field display name is now "Area" (`PVTSSF_lAHOC1IP7s4BanXtzhVdrrc`) — verified 2026-07-04, "E2E" option no longer exists:
+`fe228fee`=Feature · `df6fc6c2`=Bug · `8c8ea89a`=Performance · `5d406e8e`=UX · `84bf01bd`=Pipeline · `5f5e44fd`=Infrastructure
+
+**[TRAP] Field/option IDs drift over time — verify before trusting this table.** Query current state before a batch of mutations: `gh api graphql -f query='{ node(id: "PVT_kwHOC1IP7s4BanXt") { ... on ProjectV2 { fields(first: 20) { nodes { ... on ProjectV2SingleSelectField { name id options { id name } } } } } } }'`
 
 **Target Batch** (`PVTSSF_lAHOC1IP7s4BanXtzhVdrsY`):
 `5162bb0a`=U5c — Dual-monitor freeze

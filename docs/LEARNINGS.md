@@ -867,6 +867,24 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Solution:** Use the GraphQL mutation directly: get the issue node ID (`gh api repos/bondybondbond/rushcut/issues/<N> --jq '.node_id'`) then call `addProjectV2ItemById` (`gh api graphql -f query='mutation { addProjectV2ItemById(input: { projectId: "PVT_kwHOC1IP7s4BanXt", contentId: "<node_id>" }) { item { id } } }'`). The returned `item.id` is the project item node ID needed for subsequent field-update mutations.
 **Context:** Step 2.5 of any wrapup — always use the GraphQL path when adding issues to GitHub Projects #1. `gh project item-add` CLI is unreliable.
 
+**Update 2026-07-04:** `gh project item-add` succeeded silently (no output, exit 0) and the item genuinely was added — but looked "missing" because `gh project item-list 1 --format json` defaults to a small page (`--limit 30`) and the new item was outside that window. Before concluding `item-add` failed and falling back to the GraphQL workaround above, re-check with a higher `--limit` (see next entry).
+
+---
+
+## Workflow — `gh project item-list` default limit truncates results; false "item not found"
+
+**Problem:** `gh project item-list 1 --owner bondybondbond --format json` (no `--limit` flag) returns only ~30 items by default. Searching that output for a just-created issue's node ID (e.g. to run field mutations) returns nothing, making it look like `item-add` failed when it actually succeeded.
+**Solution:** Always pass `--limit 200` (or a number comfortably above the current backlog size) when searching `item-list` output for a specific issue by number: `gh project item-list 1 --owner bondybondbond --format json --limit 200`.
+**Context:** Any GraphQL/gh-project scripting that needs an item's node ID right after creating it (Step 2.5 backlog harvest, wrapup field assignment).
+
+---
+
+## Workflow — Node.js on Windows can't `require()` a path written via Bash `/tmp`
+
+**Problem:** Writing intermediate JSON with the Bash tool to `/tmp/foo.json` (Git Bash's path) and then `require('/tmp/foo.json')` from a `node -e "..."` one-liner fails with `MODULE_NOT_FOUND` — Node is a native Windows binary and doesn't resolve Git Bash's `/tmp` mapping.
+**Solution:** Write intermediate files to a real path inside the project directory (e.g. `./items.json` in the repo root) instead of `/tmp`, `require('./items.json')`, then delete it afterward.
+**Context:** Ad hoc Node/Python one-liners parsing `gh` CLI JSON output on this machine (project-field lookups, GraphQL scripting) — same class of trap as the WSL `/tmp` vs Windows-path issue already documented for the pipeline, but for Bash-tool-vs-Node instead of WSL-vs-Windows.
+
 ---
 
 ## WebView2 — `play()` called after `currentTime` write races the seek and silently stays paused

@@ -19,6 +19,14 @@ Get-NetTCPConnection -LocalPort 9222 -State Listen | ForEach-Object { Stop-Proce
 ```
 Then re-launch the Tauri binary.
 
+## rushcut-qa-reviewer subagent owns the CDP port during its background run
+
+`.claude/agents/rushcut-qa-reviewer.md` is invoked by `rushcut-dev-plan` Step 7 (via the Agent tool, `run_in_background: true`) after each screen is built. It uses `preview_*` MCP tools only — it never runs WDIO, which avoids the exact conflict above recurring on every single screen (that would force process-lifecycle juggling per screen instead of per session).
+
+**Ownership rule:** the reviewer owns `preview_*`/CDP port 9222 for the duration of its background run. The invoking session must not call any `preview_*` tool again until the reviewer's completion notification arrives. This is the same underlying conflict as the chrome-devtools/preview_*-vs-WDIO rule above, just scoped to two consumers of the same MCP browser instead of MCP-vs-WDIO.
+
+**Phase 2 (deferred, not built):** true concurrent QA — reviewing screen N while screen N+1's own build-eval is also touching the browser — needs a second Tauri instance on an isolated CDP/WDIO port pair (e.g. 9223/9516), a new `wdio.qa.conf.ts`, and swapping `killStaleProcesses`' `taskkill /IM rushcut.exe` for PID-scoped killing so a QA run never touches the user's live binary. Not built — file a GitHub issue if/when this becomes worth doing.
+
 ## Never run WDIO while a user render is in progress (critical)
 
 `beforeSession` kills ALL `rushcut.exe` processes — including the user's live binary. The pipeline keeps running in WSL and may complete, but the new binary has no Rust stdout listener for that job. `DONE:` is never received; the job stays `processing` forever. Before running any E2E suite, confirm no pipeline is running:
@@ -143,15 +151,18 @@ For each file that renders the value, verify the display is human-readable (not 
 
 `expect(info.duration).toBeGreaterThan(3)` — threshold is `3`, not `10`. With 1 clip added the output is ~7s. `> 3` is a "non-trivial output" check; don't tie it to expected clip count.
 
-## rushcut-eval skill (`/rushcut-eval`)
+## rushcut-eval skill (`/rushcut-eval`) — DEPRECATED, split in two
 
-Hybrid eval: WDIO specs for deterministic assertions + 3 MCP screenshots + 1 console check. Full spec at `.claude/skills/rushcut-eval/SKILL.md`.
+The old hybrid eval (WDIO + 3 MCP screenshots + 1 console check) is now two separate things:
+- Visual/acceptance-check eval → `rushcut-qa-reviewer` subagent, invoked automatically by `rushcut-dev-plan` Step 7 (see section above)
+- WDIO structural smoke test → `rushcut-wrapup` Step 0.5
 
-Key rules:
+`.claude/skills/rushcut-eval/SKILL.md` is kept only as a manual fallback for docs-only/pipeline-only sessions with no screen to review.
+
+Key rules (still apply wherever WDIO runs, including wrapup and the fallback):
 
 - Run WDIO via **PowerShell** with `powershell.exe -Command "cd C:/apps/rushcut && pnpm test:e2e:xxx 2>&1"`.
 - Three spec suites: `test:e2e` (fast), `test:e2e:editor` (gap-editor), `test:e2e:render` (render).
 - Failure screenshots auto-saved to `e2e/screenshots/` (in `.gitignore`) via `afterTest` hook.
 - Acceptable `invoke()` shortcuts in specs: `scan_folder` + `create_project` (OS file dialogs can't be automated). Use `browser.execute()` for these.
 - Upload page clip display = permanent SKIP. `invoke("scan_folder")` returns data but bypasses `setClips()`.
-- Fall back to `mcp__chrome-devtools__take_snapshot` for live DOM inspection on failures — hybrid reduces MCP use, does not eliminate it.
