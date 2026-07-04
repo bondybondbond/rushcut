@@ -27,6 +27,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — check `render-timing-log.jsonl` before designing a perf refactor off an issue's estimated %
+
+**Problem:** GitHub issues with a numeric performance estimate (e.g. "40-60% wall-clock reduction") can be stale the moment a different, unrelated batch ships — the estimate was made against the pipeline as it existed when filed, not as it exists now. Designing a refactor straight off that estimate risks building real complexity for a bottleneck that no longer exists.
+**Solution:** Before designing any perf-optimization batch, read `%TEMP%\rushcut\render-timing-log.jsonl` (already populated with `t_normalise_s`/`t_render_s`/`t_total_s`/`proxy_used` per real render since Batch T-era) and check whether the targeted stage is actually a meaningful fraction of `t_total_s` on representative real data. Issue #20 (V4.2 decode/encode overlap) estimated 40-60%; the log showed `t_normalise_s` at 1.9-4% of total across every real render, proxy-covered or not — proxy caching (unrelated work) had already captured the win. One log read avoided a multi-session refactor of `render.py`'s Step 1-5 orchestration.
+**Context:** Any session starting a `V4.x`/pipeline-performance issue, or any issue whose body cites an estimated speedup/slowdown percentage.
+
+---
+
 ## Workflow — background `until` monitor output is unreliable; read the log directly when user says "done"
 
 **Problem:** A background Bash `until` poll loop writing to a temp file produces an empty output file when the loop exits — the final `tail` command runs but its output goes to the background task file which is already "done" from the harness perspective. When the user says "it's finished", the background task's output file is empty or stale.
