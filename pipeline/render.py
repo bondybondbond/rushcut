@@ -755,8 +755,13 @@ def run_pipeline(
             ffmpeg_run(cmd)
         except RuntimeError as e:
             if is_amf:
+                # This handler fires for ANY AMF encode failure, not just the
+                # documented #64 (yuv420p->yuv444p swscaler negotiation) case --
+                # e.g. #86 is a "Permission denied" opening the segment output
+                # over a WSL UNC path, a distinct root cause. Do not assume #64
+                # from this log line alone; read the actual ffmpeg stderr above.
                 log.warning(
-                    "[encoder] *** AMF FALLBACK (#64) *** AMF_FALLBACK=1 encode failed "
+                    "[encoder] *** AMF FALLBACK *** AMF_FALLBACK=1 encode failed "
                     "-- retrying on libx264 (slow CPU encode + mixed-encoder concat risk): %s",
                     e,
                 )
