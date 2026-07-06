@@ -152,11 +152,22 @@ _MOVIE_VOL = {0.2: 1.0, 0.4: 0.4, 0.7: 0.3}
 
 # Zoom step parallelism. Each clip's zoom is an independent FFmpeg pass; running
 # up to 4 concurrently turns the serial zoom loop into ~cores/4 wall time.
-def _resolve_render_work_dir(job_id: "str | object") -> Path:
-    # U1g segment artifacts live on Windows-backed NTFS (via /mnt/c) instead of
-    # /tmp tmpfs, surviving WSL memory-pressure eviction between the last batch
-    # encode and the concat-manifest write (the [Errno 2] that silently fell back
-    # to the monolithic path). Resolution: USERPROFILE -> /tmp fallback (test envs).
+def _resolve_render_work_dir(job_id: "str | object", base: "str | None" = None) -> Path:
+    # NTFS-backed scratch dir for Windows ffmpeg.exe (AMF) output targets AND U1g
+    # segment artifacts (which must survive WSL memory-pressure eviction between the
+    # last batch encode and the concat-manifest write). Windows ffmpeg.exe can write
+    # a /mnt/c -> C:\ path but NOT a /tmp -> \\wsl.localhost UNC path (Permission
+    # denied on the 9p server); see #86.
+    #
+    # Resolution order:
+    #   1. explicit `base` (run.py passes manifest_path.parent, always a /mnt/c path
+    #      that already exists) -- authoritative, no env dependency. Preferred.
+    #   2. USERPROFILE-derived /mnt/c path -- legacy; NOT inherited into the WSL env
+    #      from the bare `wsl -- python3` spawn, so this silently missed and fell to (3)
+    #      (the #86 root cause).
+    #   3. /tmp fallback -- test envs only. Windows ffmpeg.exe CANNOT write here.
+    if base:
+        return Path(base) / str(job_id)
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         user = Path(userprofile).name
@@ -363,6 +374,12 @@ def run_pipeline(
 
     tmp = TMP_BASE / str(job_id)
     tmp.mkdir(parents=True, exist_ok=True)
+    # #86: NTFS scratch dir for AMF (Windows ffmpeg.exe) output targets. `tmp` (tmpfs)
+    # stays fast for normalise/pre-trim/inject-silence intermediates (read by AMF over
+    # UNC, which works); only the final render.mp4 + U1g segment files must land here.
+    render_work = _resolve_render_work_dir(job_id, config.get("ntfs_tmp_base"))
+    render_work.mkdir(parents=True, exist_ok=True)
+    log.info("[render] tmp(tmpfs)=%s  render_work(NTFS/AMF-out)=%s", tmp, render_work)
     t_wall_start = time.time()
     log.info("[render] Job %s | mode=%s | %d clips", job_id, mode, len(clip_paths))
 
@@ -472,7 +489,8 @@ def run_pipeline(
         report(72)
         # Copy the cached clean intermediate into the job tmp dir, then apply the
         # cheap music/loudnorm layer on top -- Steps 1-5 are skipped entirely.
-        output = tmp / "render.mp4"
+        # #86: output lives on NTFS render_work (AMF write target consistency).
+        output = render_work / "render.mp4"
         shutil.copy2(str(cache_file), str(output))  # /mnt/c -> tmpfs copy is safe
         output = _apply_audio_treatment(output)
         report(95)
@@ -720,7 +738,9 @@ def run_pipeline(
     # CRITICAL: durations must come from current_paths (post-trim), not original clips.
     report(60)
     log.info("[render] Step 5: render with xfade")
-    output = tmp / "render.mp4"
+    # #86: output on NTFS render_work so Windows ffmpeg.exe (AMF) can write it (single-
+    # clip, monolithic, and the U1g open/close post-pass all target this path).
+    output = render_work / "render.mp4"
     durations = [get_duration(p) for p in current_paths]
     audio_flags = [has_audio(p) for p in current_paths]
     t0 = time.time()
@@ -854,7 +874,9 @@ def run_pipeline(
 
         def _render_segmented() -> None:
             seg_job_id = job.get("id") or job_id
-            seg_tmp = _resolve_render_work_dir(seg_job_id)
+            # #86: reuse the outer NTFS render_work (same job_id/base) so U1g segment
+            # outputs are AMF-writable /mnt/c paths, never /tmp -> UNC.
+            seg_tmp = render_work
             seg_tmp.mkdir(parents=True, exist_ok=True)
             log.info("[U1g] segment work dir: %s", seg_tmp)
             xf = clamp_xfade_dur(durations)

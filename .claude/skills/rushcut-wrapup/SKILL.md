@@ -435,6 +435,12 @@ powershell.exe -NoProfile -Command "Remove-Item \"\$env:TEMP\rushcut\*.json\" -F
 powershell.exe -NoProfile -Command "wsl -d Ubuntu-24.04 -u root -- sh -c 'rm -rf /tmp/*/'"
 ```
 
+**NTFS render scratch dirs** (`%TEMP%\rushcut\<job_id>\`, holding `render.mp4` + `u1g_seg_*.mp4` — the AMF write targets introduced by #86). `run.py` deletes its own job's dir via `_resolve_render_work_dir` after every successful render, but crashed/killed jobs (WDIO SIGTERM, cancelled renders, WSL restart mid-job) leave orphans that never get swept — unlike `/tmp` above, these are NTFS and persist indefinitely. Age-gated to 24h so an in-flight render's scratch dir is never touched:
+
+```bash
+powershell.exe -NoProfile -Command "Get-ChildItem \"\$env:TEMP\rushcut\" -Directory -ErrorAction SilentlyContinue | Where-Object { \$_.LastWriteTime -lt (Get-Date).AddHours(-24) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; Write-Host 'NTFS render scratch swept'"
+```
+
 **Code:** Remove `console.log` / `print()` debug statements, temp/scratch files, resolved inline TODOs.
 
 **Docs (light prune — apply "earns its place" test):**

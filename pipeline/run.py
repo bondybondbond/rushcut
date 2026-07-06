@@ -109,6 +109,16 @@ def main() -> None:
     intro_text = settings.get("intro_text", "")
     outro_text = settings.get("outro_text", "")
 
+    # #86: NTFS-backed scratch base for Windows ffmpeg.exe (AMF) output targets.
+    # manifest_path is always /mnt/c/Users/<user>/AppData/Local/Temp/rushcut/<id>.json
+    # (Rust writes it to %TEMP%\rushcut), so its parent is a guaranteed NTFS /mnt/c path
+    # that already exists. USERPROFILE is NOT inherited into the WSL env from the bare
+    # `wsl -- python3` spawn, so the old env-based resolution silently fell back to /tmp
+    # -> \\wsl.localhost UNC -> AMF "Permission denied" on every segment output write.
+    # TODO: replace with user-configurable render scratch-disk setting (see #XX). This
+    # is scratch only -- final exports still land in C:\clips\processed (output_path).
+    ntfs_tmp_base = str(manifest_path.parent)
+
     # Build job dict with nested config matching render.py expectations
     job = {
         "id": job_id,
@@ -148,6 +158,9 @@ def main() -> None:
             "win_ffmpeg_path": manifest.get("win_ffmpeg_path", ""),
             # use_amf: True when UI "Fast render" toggle is on (or RUSHCUT_USE_AMF env set).
             "use_amf": bool(settings.get("use_amf", False)),
+            # #86: NTFS scratch base so AMF (Windows ffmpeg.exe) output targets are
+            # real /mnt/c paths, not /tmp -> \\wsl.localhost UNC (Permission denied).
+            "ntfs_tmp_base": ntfs_tmp_base,
         },
     }
 
@@ -173,7 +186,7 @@ def main() -> None:
 
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent))
-        from pipeline.render import run_pipeline
+        from pipeline.render import run_pipeline, _resolve_render_work_dir
 
         tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage, on_analysis=on_analysis)
 
@@ -181,6 +194,9 @@ def main() -> None:
         # Clean up WSL2 /tmp/<job_id>/ — intermediates are no longer needed after copy.
         # This frees 1-3 GB per render from the WSL2 tmpfs immediately.
         shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)
+        # #86: also remove the NTFS scratch dir (render.mp4 + u1g_seg_* live here now).
+        # Resolve via the SAME function render.py uses so the path can never diverge.
+        shutil.rmtree(str(_resolve_render_work_dir(job_id, ntfs_tmp_base)), ignore_errors=True)
 
         # Timing log — skip for draft/preview runs to avoid polluting benchmark data
         if manifest.get("mode", "final") != "draft":
