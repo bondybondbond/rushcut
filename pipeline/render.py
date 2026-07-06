@@ -1128,9 +1128,10 @@ def run_pipeline(
             try:
                 _render_segmented()
                 did_batched = True
+                fallback_label = "with fallback" if amf_fallback_flag[0] else "no fallback"
                 log.info(
-                    "[U1g] segmented render complete (no fallback) batches=%s clips_total=%s mem_avail_mb=%s",
-                    progress["total"], len(current_paths), _mem_available_mb(),
+                    "[U1g] segmented render complete (%s) batches=%s clips_total=%s mem_avail_mb=%s",
+                    fallback_label, progress["total"], len(current_paths), _mem_available_mb(),
                 )
             except Exception as e:  # noqa: BLE001 -- fall back to monolithic on any planner/encode failure
                 # Logs-first instrumentation (issue #7): capture full diagnostics on
