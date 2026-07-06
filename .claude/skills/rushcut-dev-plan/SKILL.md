@@ -129,18 +129,22 @@ For UI checks, always include at minimum:
 
 ## Step 7 — In-build eval cadence
 
-After implementing each screen or component (not at the end of the whole batch), get an independent review of **only that changed screen** — do not grade your own work.
+After completing each implementation step that has a Step-6-defined pass/fail acceptance check (not at the end of the whole batch) — whether that step is a UI screen/component, a pipeline change, or a Tauri/Rust change — get an independent review of **only that changed step** — do not grade your own work.
 
 **This step is MANDATORY and non-negotiable. E2E spec passing does NOT substitute for it.**
 E2E tests verify DOM structure and element presence. They do NOT verify visual rendering —
-broken images, invisible overlays, wrong colours, and corrupt data all pass E2E.
+broken images, invisible overlays, wrong colours, and corrupt data all pass E2E. The same logic
+applies to pipeline changes — a green E2E run does not verify loudness is within spec, that a
+cache actually got hit, or that ffprobe's stream metadata matches expectations.
 
-1. Immediately after finishing the screen, invoke the `rushcut-qa-reviewer` subagent via the Agent tool with `run_in_background: true`. Pass it only:
-   - `git diff HEAD -- <scoped path>` for this screen
-   - The screen name / route
-   - The acceptance checks for this screen from Step 6
+1. Immediately after finishing the step, invoke the `rushcut-qa-reviewer` subagent via the Agent tool with `run_in_background: true`. Pass it only:
+   - `git diff HEAD -- <scoped path>` for this step
+   - The review target:
+     - **UI step:** the screen name / route
+     - **Pipeline/backend step:** the function/module touched, **and** the concrete log/artifact paths to verify it against (e.g. `pipeline-latest.log`, `render-timing-log.jsonl`, the output mp4 path) — both together, since a bare function name doesn't tell the reviewer where to find proof, and bare paths don't explain what's being checked
+   - The acceptance checks for this step from Step 6
    Do **not** pass it your reasoning, the plan, or why you built it this way — it must stay cold-context.
-2. Then continue straight into researching/implementing the **next** screen using `Read`/`Grep`/`Edit`/`Write` only. Do not call any `preview_*` tool yourself while a reviewer run is in flight for a prior screen — the reviewer owns the browser for the duration of its background run, and only hands it back on its completion notification. You can draft/code the next screen while waiting, but you cannot visually build-eval it until the browser comes back.
+2. Then continue straight into researching/implementing the **next** step using `Read`/`Grep`/`Edit`/`Write` only. If this step's review touches `preview_*`/the browser (a UI/screen review, or a pipeline review that also needs to confirm something rendered in the app), do not call any `preview_*` tool yourself while that reviewer run is in flight — the reviewer owns the browser for the duration of its background run, and only hands it back on its completion notification. A pipeline-only review (PowerShell + log/ffprobe reads only, never touching `preview_*`) never claims the CDP port, so you're free to keep using `preview_*` yourself during that run. You can draft/code the next step while waiting, but you cannot visually build-eval it until the browser comes back (when the prior review does hold it).
 3. When the reviewer's completion notification arrives, read its verdict (see the schema in `rushcut-qa-reviewer.md`) and proceed to Step 7.9.
 
 Do NOT run `/rushcut-eval` (full smoke test) during build — that is wrapup's job.

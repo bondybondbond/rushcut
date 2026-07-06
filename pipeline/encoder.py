@@ -10,14 +10,19 @@ import subprocess
 
 log = logging.getLogger(__name__)
 
-# Bitrate target for the final encode (4K and 1080p).
-# TV-check baseline: watch 30s of a pan-heavy section and compare to source.
-#   If indistinguishable -> drop to "15M" in one edit here.
-#   If noticeably softer -> stay at "20M".
-# AMF: used as -b:v target; MAXRATE is the peak cap (~1.2x) for vbr_peak mode.
+# Bitrate target for the final encode -- resolution-adaptive (#49/#78).
+# 1080p (libx264): 20M target. 4K (AMF): 40M target / 50M peak -- 4K has 4x the
+#   pixels of 1080p, so 20M spread over 3840x2160 is ~4x lower bits-per-pixel and
+#   the 4K output was barely sharper than 1080p. 40M/50M lands 4K squarely in the
+#   pro-editor range (~40M target / 50-60M max) and clearly ahead of 1080p.
+# TV-check: watch 30s of a pan-heavy section and compare to source; tune the
+#   matching tier here (1080p -> FINAL_BITRATE, 4K -> FINAL_BITRATE_4K).
+# AMF: used as -b:v target; the *_MAXRATE peak cap feeds vbr_peak mode.
 # libx264: used as -b:v target (bitrate-targeted, consistent high bitrate).
-FINAL_BITRATE = "20M"
-AMF_MAXRATE = "24M"  # vbr_peak needs explicit maxrate or AMF picks its own default
+FINAL_BITRATE = "20M"       # 1080p (libx264)
+AMF_MAXRATE = "24M"         # 1080p AMF opt-in (RUSHCUT_USE_AMF); vbr_peak needs an explicit maxrate
+FINAL_BITRATE_4K = "40M"    # 4K (AMF) target
+AMF_MAXRATE_4K = "50M"      # 4K AMF peak cap -- VBR headroom above the 40M target floor
 
 # AMF draft constants (quick preview; draft uses CQP for speed regardless of mode)
 AMF_QP_DRAFT      = 30
@@ -140,16 +145,30 @@ def video_encoder_args(
             # Final: VBR peak-constrained -- consistent high bitrate compensates for
             # AMD's missing B-frame support (driver-level limitation; -bf is ignored).
             # -maxrate must be set explicitly; without it AMF picks its own ceiling.
+            # Resolution-adaptive bitrate (#49/#78): 4K gets the 40M/50M tier, 1080p
+            # (AMF opt-in via RUSHCUT_USE_AMF) stays on the 20M/24M tier.
+            is_4k = output_resolution == "4k"
+            if is_4k:
+                final_b, final_max = FINAL_BITRATE_4K, AMF_MAXRATE_4K
+            else:
+                final_b, final_max = FINAL_BITRATE, AMF_MAXRATE
             codec_args = [
                 "-c:v", "h264_amf",
                 "-pix_fmt", "yuv420p",
                 "-profile:v", "main",
                 "-rc", "vbr_peak",
-                "-b:v", FINAL_BITRATE,
-                "-maxrate", AMF_MAXRATE,
-                "-bufsize", AMF_MAXRATE,
+                "-b:v", final_b,
+                "-maxrate", final_max,
+                "-bufsize", final_max,
                 "-quality", "quality",
             ]
+            if is_4k:
+                # Quality knobs (#78, AMF ffmpeg 8.0.1): VBAQ redistributes bits to
+                # perceptually important regions; high-motion boost targets soft
+                # high-motion pans. Both hardware-side, ~zero render-time cost.
+                # 4K-only -- keeps the rare 1080p AMF opt-in (RUSHCUT_USE_AMF) byte-
+                # identical to pre-#78 behaviour.
+                codec_args += ["-vbaq", "true", "-high_motion_quality_boost_enable", "true"]
         # Return WSL-accessible path so subprocess.run() in WSL can execute ffmpeg.exe
         return [_win_to_wsl(win_ffmpeg_path)], codec_args, True
 

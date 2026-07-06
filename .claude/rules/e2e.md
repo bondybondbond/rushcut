@@ -25,6 +25,8 @@ Then re-launch the Tauri binary.
 
 **Ownership rule:** the reviewer owns `preview_*`/CDP port 9222 for the duration of its background run. The invoking session must not call any `preview_*` tool again until the reviewer's completion notification arrives. This is the same underlying conflict as the chrome-devtools/preview_*-vs-WDIO rule above, just scoped to two consumers of the same MCP browser instead of MCP-vs-WDIO.
 
+This rule only applies when the reviewer's review actually touches `preview_*`. A pipeline-only review (PowerShell + log/ffprobe reads only, no `preview_*` calls) never claims the CDP port — the invoking session is free to keep using `preview_*` itself during that review's background run.
+
 **Phase 2 (deferred, not built):** true concurrent QA — reviewing screen N while screen N+1's own build-eval is also touching the browser — needs a second Tauri instance on an isolated CDP/WDIO port pair (e.g. 9223/9516), a new `wdio.qa.conf.ts`, and swapping `killStaleProcesses`' `taskkill /IM rushcut.exe` for PID-scoped killing so a QA run never touches the user's live binary. Not built — file a GitHub issue if/when this becomes worth doing.
 
 ## Never run WDIO while a user render is in progress (critical)

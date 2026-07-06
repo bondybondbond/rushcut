@@ -36,7 +36,7 @@ import subprocess
 
 from .cards import make_card
 from .detect import detect_trim_points
-from .encoder import to_win_path, video_encoder_args
+from .encoder import to_win_path, video_encoder_args, FINAL_BITRATE_4K, AMF_MAXRATE_4K
 from .loudnorm import loudnorm_filter
 from .music import mix_music
 from .normalise import normalise
@@ -1057,9 +1057,19 @@ def run_pipeline(
                     )
                     return c
                 if amf:
-                    return ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
-                            "-rc", "vbr_peak", "-b:v", "40M", "-maxrate", "40M",
-                            "-bufsize", "40M", "-quality", "quality"]
+                    # #49/#78: share the 4K final constant (FINAL_BITRATE_4K=40M) so this
+                    # post-pass and the main 4K encode have one source of truth. NOTE: maxrate
+                    # now 50M (AMF_MAXRATE_4K), diverging from #31's original 40M/40M -- the 40M
+                    # target floor is unchanged (still near-lossless); the higher peak only gives
+                    # VBR headroom on complex frames and matches the main 4K encode's ceiling.
+                    # Quality flags are 4K-only (matches encoder.py's gate) -- the post-pass in
+                    # practice only ever fires for 4K, but this keeps behaviour explicit.
+                    args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                            "-rc", "vbr_peak", "-b:v", FINAL_BITRATE_4K, "-maxrate", AMF_MAXRATE_4K,
+                            "-bufsize", AMF_MAXRATE_4K, "-quality", "quality"]
+                    if output_resolution == "4k":
+                        args += ["-vbaq", "true", "-high_motion_quality_boost_enable", "true"]
+                    return args
                 return ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
                         "-crf", "16", "-preset", "medium"]
 
