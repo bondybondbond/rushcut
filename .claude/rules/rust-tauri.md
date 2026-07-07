@@ -164,6 +164,8 @@ s.remove(&format!("{}:normal", pid));
 
 Symptom of the bug: `proxy-bg.log` shows two identical `batch-start` lines with `low_priority=false` at the same timestamp.
 
+**This in-memory guard pattern is NOT sufficient for `start_job`'s single-in-flight-job guard (see #89, open).** `start_job` checks `get_active_job()` (a `SELECT`) then much later calls `insert_job()` (a separate `INSERT`) with no transaction and no DB constraint between them — a check-then-insert race, not a check-then-set-in-memory-flag race. Confirmed live: three duplicate renders fired at once, spawned three concurrent 4K WSL pipelines, all died together from WSL memory pressure. Any new "prevent duplicate X" guard backed by SQLite needs a DB-level constraint (unique index, or check+insert inside one transaction) — an in-memory `Mutex`/`HashSet` only closes the race when every caller path shares the same in-process guard state with no `await` between check and act.
+
 ## DB path — not Tauri's appDataDir
 
 The DB lives at `%APPDATA%\rushcut\rushcut.db` (set by `dirs::data_dir()` in db.rs). Tauri's own `appDataDir()` returns `%APPDATA%\com.rushcut.app` — a different directory that does NOT contain the DB. Do not confuse them.

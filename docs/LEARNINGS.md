@@ -499,6 +499,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Tauri — check-then-insert command guards need DB-level atomicity, not an in-memory Mutex
+
+**Problem:** `start_job` (`src-tauri/src/lib.rs:1218`) guards against duplicate renders with `get_active_job()` (a `SELECT`) followed much later by `insert_job()` (a separate `INSERT`) — no transaction, no unique constraint between them. Two or three calls can each pass the `SELECT` before any commits the `INSERT`, so all proceed. Confirmed live (#89, 2026-07-07): three duplicate renders fired at the same instant, spawned three concurrent 4K WSL pipelines, and all three died together from the resulting WSL memory pressure — the exact scenario the guard's own comment says it exists to prevent.
+**Solution:** An in-memory `Mutex`/`HashSet` guard (the pattern already used to fix the same bug shape in `generate_proxies_cmd`'s boost guard) only closes the race for in-process callers with no `await` between check and act. It does NOT close a race where the check and the write both hit SQLite with async work in between — that needs a DB-level constraint (e.g. a unique index/constraint on `project_id` filtered to `status IN ('pending','processing')`), or the check+insert wrapped in one transaction. Diagnostic signature for this bug class: multiple `jobs` rows with **identical `created_at`**, pipeline logs of **identical byte size**, all dying at the **identical point** — that combination means duplicate concurrent submission, not a random crash.
+**Context:** Any Tauri command with a "don't double-submit" guard backed by SQLite (`start_job`, `add_clip_cut` — see #70 — and similar). Before trusting a guard, check whether the check-then-act gap spans an `await`.
+
+---
+
 ## Shuffle transition pool — two separate definitions that must stay in sync
 
 **Problem:** `pipeline/transitions.py::_SHUFFLE_POOL` (FFmpeg xfade names: `"fade"`, `"wipeleft"`, etc.) and `src/pages/Arrange.tsx::SHUFFLE_POOL` (UI/Rust names: `"crossfade"`, `"wipe"`, etc.) are separate lists that represent the same curated set under different naming conventions. `dissolve` was present in both and caused literal static/snow in renders before V1.4 caught it.
@@ -884,6 +892,8 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 **Update 2026-07-04:** `gh project item-add` succeeded silently (no output, exit 0) and the item genuinely was added — but looked "missing" because `gh project item-list 1 --format json` defaults to a small page (`--limit 30`) and the new item was outside that window. Before concluding `item-add` failed and falling back to the GraphQL workaround above, re-check with a higher `--limit` (see next entry).
 
+**Update 2026-07-07 — simpler fix, prefer this first:** `gh project item-add 1 --owner bondybondbond --url <issue-url> --format json` prints the created item directly, including `.id` — the project item node ID needed for field mutations, with zero follow-up query. No need for the GraphQL fallback or the item-list re-query below unless `--format json` itself is unavailable. The earlier "silently does nothing" read was from running the command with no `--format` flag, which prints nothing on success by design (not a failure).
+
 ---
 
 ## Workflow — `gh project item-list` default limit truncates results; false "item not found"
@@ -899,6 +909,8 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** Writing intermediate JSON with the Bash tool to `/tmp/foo.json` (Git Bash's path) and then `require('/tmp/foo.json')` from a `node -e "..."` one-liner fails with `MODULE_NOT_FOUND` — Node is a native Windows binary and doesn't resolve Git Bash's `/tmp` mapping.
 **Solution:** Write intermediate files to a real path inside the project directory (e.g. `./items.json` in the repo root) instead of `/tmp`, `require('./items.json')`, then delete it afterward.
 **Context:** Ad hoc Node/Python one-liners parsing `gh` CLI JSON output on this machine (project-field lookups, GraphQL scripting) — same class of trap as the WSL `/tmp` vs Windows-path issue already documented for the pipeline, but for Bash-tool-vs-Node instead of WSL-vs-Windows.
+
+**Update 2026-07-07:** the Grep tool has the identical problem — it can't see paths under Git Bash's `/tmp` either (`Path does not exist`). Same fix: write to a real Windows-visible path (the session scratchpad dir) instead. Also: `python3` on this machine's Git Bash PATH resolves to a broken Windows Store alias (`MODULE_NOT_FOUND`-equivalent failure) — use plain `python` instead, which correctly resolves to the real Python 3.12 install.
 
 ---
 
