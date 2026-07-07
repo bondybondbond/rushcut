@@ -482,7 +482,7 @@ For each pattern found, **act on it immediately** — don't just state the tip:
 
 - If it's a recurring user prompt pattern (e.g. scope too vague, missing constraints) → save a `feedback_*` memory file noting the pattern and better phrasing
 - If it's a workflow shortcut the user could use more → note it verbally as a "next session tip" (2 sentences max)
-- If it revealed a gap in how the session was kicked off (e.g. no batch spec, missing context) → update the dev-plan skill's Step 2 "Ingest the request" checklist
+- If it revealed a gap in how the session was kicked off (e.g. no batch spec, missing context) → update the dev-plan skill's Step 1 "Ingest the request" checklist
 
 Skip if the session was efficient and nothing stands out. Do not invent tips.
 

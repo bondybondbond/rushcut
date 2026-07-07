@@ -21,7 +21,7 @@ Then re-launch the Tauri binary.
 
 ## rushcut-qa-reviewer subagent owns the CDP port during its background run
 
-`.claude/agents/rushcut-qa-reviewer.md` is invoked by `rushcut-dev-plan` Step 7 (via the Agent tool, `run_in_background: true`) after each screen is built. It uses `preview_*` MCP tools only — it never runs WDIO, which avoids the exact conflict above recurring on every single screen (that would force process-lifecycle juggling per screen instead of per session).
+`.claude/agents/rushcut-qa-reviewer.md` is invoked by `rushcut-dev-plan` Step 6 (via the Agent tool, `run_in_background: true`) after each screen is built. It uses `preview_*` MCP tools only — it never runs WDIO, which avoids the exact conflict above recurring on every single screen (that would force process-lifecycle juggling per screen instead of per session).
 
 **Ownership rule:** the reviewer owns `preview_*`/CDP port 9222 for the duration of its background run. The invoking session must not call any `preview_*` tool again until the reviewer's completion notification arrives. This is the same underlying conflict as the chrome-devtools/preview_*-vs-WDIO rule above, just scoped to two consumers of the same MCP browser instead of MCP-vs-WDIO.
 
@@ -156,7 +156,7 @@ For each file that renders the value, verify the display is human-readable (not 
 ## rushcut-eval skill (`/rushcut-eval`) — DEPRECATED, split in two
 
 The old hybrid eval (WDIO + 3 MCP screenshots + 1 console check) is now two separate things:
-- Visual/acceptance-check eval → `rushcut-qa-reviewer` subagent, invoked automatically by `rushcut-dev-plan` Step 7 (see section above)
+- Visual/acceptance-check eval → `rushcut-qa-reviewer` subagent, invoked automatically by `rushcut-dev-plan` Step 6 (see section above)
 - WDIO structural smoke test → `rushcut-wrapup` Step 0.5
 
 `.claude/skills/rushcut-eval/SKILL.md` is kept only as a manual fallback for docs-only/pipeline-only sessions with no screen to review.

@@ -14,12 +14,13 @@ Read the user's `<context>` block carefully. Identify:
 - Is this a new feature, a bug fix, a performance issue, or continuing a deferred batch?
 - What specific components are involved (pipeline, Tauri/Rust, React UI, E2E)?
 - Are there any explicit constraints or "must not regress" callouts?
+- If this is a continuation of a deferred batch, re-state what was deferred and why before proposing the plan.
 
 ---
 
-## Step 3 — Load existing knowledge (parallel reads)
+## Step 2 — Load existing knowledge (parallel reads)
 
-Run these in parallel:
+Invoke all of the following as a single parallel tool-call batch — multiple tool_use blocks in one turn, not one call per message:
 
 1. **Memory** — `C:\Users\Manasak\.claude\projects\C--apps-rushcut\memory\MEMORY.md` — read in full; it is the single source for current state + next task (CONTEXT.md no longer exists). Small file by design.
 2. **LEARNINGS.md** — `docs/LEARNINGS.md` is a large pattern library — **do NOT read it in full.** `Grep` it for the patterns relevant to this request (e.g. the component, FFmpeg filter, or failure class involved) and read only the matching entries.
@@ -42,7 +43,7 @@ Only read additional source files if a specific function, config, or data struct
 
 ---
 
-## Step 4 — Web research (if needed)
+## Step 3 — Web research (if needed)
 
 If the task involves a non-trivial technical approach (FFmpeg filter, Rust crate, WebdriverIO API, performance technique):
 - Run 1–2 targeted web searches
@@ -53,7 +54,7 @@ Skip this step entirely if the approach is already well-understood from the exis
 
 ---
 
-## Step 5 — Log data check
+## Step 4 — Log data check
 
 Before planning any fix for A/V sync, performance, pipeline output quality, or audio issues:
 - Check: does the codebase already emit `[sync-check]`, timing logs, or relevant debug output for this problem?
@@ -62,16 +63,20 @@ Before planning any fix for A/V sync, performance, pipeline output quality, or a
 
 ---
 
-## Step 6 — Produce the plan
+## Step 5 — Produce the plan
 
-Output a concise, numbered implementation plan. Use this structure:
+This step has a **hard mid-step stop**: 5a ends with a mandatory question and a wait — do not continue into 5b in the same message. Treat them as two separate turns, not one bulleted output.
 
-### Findings (bullet-points)
+### Step 5a — Findings, design compliance, and the acceptance-check question
+
+Output:
+
+**Findings (bullet-points)**
 - Key facts about the current state relevant to this task
 - Any gotchas, known failure modes, or constraints that apply
-- Web research highlights (if Step 4 ran)
+- Web research highlights (if Step 3 ran)
 
-### Design compliance (UI work only — skip if no UI changes)
+**Design compliance (UI work only — skip if no UI changes)**
 
 For every UI element proposed (new component, modified screen, copy change):
 - State which DESIGN.md tokens apply: background, surface, text colour, button pattern, chip accent
@@ -85,15 +90,15 @@ For every UI element proposed (new component, modified screen, copy change):
   - Chip active accent: `#99B3FF` (blue); card colour picker ring: `#FF8A65` (peach only)
   - Progress bars: always green `#22c55e`
 
-### Acceptance checks (define before building — user must confirm)
-
-**MANDATORY:** Before writing a single line of code, ask the user:
+**MANDATORY — then stop:** ask the user:
 
 > "Before I start — what does success look like for you? Describe what you'd need to see (or interact with) to call this done. I'll use your description to set the acceptance criteria and take screenshots as proof when I'm finished."
 
-Wait for the user's response. Do not proceed to the implementation plan until you have it.
+Do not produce Step 5b (Refactoring / Implementation plan / Questions) until the user has answered. This is a real stop, not a rhetorical question — the next message in this skill must not exist until a reply arrives.
 
-From the user's description, derive concrete binary pass/fail checks. These drive the targeted eval during build — not a final checklist.
+### Step 5b — Acceptance checks, refactoring, implementation plan (after the user answers)
+
+**Acceptance checks** — from the user's description, derive concrete binary pass/fail checks. These drive the targeted eval during build — not a final checklist.
 
 Format: `[ ] Screen/component — what must be true`
 
@@ -109,27 +114,32 @@ For UI checks, always include at minimum:
 - `[ ] [Screen] — headings are peach, body text is white, no grey text visible`
 - `[ ] [Screen] — no missing thumbnails or broken images`
 
-### Refactoring consideration
+**Refactoring consideration**
 - State explicitly: should any refactoring happen **before** or **after** the feature/fix?
 - If before: one bullet explaining why (e.g. the fix is blocked by a structural issue)
 - If after: one bullet (e.g. cleanup once the feature is proven)
 - If none needed: "No refactoring required"
 
-### Implementation plan
+**Implementation plan**
 1. Numbered steps — each step is one atomic change (one file, one function, one config)
 2. Flag any step that touches a "critical constraint" from MEMORY.md
-3. If log-first is needed (from Step 5), step 1 must be: "Add [X] logging to [file/function], then render and paste output before proceeding"
+3. If log-first is needed (from Step 4), step 1 must be: "Add [X] logging to [file/function], then render and paste output before proceeding"
 4. After the last step touching each screen, insert: `→ EVAL: run targeted check on [screen name]` — this is where in-build eval happens
+5. If the plan has more than 8 steps, flag it and ask the user if scope should be reduced
 
-### Questions / blockers
+**Questions / blockers**
 - List anything that must be confirmed before starting (missing requirements, ambiguous scope)
 - Ask the user directly — do not proceed past this point until answered
 
 ---
 
-## Step 7 — In-build eval cadence
+**Phase boundary:** everything above (Steps 1–5b) is planning-only — no code edits. Everything from Step 6 onward assumes the plan is approved and implementation has begun: `Edit`/`Write` are expected there and are not a violation of the "no code" rule in Rules below, which applies only to Steps 1–5b.
 
-After completing each implementation step that has a Step-6-defined pass/fail acceptance check (not at the end of the whole batch) — whether that step is a UI screen/component, a pipeline change, or a Tauri/Rust change — get an independent review of **only that changed step** — do not grade your own work.
+---
+
+## Step 6 — In-build eval cadence
+
+After completing each implementation step that has a Step-5b-defined pass/fail acceptance check (not at the end of the whole batch) — whether that step is a UI screen/component, a pipeline change, or a Tauri/Rust change — get an independent review of **only that changed step** — do not grade your own work.
 
 **This step is MANDATORY and non-negotiable. E2E spec passing does NOT substitute for it.**
 E2E tests verify DOM structure and element presence. They do NOT verify visual rendering —
@@ -142,15 +152,15 @@ cache actually got hit, or that ffprobe's stream metadata matches expectations.
    - The review target:
      - **UI step:** the screen name / route
      - **Pipeline/backend step:** the function/module touched, **and** the concrete log/artifact paths to verify it against (e.g. `pipeline-latest.log`, `render-timing-log.jsonl`, the output mp4 path) — both together, since a bare function name doesn't tell the reviewer where to find proof, and bare paths don't explain what's being checked
-   - The acceptance checks for this step from Step 6
+   - The acceptance checks for this step from Step 5b
    Do **not** pass it your reasoning, the plan, or why you built it this way — it must stay cold-context.
 2. Then continue straight into researching/implementing the **next** step using `Read`/`Grep`/`Edit`/`Write` only. If this step's review touches `preview_*`/the browser (a UI/screen review, or a pipeline review that also needs to confirm something rendered in the app), do not call any `preview_*` tool yourself while that reviewer run is in flight — the reviewer owns the browser for the duration of its background run, and only hands it back on its completion notification. A pipeline-only review (PowerShell + log/ffprobe reads only, never touching `preview_*`) never claims the CDP port, so you're free to keep using `preview_*` yourself during that run. You can draft/code the next step while waiting, but you cannot visually build-eval it until the browser comes back (when the prior review does hold it).
-3. When the reviewer's completion notification arrives, read its verdict (see the schema in `rushcut-qa-reviewer.md`) and proceed to Step 7.9.
+3. When the reviewer's completion notification arrives, read its verdict (see the schema in `rushcut-qa-reviewer.md`) and proceed to Step 6.9.
 
 Do NOT run `/rushcut-eval` (full smoke test) during build — that is wrapup's job.
 Do NOT run `/rushcut-wrapup` — the user will decide when to wrap.
 
-### Step 7.9 — Read verdict and get user sign-off (MANDATORY)
+### Step 6.9 — Read verdict and get user sign-off (MANDATORY)
 
 1. Relay the reviewer's verdict to the user: which checks passed, which failed and why (use the reviewer's own `message` text — it's already concrete, not vibes).
 2. A confirmatory screenshot taken by you (the orchestrator) is **optional, not mandatory** — the reviewer already did the visual work and its own screenshots aren't shown to the user automatically. Take one yourself only if the user asks to see it directly.
@@ -161,9 +171,7 @@ Do NOT run `/rushcut-wrapup` — the user will decide when to wrap.
 
 ## Rules
 
-- Never write code during this skill — research and plan only
+- **Never write code during Steps 1–5b** — those are research and plan only. Steps 6/6.9 are build-time cadence (see the Phase boundary note above) and explicitly expect `Edit`/`Write`.
 - Never exceed 3 levels of nesting in bullet lists
-- If the request is a continuation of a deferred batch, re-state what was deferred and why before proposing the plan
-- If the plan has more than 8 steps, flag it and ask the user if scope should be reduced
-- **`[TRAP]` convention:** During implementation (after this plan is approved and dev begins), whenever a system bug, broken assumption, or more-effective route is discovered — things like "a previously described approach doesn't work", "a required plugin/tool is missing", "the documented API changed" — output a line prefixed `[TRAP]:` inline in the response. The wrapup skill will scan for these and route them to LEARNINGS.md, rules files, or DESIGN.md.
+- **`[TRAP]` convention:** During implementation (Step 6 onward, after the plan is approved), whenever a system bug, broken assumption, or more-effective route is discovered — things like "a previously described approach doesn't work", "a required plugin/tool is missing", "the documented API changed" — output a line prefixed `[TRAP]:` inline in the response. The wrapup skill will scan for these and route them to LEARNINGS.md, rules files, or DESIGN.md.
 - **DESIGN.md gaps:** If implementation reveals a UI pattern not covered by `docs/DESIGN.md` (new component type, animation, responsive rule), add the gap to the "DESIGN.md gap" section in the plan output AND flag it as a `[TRAP]` so wrapup extends the design system.
