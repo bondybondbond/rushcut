@@ -20,6 +20,7 @@
 
 ## Critical Rules (every session)
 
+- **`.claude/settings.json` `UserPromptSubmit` hook is enforcement infra, not sample config.** `.claude/hooks/enforce-skill-trigger.js` forces `Skill(rushcut-dev-plan)`/`Skill(rushcut-wrapup)` when the user's message matches a trigger phrase — added after a real miss where "dev plan" was treated as generic text. Do not remove or bypass it without the user's explicit request.
 - **Two instances share one DB.** User runs `src-tauri/target/debug/rushcut.exe` directly (always-on Vite dev server). WDIO tests launch a separate process of the same binary. Both write to `%APPDATA%\rushcut\rushcut.db`. Never confuse their generated artifacts — WDIO renders show `instance=wdio` in the timing log.
 - **WSL and PowerShell: use the PowerShell tool, not Bash.** Claude Code Bash = Git Bash; it mangles `/mnt/c/` paths, `$variables`, and `|` pipes inside `powershell.exe -Command "..."`. Use the dedicated `PowerShell` tool for all WSL calls and any PowerShell with variables or pipes. Glob patterns in PowerShell args get expanded by Git Bash — use `cmd.exe /c` for those.
 - **`git push`:** Use `git push origin main` — Windows Credential Manager holds the PAT (set up 2026-06-16). The old `GIT_ASKPASS=echo ...` workaround was Bash-only and no longer needed.
