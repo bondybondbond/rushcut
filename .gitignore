@@ -65,9 +65,6 @@ spike/output*
 # Claude Code worktrees (temporary git worktrees created by the Agent tool)
 .claude/worktrees/
 
-# Skill-gate hook runtime state (ephemeral, per-session -- see .claude/hooks/lib/skill-gate.js)
-.claude/hooks/.state/
-
 # Next.js build info
 tsconfig.tsbuildinfo
 __pycache__/

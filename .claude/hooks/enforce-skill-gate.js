@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-// PreToolUse hook: the actual enforcement boundary for the skill-trigger rule. Runs before
-// EVERY tool call. If enforce-skill-trigger.js (UserPromptSubmit) armed the gate for this
-// session, every tool call except Skill/AskUserQuestion is denied until the matching Skill
-// is invoked. UserPromptSubmit alone only injects a suggestion the model can ignore at the
-// point it picks a tool -- this hook is what makes the rule actually deterministic.
-//
-// Fail-open: see lib/skill-gate.js isExpired() -- a stuck/buggy gate auto-clears after
-// 10 minutes or 5 denied attempts, so this can never permanently block a session.
+// PreToolUse hook: the real enforcement boundary, and fully self-contained. Runs before every
+// tool call and independently re-derives "is a skill trigger currently pending" by reading
+// transcript_path directly (provided in every hook payload) -- no shared state file with
+// UserPromptSubmit, which removes the cross-hook write/read race an earlier file-based version
+// of this gate had (see docs/LEARNINGS.md). Fails open on any transcript read/parse error, and
+// naturally "expires" the moment the user's next message doesn't re-trigger -- no separate
+// attempts/time-based expiry bookkeeping needed, unlike the old design.
 
 const fs = require("fs");
-const gate = require("./lib/skill-gate");
+const { detectSkill } = require("./lib/trigger-match");
+const { findLastHumanMessage, hasMatchingSkillCallSince } = require("./lib/transcript");
 
 function readStdin() {
   try {
@@ -27,35 +27,28 @@ try {
   data = {};
 }
 
-const sessionId = String(data.session_id ?? "unknown");
 const toolName = String(data.tool_name ?? "");
+const transcriptPath = data.transcript_path;
 
 const EXEMPT_TOOLS = new Set(["Skill", "AskUserQuestion"]);
 
-const pending = gate.read(sessionId);
-
-if (!pending) {
+if (EXEMPT_TOOLS.has(toolName) || !transcriptPath) {
   process.exit(0);
 }
 
-if (toolName === "Skill") {
-  const invokedSkill = data.tool_input && data.tool_input.skill;
-  if (invokedSkill === pending.skill) {
-    gate.clear(sessionId);
-  }
-  process.exit(0);
+const last = findLastHumanMessage(transcriptPath);
+if (!last) {
+  process.exit(0); // couldn't read/parse transcript, or no human message yet -- fail open
 }
 
-if (EXEMPT_TOOLS.has(toolName)) {
-  process.exit(0);
+const skill = detectSkill(last.text);
+if (!skill) {
+  process.exit(0); // most recent human message didn't contain a trigger phrase
 }
 
-if (gate.isExpired(pending)) {
-  gate.clear(sessionId);
-  process.exit(0);
+if (hasMatchingSkillCallSince(last.lines, last.index, skill)) {
+  process.exit(0); // already satisfied for this turn
 }
-
-gate.bumpAttempt(sessionId, pending);
 
 process.stdout.write(
   JSON.stringify({
@@ -63,9 +56,9 @@ process.stdout.write(
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
       permissionDecisionReason:
-        `BLOCKED (hook-enforced): the user's message matched a hard-enforced trigger phrase for ` +
-        `the "${pending.skill}" skill. You must call the Skill tool with skill: "${pending.skill}" ` +
-        `before "${toolName}" or any other tool will be permitted this turn.`,
+        `BLOCKED (hook-enforced): the user's most recent message matched a hard-enforced ` +
+        `trigger phrase for the "${skill}" skill. Call the Skill tool with skill: "${skill}" ` +
+        `before "${toolName}" or any other tool will be permitted.`,
     },
   })
 );
