@@ -415,6 +415,8 @@ export default function Trimmer() {
     }
   }
 
+  // Only invoked from Clip mode (see onSelectClip below) — Film mode keeps its own job of
+  // reviewing assembled film position and does not silently switch the user into clip review.
   async function handleFilmSelect(filmClip: Clip) {
     const sourceRow = clips.find(c => c.include === 0 && c.local_path === filmClip.local_path);
     const workClip = sourceRow ?? filmClip;
@@ -1081,6 +1083,10 @@ export default function Trimmer() {
             const cut = clips.find(c => c.id === clipId);
             if (cut) { handleDeleteCut(cut); if (filmActiveId === clipId) setFilmActiveId(null); }
           }}
+          onSelectClip={viewMode === "clip" ? (clipId) => {
+            const cut = clips.find(c => c.id === clipId && c.include === 1);
+            if (cut) handleFilmSelect(cut);
+          } : undefined}
           onReorder={handleReorder}
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
