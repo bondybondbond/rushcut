@@ -7,6 +7,16 @@
 // image attachment) is not recognised as human text by isGenuineHumanMessage below -- only
 // pure-string or all-text-block messages count. Acceptable for this project's terminal-driven
 // workflow; would need extending if image-attached trigger messages become common.
+//
+// Coupling risk (accepted, not mitigated): this reads the transcript JSONL's internal shape
+// (isMeta, message.content block types, tool_use structure) -- an implementation detail, not a
+// documented/versioned Claude Code API. If that shape changes in a future version, every read
+// here fails closed to "couldn't parse" and the caller (enforce-skill-gate.js) fails OPEN --
+// i.e. the hard gate silently stops firing and behaviour degrades to the pre-existing
+// UserPromptSubmit-only soft hint, not a broken/blocking session. Acceptable for a workflow-
+// discipline guard; would NOT be acceptable if this pattern were ever reused for an actual
+// safety boundary (e.g. blocking a destructive command) -- that needs a sturdier mechanism
+// than transcript-scraping.
 
 const fs = require("fs");
 
