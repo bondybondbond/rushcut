@@ -10,6 +10,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/enforce-skill-gate.js",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

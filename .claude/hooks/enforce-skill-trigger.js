@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-// UserPromptSubmit hook: deterministically forces Skill invocation when the user's message
-// contains a rushcut-dev-plan or rushcut-wrapup trigger phrase. A memory file cannot guarantee
-// this (soft bias only) -- this hook runs in the harness, outside the model's control, so the
-// forcing instruction is injected before the model does any reasoning. See feedback memory
+// UserPromptSubmit hook: injects a soft instruction when the user's message contains a
+// rushcut-dev-plan or rushcut-wrapup trigger phrase, AND arms the hard PreToolUse gate
+// (see enforce-skill-gate.js + lib/skill-gate.js) that actually blocks every other tool
+// call until Skill() is invoked. UserPromptSubmit alone is not enforcement -- the model can
+// still ignore injected context at the point it picks a tool. See feedback memory
 // feedback_dev_plan_trigger_deterministic.md for the incident that prompted this (issue #75:
-// "dev plan - #75" was treated as generic instruction instead of a skill trigger).
+// "dev plan - #75" was treated as generic instruction instead of a skill trigger, and an
+// earlier UserPromptSubmit-only version of this hook would not have stopped that).
 
 const fs = require("fs");
+const gate = require("./lib/skill-gate");
 
 function readStdin() {
   try {
@@ -61,9 +64,14 @@ if (anyMatch(DEV_PLAN_TRIGGERS)) {
   skill = "rushcut-wrapup";
 }
 
+gate.vacuum();
+
 if (!skill) {
   process.exit(0);
 }
+
+const sessionId = String(data.session_id ?? "unknown");
+gate.arm(sessionId, skill);
 
 const additionalContext =
   `MANDATORY (hook-enforced, not optional): this message contains a trigger phrase for the ` +
@@ -71,7 +79,8 @@ const additionalContext =
   `skill: "${skill}" -- before any other reasoning, tool call, or Plan Mode entry. Do not ` +
   `substitute an ad-hoc manual flow (e.g. generic Plan Mode with Explore/Plan agents) even if ` +
   `you believe it is equivalent: the skill's own step machinery (including any auto-invoked ` +
-  `QA/verification step) only runs when the skill itself is invoked.`;
+  `QA/verification step) only runs when the skill itself is invoked. This is now also enforced ` +
+  `by a PreToolUse hook -- every other tool call will be denied until Skill("${skill}") runs.`;
 
 process.stdout.write(
   JSON.stringify({
