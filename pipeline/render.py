@@ -476,11 +476,12 @@ def run_pipeline(
     # resolution, fps) -- never on music. Compute the signature from the ORIGINAL
     # manifest `clips` (absolute in_ms/out_ms); pipeline_clips is mutated by the
     # B-0 pre-trim below and would drift the signature between identical renders.
-    # Cache only in final mode; disabled when shuffle_between is on (its cut
-    # selection is seeded per-render by job.id, so the intermediate is not yet
-    # reproducible across renders -- see plan follow-up).
+    # #83: shuffle's xfade RNG is seeded from this same cache_sig (not job.id),
+    # so shuffle_between renders are now reproducible across identical
+    # clip-set+settings and can safely hit the cache like any other render.
     cache_sig = render_cache.signature(clips, config, output_resolution, mode, target_fps_raw)
-    use_cache = (mode == "final") and not config.get("shuffle_between", False)
+    log.info("[cache] sig=%s (shuffle_between=%s)", cache_sig, config.get("shuffle_between", False))
+    use_cache = mode == "final"
     if use_cache and render_cache.is_valid(render_cache.cache_path(cache_sig)):
         cache_file = render_cache.cache_path(cache_sig)
         log.info("[cache] HIT %s -> %s", cache_sig, cache_file.name)
@@ -873,7 +874,6 @@ def run_pipeline(
         progress = {"batch": 0, "total": 0, "batch_len": 0}
 
         def _render_segmented() -> None:
-            seg_job_id = job.get("id") or job_id
             # #86: reuse the outer NTFS render_work (same job_id/base) so U1g segment
             # outputs are AMF-writable /mnt/c paths, never /tmp -> UNC.
             seg_tmp = render_work
@@ -881,7 +881,7 @@ def run_pipeline(
             log.info("[U1g] segment work dir: %s", seg_tmp)
             xf = clamp_xfade_dur(durations)
             per_cut_names = resolve_cut_names(
-                len(current_paths), transition, shuffle_between, seg_job_id
+                len(current_paths), transition, shuffle_between, cache_sig
             )
             # May raise ValueError if a boundary clip has no solo region.
             plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
@@ -1157,7 +1157,7 @@ def run_pipeline(
                 output_resolution=output_resolution,
                 clip_volumes=clip_volumes,
                 shuffle_between=shuffle_between,
-                seed=job.get("id"),
+                seed=cache_sig,
                 opening_transition=opening_transition,
                 closing_transition=closing_transition,
                 target_fps_raw=target_fps_raw,

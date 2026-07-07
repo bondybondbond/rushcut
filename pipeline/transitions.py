@@ -19,7 +19,9 @@ Key constraints (from CLAUDE.md + plan fixes):
 - M2 additions:
   - "wipe" -> transition=wipeleft  (horizontal wipe left)
   - "zoom" -> transition=zoomin    (zoom-in xfade)
-  - shuffle_between=True: draw a random xfade type per cut (seed from job_id for determinism)
+  - shuffle_between=True: draw a random xfade type per cut (seed from the render
+    cache's stable signature, not job_id, so identical clip-set+settings reproduce
+    the same shuffle order across renders and can hit the render cache -- #83)
   - opening_transition / closing_transition: prepend/append a synthetic black input
     and xfade into/out-of it. "none" = no open/close black frame.
 """
@@ -448,8 +450,10 @@ def build_filter_complex(
         xfade_dur:           Crossfade duration in seconds.
         shuffle_between:     If True, pick a random transition per cut from _SHUFFLE_POOL.
                              The `transition` arg is ignored when this is True.
-        seed:                Job ID string used to seed the RNG for deterministic shuffle
-                             re-renders. Unused when shuffle_between is False.
+        seed:                Stable per-render signature (the render cache's cache_sig)
+                             used to seed the RNG for deterministic shuffle re-renders --
+                             NOT the job ID, which changes every render (#83). Unused when
+                             shuffle_between is False.
         opening_transition:  Transition to apply from a synthetic black frame into clip 0.
                              "none" = skip (default). Uses same xfade_dur.
         closing_transition:  Transition to apply from the last clip out to a synthetic black
