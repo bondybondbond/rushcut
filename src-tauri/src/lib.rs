@@ -1310,7 +1310,7 @@ async fn start_job(
 
     // Insert job row
     let now = db::now();
-    insert_job(&Job {
+    if let Err(e) = insert_job(&Job {
         id: job_id.clone(),
         project_id: project_id.clone(),
         status: "pending".to_string(),
@@ -1322,8 +1322,27 @@ async fn start_job(
         created_at: now.clone(),
         updated_at: now,
         current_stage: None,
-    })
-    .map_err(|e| format!("DB error (insert job): {}", e))?;
+    }) {
+        // #89: idx_jobs_active_per_project rejected this insert — another
+        // caller won the race and already has an active job for this
+        // project. Re-attach to it instead of surfacing an error, mirroring
+        // the early get_active_job() check above.
+        let is_constraint_violation = matches!(
+            &e,
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ErrorCode::ConstraintViolation
+        );
+        if is_constraint_violation {
+            if let Ok(Some(active)) = get_active_job(&project_id) {
+                return Ok(active.id);
+            }
+            // Winning job already finished (or failed) in the gap between our
+            // failed insert and this re-query — nothing to re-attach to, and
+            // our own insert didn't happen either. Surface a normal retryable
+            // error rather than silently no-op'ing or fabricating a job id.
+        }
+        return Err(format!("DB error (insert job): {}", e));
+    }
 
     // Notify Library (and any other listeners) that a new job has started so they
     // can add it to their jobsMap before the first pipeline-progress event arrives.

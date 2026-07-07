@@ -165,6 +165,33 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         conn.execute("ALTER TABLE jobs ADD COLUMN current_stage TEXT", [])?;
     }
 
+    // #89: self-heal any pre-existing duplicate active jobs before adding the
+    // unique index below, or index creation fails on dirty data. Keeps only
+    // the newest pending/processing row per project; fails the rest. Runs
+    // every startup — idempotent no-op once there are no duplicates left.
+    conn.execute(
+        "UPDATE jobs SET status = 'failed',
+            error_message = 'Superseded by duplicate-render race guard cleanup (#89)',
+            updated_at = ?1
+         WHERE status IN ('pending','processing')
+           AND id NOT IN (
+             SELECT id FROM (
+               SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_at DESC) AS rn
+               FROM jobs WHERE status IN ('pending','processing')
+             ) WHERE rn = 1
+           )",
+        params![now()],
+    )?;
+
+    // #89: DB-level guard against duplicate concurrent renders for the same
+    // project (race condition — start_job's SELECT-then-INSERT check has no
+    // transaction spanning it). Must run after the self-heal UPDATE above.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_per_project
+         ON jobs(project_id) WHERE status IN ('pending','processing')",
+        [],
+    )?;
+
     // Additive migrations: per-clip review fields (Batch 14c) + waveform (Batch 15c) + codec (Batch 16) + clip_volume (Batch J).
     let clip_cols = [
         ("in_ms",        "INTEGER"),
