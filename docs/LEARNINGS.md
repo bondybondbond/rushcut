@@ -269,6 +269,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## E2E — Arrange focal-point drag-to-set has no WDIO coverage (accepted manual exception)
+
+**Problem:** `Arrange.tsx`'s focal-point picker only calls `saveReview(clip, { focal_x, focal_y })` when a real pointer-movement gesture crosses `DRAG_THRESHOLD_PX` (a plain mouse handler, not dnd-kit, but the same class of problem as the CDP synthetic-drag entry above) — a click with no movement just toggles play/pause instead. Simulating that threshold gesture reliably in WebdriverIO is flaky by nature (timing-sensitive, machine-speed-dependent), and setting the focal point correctly is itself partly a "taste" judgment (where's the interesting subject in frame) that a machine can't grade anyway.
+**Solution:** Accepted as a manual-only check, same category as rendered-video quality and 4K sign-off — do not attempt a synthetic-drag WDIO test for this. DB persistence of `focal_x`/`focal_y` is partially covered indirectly: `arrange.spec.ts`'s "selecting a zoom preset persists to the DB via update_clip_review_cmd" test proves the same `update_clip_review_cmd` write path works, since `zoom_mode` and `focal_x`/`focal_y` are written by the identical `saveReview` call.
+**Context:** `Arrange.tsx` focal-point picker (`getFocalFromMouse`, `saveReview`). Applies to any future attempt to add WDIO coverage for drag-driven focal-point setting.
+
+---
+
 ## Workflow — Worktree sessions
 
 - **Edits in a worktree are NOT visible to the running app** — `pnpm dev` launched from `C:\apps\rushcut` reads the main branch, not the worktree at `C:\apps\rushcut\.claude\worktrees\<name>`. Any fix applied only in the worktree appears to have no effect when the user tests. Always apply fixes to the main-branch files (`C:\apps\rushcut\src\...`) when the goal is immediate user-visible verification, or merge the worktree branch first.
@@ -919,6 +927,8 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Update 2026-07-04:** `gh project item-add` succeeded silently (no output, exit 0) and the item genuinely was added — but looked "missing" because `gh project item-list 1 --format json` defaults to a small page (`--limit 30`) and the new item was outside that window. Before concluding `item-add` failed and falling back to the GraphQL workaround above, re-check with a higher `--limit` (see next entry).
 
 **Update 2026-07-07 — simpler fix, prefer this first:** `gh project item-add 1 --owner bondybondbond --url <issue-url> --format json` prints the created item directly, including `.id` — the project item node ID needed for field mutations, with zero follow-up query. No need for the GraphQL fallback or the item-list re-query below unless `--format json` itself is unavailable. The earlier "silently does nothing" read was from running the command with no `--format` flag, which prints nothing on success by design (not a failure).
+
+**Update 2026-07-08 — re-discovered from scratch, don't repeat this:** A session hit the exact `item-list` truncation symptom above (item genuinely added, `--limit 30` default hid it) and burned ~5 tool calls re-deriving the fix live (tried `python3 -c`, then `jq` — neither installed in this machine's Git Bash — before landing on `--limit 200`), instead of grepping this LEARNINGS.md entry first. **Rule: when a `gh`/tooling command behaves unexpectedly mid-session (item "not found", silent no-op, unclear output), grep LEARNINGS.md for the literal command before reaching for an alternate JSON tool.** Also note for this machine specifically: neither `jq` nor `python3` is on Git Bash's PATH — use `grep -o` patterns or the Read tool instead of piping to either.
 
 ---
 

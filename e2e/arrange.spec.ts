@@ -262,6 +262,24 @@ describe("Arrange screen", () => {
     }
   });
 
+  it("selecting a zoom preset persists to the DB via update_clip_review_cmd", async () => {
+    if (!projectId) return;
+    // Switch to Fixed + medium — a clean value distinct from the Gradual state
+    // left by the prior test, so a stale DB value can't accidentally pass this check.
+    await (await $('[data-testid="chip-zoom-style-fixed"]')).click();
+    await browser.pause(200);
+    await (await $('[data-testid="chip-zoom-amount-medium"]')).click();
+    await browser.pause(500); // let the update_clip_review_cmd invoke resolve
+
+    const clip = await browser.execute(async (id: string) => {
+      const { invoke } = (window as any).__TAURI_INTERNALS__;
+      const project: any = await invoke("get_project", { projectId: id });
+      return project.clips.find((c: any) => c.include === 1);
+    }, projectId);
+
+    expect(clip.zoom_mode).toBe("medium");
+  });
+
   it("volume chips are NOT present in the Arrange screen", async () => {
     if (!projectId) return;
     const volumeChip = await $('[data-testid="chip-volume-100%"]');
