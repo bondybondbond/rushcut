@@ -43,6 +43,8 @@ For a UI-step review: you own the `preview_*` tool / CDP connection to the runni
 
 1. **Attach to the running app.** Use `preview_start`/`preview_list` to find the live dev server. If no server is reachable within a reasonable wait, or the target route never becomes ready, stop and return `status: "blocked"` with a clear `notes` field explaining what's wrong (do not guess or wait indefinitely).
 
+   **Known limitation (confirmed #90, 2026-07-08):** `preview_*` drives its own browser against the bare Vite HTTP page — it never attaches to a real Tauri binary's IPC layer, no matter how that binary is launched (see `.claude/rules/e2e.md`'s `[TRAP]` on this). `window.__TAURI__` will be `undefined` and every `invoke()` call will fail. If the review target needs real project/DB data (a real route param, thumbnails from `scan.py`, proxy/waveform state, anything behind `get_project` etc.), you cannot reach it — return `status: "blocked"` immediately with that explanation rather than retrying with a differently-launched binary; it will not help.
+
 2. **Navigate to the screen.** Follow the same load-order rigor RushCut's dev-plan already uses:
    - Take an **immediate-load** screenshot first. Thumbnails sourced from the DB (scan.py) must already be visible at this point — do NOT wait for the pipeline before judging thumbnail-related checks.
    - Only wait for the background proxy/waveform pipeline (watch for the "Preview optimised" indicator, poll every ~10s, max ~120s) if a specific acceptance check depends on pipeline-derived assets (waveform, proxy video playback). Do not wait for the pipeline on checks that don't need it.

@@ -62,6 +62,10 @@ export default function Trimmer() {
   const activeFilmSlotRef = useRef<"a" | "b">("a");
   // Incremented each time loadIntoSlot runs for a slot — invalidates stale rVFC callbacks
   const slotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 });
+  // #90: transient note shown when a Film-mode clip's proxy is missing/corrupt and we
+  // fell back to the source file (ported from Sound.tsx #51).
+  const [proxyFallbackNote, setProxyFallbackNote] = useState(false);
+  const proxyNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Dual-buffer clip preview (#10): two persistent video elements for clip mode, same
   // ping-pong pattern as the film engine — keeps the outgoing frame visible while the
@@ -488,6 +492,14 @@ export default function Trimmer() {
     return slot === "a" ? filmVideoARef.current : filmVideoBRef.current;
   }
 
+  // #90: stamp which clip + source-kind a Film-mode slot's <video> currently holds, so
+  // handleFilmSlotError can resolve the clip and decide whether a fallback is still possible.
+  // usingSource="0" -> currently playing the proxy; "1" -> already on the original source file.
+  function stampSlot(v: HTMLVideoElement, clip: Clip) {
+    v.dataset.clipId = clip.id;
+    v.dataset.usingSource = clip.proxy_path ? "0" : "1";
+  }
+
   function setSlotVisible(slot: "a" | "b" | "none") {
     const vA = filmVideoARef.current;
     const vB = filmVideoBRef.current;
@@ -684,6 +696,7 @@ export default function Trimmer() {
     // Hide immediately so frame 0 never shows while the decoder seeks to startMs
     v.style.opacity = "0";
     v.style.pointerEvents = "none";
+    stampSlot(v, filmClip);
     v.src = src;
     // Listener BEFORE load() — cached files fire loadedmetadata synchronously
     v.addEventListener("loadedmetadata", () => {
@@ -718,6 +731,7 @@ export default function Trimmer() {
     const thisGen = slotGenRef.current[targetSlot];
 
     // Do NOT touch currentSlot's opacity — leave outgoing frame visible.
+    stampSlot(newV, filmClip);
     newV.src = src;
     newV.addEventListener("loadedmetadata", () => {
       if (slotGenRef.current[targetSlot] !== thisGen || !filmModeRef.current) return;
@@ -759,6 +773,11 @@ export default function Trimmer() {
     const v = getFilmVideo(slot);
     if (!v) return;
     const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+    // #90: bump generation here too — this was previously missing, which meant a
+    // preloaded slot's generation still reflected whatever was last loaded via
+    // loadIntoSlot/crossSeekToClip, breaking the handleFilmSlotError double-fire guard.
+    slotGenRef.current[slot]++;
+    stampSlot(v, filmClip);
     v.src = src;
     v.addEventListener("loadedmetadata", () => {
       v.currentTime = (filmClip.in_ms ?? 0) / 1000;
@@ -804,6 +823,56 @@ export default function Trimmer() {
         const afterNextSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
         preloadIntoSlot(afterNextIdx, afterNextSlot);
       }
+    }
+  }
+
+  // #90: a Film-mode slot's <video> failed to load/play. Ported from Sound.tsx's
+  // handleSlotError (#51), dual-buffer aware: the PRELOADED (inactive) slot retries
+  // silently so it is ready when promoted; the ACTIVE slot recovers mid-playback and
+  // surfaces a toast. If already on the source and still failing, give up gracefully
+  // (advance past the clip if active) so the film never stalls.
+  function handleFilmSlotError(slot: "a" | "b") {
+    const v = getFilmVideo(slot);
+    if (!v) return;
+    const clip = inFilmRef.current.find((c) => c.id === v.dataset.clipId);
+    if (!clip) return;
+    const isActive = slot === activeFilmSlotRef.current;
+    const gen = slotGenRef.current[slot];
+
+    if (v.dataset.usingSource === "1" || !clip.proxy_path) {
+      // Already on the source (or no proxy to fall back from) and still failing.
+      // Double-fire guard: React can dispatch onError more than once for the same
+      // failed load — only advance once per generation (see LEARNINGS.md #90/#757).
+      if (isActive && isPlaying) {
+        if (v.dataset.advancedGen === String(gen)) {
+          console.warn("[film-error] duplicate advance skipped", slot, gen);
+          return;
+        }
+        v.dataset.advancedGen = String(gen);
+        console.warn("[film] active slot source playback failed, advancing past clip", clip.id);
+        advanceFilmClip();
+      }
+      return;
+    }
+
+    // Proxy failed -> swap to the original source file at the clip's in-point.
+    const sourceSrc = convertFileSrc(clip.local_path);
+    const seekSec = (clip.in_ms ?? 0) / 1000;
+    v.dataset.usingSource = "1";
+    v.src = sourceSrc;
+    v.addEventListener("loadedmetadata", () => {
+      v.currentTime = seekSec;
+      if (isActive && isPlaying) v.play().catch(() => {});
+    }, { once: true });
+    v.load();
+
+    if (isActive) {
+      setProxyFallbackNote(true);
+      if (proxyNoteTimerRef.current !== null) clearTimeout(proxyNoteTimerRef.current);
+      proxyNoteTimerRef.current = setTimeout(() => {
+        setProxyFallbackNote(false);
+        proxyNoteTimerRef.current = null;
+      }, 4000);
     }
   }
 
@@ -1206,6 +1275,7 @@ export default function Trimmer() {
                 handleFilmTimeUpdate("a", sec);
               }}
               onSeeked={() => { if (activeFilmSlotRef.current === "a") isSeekingRef.current = false; }}
+              onError={() => handleFilmSlotError("a")}
             />
 
             {/* ── Film video B (dual-buffer) ── */}
@@ -1224,6 +1294,7 @@ export default function Trimmer() {
                 handleFilmTimeUpdate("b", sec);
               }}
               onSeeked={() => { if (activeFilmSlotRef.current === "b") isSeekingRef.current = false; }}
+              onError={() => handleFilmSlotError("b")}
             />
 
             {/* Clip mode failure states */}
@@ -1371,6 +1442,13 @@ export default function Trimmer() {
       {toast && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
           <p className="text-sm text-[#e5e5e5] whitespace-nowrap">{toast}</p>
+        </div>
+      )}
+
+      {/* #90: transient note when a Film-mode clip's proxy was missing and we fell back to the source file */}
+      {viewMode === "film" && proxyFallbackNote && (
+        <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
+          <p className="text-sm text-[#e5e5e5] whitespace-nowrap">Optimised preview missing for one clip -- using the original file.</p>
         </div>
       )}
     </EditorShell>

@@ -562,6 +562,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Dual-buffer onError double-fire guard needs a gen-bump at EVERY src-set site, not just the ones with a reveal gate
+
+**Problem:** Porting a proxy-fallback `onError` handler (e.g. Sound.tsx's #51 pattern) to a second dual-buffer engine and guarding it against React's double-fire with `slotGenRef` only works if `slotGenRef` is bumped at every function that assigns `v.src` for that slot — including "dumb" preload functions with no `gateFrameRevealThen`/rVFC gate of their own. It's easy to assume the gen counter only needs bumping where a reveal gate reads it (`loadIntoSlot`, `crossSeekToClip`) and skip the plain preload function, since nothing there currently consumes `thisGen`. That leaves the preloaded slot's generation stale — carried over from whatever was loaded into that slot last — so a `dataset.advancedGen`/error-guard comparison keyed on `slotGenRef` can false-positive-match a *different* clip's failure as "already handled."
+**Solution:** Bump `slotGenRef.current[slot]++` in every function that sets `v.src` for a dual-buffer slot, even ones with no gate logic of their own (e.g. `preloadIntoSlot`). Treat the gen counter as "identity of the current load," not just "staleness guard for pending async callbacks" — the two uses have different completeness requirements.
+**Context:** `src/pages/Trimmer.tsx` Film-mode dual-buffer, #90. Store the double-fire "have I already reacted to this failure" marker as a `dataset` attribute on the `<video>` element itself (e.g. `dataset.advancedGen = String(gen)`), not a second ref — avoids a ref that duplicates `slotGenRef`'s data and stays colocated with the existing `dataset.clipId`/`dataset.usingSource` idiom.
+
+---
+
 ## Sound.tsx — intentionally naive timeline; filmstrip seek requires a conversion layer
 
 **Problem:** Sound's master preview plays proxies sequentially with no xfade blending, so its internal timeline (`totalMs`, `clipStartMsRef`, `seekToFilmMs`) accumulates raw clip durations without xfade subtraction. The StickyFilmStrip uses telescoped (card-inclusive, xfade-subtracted) time. Wiring strip click directly to `seekToFilmMs` gives seeks that are off by `xfadeMs × (n−1)` for multi-clip projects with transitions, plus a 3s card lead when an open card is enabled.
