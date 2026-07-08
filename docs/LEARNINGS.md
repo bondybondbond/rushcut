@@ -67,6 +67,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — orchestrator must pre-judge IPC-dependency before invoking rushcut-qa-reviewer
+
+**Problem:** `rushcut-qa-reviewer` (invoked by `rushcut-dev-plan` Step 6) uses `preview_*` MCP tools exclusively, which always drive Claude's own Electron browser against the bare Vite dev server — never a real Tauri binary's IPC layer, regardless of launch method (confirmed twice in #90: default launch, then binary + explicit CDP flag, both blocked identically). No `preview_*` tool schema exposes a CDP URL/port/"attach existing" parameter, and `.claude/launch.json` configs only support spawning a new process — there is no supported mechanism for the Preview MCP to attach to an external CDP endpoint (confirmed #93 via tool-schema inspection). Without a pre-check, the orchestrator burns a full background-agent round trip on every IPC-dependent screen just to receive `status: "blocked"`.
+**Solution:** Two-part permanent mitigation. (1) The reviewer itself (`rushcut-qa-reviewer.md` Branch A step 1) returns `status: "blocked"` immediately, without retrying, when a screen needs real `invoke()`/DB data. (2) `rushcut-dev-plan` SKILL.md Step 6 now has an orchestrator-side pre-check (step 1): before invoking the reviewer for a UI step, judge whether it needs `invoke()`/DB-backed data; if yes, skip the reviewer invocation entirely and record the check as "IPC-dependent — verify via WDIO or manual check" instead of dispatching and waiting on a guaranteed-blocked verdict.
+**Context:** Any `rushcut-dev-plan` session with a UI step whose acceptance checks depend on real project data (thumbnails, waveform, proxy state, any Tauri command result). See the `[TRAP]` entry in `.claude/rules/e2e.md` and the blocked-fallback in `.claude/agents/rushcut-qa-reviewer.md` for the reviewer-side half of this fix.
+
+---
+
 ## Workflow — user always launches the .exe directly; never pnpm dev
 
 **Problem:** `pnpm dev` is NOT how this user runs RushCut. Suggesting it wastes a round trip and breaks trust. The user has an always-on Vite dev server; they launch `C:\apps\rushcut\src-tauri\target\debug\rushcut.exe` directly by double-click. That debug binary connects to the live Vite server on port 1420 and picks up TS/TSX changes via HMR — no rebuild or relaunch needed for React changes.
