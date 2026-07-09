@@ -116,6 +116,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — `gh` CLI returns silently empty via the Bash tool; use PowerShell
+
+**Problem:** `gh issue view <n> --repo ... --comments` invoked via the Bash tool returned zero output — no error, no data — despite `gh` being authenticated and healthy (`gh auth status` confirmed logged in). Wasted several round trips (piping to a file, redirecting stderr) before suspecting the tool rather than the command.
+**Solution:** Re-run the identical `gh` command via the PowerShell tool — it worked immediately. Treat `gh` like WSL: always use PowerShell in this repo, never Bash.
+**Context:** Any `gh issue/pr/api/project` command during dev-plan research or wrapup. Consistent with the existing CLAUDE.md rule "WSL and PowerShell: use the PowerShell tool, not Bash" — this extends the same rule to `gh`.
+
+---
+
 ## Workflow — DB cross-check: use invoke() not sqlite3 while app is running
 
 **Problem:** Running `sqlite3 rushcut.db` via WSL while the app holds the DB open in WAL mode returns a stale snapshot — correct file, wrong data. The WAL file has uncommitted/uncheckpointed writes that sqlite3 doesn't see, so project rows appear missing or outdated.
