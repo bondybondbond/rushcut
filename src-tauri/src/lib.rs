@@ -686,6 +686,12 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
     // Build arg list with AMF vs libx264 branching (mirrors generate_proxy_file_normal_priority).
     let mut args: Vec<&str> = vec![
         "-hide_banner", "-loglevel", "error",
+        // [#92] Hardware-decode the input HEVC on the GPU. Naming an AMF *output* encoder does
+        // NOT hardware-decode the input; without this, FFmpeg software-decodes 4K HEVC at ~1x
+        // realtime (the real bottleneck). Decode-only (no -hwaccel_output_format): the software
+        // scale filter forces CPU processing regardless, per AMD's FFmpeg-AMF docs. Measured
+        // 1.9x faster (92.1s -> 48.6s) on a 52.85s 4K HEVC Main10 clip, driver 31.0.21925.1001.
+        "-hwaccel", "d3d11va",
         "-i", src,
         "-map", "0:v:0",
         "-map", "0:a:0?",
@@ -774,6 +780,12 @@ fn generate_proxy_file_normal_priority(src: &str, dst: &str, threads: u32) -> bo
     // QP 30 / quality=speed is the proxy preset (intermediate quality, fast).
     let mut args: Vec<&str> = vec![
         "-hide_banner", "-loglevel", "error",
+        // [#92] Hardware-decode the input HEVC on the GPU. Naming an AMF *output* encoder does
+        // NOT hardware-decode the input; without this, FFmpeg software-decodes 4K HEVC at ~1x
+        // realtime (the real bottleneck). Decode-only (no -hwaccel_output_format): the software
+        // scale filter forces CPU processing regardless, per AMD's FFmpeg-AMF docs. Measured
+        // 1.9x faster (92.1s -> 48.6s) on a 52.85s 4K HEVC Main10 clip, driver 31.0.21925.1001.
+        "-hwaccel", "d3d11va",
         "-i", src,
         "-map", "0:v:0",
         "-map", "0:a:0?",
@@ -839,45 +851,81 @@ fn generate_proxy_file_normal_priority(src: &str, dst: &str, threads: u32) -> bo
     }
 }
 
-/// Encode a 480p H.264 proxy using the best available GPU encoder (detected once via OnceLock).
-/// GPU encoders (nvenc/qsv/amf) handle their own hardware decode — no separate hwaccel flag needed.
+/// Encode a 1080p H.264 proxy using the best available GPU encoder (detected once via OnceLock).
+/// Input HEVC is hardware-decoded via `-hwaccel d3d11va` (#92) — naming an AMF *output* encoder
+/// does NOT hardware-decode the input; without this flag FFmpeg software-decodes 4K HEVC at ~1x
+/// realtime, the real proxy bottleneck. No `-hwaccel_output_format`: the software `scale` filter
+/// forces CPU processing regardless (per AMD's own docs), so decode-only accel is the correct shape.
 /// Returns true on success.
 fn generate_proxy_file(src: &str, dst: &str) -> bool {
     let encoder = detect_best_encoder();
+    let is_amf = encoder == "h264_amf";
     // [Q2] Use native source fps so proxy matches render target_fps and passes reuse gate.
     let fps = probe_clip_fps(src).unwrap_or_else(|| "25".to_string());
     eprintln!("[C-proxy] encoding 1080p proxy {} -> {} using {} fps={}", src, dst, encoder, fps);
     // Spec matches normalise.py output so render.py can skip normalise on re-renders:
-    //   scale=-2:1080 yuv420p, native fps CFR, libx264/GPU ultrafast, AAC 48kHz
+    //   scale=-2:1080 yuv420p, native fps CFR, GPU/libx264, AAC 48kHz
     // -c:a aac + -ar 48000: DJI records at 96kHz — must re-encode, not stream-copy.
-    let ok = std::process::Command::new(ffmpeg_exe())
-        .args([
-            "-i", src,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-vf", "scale=-2:1080,format=yuv420p",
-            "-r", &fps,
-            "-fps_mode", "cfr",
-            "-c:v", encoder,
-            "-preset", "ultrafast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-ar", "48000",
-            "-y",
-            dst,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if ok {
-        eprintln!("[C-proxy] encode OK: {}", dst);
+    //
+    // [#92] AMF vs libx264 need DIFFERENT encode-control args, same as the two 2160p bg
+    // functions. `-preset ultrafast`/`-crf` are libx264-only; passing them to h264_amf fails
+    // init ("Unable to parse option value 'ultrafast'", exit 234) and produced NO proxy on
+    // AMD machines — the lazy cold-seek path was silently broken before this branch was added.
+    let mut args: Vec<&str> = vec![
+        "-hwaccel", "d3d11va",
+        "-i", src,
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-vf", "scale=-2:1080,format=yuv420p",
+        "-r", &fps,
+        "-fps_mode", "cfr",
+        "-c:v", encoder,
+    ];
+    if is_amf {
+        args.extend([
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "main",
+            "-rc", "cqp",
+            "-qp_i", "30",
+            "-qp_p", "30",
+            "-quality", "speed",
+            "-colorspace", "bt709",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+        ]);
     } else {
-        eprintln!("[C-proxy] encode FAILED: {}", dst);
+        args.extend(["-preset", "ultrafast", "-crf", "23"]);
     }
-    ok
+    args.extend([
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-ar", "48000",
+        "-y",
+        dst,
+    ]);
+
+    // Capture stderr so failures land in proxy-bg.log instead of being swallowed (#92 root cause).
+    match std::process::Command::new(ffmpeg_exe())
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            eprintln!("[C-proxy] encode OK: {}", dst);
+            true
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail: String = stderr.chars().rev().take(400).collect::<String>().chars().rev().collect();
+            proxy_bg_log(&format!("[C-proxy] encode FAILED encoder={} exit={:?} stderr_tail={}", encoder, out.status.code(), tail));
+            false
+        }
+        Err(e) => {
+            proxy_bg_log(&format!("[C-proxy] encode-spawn-error src={} err={}", src, e));
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
