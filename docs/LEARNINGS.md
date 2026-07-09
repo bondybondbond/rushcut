@@ -35,6 +35,22 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — chained `Select-String | Select-String` does not AND-match across separate log lines
+
+**Problem:** Piping one `Select-String` into another to combine two patterns (e.g. find lines matching pattern A, then filter for pattern B) silently returns nothing when A and B live on *different* log lines that are logically related but not textually adjacent — e.g. `proxy-bg.log`'s `[PROXY_BG] done clip_id=... elapsed=...` and the following `[PROXY_BG] fan-out local_path=... proxy_path=...` line are two separate emits per clip, so filtering "done lines" then re-filtering for a proxy-hash substring (which only appears on the fan-out line) always returns empty.
+**Solution:** Use a single regex with alternation/lookaround over the raw file instead of chaining match objects across two `Select-String` calls, or grep for the unique identifier that actually appears on the line you need (e.g. the source clip filename on `encode-start` lines) rather than assuming two conceptually-linked facts share one line.
+**Context:** Any PowerShell log-parsing task combining two conditions from a structured multi-line log emitter.
+
+---
+
+## E2E — msedgedriver pinned version can drift out from under WebView2/Edge auto-update
+
+**Problem:** `pnpm test:e2e` failed with `session not created: This version of Microsoft Edge WebDriver only supports Microsoft Edge version 148. Current browser version is 150.0.4078.48` — the installed msedgedriver binary in this repo/toolchain is pinned to v148, but Windows auto-updated the system Edge/WebView2 runtime to v150 independently. Not caused by any app code change; pure environment drift between sessions.
+**Solution:** Not fixed inline (not a one-line change — needs downloading a new msedgedriver build matching the installed Edge version and updating whatever pins/references the old one). Noted as a standing blocker until addressed; re-check `msedgedriver --version` vs installed Edge version if WDIO suddenly fails session creation with no code changes nearby.
+**Context:** Any session running `pnpm test:e2e*` — check this class of error first before assuming a real test regression.
+
+---
+
 ## Workflow — background `until` monitor output is unreliable; read the log directly when user says "done"
 
 **Problem:** A background Bash `until` poll loop writing to a temp file produces an empty output file when the loop exits — the final `tail` command runs but its output goes to the background task file which is already "done" from the harness perspective. When the user says "it's finished", the background task's output file is empty or stale.
