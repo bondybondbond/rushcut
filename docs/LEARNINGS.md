@@ -1132,6 +1132,12 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Solution:** Don't try to repair pip in-place. Run `py install <ver> --force` (e.g. `py install 3.14 --force`) — this re-downloads and re-extracts the whole runtime from python.org (signature-verified), which repairs the bundled-wheel gap and gives ensurepip something to bootstrap from. One command, no manual file surgery. Confirmed fixed: `python -m pip --version` worked immediately after, no separate `ensurepip` step needed.
 **Context:** Any Windows session where `pip`/`python -m pip` throws an import error unrelated to a specific package. Check `py list` first to confirm the exact tag installed, then `py install <tag> --force`. If `py` itself isn't the new install-manager version (pre-2026 installs used a different `py.exe`), this may not apply — check `py --version` reports an install-manager banner (e.g. "Python installation manager 26.3") first.
 
+## [Workflow: `gh project item-list` default limit silently truncates — pass `--limit` explicitly when looking up a just-created item]
+
+**Problem:** `gh project item-list 1 --owner bondybondbond --format json` with no `--limit` returned only ~30 of 102 items and silently omitted a just-created issue, so a lookup-by-number for its node id (`PVTI_...`) came back empty — the GraphQL field-update mutations then failed with `Could not resolve to a node with the global id of ''` (empty string, not a helpful "not found").
+**Solution:** Always pass `--limit 500` (or check `totalCount` first) when searching item-list output for a specific item right after `gh project item-add` — never rely on the default page size.
+**Context:** Any wrapup Step 2.5 GraphQL field-setting sequence on a new issue. Confirmed on #105, 2026-07-10.
+
 ## [Workflow: git-filter-repo history rewrite — use WSL when Windows Python/pip is unavailable, and `git config --global --add safe.directory` is required for the WSL-mounted NTFS repo]
 
 **Problem:** `git-filter-repo` needs a working `pip` to install. When Windows pip is broken (see above) or git-filter-repo isn't installed at all, the pipeline's WSL2 Python3/pip (already used for the render pipeline) is a ready fallback — but running git commands against the NTFS-mounted repo path (`/mnt/c/apps/rushcut`) from WSL immediately fails with `fatal: detected dubious ownership in repository`.
