@@ -57,6 +57,9 @@ from .zoom import build_zoom_vf
 
 log = logging.getLogger(__name__)
 
+# Step 2 trim parallelism (#99) — same cap/formula as normalise.py's MAX_PARALLEL_NORMALISE.
+MAX_PARALLEL_TRIM = min(4, os.cpu_count() or 1)
+
 
 def _fps_to_tbn(fps_raw: str) -> str:
     """Derive the libx264 container time_base string from the fps rational.
@@ -614,7 +617,8 @@ def run_pipeline(
     if has_user_trims or config.get("silence_removal", False):
         log.info("[render] Step 2: trim (user overrides: %s, silence_removal: %s)",
                  has_user_trims, config.get("silence_removal", False))
-        trimmed = []
+        trimmed = list(current_paths)  # default: passthrough (overwritten below for trim jobs)
+        jobs = []  # (index, path, start_s, end_s)
         for i, (p, clip_meta) in enumerate(zip(current_paths, pipeline_clips)):
             user_in = clip_meta.get("in_ms")
             user_out = clip_meta.get("out_ms")
@@ -624,15 +628,25 @@ def run_pipeline(
                 start = (user_in / 1000.0) if user_in is not None else 0.0
                 end = (user_out / 1000.0) if user_out is not None else dur
                 log.info("[render] Clip %d: user trim %.3fs -> %.3fs", i, start, end)
-                out = tmp / f"trim_{i}.mp4"
-                trimmed.append(trim(p, start, end, out))
+                jobs.append((i, p, start, end))
             elif config.get("silence_removal", False):
                 dur = get_duration(p)
                 start, end = detect_trim_points(p, dur)
+                jobs.append((i, p, start, end))
+            # else: passthrough, trimmed[i] already holds the original path.
+
+        if jobs:
+            threads_per_worker = max(1, (os.cpu_count() or 4) // MAX_PARALLEL_TRIM)
+
+            def _trim_worker(i: int, p, start: float, end: float) -> None:
                 out = tmp / f"trim_{i}.mp4"
-                trimmed.append(trim(p, start, end, out))
-            else:
-                trimmed.append(p)
+                trimmed[i] = trim(p, start, end, out, threads=threads_per_worker)
+
+            with ThreadPoolExecutor(max_workers=MAX_PARALLEL_TRIM) as pool:
+                futures = [pool.submit(_trim_worker, i, p, start, end) for i, p, start, end in jobs]
+                for f in futures:
+                    f.result()  # re-raise any worker exception immediately (no swallowing)
+
         current_paths = trimmed
     else:
         log.info("[render] Step 2: trim skipped")
