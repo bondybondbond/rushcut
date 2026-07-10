@@ -411,6 +411,12 @@ Use native **Edit** tool.
 
 ## Step 5 — Cleanup
 
+**Build cache size flag (read-only, advisory only — never auto-deletes):** `src-tauri/target/` is Rust's build cache and grows unbounded across sessions (confirmed reaching 22GB before ever being cleared). Check its size; if over 15GB, flag it in the wrapup report rather than clearing it — clearing costs the next build its incremental cache, so that's a deliberate call for the user, not an automatic wrapup action. Use `/rushcut-maintenance` for the actual cleanup.
+
+```bash
+powershell.exe -NoProfile -Command "$s = (Get-ChildItem C:/apps/rushcut/src-tauri/target -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1GB; if ($s -gt 15) { Write-Host \"target/ is now $([math]::Round($s,1)) GB -- consider running /rushcut-maintenance\" }"
+```
+
 **Test artifacts:** Delete any failure screenshots that accumulated during the session:
 
 ```bash
