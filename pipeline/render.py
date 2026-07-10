@@ -715,6 +715,8 @@ def run_pipeline(
         )
         current_paths = [card] + current_paths
         clip_volumes = [1.0] + clip_volumes
+        if zoom_vfs is not None:
+            zoom_vfs = [None] + zoom_vfs
 
     outro_text = config.get("outro_text") or (config.get("end_card") or {}).get("text", "")
     outro_color = (
@@ -733,6 +735,15 @@ def run_pipeline(
         )
         current_paths = current_paths + [card]
         clip_volumes = clip_volumes + [1.0]
+        if zoom_vfs is not None:
+            zoom_vfs = zoom_vfs + [None]
+
+    # zoom_vfs must stay 1:1 with current_paths through card insertion (#98) --
+    # a length mismatch here silently misapplies zoom to the wrong clip in the
+    # monolithic path, or crashes with IndexError in the segmented path.
+    assert zoom_vfs is None or len(zoom_vfs) == len(current_paths), (
+        f"zoom_vfs/current_paths length mismatch: {len(zoom_vfs)} vs {len(current_paths)}"
+    )
 
     # 5. Build filter_complex + render.
     report_stage("Rendering")
@@ -1144,6 +1155,7 @@ def run_pipeline(
                     "batch_len=%s clips_total=%s exc=%r -- falling back to monolithic",
                     cls, e.__class__.__name__, ffmpeg_exit, _mem_available_mb(), progress["batch"],
                     progress["total"], progress["batch_len"], len(current_paths), e,
+                    exc_info=True,
                 )
                 did_batched = False
 
