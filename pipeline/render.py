@@ -224,6 +224,16 @@ def _probe_frame_count(path: Path) -> int:
     raise RuntimeError(f"cannot probe frame count for {path}")
 
 
+class _BoundaryDriftError(RuntimeError):
+    """#114 Fix 2: distinguishes the U1g open/close frame-drift correctness check
+    from real ffmpeg crashes / planner rejections, so the segmented-render except
+    block can skip the (OOM-prone at this scale) monolithic fallback for this
+    class specifically. Module-level by design -- must not be nested inside
+    _render_segmented() or any inner function, or isinstance() checks against it
+    could fail to match a re-evaluated nested class across calls.
+    """
+
+
 def _classify_segmented_failure(exc: Exception) -> "tuple[str, int | None]":
     # Collapsed taxonomy (logs-first): the only decision that matters next is
     # whether monolithic is the legit fallback. ValueError from plan_video_batches
@@ -887,6 +897,21 @@ def run_pipeline(
         # mutate it via closure and report_analysis() below can read it
         # regardless of which render path actually ran.
         boundary_reencode_s = [0.0]
+        # #114 Fix 1->fix: real per-boundary frame deltas (measured via the
+        # pre/post _probe_frame_count() calls in _boundary_reencode() below),
+        # summed here so the drift guardrail can compare the final concat
+        # against ACTUAL measured segment growth instead of a theoretical
+        # per-boundary formula. Root cause (2026-07-11 instrumented render,
+        # Stagecoach 2025): the open boundary's xfade uses offset=0, which per
+        # ffmpeg xfade semantics (output_duration = offset + second_stream_duration)
+        # adds ZERO frames beyond the inner segment's own length -- the old
+        # `total_after_open = inner_duration + 0.1` assumption in
+        # transitions.py was wrong for the offset=0 case. Measured: open
+        # delta=0 (not the assumed +3), close delta=4 (not the assumed +3).
+        # Tying the guardrail to real measured deltas sidesteps re-deriving a
+        # fragile xfade-duration formula and instead verifies concat integrity,
+        # which is what actually matters for sync risk.
+        oc_actual_frame_delta = [0]
 
         # Localise all /mnt/* inputs to WSL tmpfs before any FFmpeg encode.
         # Opening 17+ Windows-filesystem files concurrently via the 9P driver
@@ -1102,6 +1127,14 @@ def run_pipeline(
                 seg = seg_files[idx]
                 iw, ih = get_frame_size(seg)
                 seg_dur = get_duration(seg)
+                # #114 Fix 1 (logs-first): `seg` is the already-completed, fully-flushed
+                # batch segment written by the U1g batch loop above -- this function only
+                # runs after ALL batches finish, so it's a stable, closed file at probe
+                # time (not a partial/in-progress write). Baseline probe before the
+                # boundary re-encode; paired with the post-probe below to isolate the
+                # per-boundary frame delta (open vs. close), since only the combined
+                # final-output check exists today.
+                pre_frames = _probe_frame_count(seg)
                 pp_fc, pp_vmap, _ = build_open_close_post_fc(
                     inner_duration=seg_dur,
                     has_audio=False,
@@ -1163,6 +1196,19 @@ def run_pipeline(
                         "keyframe -- lossless concat may glitch at this boundary",
                         idx, out_seg.name,
                     )
+
+                # #114 Fix 1 (logs-first): per-boundary frame delta, separate from the
+                # combined final-output check further down. Compare against
+                # oc_delta_expected's per-boundary assumption (round(0.1*fps_f)) to
+                # isolate whether the drift is per-boundary or a compounding artifact.
+                post_frames = _probe_frame_count(out_seg)
+                this_delta = post_frames - pre_frames
+                oc_actual_frame_delta[0] += this_delta
+                log.info(
+                    "[U1g][#114] boundary frame delta idx=%d open=%s close=%s "
+                    "pre=%d post=%d delta=%d",
+                    idx, is_open, is_close, pre_frames, post_frames, this_delta,
+                )
 
                 return out_seg
 
@@ -1257,13 +1303,27 @@ def run_pipeline(
                 )
 
                 # Validate final frame count against the pre-open/close planned
-                # total + the per-boundary +0.1s black-source padding. Uses
-                # total_frames_expected (the exact planned base, from the
+                # total + the REAL measured per-boundary delta (oc_actual_frame_delta,
+                # summed from the pre/post probes in _boundary_reencode() above).
+                # Uses total_frames_expected (the exact planned base, from the
                 # segment plan) rather than probing an intermediate file, since
                 # there's no single "inner" file in this path.
+                #
+                # #114 fix: this used to assume a symmetric round(0.1*fps_f) per
+                # active boundary (3+3=6 for both-on). Real instrumented data
+                # (2026-07-11, Stagecoach 2025, 20 clips/4K) showed that's wrong:
+                # the OPEN boundary's xfade uses offset=0, and per ffmpeg xfade
+                # semantics (output_duration = offset + second_stream_duration)
+                # that adds ZERO frames beyond the inner segment's own length --
+                # confirmed by a clean delta=0 measurement, not the assumed +3.
+                # The CLOSE boundary measured delta=4 (also not the assumed +3).
+                # Deriving "expected" from a duration-based formula was the root
+                # bug; using the actual measured per-boundary deltas instead ties
+                # this guardrail to ground truth and makes it check what actually
+                # matters -- concat integrity -- rather than re-deriving a
+                # fragile xfade-duration formula that doesn't hold for offset=0.
                 out_frames = _probe_frame_count(output)
-                oc_delta_expected = (round(0.1 * fps_f) if has_open else 0) + \
-                                     (round(0.1 * fps_f) if has_close else 0)
+                oc_delta_expected = oc_actual_frame_delta[0]
                 expected_frames = total_frames_expected + oc_delta_expected
                 oc_drift_frames = abs(out_frames - expected_frames)
                 log.info(
@@ -1273,7 +1333,7 @@ def run_pipeline(
                     oc_delta_expected, oc_drift_frames,
                 )
                 if oc_drift_frames > 1:
-                    raise RuntimeError(
+                    raise _BoundaryDriftError(
                         f"[U1g] boundary-only open/close drift {oc_drift_frames} "
                         "frames -- sync risk"
                     )
@@ -1293,6 +1353,28 @@ def run_pipeline(
                     fallback_label, progress["total"], len(current_paths), _mem_available_mb(),
                 )
             except Exception as e:  # noqa: BLE001 -- fall back to monolithic on any planner/encode failure
+                # #114 Fix 2: a drift-check failure is a correctness assertion, not a real
+                # ffmpeg crash -- falling back to monolithic here is exactly the OOM-prone
+                # path U1g batching exists to avoid at this scale (confirmed: monolithic
+                # OOM'd on AMF, OOM'd again on the libx264 retry, took WSL down hard enough
+                # to need `wsl --shutdown`). isinstance check inside this single except
+                # block (NOT a separate `except _BoundaryDriftError:` clause -- a
+                # more-specific clause ordered after this general one would never be
+                # reached, silently swallowed by it first). Do not fall back here --
+                # propagate a clean, user-facing error instead. Technical detail
+                # (per-boundary/final frame counts) is already in the log above via the
+                # drift check itself.
+                if isinstance(e, _BoundaryDriftError):
+                    log.error(
+                        "[U1g][#114] boundary drift check failed -- aborting render "
+                        "instead of falling back to monolithic (known OOM risk at this "
+                        "scale): %s", e,
+                    )
+                    raise RuntimeError(
+                        "Render failed: transition boundary sync check failed "
+                        "(open/close fade drift). Please retry, or disable one of the "
+                        "opening/closing transitions and try again."
+                    ) from e
                 # Logs-first instrumentation (issue #7): capture full diagnostics on
                 # the (exit-15-prone) monolithic fallback so the next in-the-wild
                 # failure can be designed against without re-running. Behaviour
