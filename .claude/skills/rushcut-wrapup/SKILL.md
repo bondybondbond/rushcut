@@ -91,16 +91,18 @@ Do NOT invent patterns. Only write entries for waste that actually occurred this
 
 Add an entry **only** if the pattern is genuinely reusable in future sessions — a technical insight that isn't obvious and isn't already covered.
 
-Structure LEARNINGS.md as a **pattern library** (not a chronological diary). Each entry is a named, standalone pattern:
+Structure LEARNINGS.md as a **pattern library** (not a chronological diary). Each entry is a named, standalone pattern. Header format must be `## Tag — Title` (matching the tag table at the top of the file) — **never** `## [Tag: Title]` bracket style, which breaks the file's own documented `grep -nE "^## <Tag>"` lookup:
 
 ```
-## [Pattern Name]
+## Tag — Pattern Name
 **Problem:** [1 sentence — what breaks or goes wrong]
 **Solution:** [1–2 sentences — what to do instead]
 **Context:** [where/when this applies — which file, which pipeline step, which tool]
 ```
 
-Before adding: scan existing entries. If a similar pattern exists, update it rather than adding a duplicate. Remove entries that are now obsolete or superseded.
+Before adding: scan existing entries **for the tag you're about to use**. If a similar pattern already exists — including in `.claude/rules/*.md`, which is the canonical home for anything E2E/pipeline/Tauri-procedural — update it or link to it rather than adding a duplicate. Remove entries that are now obsolete or superseded.
+
+**Per-tag size guard:** before appending, run `grep -c "^## <Tag>"` for the tag you're adding under. If it already returns >15 hits, do a quick dedup/split pass on that tag's existing entries first — merge duplicates, split any bucket-style entry that packs multiple unrelated facts under one header (one entry = one idea), and only then add the new entry. Scope the pass to that tag only, never a blind pass over the whole file — a global judgment pass without full context on every entry is how real failure-mode nuance gets pruned by mistake. Keep entries with unique real-world failure narrative (specific symptom, wrong hypothesis ruled out, exact incident) even if a `.claude/rules/*.md` rule covers the same "what to do" — rules are procedural, LEARNINGS is "how it failed in reality."
 
 Use native **Edit** tool.
 
