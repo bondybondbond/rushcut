@@ -52,7 +52,9 @@ from .transitions import (
     resolve_cut_names,
     clamp_xfade_dur,
 )
-from .trim import trim
+from .trim import trim  # trim_smart() (#104) built but NOT wired in -- real measurement
+                          # showed a net regression under production contention, see
+                          # issue #104 comment. Left in pipeline/trim.py for reference.
 from .utils import FFMPEG, ffmpeg_run, ffprobe_json, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import build_zoom_vf
 
