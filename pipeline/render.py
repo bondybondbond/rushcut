@@ -36,7 +36,11 @@ import subprocess
 
 from .cards import make_card
 from .detect import detect_trim_points
-from .encoder import to_win_path, video_encoder_args, FINAL_BITRATE_4K, AMF_MAXRATE_4K
+from .encoder import (
+    to_win_path, video_encoder_args,
+    FINAL_BITRATE_4K, AMF_MAXRATE_4K,
+    HEVC_FINAL_BITRATE_4K, HEVC_AMF_MAXRATE_4K,
+)
 from .loudnorm import loudnorm_filter
 from .music import mix_music
 from .normalise import normalise
@@ -785,8 +789,16 @@ def run_pipeline(
     # Batch Q: resolve encoder once for both paths (single-clip + multi-clip).
     win_ffmpeg = config.get("win_ffmpeg_path", "")
     use_amf = bool(config.get("use_amf", False))
-    bin_argv, codec_args, is_amf = video_encoder_args(mode, output_resolution, win_ffmpeg, use_amf=use_amf)
+    use_hevc_amf = bool(config.get("use_hevc_amf", False))  # #110, opt-in only
+    bin_argv, codec_args, is_amf = video_encoder_args(
+        mode, output_resolution, win_ffmpeg, use_amf=use_amf, use_hevc_amf=use_hevc_amf
+    )
     log.info("[Q] encoder=%s is_amf=%s", codec_args[1] if len(codec_args) > 1 else "?", is_amf)
+    # #110: which AMF family this render started on -- codec_args/is_amf are
+    # computed once above and reused for every U1g batch (one encoder family
+    # per render), so this is stable for the whole render, including the
+    # boundary re-encode below.
+    main_is_hevc = is_amf and len(codec_args) > 1 and codec_args[1] == "hevc_amf"
 
     # Batch R Part C: surface silent fallback to the UI. Set when the user asked
     # for AMF (Fast render toggle / RUSHCUT_USE_AMF) but we ended up on libx264 --
@@ -1045,9 +1057,17 @@ def run_pipeline(
                 if mode == "draft":
                     _, c, _ = video_encoder_args(
                         mode, output_resolution, win_ffmpeg,
-                        force_libx264=not amf, use_amf=use_amf,
+                        force_libx264=not amf, use_amf=use_amf, use_hevc_amf=use_hevc_amf,
                     )
                     return c
+                if amf and main_is_hevc:
+                    # #110: match the render's own hevc_amf family -- same
+                    # nv12/-b:v-explicit reasoning as the main encode branch
+                    # in encoder.py (AMF#514, AMF#273; see video_encoder_args).
+                    args = ["-c:v", "hevc_amf", "-pix_fmt", "nv12", "-profile:v", "main",
+                            "-rc", "vbr_peak", "-b:v", HEVC_FINAL_BITRATE_4K, "-maxrate", HEVC_AMF_MAXRATE_4K,
+                            "-bufsize", HEVC_AMF_MAXRATE_4K, "-quality", "quality"]
+                    return args
                 if amf:
                     args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
                             "-rc", "vbr_peak", "-b:v", FINAL_BITRATE_4K, "-maxrate", AMF_MAXRATE_4K,

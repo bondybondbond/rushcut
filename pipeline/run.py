@@ -158,6 +158,10 @@ def main() -> None:
             "win_ffmpeg_path": manifest.get("win_ffmpeg_path", ""),
             # use_amf: True when UI "Fast render" toggle is on (or RUSHCUT_USE_AMF env set).
             "use_amf": bool(settings.get("use_amf", False)),
+            # #110: use_hevc_amf -- injected by Rust start_job from its own process
+            # env (RUSHCUT_USE_HEVC_AMF), not forwarded from the WSL/Linux env (WSL
+            # spawn passes no env vars -- same class of gap as #86's USERPROFILE bug).
+            "use_hevc_amf": bool(settings.get("use_hevc_amf", False)),
             # #86: NTFS scratch base so AMF (Windows ffmpeg.exe) output targets are
             # real /mnt/c paths, not /tmp -> \\wsl.localhost UNC (Permission denied).
             "ntfs_tmp_base": ntfs_tmp_base,

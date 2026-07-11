@@ -1315,6 +1315,22 @@ async fn start_job(
         .unwrap_or(false)
     { "wdio" } else { "direct" };
 
+    // #110: hevc_amf opt-in has no UI field. Inject it from Rust's OWN process
+    // env (this process is a normal Windows process, so a persistent Windows
+    // env var reaches it reliably) rather than relying on the WSL python
+    // process reading os.environ directly -- the bare `wsl -d ... -- python3
+    // run.py` spawn below forwards no env vars into the Linux side at all
+    // (same class of gap as the #86 USERPROFILE bug), so RUSHCUT_USE_HEVC_AMF
+    // set only in the WSL shell would never be seen by this spawn.
+    let mut settings_val = serde_json::from_str::<serde_json::Value>(&settings_json)
+        .unwrap_or(json!({}));
+    if let Some(obj) = settings_val.as_object_mut() {
+        let use_hevc_amf = std::env::var("RUSHCUT_USE_HEVC_AMF")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        obj.insert("use_hevc_amf".to_string(), json!(use_hevc_amf));
+    }
+
     // Write manifest JSON to Windows TEMP
     let manifest = json!({
         "job_id": job_id,
@@ -1342,8 +1358,7 @@ async fn start_job(
                 "clip_volume": c.clip_volume,
             })
         }).collect::<Vec<_>>(),
-        "settings": serde_json::from_str::<serde_json::Value>(&settings_json)
-            .unwrap_or(json!({})),
+        "settings": settings_val,
         "output_path": output_path,
     });
 
