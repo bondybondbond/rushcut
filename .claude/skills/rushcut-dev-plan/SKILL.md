@@ -61,6 +61,7 @@ Before planning any fix for A/V sync, performance, pipeline output quality, or a
 - If **yes** and we have real log output to work from — proceed to plan the fix.
 - If **no real log data exists** — add a logging-first task at the top of the plan. Instrument first, render, paste logs, then fix. State this explicitly.
 - **Render speed:** if this task touches `render.py`, `trim.py`, `normalise.py`, `transitions.py`, `zoom.py`, or proxy gen, check `docs/speed-goal.md` first and flag in Step 5a whether it's likely to help, hurt, or be neutral on render/proxy speed.
+- **Diagnostic script correctness:** if a diagnostic script probes structured data (keyframes, durations, frame counts, GOP structure, etc.), assert the result is non-empty/non-zero before proceeding — a silent zero is a parsing bug until proven otherwise. A plausible-but-wrong result (e.g. "0 keyframes found") can pass silently and lead to a wrong conclusion. Confirmed on #104 (2026-07-11): an ffprobe CSV column-order assumption caused a false "0 keyframes" reading that was corrected only by manual re-verification.
 
 ---
 
