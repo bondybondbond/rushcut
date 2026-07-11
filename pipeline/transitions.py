@@ -421,6 +421,46 @@ def build_open_close_post_fc(
     return _force_yuv420p_tail("; ".join(parts), "[vout]"), "[vout]", a_out
 
 
+def build_open_close_audio_fc(
+    opening_transition: str = "none",
+    closing_transition: str = "none",
+    xfade_dur: float = XFADE_DUR,
+) -> "tuple[str, str]":
+    """#65 Phase B: audio-only counterpart to build_open_close_post_fc.
+
+    Extracted so the (already cheap, whole-project) audio_full track can get the
+    SAME acrossfade-to-silence open/close fade as before, without re-encoding
+    video at all -- the expensive part of the old whole-film post-pass was
+    always the video generation, not the audio. Verified against
+    build_open_close_post_fc's real filter-graph output before extraction: the
+    audio chain only ever references [0:a]/[aout] and never touches [0:v] --
+    fully independent of the video chain.
+
+    Input is FFmpeg input index 0 ([0:a]). Returns (fc, a_out_label).
+    """
+    has_open = opening_transition != "none"
+    has_close = closing_transition != "none"
+    if not has_open and not has_close:
+        raise ValueError("build_open_close_audio_fc called with no open/close transition")
+
+    black_dur = xfade_dur + 0.1
+    parts: list[str] = []
+    a_inner = "[0:a]"
+
+    a_after_open = "[awrap]" if has_close else "[aout]"
+    if has_open:
+        parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abo]")
+        parts.append(f"[abo]{a_inner}acrossfade=d={xfade_dur:.4f}{a_after_open}")
+    else:
+        a_after_open = a_inner
+
+    if has_close:
+        parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abc]")
+        parts.append(f"{a_after_open}[abc]acrossfade=d={xfade_dur:.4f}[aout]")
+
+    return "; ".join(parts), "[aout]"
+
+
 def build_filter_complex(
     clip_paths: list[Path],
     durations: list[float],

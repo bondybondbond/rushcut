@@ -32,10 +32,16 @@ Run the fast spec suite only. No screenshots. No MCP. No CDP required — just W
 
 ```bash
 powershell.exe -Command "Stop-Process -Name rushcut -Force -ErrorAction SilentlyContinue; Stop-Process -Name msedgedriver -Force -ErrorAction SilentlyContinue"
-cmd.exe /c "set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 && start C:\apps\rushcut\src-tauri\target\debug\rushcut.exe"
 ```
 
-Wait 5s, then:
+Then launch the binary with the CDP port env var. **Do NOT use `cmd.exe /c "set VAR=val && start exe"`** — confirmed (2026-07-11) it silently drops the env var and the process may not even end up running when invoked via the PowerShell tool. Use `$env:VAR = "val"; Start-Process` instead (see LEARNINGS.md "launching the debug binary with WebView2 remote-debug port"):
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+Start-Process "C:\apps\rushcut\src-tauri\target\debug\rushcut.exe"
+```
+
+Wait 5s, then confirm the port is actually listening before running WDIO (`Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue`) — if not, the launch failed silently and WDIO will time out instead of giving a clear error.
 
 ```bash
 powershell.exe -Command "Set-Location C:/apps/rushcut; pnpm test:e2e 2>&1"
