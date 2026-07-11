@@ -1007,8 +1007,10 @@ def run_pipeline(
                     )
 
                 log.info(
-                    "[U1g] batch %d/%d clips %s start=%.3f frames=%d (global [%.3f,%.3f])",
+                    "[U1g] batch %d/%d clips %s start=%.3f frames=%d (global [%.3f,%.3f]) "
+                    "mem_avail_mb=%s",
                     bi + 1, len(plan), idxs, start, n_frames, g_start, g_end,
+                    _mem_available_mb(),
                 )
                 fell_back = _run_with_amf_fallback(cmd, _fb_batch)
                 encoder_outcome_by_idx[bi] = not fell_back
