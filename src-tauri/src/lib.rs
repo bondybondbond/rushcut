@@ -1288,18 +1288,34 @@ async fn start_job(
         .map_err(|e| format!("DB error (get clips): {}", e))?;
 
     // Build output path — slug-01.mp4, slug-02.mp4 ... (per-project counter)
+    // #111: use max existing suffix, not file count — a gap in the sequence
+    // (deleted file, crashed render) previously caused count+1 to collide
+    // with a still-existing file and silently overwrite it.
     let slug = slugify(&project_data.project.name);
-    let counter = std::fs::read_dir(DEFAULT_OUTPUT_DIR)
+    let prefix = format!("{}-", slug);
+    let max_suffix = std::fs::read_dir(DEFAULT_OUTPUT_DIR)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
-              .filter(|e| {
+              .filter_map(|e| {
                   let name = e.file_name().to_string_lossy().to_string();
-                  name.starts_with(&format!("{}-", slug)) && name.ends_with(".mp4")
+                  name.strip_prefix(&prefix)
+                      .and_then(|rest| rest.strip_suffix(".mp4"))
+                      .and_then(|num_str| num_str.parse::<u32>().ok())
               })
-              .count()
+              .max()
+              .unwrap_or(0)
         })
         .unwrap_or(0);
-    let output_path = format!(r"{}\{}-{:02}.mp4", DEFAULT_OUTPUT_DIR, slug, counter + 1);
+    let mut suffix = max_suffix + 1;
+    let mut output_path = format!(r"{}\{}-{:02}.mp4", DEFAULT_OUTPUT_DIR, slug, suffix);
+    // Collision guard: max-suffix handles gaps, but a race (two renders kicked
+    // off near-simultaneously) or an external write could still land on an
+    // existing path. Bump past any collision rather than silently overwriting.
+    while std::path::Path::new(&output_path).exists() {
+        suffix += 1;
+        output_path = format!(r"{}\{}-{:02}.mp4", DEFAULT_OUTPUT_DIR, slug, suffix);
+    }
+    eprintln!("[start_job] output suffix: {}, path: {}", suffix, output_path);
 
     // Filter out skipped clips (include == 0) — they don't reach the pipeline.
     let included_clips: Vec<&Clip> = project_data.clips.iter()
