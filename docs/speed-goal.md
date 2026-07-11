@@ -29,7 +29,7 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
 ## Outstanding hypotheses / relevant open issues (ranked)
 
 1. **#104** — Step 2 trim: partial-GOP re-encode instead of full libx264 re-encode. Real fix after #99's disappointing result. Targets the 15–25% `t_trim_s` slice.
-2. **#100** — `t_normalise_s=25s` on a full proxy-skip render, expected 2–5s. Unexplained, logs-only investigation needed.
+2. ~~**#100**~~ — RESOLVED (closed 2026-07-11): `t_normalise_s` brackets B-0 pre-trim, not just `normalise()` — the 25s is B-0 wall time, not an anomaly. See LEARNINGS.md entry.
 3. **#101** — proxy resolution trade-off (2160p vs tiered). Measure amortization before changing.
 4. **#88** — isolate 4K bitrate cost from open/close post-pass; possible Fast/Best-Quality toggle.
 5. **#85** — ideation: `hevc_amf` for final encode. Untested.
@@ -42,6 +42,7 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
 - **#99 (closed, PARTIAL)** — Parallelised Step 2 trim. Only 1.1–1.3x, not the expected 3–4x — real ceiling is a ~7–8s fixed cost per FFmpeg invocation, not a parallelism problem. See #104 for the actual fix direction.
 - **#96 (closed, MIXED)** — Fixed trim precision (keyframe-snap bug adding ~1s of wrong footage). Correctness win, but changed Step 2 from stream-copy to re-encode — added the cost #99/#104 are now dealing with.
 - **#98 (closed, FIX)** — U1g tail-batch crash fix; was silently falling back to slow monolithic render on the last batch.
+- **#100 (closed, DIAGNOSIS)** — `t_normalise_s=25s` on a full proxy-skip render confirmed to be B-0 pre-trim time bucketed under the "normalise" timer label, not a regression. Logs-only, no code change. Floor magnitude (does B-0's stream-copy hit a fixed per-invocation floor like #104's re-encode?) is still open, cross-referenced on #104.
 - **2026-07-11 diagnosis session — 5 proposed speed ideas, 4 rejected:**
   - Pre-bake xfade segments at proxy time — high complexity, mostly redundant with the V4.1 render cache, and repeats a pattern (pre-bake-and-cache) already tried and reverted for zoom (#67/#79).
   - Parallel U1g batch encoding — **reintroduces OOM.** U1g's `BATCH_SIZE=4` sequential design exists specifically because one 4K batch peaks at 6–9.7 GB against a 12 GB WSL budget; running batches in parallel would blow that budget. Also AMF hardware contention makes concurrent encodes *slower*, not faster (documented precedent in the proxy-batch concurrency guard).
