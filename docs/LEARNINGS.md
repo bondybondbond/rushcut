@@ -907,7 +907,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow: CDP eval requires a pre-running app — do not orchestrate from tool calls
+## Workflow — CDP eval requires a pre-running app — do not orchestrate from tool calls
 
 **Problem:** Attempts to start Vite (`pnpm dev:vite`) and the Tauri binary from inside Bash/PowerShell tool calls fail silently — the processes die between tool calls because each tool call runs in a fresh child shell. Diagnostic confusion follows when CDP port 9222 is occupied by a wrong process or is empty.
 **Solution:** Visual eval (MCP screenshots) and E2E runs both require the app to already be running. Check `netstat -ano | findstr :9222` first; if not live, ask the user to run `pnpm dev` in their terminal. Do NOT attempt to orchestrate Vite + binary from within tool calls.
@@ -936,25 +936,19 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — `gh project item-add` silently does nothing; use GraphQL directly
+## Workflow — `gh project item-add` silently does nothing unless `--format json` is passed
 
-**Problem:** `gh project item-add 1 --owner bondybondbond --url <issue-url>` exits 0 but does not add the item to the project (total item count stays unchanged). No error, no diagnostic output.
-**Solution:** Use the GraphQL mutation directly: get the issue node ID (`gh api repos/bondybondbond/rushcut/issues/<N> --jq '.node_id'`) then call `addProjectV2ItemById` (`gh api graphql -f query='mutation { addProjectV2ItemById(input: { projectId: "PVT_kwHOC1IP7s4BanXt", contentId: "<node_id>" }) { item { id } } }'`). The returned `item.id` is the project item node ID needed for subsequent field-update mutations.
-**Context:** Step 2.5 of any wrapup — always use the GraphQL path when adding issues to GitHub Projects #1. `gh project item-add` CLI is unreliable.
-
-**Update 2026-07-04:** `gh project item-add` succeeded silently (no output, exit 0) and the item genuinely was added — but looked "missing" because `gh project item-list 1 --format json` defaults to a small page (`--limit 30`) and the new item was outside that window. Before concluding `item-add` failed and falling back to the GraphQL workaround above, re-check with a higher `--limit` (see next entry).
-
-**Update 2026-07-07 — simpler fix, prefer this first:** `gh project item-add 1 --owner bondybondbond --url <issue-url> --format json` prints the created item directly, including `.id` — the project item node ID needed for field mutations, with zero follow-up query. No need for the GraphQL fallback or the item-list re-query below unless `--format json` itself is unavailable. The earlier "silently does nothing" read was from running the command with no `--format` flag, which prints nothing on success by design (not a failure).
-
-**Update 2026-07-08 — re-discovered from scratch, don't repeat this:** A session hit the exact `item-list` truncation symptom above (item genuinely added, `--limit 30` default hid it) and burned ~5 tool calls re-deriving the fix live (tried `python3 -c`, then `jq` — neither installed in this machine's Git Bash — before landing on `--limit 200`), instead of grepping this LEARNINGS.md entry first. **Rule: when a `gh`/tooling command behaves unexpectedly mid-session (item "not found", silent no-op, unclear output), grep LEARNINGS.md for the literal command before reaching for an alternate JSON tool.** Also note for this machine specifically: neither `jq` nor `python3` is on Git Bash's PATH — use `grep -o` patterns or the Read tool instead of piping to either.
+**Problem:** `gh project item-add 1 --owner bondybondbond --url <issue-url>` (no `--format` flag) prints nothing on success — reads exactly like a silent failure (no error, no diagnostic output).
+**Solution:** Add `--format json`: `gh project item-add 1 --owner bondybondbond --url <issue-url> --format json` prints the created item directly, including `.id` — the project item node ID needed for subsequent field-update mutations — with zero follow-up query. Only fall back to the GraphQL `addProjectV2ItemById` mutation if `--format json` itself is unavailable.
+**Context:** Step 2.5 of any wrapup — adding issues to GitHub Projects #1.
 
 ---
 
-## Workflow — `gh project item-list` default limit truncates results; false "item not found"
+## Workflow — `gh project item-list` default limit silently truncates results; false "item not found"
 
-**Problem:** `gh project item-list 1 --owner bondybondbond --format json` (no `--limit` flag) returns only ~30 items by default. Searching that output for a just-created issue's node ID (e.g. to run field mutations) returns nothing, making it look like `item-add` failed when it actually succeeded.
-**Solution:** Always pass `--limit 200` (or a number comfortably above the current backlog size) when searching `item-list` output for a specific issue by number: `gh project item-list 1 --owner bondybondbond --format json --limit 200`.
-**Context:** Any GraphQL/gh-project scripting that needs an item's node ID right after creating it (Step 2.5 backlog harvest, wrapup field assignment).
+**Problem:** `gh project item-list 1 --owner bondybondbond --format json` with no `--limit` flag defaults to a small page (~30 items) and silently omits items outside that window — including a just-created issue. Looking up that issue's node ID by number then returns nothing, making it look like `item-add` failed (or a field-update GraphQL mutation fails with an unhelpful `Could not resolve to a node with the global id of ''`) when the item was actually added fine.
+**Solution:** Always pass an explicit `--limit 500` (or check `totalCount` first) comfortably above current backlog size when searching `item-list` output for a specific item right after creating it: `gh project item-list 1 --owner bondybondbond --format json --limit 500`. Never rely on the default page size.
+**Context:** Any GraphQL/gh-project scripting that needs an item's node ID right after creating it (Step 2.5 backlog harvest, wrapup field assignment). Confirmed independently on #105 (2026-07-10) and re-discovered from scratch at least twice more since — grep this entry before re-deriving the fix. Neither `jq` nor `python3` is on this machine's Git Bash PATH, so don't reach for those as a workaround either.
 
 ---
 
@@ -1129,12 +1123,6 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** Windows Python 3.14 (installed via the new `py` install manager, `AppData\Local\Python\pythoncore-3.14-64`) had a corrupted `pip` — every invocation raised `ModuleNotFoundError: No module named 'pip._vendor.rich.console'`. `python -m ensurepip --upgrade` also failed (`FileNotFoundError` copying the bundled wheel) because the bundled wheel file itself was missing from the install — the corruption was in the Python installation, not just pip's site-packages.
 **Solution:** Don't try to repair pip in-place. Run `py install <ver> --force` (e.g. `py install 3.14 --force`) — this re-downloads and re-extracts the whole runtime from python.org (signature-verified), which repairs the bundled-wheel gap and gives ensurepip something to bootstrap from. One command, no manual file surgery. Confirmed fixed: `python -m pip --version` worked immediately after, no separate `ensurepip` step needed.
 **Context:** Any Windows session where `pip`/`python -m pip` throws an import error unrelated to a specific package. Check `py list` first to confirm the exact tag installed, then `py install <tag> --force`. If `py` itself isn't the new install-manager version (pre-2026 installs used a different `py.exe`), this may not apply — check `py --version` reports an install-manager banner (e.g. "Python installation manager 26.3") first.
-
-## Workflow — `gh project item-list` default limit silently truncates — pass `--limit` explicitly when looking up a just-created item
-
-**Problem:** `gh project item-list 1 --owner bondybondbond --format json` with no `--limit` returned only ~30 of 102 items and silently omitted a just-created issue, so a lookup-by-number for its node id (`PVTI_...`) came back empty — the GraphQL field-update mutations then failed with `Could not resolve to a node with the global id of ''` (empty string, not a helpful "not found").
-**Solution:** Always pass `--limit 500` (or check `totalCount` first) when searching item-list output for a specific item right after `gh project item-add` — never rely on the default page size.
-**Context:** Any wrapup Step 2.5 GraphQL field-setting sequence on a new issue. Confirmed on #105, 2026-07-10.
 
 ## Workflow — git-filter-repo history rewrite — use WSL when Windows Python/pip is unavailable, and `git config --global --add safe.directory` is required for the WSL-mounted NTFS repo
 
