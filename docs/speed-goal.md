@@ -24,7 +24,7 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
 
 **Gap to north star:** big-case cold total is 1.7–2.35x over the 5-min target. `t_render_s` + `t_trim_s` = 85%+ of the gap. Everything else is noise — don't optimise it first.
 
-**Open question:** `t_render_s` swings 317→486s (~50%) across renders of the *identical* clip set/settings. Likely system/GPU contention, not pipeline inefficiency — not yet investigated.
+**Variance diagnosed (2026-07-11):** `t_render_s` swings 317→486s (~50%) across renders of the *identical* clip set/settings. Checked against proxy contention (never fired) and WSL memory (flat 11340–11354MB across all 4 renders, no correlation with render time) — both ruled out. Diagnosis: Windows/WSL scheduler noise from other load during a back-to-back A/B testing session, not a pipeline inefficiency — unfalsifiable from pipeline logs alone. **317s is the clean-machine floor for this baseline going forward, not 486s.** `mem_avail_mb` is now logged at U1g batch start (not just completion) so a future variance event has richer data if worth revisiting.
 
 ## Outstanding hypotheses / relevant open issues (ranked)
 
@@ -33,7 +33,7 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
 3. **#101** — proxy resolution trade-off (2160p vs tiered). Measure amortization before changing.
 4. **#88** — isolate 4K bitrate cost from open/close post-pass; possible Fast/Best-Quality toggle.
 5. **#85** — ideation: `hevc_amf` for final encode. Untested.
-6. **Unexplained `t_render_s` variance** (317–486s on identical input) — not filed, worth a quick investigation before chasing anything else.
+6. **#106 (P3-Low)** — copy-stream normalise for already-compliant clips. Narrow: never fires on the primary DJI HEVC workload.
 
 ## Learning log (brief — tried, success/fail)
 
@@ -47,4 +47,5 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
   - Parallel U1g batch encoding — **reintroduces OOM.** U1g's `BATCH_SIZE=4` sequential design exists specifically because one 4K batch peaks at 6–9.7 GB against a 12 GB WSL budget; running batches in parallel would blow that budget. Also AMF hardware contention makes concurrent encodes *slower*, not faster (documented precedent in the proxy-batch concurrency guard).
   - Pre-compute/cache zoom VF strings — near-zero payoff (`t_zoom_s` is <1% of total); `build_zoom_vf` is a cheap string-builder, not a heavy computation.
   - Second-tier music/loudnorm cache — **already built** (V4.1 render cache excludes music fields from the signature and reapplies them as a cheap remux on every hit).
-  - **Kept:** copy-stream normalise for already-compliant clips (no compliance check exists in `normalise.py` today) — real but narrow, since primary DJI HEVC footage is never "already compliant" H.264. Not yet filed as an issue.
+  - **Kept:** copy-stream normalise for already-compliant clips (no compliance check exists in `normalise.py` today) — real but narrow, since primary DJI HEVC footage is never "already compliant" H.264. Filed as **#106** (P3-Low).
+- **2026-07-11 variance diagnostic pass — DIAGNOSED, not a pipeline problem.** Correlated the 317–486s `t_render_s` spread against proxy-contention logs and `mem_avail_mb` (added per-batch logging as part of this pass) across the 4 matching job logs (matched by timestamp proximity — `render-timing-log.jsonl` has no `job_id` field, see LEARNINGS.md). Contention warning never fired; memory was flat (11340–11354MB) regardless of render speed. Conclusion: external machine load during A/B testing, not pipeline inefficiency. **317s recorded as the clean-machine floor.**
