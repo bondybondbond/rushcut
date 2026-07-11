@@ -27,6 +27,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — `gh issue view --comments` returns completely empty output on some issues, even with `--json` unaffected
+
+**Problem:** `gh issue view <n> --repo <owner>/<repo> --comments` silently printed nothing at all (no title, no body, no comments, exit code 0) for issue #101, which had zero comments. Two retries with the same command (including redirecting to a file) also returned empty. Wasted two round trips before switching approach.
+**Solution:** If `--comments` returns nothing, don't retry it — fall back to `gh issue view <n> --json number,title,body,state,labels` (works reliably) plus `gh api repos/<owner>/<repo>/issues/<n>/comments --jq '.[].body'` for comments separately. Root cause not identified (possibly a gh CLI rendering quirk on zero-comment issues) — not worth chasing further, the `--json`/`--api` combo is strictly more reliable anyway.
+**Context:** `rushcut-dev-plan` Step 2, fetching a GitHub issue brief at the start of any session.
+
+---
+
 ## Workflow — check `render-timing-log.jsonl` before designing a perf refactor off an issue's estimated %
 
 **Problem:** GitHub issues with a numeric performance estimate (e.g. "40-60% wall-clock reduction") can be stale the moment a different, unrelated batch ships — the estimate was made against the pipeline as it existed when filed, not as it exists now. Designing a refactor straight off that estimate risks building real complexity for a bottleneck that no longer exists.
