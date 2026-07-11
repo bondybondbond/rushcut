@@ -238,6 +238,9 @@ def main() -> None:
                     "t_total_s":       float(_a.get("total_s", 0)),
                     "output_mb":       round(output_mb, 1),
                     "encoder":         _a.get("encoder", "libx264"),
+                    "opening_transition_on": bool(int(_a.get("opening_transition_on", 0))),
+                    "closing_transition_on": bool(int(_a.get("closing_transition_on", 0))),
+                    "t_boundary_reencode_s": float(_a.get("boundary_reencode_s", 0)),
                 }
                 timing_log = manifest_path.parent / "render-timing-log.jsonl"
                 with open(timing_log, "a") as f:

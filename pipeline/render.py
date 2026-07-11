@@ -882,6 +882,11 @@ def run_pipeline(
         has_open = opening_transition != "none"
         has_close = closing_transition != "none"
         has_xfade = (transition != "none") or shuffle_between
+        # #88: isolate boundary-reencode cost from the bundled t_render_s
+        # figure. Declared here (outer scope) so _render_segmented() can
+        # mutate it via closure and report_analysis() below can read it
+        # regardless of which render path actually ran.
+        boundary_reencode_s = [0.0]
 
         # Localise all /mnt/* inputs to WSL tmpfs before any FFmpeg encode.
         # Opening 17+ Windows-filesystem files concurrently via the 9P driver
@@ -1162,6 +1167,11 @@ def run_pipeline(
                 return out_seg
 
             needs_open_close = has_open or has_close
+            # #88: timed at the call sites (not inside _boundary_reencode)
+            # since the 3 sites below are mutually exclusive -- only 1 or 2
+            # fire per render, so accumulating across them can't double-count.
+            # boundary_reencode_s itself is declared in the outer run_pipeline
+            # scope (near has_open/has_close) so report_analysis() can read it.
 
             if needs_open_close:
                 # #65: bake the open/close fade into ONLY the boundary segment(s),
@@ -1178,12 +1188,18 @@ def run_pipeline(
                 # silently break.
                 last_idx = len(seg_files) - 1
                 if has_open and has_close and last_idx == 0:
+                    _t0_br = time.time()
                     seg_files[0] = _boundary_reencode(0, is_open=True, is_close=True)
+                    boundary_reencode_s[0] += time.time() - _t0_br
                 else:
                     if has_open:
+                        _t0_br = time.time()
                         seg_files[0] = _boundary_reencode(0, is_open=True, is_close=False)
+                        boundary_reencode_s[0] += time.time() - _t0_br
                     if has_close:
+                        _t0_br = time.time()
                         seg_files[last_idx] = _boundary_reencode(last_idx, is_open=False, is_close=True)
+                        boundary_reencode_s[0] += time.time() - _t0_br
 
             # Concat the segments (all identical codec/params) -> video_full.
             concat_list = seg_tmp / "u1g_concat.txt"
@@ -1432,6 +1448,9 @@ def run_pipeline(
             f",encoder={encoder_name}"
             f",amf_fallback={1 if amf_fallback_flag[0] else 0}"
             f",render_cache={cache_status}"
+            f",opening_transition_on={1 if has_open else 0}"
+            f",closing_transition_on={1 if has_close else 0}"
+            f",boundary_reencode_s={boundary_reencode_s[0]:.1f}"
         )
     except Exception as e:
         log.warning("[render] ANALYSIS emit failed: %s", e)
