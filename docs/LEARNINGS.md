@@ -116,28 +116,11 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — DB cross-check: use invoke() not sqlite3 while app is running
+## Workflow — DB path/staleness traps (WAL, MSIX container, WSL 9p cache) — see rust-tauri.md
 
-**Problem:** Running `sqlite3 rushcut.db` via WSL while the app holds the DB open in WAL mode returns a stale snapshot — correct file, wrong data. The WAL file has uncommitted/uncheckpointed writes that sqlite3 doesn't see, so project rows appear missing or outdated.
-**Solution:** For cross-checks during an active session, call `invoke("list_projects_cmd")` (or another Tauri command) via `mcp__chrome-devtools__evaluate_script` — the app's own connection reads through the WAL and returns current data. Use sqlite3 directly only when the app is NOT running.
-**Context:** Any session that needs to verify DB content while the Tauri binary is open. Also note: the app DB is at `%APPDATA%\rushcut\rushcut.db` (from `dirs::data_dir()`) — NOT `%APPDATA%\com.rushcut.app` (that's Tauri's own managed dir, which the DB does not use).
-
----
-
-## Workflow — In-session binary uses a Claude MSIX container DB, not the user's real Roaming file
-
-**Problem:** When the rushcut debug binary is launched *in-session* (via `Start-Process` from Claude Code's packaged context), Windows MSIX filesystem virtualisation redirects its `%APPDATA%` writes to `C:\Users\Manasak\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\rushcut\rushcut.db` — a separate physical file. `dirs::data_dir()` prints the *logical* Roaming path in logs, but that is a lie on this machine. WSL `/mnt/c/.../Roaming/rushcut/rushcut.db` is the user's real file; the Windows Store `python.exe` alias has its own container too. All three disagree.
-**Solution:** To verify DB state against the in-session binary: inject and read using WSL python pointed at the **container path** (`/mnt/c/Users/Manasak/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache\Roaming\rushcut\rushcut.db`), not the real Roaming path. Drop WSL caches before reading (`echo 1 > /proc/sys/vm/drop_caches`) — 9p reads are stale even after the container DB changes. Confirm the right file by temporarily adding `eprintln!("[dbpath] {}", db::db_path().display())` to `setup()` and reading binary stderr.
-**Critical addendum — PowerShell `$env:APPDATA` is ALSO virtualised:** Claude's own PowerShell tool runs inside the MSIX container, so `$env:APPDATA` in any PowerShell command resolves to the container's virtual Roaming path (yesterday's timestamp, stale file). It does NOT point to the user's real binary's DB. To cross-check the DB used by the user's own double-clicked binary, always use WSL with the absolute Roaming path: `wsl -- stat /mnt/c/Users/Manasak/AppData/Roaming/rushcut/rushcut.db`. A stat showing today's timestamp confirms the real file; `$env:APPDATA` will show yesterday's.
-**Context:** In-session DB verification when the binary is launched via `Start-Process` (i.e. from Claude Code). For the user's own launched binary (normal double-click outside any package), this does NOT apply — the real Roaming file is used, but PowerShell reads are still virtualised and stale.
-
----
-
-## Workflow — WSL `/mnt/c` SQLite reads are stale; writes land but reads need cache drop
-
-**Problem:** Reading `rushcut.db` via WSL2 `/mnt/c` 9p protocol returns a cached view that does not reflect recent Windows-side writes (or even recent WSL writes visible to Windows). Specifically, a WSL python commit that inserts rows can be immediately visible to the Windows binary but NOT visible to a subsequent WSL python read — leading to false "rows missing" conclusions.
-**Solution:** Before any WSL read of a DB that was recently written (by WSL or Windows), drop the 9p page cache: `wsl -u root -- sh -c "echo 1 > /proc/sys/vm/drop_caches"`. For authoritative reads, prefer writing a Python script and running it via `Start-Process` in the same OS context as the binary, rather than via WSL.
-**Context:** Any in-session DB verification using WSL python or WSL sqlite3 against a file that was recently opened or written by a Windows process.
+**Problem:** In-session DB verification has three independent staleness/redirect traps (WAL snapshot staleness for external sqlite3 reads, MSIX-container `%APPDATA%` redirect for in-session binary launches, WSL `/mnt/c` 9p read caching) that look like the same "DB shows wrong data" symptom but have different causes and different fixes.
+**Solution:** Full mechanism and fix for all three now lives in [`.claude/rules/rust-tauri.md`](../.claude/rules/rust-tauri.md) → `## DB path — not Tauri's appDataDir`. Read that section before writing any script that reads or writes `rushcut.db` in-session — do not restate the mechanism here.
+**Context:** Confirmed live on #89 (see the incident entry below) and multiple other sessions. Kept as a pointer, not a copy, so the mechanism has one home instead of drifting across files.
 
 ---
 
