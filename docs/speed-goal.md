@@ -28,13 +28,14 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
 
 ## Outstanding hypotheses / relevant open issues (ranked)
 
-1. **#88** — isolate 4K bitrate cost from open/close post-pass; possible Fast/Best-Quality toggle.
+1. **#88** — isolate 4K bitrate cost from open/close post-pass; possible Fast/Best-Quality toggle. **Blocked on #114** (P1 bug: both-open+close triggers a 2-frame drift guardrail on the U1g segmented path → monolithic fallback → AMF OOM → libx264 OOM kill → WSL crash). Boundary-reencode timing instrumentation shipped this session (`t_boundary_reencode_s` in `render-timing-log.jsonl`) but the verification render never reached it.
 2. **#106 (P3-Low)** — copy-stream normalise for already-compliant clips. Narrow: never fires on the primary DJI HEVC workload.
 
 `t_trim_s` has no remaining candidate after #104 closed NO-GO (below) — #99's parallelism win (~1.2x) is the ceiling for that stage barring a fundamentally different approach. Remaining north-star gap is `t_render_s` (63–69% of total) — #88 above targets it. **#110 (hevc_amf) shipped but is NOT a `t_render_s` lever** — see below; it's a file-size win only, since decode/filter_complex compositing (not encode) dominates `t_render_s` in the real U1g path.
 
 ## Learning log (brief — tried, success/fail)
 
+- **#88 (attempted, BLOCKED, 2026-07-11)** — shipped timing instrumentation (`t_boundary_reencode_s`, `opening_transition_on`, `closing_transition_on`) to isolate boundary-reencode cost. Real verification render hit a new bug instead (#114): both open+close active trips a 2-frame drift guardrail → monolithic fallback → AMF OOM → libx264 OOM-killed WSL. No `t_render_s`/`t_boundary_reencode_s` data obtained. Both boundary re-encodes themselves succeeded before the drift check killed the run — no evidence yet that boundary-reencode cost itself is the problem.
 - **#65 (closed, SUCCESS)** — AMF quality preset raised + eliminated full-film double-encode for open/close (post-pass now only re-encodes the boundary segment, not the whole film). Real win.
 - **#84 (closed, REJECTED)** — AMF `-quality "balanced"` tested as an A/B against `"quality"`. Zero speed gain at current 40M/50M bitrate, visible quality loss. Reverted. **Don't re-propose without a bitrate change too.**
 - **#99 (closed, PARTIAL)** — Parallelised Step 2 trim. Only 1.1–1.3x, not the expected 3–4x — real ceiling is a ~7–8s fixed cost per FFmpeg invocation, not a parallelism problem. See #104 for the actual fix direction.
