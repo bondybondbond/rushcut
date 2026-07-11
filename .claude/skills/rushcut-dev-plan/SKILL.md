@@ -60,6 +60,7 @@ Before planning any fix for A/V sync, performance, pipeline output quality, or a
 - Check: does the codebase already emit `[sync-check]`, timing logs, or relevant debug output for this problem?
 - If **yes** and we have real log output to work from — proceed to plan the fix.
 - If **no real log data exists** — add a logging-first task at the top of the plan. Instrument first, render, paste logs, then fix. State this explicitly.
+- **Render speed:** if this task touches `render.py`, `trim.py`, `normalise.py`, `transitions.py`, `zoom.py`, or proxy gen, check `docs/speed-goal.md` first and flag in Step 5a whether it's likely to help, hurt, or be neutral on render/proxy speed.
 
 ---
 

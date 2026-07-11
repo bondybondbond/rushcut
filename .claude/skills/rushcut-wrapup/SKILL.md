@@ -104,6 +104,8 @@ Before adding: scan existing entries. If a similar pattern exists, update it rat
 
 Use native **Edit** tool.
 
+**Render speed:** if this session touched `render.py`, `trim.py`, `normalise.py`, `transitions.py`, `zoom.py`, or proxy gen, update `docs/speed-goal.md` — current speed log snapshot, any hypothesis tested (pass/fail), and issue status changes.
+
 ---
 
 ## Step 2 — `.claude/rules/` files and `docs/DESIGN.md`
