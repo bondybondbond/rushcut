@@ -59,14 +59,6 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — preview_* and chrome-devtools MCP both conflict with WDIO on port 9222
-
-**Problem:** Calling any `mcp__chrome-devtools__*` tool OR any `preview_*` MCP tool (including `preview_start`, `preview_screenshot`) starts a Chrome/Edge browser process that squats port 9222 for the lifetime of the Claude Code session. WDIO's `waitForPort(9222)` resolves to this MCP browser instead of the Tauri WebView2 — msedgedriver attaches to the wrong target and `getUrl()` always returns `about:blank`.
-**Solution:** Never call `preview_*` or `chrome-devtools` MCP tools during a session that also runs WDIO E2E tests. If already called, kill the Chrome process (`Get-NetTCPConnection -LocalPort 9222 | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }`) before launching the Tauri binary and running E2E.
-**Context:** Any session using `pnpm test:e2e*`. Both MCP tool families are affected — not just chrome-devtools.
-
----
-
 ## Workflow — WebView2 cold-start race with Vite
 
 **Problem:** If the Tauri binary starts before Vite is serving on port 1420, WebView2 navigates to localhost:1420, gets a connection-refused response, shows a chrome-error page, and does NOT retry. The window shows black forever. `wdio.conf.ts`'s `ensureViteRunning()` guards against this for WDIO runs, but manual binary launches are vulnerable.
@@ -831,29 +823,11 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Solution:** 3-layer fix: (1) `--disable-bidi` flag on msedgedriver spawn (primary — kills BiDi negotiation entirely), (2) `webSocketUrl: false` in capabilities, (3) route-aware readiness gate in `waitForAppRoute()` waits for `/upload`, `/library`, or `/editor/` in CDP `/json/list` before spawning msedgedriver. Reduced blind delay from 6s to 2s (only covers DOM hydration gap now).
 **Context:** `wdio.conf.ts` — msedgedriver spawn args, capabilities block, `waitForAppRoute()` helper. (Full original debugging history was in the retired `docs/E2E-DEBUGGING.md` — see git history if needed.)
 
-## E2E — getHTML(false) causes spec timeout when body contains base64 thumbnails
-
-**Problem:** `$("body").getHTML(false)` in WDIO specs transfers the entire body innerHTML (~1.9MB when MediaPantry clips have base64 thumbnail data) through WebDriver, taking >10 minutes and exceeding the Mocha 600s spec timeout.
-**Solution:** Never call `getHTML(false)` to check for a string in specs — use targeted element selectors (`$('[data-testid="..."]').getText()` or `$$("button").find()`) or `browser.execute(() => document.querySelector("...").textContent)` to check specific nodes. Only use `getHTML` on small, known-bounded DOM subtrees.
-**Context:** `e2e/trimmer.spec.ts` — any spec that runs after clips are loaded into MediaPantry. The thumbnail base64 data is embedded in every `<img>` in the pantry grid and makes the full body HTML enormous.
-
 ## E2E — spec route waits and text assertions rot silently after flow changes
 
 **Problem:** URL `waitUntil` strings and `toContain()` text checks become stale without any compile error when routing or UI copy changes. Examples: `gap-editor.spec.ts` waited for `/editor/` after "Open project" routes to `/trimmer/`; `trimmer.spec.ts` checked for `"In Film"` text that was removed in Batch 16b C3 (replaced by a green SVG dot badge with no text).
 **Solution:** After any routing change or UI copy removal, grep `e2e/**/*.spec.ts` for the old URL strings and old text values and update them. `document.body.textContent` is safer than `getHTML()` but still silently misses removed text. Always verify text assertions still match current UI copy.
 **Context:** Any E2E spec maintenance pass after a navigation-layer batch. Run `grep -n "toContain\|waitUntil\|includes" e2e/*.spec.ts` to surface candidates.
-
-## E2E — stale WebView2 subprocess holds CDP port between test runs
-
-**Problem:** Killing `rushcut.exe` does not kill the WebView2 subprocess (a separate OS process). The stale subprocess holds port 9222 across test runs; the next run attaches to a dead WebView2, causing `getUrl()` to time out.
-**Solution:** In `beforeSession`, use PowerShell `Get-NetTCPConnection -LocalPort 9222 | Stop-Process -Force` to kill whatever process holds the port before launching the binary.
-**Context:** `wdio.conf.ts` `beforeSession` cleanup block. Also `taskkill /F /IM rushcut.exe` and `/IM msedgedriver.exe`.
-
-## E2E — browser.url() hangs indefinitely with Vite dev server
-
-**Problem:** `browser.url("http://localhost:1420/")` hangs for 2+ minutes because WDIO's `POST /session/:id/url` waits for `document.readyState === "complete"`. Vite's persistent HMR WebSocket prevents this state from ever firing.
-**Solution:** Remove all `browser.url()` calls. Instead, poll `browser.getUrl()` using `browser.waitUntil()` and check for the expected route substring (e.g. `url.includes("/upload")`).
-**Context:** `e2e/fast.spec.ts` `before` hook; any spec that runs against the debug binary (Vite dev server).
 
 ## E2E — CDP /json/list URL vs WebDriver getUrl() mismatch
 
@@ -884,12 +858,6 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** `expect(value, "error message").toBe(...)` throws "Expect takes at most one argument" — this Jest version doesn't accept a custom message as the second arg to `expect()`.
 **Solution:** For value assertions use `expect(value).toBe(...)` without a message. For null/existence guards use `if (!x) throw new Error("x missing")` before the assertion.
 **Context:** `e2e/gap-editor.spec.ts` and `e2e/render.spec.ts` — any spec using a message arg on `expect()`.
-
-## E2E — isExisting() returns immediately (fails on async-loaded elements)
-
-**Problem:** `$('[data-testid="btn-render-film"]').isExisting()` returns `false` when the element renders conditionally after an async `useEffect` (e.g. `get_project` + `has_4k_clips_cmd` resolve 1–2s after mount), so a click is skipped and downstream assertions never see the expected state. The Render screen starts in `"starting"` phase (spinner only); `btn-render-film` only appears in `"ready"` phase.
-**Solution:** Replace `isExisting()` with `waitForExist({ timeout: N })` wrapped in try/catch. On timeout, treat the absence as expected (non-4K path auto-starts without a button) and continue. `isExisting()` is only safe for elements that must be present synchronously.
-**Context:** `e2e/render.spec.ts` — applies to any spec asserting conditional UI that renders after an async data fetch. Root cause: Render screen `useState<Phase>("starting")` + `Promise.all([get_project, has_4k_clips_cmd])` in `useEffect`.
 
 ## E2E — progress element disappears before poll catches 100%
 
@@ -929,14 +897,6 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** `wdio.conf.ts` `beforeSession` runs `taskkill /F /IM rushcut.exe` to clear stale binaries before the test binary launches. This kills ALL `rushcut.exe` processes — including the user's live binary if it has a render in progress. The pipeline in WSL keeps running and may complete, but the new binary has no Rust stdout listener attached to that job. `DONE:` is never received; the job stays `processing` in the DB indefinitely. The user sees a stuck progress bar with no error.
 **Solution:** Never run `pnpm test:e2e*` while a render is active. Before running any E2E suite, confirm no pipeline is running (`wsl -d Ubuntu-24.04 -u root -- tail -5 /mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/pipeline-latest.log`). If a job is stuck after this happens, it can be recovered via U1c startup self-heal (next launch auto-promotes done jobs) or a direct sqlite3 UPDATE.
 **Context:** Any session that runs WDIO specs concurrently with a user render. Symptom: job stuck at X% after E2E run; `pipeline-latest.log` shows `DONE:` but Render screen shows frozen progress bar.
-
----
-
-## E2E — Stale msedgedriver blocks WDIO re-run; wdio.conf.ts killStaleProcesses has backslash typo
-
-**Problem:** `wdio.conf.ts` `killStaleProcesses` uses `\F \IM` (backslash) instead of `/F /IM` (forward slash) in the `taskkill` command. The command silently fails, leaving the prior msedgedriver process alive. On the next `pnpm test:e2e` run, `waitForPort(9222)` resolves to the stale msedgedriver rather than the new Tauri binary, so WDIO attaches to a dead session and all specs fail with "cannot connect to Microsoft Edge at 127.0.0.1:9222".
-**Solution:** Before re-running E2E: `taskkill /F /IM msedgedriver.exe` manually in PowerShell. Fix the typo in `wdio.conf.ts` `killStaleProcesses`: change `\F \IM` → `/F /IM` in both `taskkill` calls.
-**Context:** `wdio.conf.ts` `killStaleProcesses` function. Symptom: "cannot connect to microsoft edge" on first run attempt of a new session; `tasklist | findstr msedgedriver` shows it still running.
 
 ---
 
