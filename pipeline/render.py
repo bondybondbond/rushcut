@@ -918,6 +918,14 @@ def run_pipeline(
             else:
                 raise
 
+    # #121: ANALYSIS emit below reads these regardless of branch; only the
+    # multi-clip else-branch reassigns real values -- pre-init so the
+    # single-clip shortcut doesn't hit UnboundLocalError.
+    transition = config.get("transition", "none")
+    has_open = False
+    has_close = False
+    boundary_reencode_s = [0.0]
+
     if len(current_paths) == 1:
         # Single-clip shortcut: no filter_complex needed (CLAUDE.md).
         log.info("[render] Single clip -- using simple -vf scale")
