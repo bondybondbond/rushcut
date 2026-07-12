@@ -66,6 +66,47 @@ log = logging.getLogger(__name__)
 # Step 2 trim parallelism (#99) — same cap/formula as normalise.py's MAX_PARALLEL_NORMALISE.
 MAX_PARALLEL_TRIM = min(4, os.cpu_count() or 1)
 
+# Progress bar stage weights (#12) — empirical buckets from render-timing-log.jsonl,
+# NOT live-derived from a single render (would overfit to one project's clip count/
+# resolution). "trim" is 20 (not negligible) because of the #96 re-encode fix; if a
+# future optimisation makes trim cheap again, retune here — it's a one-line change.
+# "render" and "audio" are never zero-weighted: they always run (even as a fast
+# passthrough), so they always absorb the weight any skipped stage would have used.
+STAGE_WEIGHTS = {
+    "normalise": 10,
+    "trim":      20,
+    "zoom":       3,
+    "cards":      2,
+    "render":    60,
+    "audio":      5,
+}
+
+
+def _compute_checkpoints(
+    normalise_active: bool, trim_active: bool, zoom_active: bool, cards_active: bool
+) -> dict:
+    """Cumulative progress % at the END of each stage.
+
+    Weights of inactive (skipped) stages are excluded, and the remaining active
+    stages' weights are re-normalised to fill 0->98 (100 is set by the frontend on
+    pipeline-done). See issue #12.
+    """
+    active = {
+        "normalise": STAGE_WEIGHTS["normalise"] if normalise_active else 0,
+        "trim":      STAGE_WEIGHTS["trim"] if trim_active else 0,
+        "zoom":      STAGE_WEIGHTS["zoom"] if zoom_active else 0,
+        "cards":     STAGE_WEIGHTS["cards"] if cards_active else 0,
+        "render":    STAGE_WEIGHTS["render"],
+        "audio":     STAGE_WEIGHTS["audio"],
+    }
+    total = sum(active.values()) or 1
+    cum, out = 0.0, {}
+    for stage in ("normalise", "trim", "zoom", "cards", "render", "audio"):
+        cum += active[stage] / total * 98
+        out[stage] = int(round(cum))
+    out["audio"] = 98  # pin — float accumulation across 6 stages can drift to 97/99
+    return out
+
 
 def _fps_to_tbn(fps_raw: str) -> str:
     """Derive the libx264 container time_base string from the fps rational.
@@ -419,7 +460,36 @@ def run_pipeline(
     # a dedicated -c:v copy pass). music_on still selects which branch runs.
     music_on = bool(music_filename or custom_music_path_wsl)
 
-    def _apply_audio_treatment(clean: Path) -> Path:
+    # #12: cheap, config/clip-metadata-only active-stage flags -- hoisted early so
+    # both the cache-hit and cache-miss paths can compute dynamic progress-bar
+    # checkpoints before Steps 2-4 run. None of these touch the filesystem, so
+    # hoisting them adds zero I/O to the fast cache-hit path. Reused verbatim at
+    # each stage's original call site below (no duplicate recomputation).
+    has_user_trims = any(c.get("in_ms") is not None or c.get("out_ms") is not None for c in clips)
+    trim_active = has_user_trims or config.get("silence_removal", False)
+
+    has_per_clip_zoom = any(
+        c.get("zoom_mode") and c.get("zoom_mode") != "none"
+        for c in clips
+    )
+    global_zoom = config.get("zoom", False) and mode == "final"
+    zoom_active = (has_per_clip_zoom or global_zoom) and mode == "final"
+
+    # Phase 2 format: intro_text / intro_color / outro_text / outro_color.
+    # Legacy Phase 1 format intro_card/end_card also handled as fallback.
+    intro_text = config.get("intro_text") or (config.get("intro_card") or {}).get("text", "")
+    intro_color = (
+        config.get("intro_color")
+        or (config.get("intro_card") or {}).get("color", "#000000")
+    )
+    outro_text = config.get("outro_text") or (config.get("end_card") or {}).get("text", "")
+    outro_color = (
+        config.get("outro_color")
+        or (config.get("end_card") or {}).get("color", "#000000")
+    )
+    cards_active = bool(intro_text) or bool(outro_text)
+
+    def _apply_audio_treatment(clean: Path, checkpoints: dict) -> Path:
         """V4.1: apply music + loudnorm on top of the clean intermediate.
 
         The cheap, music-agnostic layer that runs on BOTH a fresh render and a
@@ -430,7 +500,7 @@ def run_pipeline(
         Emits the TIMING:music line so both paths report consistently.
         """
         report_stage("Mixing music")
-        report(80)
+        report(checkpoints["render"])
         t_audio = time.time()
         if music_filename or custom_music_path_wsl:
             log.info("[render] Step 6: mix music (mood=%s)", music_mood)
@@ -470,6 +540,7 @@ def run_pipeline(
             log.info("[render] Step 6: audio treatment skipped (draft or no audio)")
             out = clean
         print(f"TIMING:music={time.time() - t_audio:.1f}s", flush=True)
+        report(checkpoints["audio"])
         return out
 
     # ANALYSIS counters -- all clips used, no motion filtering.
@@ -480,7 +551,6 @@ def run_pipeline(
     # 1. Normalise -- report per-clip so progress doesn't appear stuck.
     report_stage("Preparing clips")
     log.info("[render] Step 1: normalise")
-    report(10)
     t0 = time.time()
 
     # Detect target fps from the first source clip.
@@ -505,15 +575,18 @@ def run_pipeline(
         cache_file = render_cache.cache_path(cache_sig)
         log.info("[cache] HIT %s -> %s", cache_sig, cache_file.name)
         print("TIMING:cache=hit", flush=True)
+        # #12: normalise_active defaults True here -- precision doesn't matter for a
+        # cache hit (the whole point is one instant jump straight to checkpoints["render"],
+        # skipping the real per-clip proxy check that would cost real I/O on this fast path).
+        checkpoints = _compute_checkpoints(True, trim_active, zoom_active, cards_active)
         report_stage("Preparing clips")
-        report(72)
+        report(checkpoints["render"])
         # Copy the cached clean intermediate into the job tmp dir, then apply the
         # cheap music/loudnorm layer on top -- Steps 1-5 are skipped entirely.
         # #86: output lives on NTFS render_work (AMF write target consistency).
         output = render_work / "render.mp4"
         shutil.copy2(str(cache_file), str(output))  # /mnt/c -> tmpfs copy is safe
-        output = _apply_audio_treatment(output)
-        report(95)
+        output = _apply_audio_treatment(output, checkpoints)
         log.info("[render] Pipeline complete (cache hit): %s", output)
         try:
             total_s = time.time() - t_wall_start
@@ -580,6 +653,11 @@ def run_pipeline(
 
     log.info("[C-proxy] %d proxy-skip / %d normalise", len(proxy_clip_indices), len(norm_clip_indices))
 
+    # #12: the real proxy-vs-normalise partition is now known -- compute the actual
+    # dynamic checkpoints for the rest of this (cache-miss) pipeline run.
+    normalise_active = bool(norm_clip_indices)
+    checkpoints = _compute_checkpoints(normalise_active, trim_active, zoom_active, cards_active)
+
     # Initialise merged output array
     current_paths: list = [None] * n_clips
 
@@ -602,7 +680,7 @@ def run_pipeline(
 
         def _normalise_progress(done: int, total: int) -> None:
             report_stage(f"Preparing clip {done} of {total}")
-            report(10 + int(done / total * 40))  # 10% -> 50%
+            report(int(done / total * checkpoints["normalise"]))
 
         normed = normalise(
             norm_src, tmp, mode=mode,
@@ -613,7 +691,7 @@ def run_pipeline(
         for j, i in enumerate(norm_clip_indices):
             current_paths[i] = normed[j]
     else:
-        report(50)  # all proxy — skip normalise progress arc
+        report(checkpoints["normalise"])  # all proxy -- weight already collapsed to ~0
 
     normalise_s = time.time() - t0
     print(
@@ -624,13 +702,9 @@ def run_pipeline(
 
     # 2. Silence trim.
     report_stage("Trimming clips")
-    report(52)
     t0 = time.time()
 
-    # Check if any clip has user-set trim points (in_ms/out_ms from Review screen).
-    has_user_trims = any(c.get("in_ms") is not None or c.get("out_ms") is not None for c in pipeline_clips)
-
-    if has_user_trims or config.get("silence_removal", False):
+    if trim_active:
         log.info("[render] Step 2: trim (user overrides: %s, silence_removal: %s)",
                  has_user_trims, config.get("silence_removal", False))
         trimmed = list(current_paths)  # default: passthrough (overwritten below for trim jobs)
@@ -671,23 +745,18 @@ def run_pipeline(
     print(f"TIMING:trim={trim_s:.1f}s", flush=True)
     for i, p in enumerate(current_paths):
         log_av_sync(p, f"post-trim_{i}")
+    report(checkpoints["trim"])
 
     # 3. Zoom (per-clip, before transitions). Static crop-in or gradual Ken Burns --
     # vf strings injected directly into filter_complex [sv{i}] nodes. No pre-encode
     # step: AMF absorbs scale=eval=frame at hardware speed with zero render-step
     # overhead (#67). Skipped in draft mode to keep previews quick.
     report_stage("zoom")
-    report(55)
     t_zoom = time.time()
     zoom_proxy_input = 0
-    has_per_clip_zoom = any(
-        c.get("zoom_mode") and c.get("zoom_mode") != "none"
-        for c in pipeline_clips
-    )
-    global_zoom = config.get("zoom", False) and mode == "final"
 
     zoom_vfs: "list[str | None] | None" = None
-    if (has_per_clip_zoom or global_zoom) and mode == "final":
+    if zoom_active:
         log.info("[render] Step 3: zoom embed -- building per-clip vf strings")
         zoom_vfs = [None] * len(current_paths)
         built = 0
@@ -707,6 +776,7 @@ def run_pipeline(
         log.info("[render] Step 3: zoom skipped (mode=%s)", mode)
     zoom_s = time.time() - t_zoom
     print(f"TIMING:zoom={zoom_s:.1f}s", flush=True)
+    report(checkpoints["zoom"])
 
     # Per-clip audio volume multipliers (Batch J) — aligned 1:1 with current_paths.
     # pipeline_clips is still 1:1 with current_paths here (trim/zoom preserve length+order).
@@ -725,13 +795,7 @@ def run_pipeline(
     clip_w, clip_h = get_frame_size(current_paths[0])
     card_size = f"{clip_w}x{clip_h}"
 
-    # Phase 2 format: intro_text / intro_color / outro_text / outro_color.
-    # Legacy Phase 1 format intro_card/end_card also handled as fallback.
-    intro_text = config.get("intro_text") or (config.get("intro_card") or {}).get("text", "")
-    intro_color = (
-        config.get("intro_color")
-        or (config.get("intro_card") or {}).get("color", "#000000")
-    )
+    # intro_text/intro_color/outro_text/outro_color resolved early (hoisted, see #12).
     if intro_text:
         log.info("[render] Step 4: intro card")
         card = make_card(
@@ -748,11 +812,6 @@ def run_pipeline(
         if zoom_vfs is not None:
             zoom_vfs = [None] + zoom_vfs
 
-    outro_text = config.get("outro_text") or (config.get("end_card") or {}).get("text", "")
-    outro_color = (
-        config.get("outro_color")
-        or (config.get("end_card") or {}).get("color", "#000000")
-    )
     if outro_text:
         log.info("[render] Step 4: outro card")
         card = make_card(
@@ -774,11 +833,12 @@ def run_pipeline(
     assert zoom_vfs is None or len(zoom_vfs) == len(current_paths), (
         f"zoom_vfs/current_paths length mismatch: {len(zoom_vfs)} vs {len(current_paths)}"
     )
+    report(checkpoints["cards"])
 
     # 5. Build filter_complex + render.
     report_stage("Rendering")
     # CRITICAL: durations must come from current_paths (post-trim), not original clips.
-    report(60)
+    report(checkpoints["cards"])
     log.info("[render] Step 5: render with xfade")
     # #86: output on NTFS render_work so Windows ffmpeg.exe (AMF) can write it (single-
     # clip, monolithic, and the U1g open/close post-pass all target this path).
@@ -1466,16 +1526,17 @@ def run_pipeline(
 
     # 6. Music + loudnorm -- the cheap, cache-on-top layer (shared with cache hit).
     t0 = time.time()
-    output = _apply_audio_treatment(output)
+    output = _apply_audio_treatment(output, checkpoints)
     music_s = time.time() - t0
 
     # 7. Loudnorm is applied exactly once inside _apply_audio_treatment (music on ->
     # mix_music; music off -> dedicated -c:v copy pass). No separate pass here.
-    report(88)
+    # #12: tail progress tick (checkpoints["audio"]) is now emitted inside
+    # _apply_audio_treatment itself -- shared by both the cache-hit and cache-miss
+    # paths, so no separate report() call is needed here.
     loudnorm_s = 0.0
     print(f"TIMING:loudnorm={loudnorm_s:.1f}s", flush=True)
 
-    report(95)
     log.info("[render] Pipeline complete: %s", output)
 
     # Emit rich ANALYSIS line — stored in jobs.analysis_summary for benchmarking.
