@@ -62,8 +62,8 @@ src/test-clips/
 spike/tmp/
 spike/output*
 
-# Claude Code worktrees (temporary git worktrees created by the Agent tool)
-.claude/worktrees/
+# Claude Code dev tooling — not part of the product; settings.local.json must never be public
+.claude/
 
 # Next.js build info
 tsconfig.tsbuildinfo
