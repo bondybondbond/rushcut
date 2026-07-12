@@ -1,18 +1,60 @@
-# RushCut 🎬
+# RushCut
 
-> *From your rushes to a cut. In minutes.*
+A Windows desktop app for recreational filmmakers who find DaVinci Resolve and Premiere Pro too complex for what they actually want to do: turn a folder of raw clips into a watchable film. Trim, add transitions, apply Ken Burns zoom, add music, and export — all with button presses, no timeline scrubbing.
 
-Web-first video compiler for hobbyist action/drone/travel videographers. Upload your raw clips, get a watchable film with transitions, music, and structure — no timeline editing required.
+Built solo, originally as a personal tool for cutting drone/action-camera footage (DJI Osmo Pocket). Published as open source because it's useful as-is, even though it hasn't hit every original target — see [Known limitations](#known-limitations) below.
 
 ---
 
 ## What this is
 
-A solo bootstrapped project. Personal pain point first, commercial product second.
+- Upload a folder of clips → trim each one → arrange with transitions and music → render.
+- Full local processing — no cloud, no upload, no account. Your footage never leaves your machine.
+- Built for the common case (a handful of DJI/phone clips, want a shareable film in an evening), not for frame-accurate professional editing.
 
-- **The problem:** DJI LightCut is the best UX in this space — but mobile-only, no Windows. DaVinci Resolve gives full control but takes hours per clip. Nothing in between gives you *direction power* without micro-managing every 2-second clip.
-- **The solution:** Upload your rushes → pick a vibe → get a 90% film → tweak the 10%.
-- **The bet:** In a market obsessing over AI features, win by doing one job exceptionally well.
+## What this is not
+
+- **Not a professional editor.** No multi-track timeline, no color grading, no keyframe-level control beyond per-clip zoom/focal point.
+- **Not real-time.** There's no live preview scrubbing across the full timeline the way a pro NLE has — you trim per-clip, then render.
+- **Not fast.** Renders take 3–10+ minutes depending on project size and resolution. This is a leave-it-running tool, not an instant-export tool. See [Known limitations](#known-limitations).
+
+---
+
+## Requirements
+
+- **Windows 11** (uses Win32-specific APIs; not cross-platform)
+- **WSL2** with an Ubuntu distro (the render pipeline runs as Python inside WSL2, python3 + Pillow)
+- **FFmpeg** installed in both places: inside your WSL2 distro, and as a Windows-native `ffmpeg.exe` on your Windows `PATH` (the two are used for different pipeline steps — see `.claude/rules/pipeline.md` if you're digging into internals)
+- **AMD GPU** recommended for hardware-accelerated encoding (AMF). Falls back to CPU encoding (libx264) automatically if AMF isn't available — slower, but works on any hardware including Nvidia/Intel.
+- **Node.js + pnpm**, **Rust** (stable toolchain) for building the app itself
+
+## Quick start
+
+```bash
+git clone https://github.com/bondybondbond/rushcut.git
+cd rushcut
+pnpm install
+pnpm dev
+```
+
+`pnpm dev` starts the Vite dev server, compiles the Rust backend, and opens the Tauri desktop window — this is the only way to run the app with working functionality (`pnpm dev:vite` alone will build the UI but every backend call will fail).
+
+First run: point it at a folder of video clips, trim each one, arrange them on the Arrange screen, optionally add music on the Sound screen, then render. First render on a fresh machine will be slower while background proxy generation and the AMF hardware probe warm up.
+
+## Known limitations
+
+- **Render speed.** A cold render (no cached proxies) can take 10+ minutes; a warm re-render of a typical 6–9 clip project is closer to 3–5 minutes. The bottleneck is decode + compositing time in the FFmpeg pipeline, not the final encode — see `docs/speed-goal.md` for the full investigation and dead ends already ruled out before you re-propose a fix.
+- **AMD-only hardware acceleration today.** The GPU encode path (AMF) is built and tested on AMD only. Nvidia (NVENC) and Intel (QSV) paths don't exist yet — if you're on Nvidia hardware, you're on the CPU (libx264) fallback, which is slower but fully functional.
+- **HEVC playback depends on a Windows extension.** Some source footage (e.g. DJI HEVC) needs the Microsoft HEVC Video Extension installed for in-app preview; without it, RushCut falls back to the raw file automatically, but preview scrubbing is less smooth.
+- **1080p quality parity with 4K is unverified.** Recent quality work (CQP encoding) has been tuned and TV-checked primarily against 4K DJI footage; 1080p sources haven't had the same verification pass.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local dev setup and conventions. Issues labeled [`good first issue`](https://github.com/bondybondbond/rushcut/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) are scoped to be approachable without deep pipeline history.
+
+Two problems in particular could use outside eyes:
+- **Nvidia/Intel GPU encode support** — the AMF path is AMD-specific; someone with different hardware is better positioned to build and test the equivalent NVENC/QSV path.
+- **GPU decode** (tracked in the issues) — the render pipeline currently decodes on CPU; probing whether Windows-native `ffmpeg.exe`'s hardware decode helps is a self-contained, well-scoped investigation.
 
 ---
 
@@ -20,45 +62,12 @@ A solo bootstrapped project. Personal pain point first, commercial product secon
 
 ```
 rushcut/
-  docs/
-    PRD.md            ← Living product requirements document
-    ARCHITECTURE.md   ← Stack decisions and system design
-    DECISIONS.md      ← Why we chose X over Y (decision log)
-    CHANGELOG.md      ← Session-by-session what changed
-  src/                ← Application code (populated in Phase 1)
-  README.md
+  src/            React + Vite renderer (the UI)
+  src-tauri/      Rust backend (Tauri 2.x) — SQLite DB, process orchestration
+  pipeline/       Python render pipeline, runs inside WSL2
+  e2e/            WebdriverIO end-to-end tests
+  docs/           DESIGN.md, LEARNINGS.md (pipeline pattern library), PRD-DEV.md (roadmap)
+  scripts/        One-off dev/diagnostic scripts
 ```
 
----
-
-## Current status
-
-**Phase:** Pre-build — PRD drafted, architecture defined, not yet in code.
-
-**Next step:** Scaffold Next.js app + test FFmpeg Lambda pipeline locally with real DJI footage. See `docs/archive/PRD.md` (Phase 1, historical).
-
----
-
-## Tech stack (summary)
-
-| Layer            | Tool                                        |
-| ---------------- | ------------------------------------------- |
-| Frontend         | Next.js (App Router) + Tailwind + shadcn/ui |
-| Auth + DB        | Supabase                                    |
-| File storage     | Cloudflare R2                               |
-| Video processing | FFmpeg on AWS Lambda (containerised)        |
-| Payments         | Stripe                                      |
-
-Full stack rationale in `docs/archive/phase1/ARCHITECTURE-phase1.md` (historical — superseded by the Tauri build; see `CLAUDE.md`).
-
----
-
-## For AI assistants reading this
-
-> **This README predates the Tauri pivot** — the "Current status" and "Tech stack" sections above describe the retired Phase-1 cloud architecture (Next.js / Supabase / R2 / Lambda), which is gone. Do not treat them as current.
-
-- **Start with `CLAUDE.md`** (repo root) — the canonical, current entry point: architecture, critical rules, and the docs model.
-- Current state + next task: the project memory (`MEMORY.md`); execution backlog: GitHub Projects #1.
-- Historical Phase-1 product context and decision log are archived under `docs/archive/` (`PRD.md`, `DECISIONS.md`, `phase1/`).
-- The author uses Claude Code as primary coding assistant.
-- No rush on timeline — quality over speed, personal pain point drives all prioritisation
+`CLAUDE.md` (repo root) has the full architecture rundown and is kept current — worth a read if you're digging into internals or using an AI coding assistant against this repo.
