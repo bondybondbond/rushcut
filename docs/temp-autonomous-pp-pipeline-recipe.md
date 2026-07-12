@@ -140,3 +140,43 @@ This is PP's own description of how it prioritizes sources when researching a Cl
 Build a temporary subagent using this exact recipe (same verbatim round templates, same source-hierarchy bias, same response shape) and run it against a similarly-scoped issue to #121, in parallel/comparison with the real PP-via-browser loop. Then decide whether the mechanical efficiency gain (no browser automation, no CDP timeouts, no quadratic thread re-reads) outweighs the loss of genuine cross-model diversity.
 
 **Candidate issue for the test: [#102](https://github.com/bondybondbond/rushcut/issues/102)** — "Intro card silently misapplies per-clip zoom to the wrong clip (off-by-one, zoom_vfs not shifted)." Similar shape to #121: contained Python bug in `render.py`, no UI, verifiable without a real render/DB, and — like #121 — has a build-in "is the report's own diagnosis actually still accurate?" question (the issue itself says #98's fix *might* have already resolved this as a side effect, but that's unconfirmed — good parallel to #121's "the issue's stated root cause was incomplete" theme).
+
+**Update 2026-07-12: #102 turned out already fixed** (confirmed by reading `render.py` directly — #98's `zoom_vfs` extension already covers it), so the actual trial ran on **#122** instead ("single-clip renders silently ignore opening_transition/closing_transition config") — same shape, still a live bug.
+
+---
+
+## Trial results — subagent-as-consultant vs. real Perplexity (run on #122, 2026-07-12)
+
+### What was built
+
+`.claude/agents/rushcut-pp-consultant.md` — a Claude subagent encoding the same 4 verbatim round templates, PP's source-hierarchy routine, and PP's response shape (direct answer → devil's advocate → what-if/implications → TL;DR → next actions). **Discovered mid-trial:** newly-created `.claude/agents/*.md` files are not picked up as a `subagent_type` value mid-session — the Agent tool's registry is fixed at conversation start. Worked around by invoking `general-purpose` with the full persona pasted inline into each prompt; functionally equivalent, just can't rely on the frontmatter `model:` default (passed `model` explicitly per call instead). Any future instance of this pattern should expect the same restart requirement.
+
+### Effectiveness — did it catch real bugs?
+
+**Yes, substantively.** Across 4 rounds the subagent caught three defects that would have shipped without it:
+1. **Round 2 (plan critique):** an early draft's "delete lines 965-970" instruction would have deleted `shuffle_between`'s read too, crashing **every multi-clip render** with `UnboundLocalError` on `has_xfade` — a far worse regression than the bug being fixed, and outside what the all-single-clip verification matrix could ever catch.
+2. **Round 2:** an early draft used unconditional `str()` for the wrap-pass's ffmpeg command instead of `to_win_path(...) if is_amf else str(...)` — would have silently broken every 4K AMF single-clip render (feeds a WSL path to Windows-native `ffmpeg.exe`), invisible in CLI testing (CLI always falls back to libx264).
+3. **Round 3 (final check):** "mirror `_boundary_reencode` exactly" would have dropped audio entirely — that helper maps video-only by design (U1g does audio separately on a whole-project track); the single-clip path has no such separate track and needed the audio map added explicitly.
+4. **Round 3, secondary:** flagged that reusing final `codec_args` for both the inner pass and the wrap pass would double-encode the whole clip at final quality — fixed by making the inner pass a cheap libx264 intermediate, wrap pass only at final quality.
+
+All four were caught via direct code reads (`Read`/`Grep` against the real repo), not guesswork — every objection cited an exact line number and was independently re-verified against the file before being trusted.
+
+### Cross-model diversity — the real question this trial was testing
+
+**Named directly, not glossed over:** the subagent is Claude underneath, reviewing Claude's own plan. It said so explicitly, unprompted, in Round 1 ("I have no structural advantage in judging whether the fix is correct once written beyond what any second read-through would catch... closer to 'a careful second reviewer reads the same code' than 'an architecturally distinct check'"). **Verdict for #122 specifically: cross-model diversity did not appear to matter here.** All three real defects caught were things a sufficiently careful same-architecture re-read would also catch — file-path conventions, scope/variable-lifetime bugs, and an "exactly" instruction taken too literally are RushCut-codebase-specific traps (documented in this repo's own LEARNINGS.md), not blind spots that specifically require a different training lineage to see. Whether a genuinely different architecture (GPT/Gemini/GLM) would have caught something *else* instead — a category this subagent is structurally blind to — remains untested; #122 didn't happen to surface such a case.
+
+### Token cost
+
+| Round | Tokens |
+|---|---|
+| 1 — findings+ask | 102,087 |
+| 2 — plan critique | 96,059 |
+| 3 — final check | 98,420 |
+| 4 — wrap-readiness | 91,989 |
+| **Total** | **~388,600** |
+
+For comparison, the #121 PP-browser trial's stated bottleneck was browser-automation round-trip overhead (CDP typing timeouts, quadratic `get_page_text` thread re-reads), not Claude-side token cost — that session didn't log a comparable token figure, so this isn't a clean apples-to-apples number, but ~390K tokens across 4 rounds for one small backend fix is a real, non-trivial cost on its own terms (roughly 4x a typical single-agent implementation pass for a fix this size).
+
+### Verdict
+
+**Keep using the subagent for this class of task (contained backend/pipeline bug, no UI) — it earned its cost on #122.** It's mechanically cheaper than the PP-browser loop (no CDP timeouts, no model-selector re-verification, no thread-history re-reads) and lost nothing on cross-model diversity for this particular bug, because none of the three real catches needed it. Open question for a future trial: pick an issue where the *right* answer plausibly depends on outside-the-codebase judgment (a UX/taste call, an FFmpeg approach where "what do competitors do" genuinely matters) — that's the shape of task most likely to expose the diversity gap this trial didn't.

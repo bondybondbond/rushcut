@@ -918,19 +918,40 @@ def run_pipeline(
             else:
                 raise
 
-    # #121: ANALYSIS emit below reads these regardless of branch; only the
-    # multi-clip else-branch reassigns real values -- pre-init so the
-    # single-clip shortcut doesn't hit UnboundLocalError.
+    # #121/#122: ANALYSIS emit below reads these regardless of branch --
+    # hoisted above both branches so the single-clip shortcut can apply
+    # opening/closing transitions too, instead of silently ignoring them.
     transition = config.get("transition", "none")
-    has_open = False
-    has_close = False
+    opening_transition = config.get("opening_transition", "none")
+    closing_transition = config.get("closing_transition", "none")
+    has_open = opening_transition != "none"
+    has_close = closing_transition != "none"
     boundary_reencode_s = [0.0]
 
     if len(current_paths) == 1:
-        # Single-clip shortcut: no filter_complex needed (CLAUDE.md).
+        # Single-clip shortcut: no filter_complex needed (CLAUDE.md) for the
+        # plain case. #122: when open/close is configured, add a second pass
+        # that wraps the plain-scaled render with build_open_close_post_fc --
+        # the same helper U1g's boundary re-encode uses for multi-clip.
         log.info("[render] Single clip -- using simple -vf scale")
-        in_arg  = to_win_path(current_paths[0]) if is_amf else str(current_paths[0])
-        out_arg = to_win_path(output)           if is_amf else str(output)
+        needs_oc_single = has_open or has_close
+        inner_tmp = render_work / "single_inner.mp4" if needs_oc_single else None
+        single_out = inner_tmp if needs_oc_single else output
+
+        # Inner pass: when wrapping, this is a throwaway intermediate, so
+        # encode it cheap (plain libx264, no AMF) rather than at the final
+        # codec_args -- otherwise open/close renders would double-encode the
+        # whole clip at final quality (once here, once in the wrap pass
+        # below), degrading quality relative to the no-transition case.
+        if needs_oc_single:
+            inner_argv, inner_codec_args, inner_is_amf = [FFMPEG], [
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "12",
+            ], False
+        else:
+            inner_argv, inner_codec_args, inner_is_amf = bin_argv, codec_args, is_amf
+
+        in_arg  = to_win_path(current_paths[0]) if inner_is_amf else str(current_paths[0])
+        out_arg = to_win_path(single_out)       if inner_is_amf else str(single_out)
 
         # Per-clip volume multiplier (Batch J). volume=0 is valid — produces silence.
         # V4.1: loudnorm is NOT applied here anymore. Step 5 produces the clean,
@@ -952,22 +973,65 @@ def run_pipeline(
             c.append(o_arg)
             return c
 
-        cmd = _build_single(bin_argv, codec_args, in_arg, out_arg, audio_flags[0], af_parts)
+        cmd = _build_single(inner_argv, inner_codec_args, in_arg, out_arg, audio_flags[0], af_parts)
         log.info("[render] single-clip cmd: %s", " ".join(cmd))
 
         def _fallback_single():
             fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
-            return _build_single(fb_argv, fb_codec, str(current_paths[0]), str(output), audio_flags[0], af_parts)
+            return _build_single(fb_argv, fb_codec, str(current_paths[0]), str(single_out), audio_flags[0], af_parts)
 
-        _run_with_amf_fallback(cmd, _fallback_single)
+        if needs_oc_single:
+            # Cheap intermediate has no AMF path -- nothing to fall back from.
+            ffmpeg_run(cmd)
+        else:
+            _run_with_amf_fallback(cmd, _fallback_single)
+
+        if needs_oc_single:
+            # #122: wrap the plain-scaled inner render with an open/close
+            # fade-to-black, reusing build_open_close_post_fc exactly as
+            # U1g's _boundary_reencode() does for multi-clip boundaries.
+            inner_dur = get_duration(inner_tmp)
+            iw, ih = get_frame_size(inner_tmp)
+            xf_single = clamp_xfade_dur([inner_dur])
+            pp_fc, pp_vmap, pp_amap = build_open_close_post_fc(
+                inner_duration=inner_dur,
+                has_audio=audio_flags[0],
+                scale_w=str(iw),
+                scale_h=str(ih),
+                target_fps_raw=target_fps_raw,
+                opening_transition=opening_transition if has_open else "none",
+                closing_transition=closing_transition if has_close else "none",
+                xfade_dur=xf_single,
+                clip_tbn_str=_fps_to_tbn(target_fps_raw),
+            )
+
+            def _build_wrap(b_argv, c_args, amf):
+                i_arg = to_win_path(inner_tmp) if amf else str(inner_tmp)
+                o_arg = to_win_path(output)     if amf else str(output)
+                c = b_argv + ["-y", "-i", i_arg, "-filter_complex", pp_fc, "-map", pp_vmap]
+                if pp_amap:
+                    c += ["-map", pp_amap]
+                c += ["-r", target_fps_raw] + c_args
+                if pp_amap:
+                    c += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+                c.append(o_arg)
+                return c
+
+            wrap_cmd = _build_wrap(bin_argv, codec_args, is_amf)
+            log.info(
+                "[render][#122] single-clip open/close wrap: open=%s close=%s "
+                "inner_dur=%.3fs size=%dx%d",
+                has_open, has_close, inner_dur, iw, ih,
+            )
+
+            def _fallback_wrap():
+                fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
+                return _build_wrap(fb_argv, fb_codec, False)
+
+            _run_with_amf_fallback(wrap_cmd, _fallback_wrap)
     else:
         log.info("[J] clip_volumes=%s", clip_volumes)
-        transition = config.get("transition", "none")
         shuffle_between = config.get("shuffle_between", False)
-        opening_transition = config.get("opening_transition", "none")
-        closing_transition = config.get("closing_transition", "none")
-        has_open = opening_transition != "none"
-        has_close = closing_transition != "none"
         has_xfade = (transition != "none") or shuffle_between
         # #88: isolate boundary-reencode cost from the bundled t_render_s
         # figure. Declared here (outer scope) so _render_segmented() can
