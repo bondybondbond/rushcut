@@ -174,7 +174,7 @@ export const config: WebdriverIO.Config = {
     // Without this, WDIO v9 + msedgedriver 146 negotiate BiDi and call
     // browsingContext.navigate, which hangs on Vite's HMR WebSocket.
     msEdge = spawn(
-      "C:\\Users\\Manasak\\.cargo\\bin\\msedgedriver.exe",
+      `${process.env.USERPROFILE}\\.cargo\\bin\\msedgedriver.exe`,
       [`--port=${DRIVER_PORT}`, "--disable-bidi"],
       { stdio: "pipe", shell: false }
     );

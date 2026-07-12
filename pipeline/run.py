@@ -75,8 +75,13 @@ def main() -> None:
     job_id = manifest["job_id"]
 
     # Per-job log (safe with concurrent runs) + symlink as pipeline-latest.log.
-    _log_dir = Path("/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut")
+    # manifest_path's parent is always %TEMP%\rushcut (Rust writes the manifest
+    # there) -- an NTFS path with zero username/env dependency, same pattern as
+    # ntfs_tmp_base below (#86). Also exported for utils.py's ffmpeg_run(),
+    # which has no direct access to manifest_path.
+    _log_dir = manifest_path.parent
     _log_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["RUSHCUT_LOG_DIR"] = str(_log_dir)
     _fmt = logging.Formatter("[%(levelname)s] %(message)s")
     _job_log = logging.FileHandler(_log_dir / f"pipeline-{job_id}.log", mode="w")
     _job_log.setFormatter(_fmt)

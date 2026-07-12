@@ -26,7 +26,12 @@ def ffmpeg_run(cmd: list[str]) -> None:
     analysis before the first frame is encoded).
     """
     log.info("[ffmpeg] %s", " ".join(str(c) for c in cmd))
-    stderr_path = "/mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/ffmpeg-stderr-last.log"
+    # RUSHCUT_LOG_DIR is set by run.py from manifest_path.parent (NTFS, zero
+    # username dependency, same %TEMP%\rushcut dir the job log lives in).
+    # Falls back to WSL tmpfs if unset (e.g. utils.py used outside run.py's
+    # normal pipeline flow) -- won't survive a WSL restart, but won't crash.
+    _log_dir = os.environ.get("RUSHCUT_LOG_DIR", "/tmp/rushcut")
+    stderr_path = f"{_log_dir}/ffmpeg-stderr-last.log"
     try:
         Path(stderr_path).parent.mkdir(parents=True, exist_ok=True)
     except Exception:

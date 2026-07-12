@@ -1463,7 +1463,7 @@ export default function Arrange() {
                         if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
                         cardsDebounceRef.current = setTimeout(() => saveCardsState(next), 300);
                       }}
-                      placeholder="Optional — e.g. A film by Manasak"
+                      placeholder="Optional — e.g. A film by Alex"
                       className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
                     />
                     <p className="text-xs text-[#a3a3a3] text-right">{cardsState.start.subtitle.length}/80</p>
