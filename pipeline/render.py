@@ -38,7 +38,7 @@ from .cards import make_card
 from .detect import detect_trim_points
 from .encoder import (
     to_win_path, video_encoder_args,
-    FINAL_BITRATE_4K, AMF_MAXRATE_4K,
+    FINAL_BITRATE, AMF_MAXRATE,
     HEVC_FINAL_BITRATE_4K, HEVC_AMF_MAXRATE_4K,
 )
 from .loudnorm import loudnorm_filter
@@ -56,9 +56,8 @@ from .transitions import (
     resolve_cut_names,
     clamp_xfade_dur,
 )
-from .trim import trim  # trim_smart() (#104) built but NOT wired in -- real measurement
-                          # showed a net regression under production contention, see
-                          # issue #104 comment. Left in pipeline/trim.py for reference.
+from .trim import trim  # partial-GOP trim_smart() (#104) explored and removed --
+                          # 19-31% real-render regression under contention, see #104
 from .utils import FFMPEG, ffmpeg_run, ffprobe_json, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import build_zoom_vf
 
@@ -1099,11 +1098,23 @@ def run_pipeline(
                             "-bufsize", HEVC_AMF_MAXRATE_4K, "-quality", "quality"]
                     return args
                 if amf:
-                    args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
-                            "-rc", "vbr_peak", "-b:v", FINAL_BITRATE_4K, "-maxrate", AMF_MAXRATE_4K,
-                            "-bufsize", AMF_MAXRATE_4K, "-quality", "quality"]
-                    if output_resolution == "4k":
-                        args += ["-vbaq", "true", "-high_motion_quality_boost_enable", "true"]
+                    # CQP for 4K mirrors encoder.py's video_encoder_args 4K branch
+                    # (launch plan #1.1) -- boundary segments are the open/close
+                    # transitions, same pan/motion quality concern applies there.
+                    is_4k = output_resolution == "4k"
+                    if is_4k:
+                        args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                                "-rc", "cqp", "-qp_i", "18", "-qp_p", "20", "-quality", "quality"]
+                    else:
+                        # Bug fix: this branch previously always used the 4K
+                        # bitrate tier even for a 1080p AMF-opt-in boundary
+                        # re-encode -- now correctly uses the 1080p tier,
+                        # matching encoder.py's video_encoder_args.
+                        args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                                "-rc", "vbr_peak", "-b:v", FINAL_BITRATE, "-maxrate", AMF_MAXRATE,
+                                "-bufsize", AMF_MAXRATE, "-quality", "quality"]
+                    # Extended to 1080p AMF opt-in too (launch plan #1.2) -- previously 4K-only.
+                    args += ["-vbaq", "true", "-high_motion_quality_boost_enable", "true"]
                     return args
                 return ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
                         "-crf", "16", "-preset", "medium"]
