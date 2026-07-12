@@ -167,6 +167,11 @@ def main() -> None:
             # env (RUSHCUT_USE_HEVC_AMF), not forwarded from the WSL/Linux env (WSL
             # spawn passes no env vars -- same class of gap as #86's USERPROFILE bug).
             "use_hevc_amf": bool(settings.get("use_hevc_amf", False)),
+            # #120: force_normalise -- debug-only diagnostic lever, injected by Rust
+            # start_job from its own process env (RUSHCUT_FORCE_NORMALISE), never
+            # read directly from os.environ here (WSL spawn forwards no env vars --
+            # same class of gap as use_hevc_amf above). Never exposed in UI.
+            "force_normalise": bool(settings.get("force_normalise", False)),
             # #86: NTFS scratch base so AMF (Windows ffmpeg.exe) output targets are
             # real /mnt/c paths, not /tmp -> \\wsl.localhost UNC (Permission denied).
             "ntfs_tmp_base": ntfs_tmp_base,

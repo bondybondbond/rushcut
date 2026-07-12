@@ -1345,6 +1345,17 @@ async fn start_job(
             .map(|v| v == "1")
             .unwrap_or(false);
         obj.insert("use_hevc_amf".to_string(), json!(use_hevc_amf));
+
+        // #120: force_normalise -- debug-only diagnostic lever (unblocks #118
+        // proxy-quality A/B). Same mechanism as use_hevc_amf above: read from
+        // this process's own env (reliable, unlike the WSL spawn which forwards
+        // no env vars), inject into settings before the manifest is written.
+        // Env var must be set BEFORE the binary launches -- has no effect on an
+        // already-running process. Never exposed in UI.
+        let force_normalise = std::env::var("RUSHCUT_FORCE_NORMALISE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        obj.insert("force_normalise".to_string(), json!(force_normalise));
     }
 
     // Write manifest JSON to Windows TEMP

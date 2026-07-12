@@ -318,16 +318,23 @@ def pretrim_one_clip(i: int, src_p: Path, cm: dict, tmp: Path) -> tuple[Path, di
 
 
 def decide_clip_source(
-    clip_meta: dict, output_resolution: str, target_fps_int: int
+    clip_meta: dict, output_resolution: str, target_fps_int: int,
+    force_normalise: bool = False,
 ) -> tuple[bool, str | None, str]:
     """Decide whether a clip's proxy can substitute for normalise.
 
     Returns (use_proxy, proxy_path_wsl, reason). A proxy qualifies only when it is
     valid, tall enough for the output resolution (>=1080p for 1080p, >=2160p for 4K),
     AND its fps matches the render target. See pipeline.md "Proxy reuse gate".
+
+    force_normalise (#120): debug-only override, set via manifest settings.
+    When True, always normalise regardless of proxy state -- diagnostic lever
+    for A/B testing proxy-vs-normalise quality (see #118).
     """
-    required_proxy_h = 2160 if output_resolution == "4k" else 1080
     pwsl = clip_meta.get("proxy_path_wsl")
+    if force_normalise:
+        return False, pwsl, "force_normalise flag set"
+    required_proxy_h = 2160 if output_resolution == "4k" else 1080
     valid = bool(pwsl and is_valid_proxy(pwsl))
     height, proxy_fps_int = _proxy_meta(pwsl) if valid else (0, 0)
     fps_ok = (proxy_fps_int == target_fps_int)
@@ -643,7 +650,10 @@ def run_pipeline(
     norm_clip_indices:  list[int] = []
 
     for i, cm in enumerate(pipeline_clips):
-        use_proxy, _pwsl, reason = decide_clip_source(cm, output_resolution, target_fps_int)
+        use_proxy, _pwsl, reason = decide_clip_source(
+            cm, output_resolution, target_fps_int,
+            force_normalise=config.get("force_normalise", False),
+        )
         if use_proxy:
             proxy_clip_indices.add(i)
             log.info("[C-proxy] clip %d: %s", i, reason)
