@@ -9,7 +9,10 @@ Each entry: `## <Tag> — <title>`, problem in ≤1 sentence, fix in ≤2 senten
 
 | Tag                                                | Scope                                                                                    |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `Workflow`                                         | Session mechanics — DB cross-check, WSL reads, MCP/CDP, tooling, multi-line script traps |
+| `Workflow`                                         | Session mechanics — one-off incidents not covered by a subtag below. Grep `^## Workflow —` (exact) for only this tag, or `^## Workflow` (prefix) for this tag plus all `Workflow-*` subtags |
+| `Workflow-gh`                                       | GitHub CLI / Projects GraphQL quirks — `gh issue`/`gh project` silent failures, truncation, reserved variable names |
+| `Workflow-WSL`                                      | WSL/PowerShell quoting and invocation mechanics — script-file-not-inline patterns |
+| `Workflow-CDP`                                      | CDP / `preview_*` MCP / Tauri IPC boundary — what can and can't attach to a running WebView2 |
 | `React`                                            | Component/state/media-element patterns, refs, render lifecycle                           |
 | `WebView2`                                         | Video playback, first-frame repaint, GPU compositor, `play()`/seek races                 |
 | `FFmpeg`                                           | `filter_complex`, codecs, audio, version-specific option changes                         |
@@ -24,14 +27,6 @@ Each entry: `## <Tag> — <title>`, problem in ≤1 sentence, fix in ≤2 senten
 | `DJI`                                              | Osmo Pocket 3 container/stream specifics                                                 |
 
 When adding an entry, reuse one of these tags so category-grep stays reliable. New tag → add a row here.
-
----
-
-## Workflow — `gh issue view --comments` returns completely empty output on some issues, even with `--json` unaffected
-
-**Problem:** `gh issue view <n> --repo <owner>/<repo> --comments` silently printed nothing at all (no title, no body, no comments, exit code 0) for issue #101, which had zero comments. Two retries with the same command (including redirecting to a file) also returned empty. Wasted two round trips before switching approach.
-**Solution:** If `--comments` returns nothing, don't retry it — fall back to `gh issue view <n> --json number,title,body,state,labels` (works reliably) plus `gh api repos/<owner>/<repo>/issues/<n>/comments --jq '.[].body'` for comments separately. Root cause not identified (possibly a gh CLI rendering quirk on zero-comment issues) — not worth chasing further, the `--json`/`--api` combo is strictly more reliable anyway.
-**Context:** `rushcut-dev-plan` Step 2, fetching a GitHub issue brief at the start of any session.
 
 ---
 
@@ -52,8 +47,8 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 ## Workflow — a render-cache HIT during back-to-back A/B verification silently skips the thing being tested
 
 **Problem:** Verifying an encoder/pipeline change by re-rendering the same project with identical settings right after a baseline render can hit the V4.1 render cache (`[cache] HIT` in the log) — Steps 1-5 (including the actual video encode) are skipped entirely, and only the cheap music/loudnorm remux reruns (~30-40s instead of several minutes). The render "succeeds" and completes suspiciously fast, which reads as a bug (or a huge unexplained speedup) if the cache hit isn't checked for. Confirmed on #110: an hevc_amf A/B test's second render silently reused the h264_amf-encoded cached intermediate — encoder never ran, real comparison never happened, until the log was checked.
-**Solution:** Always grep the log for `[cache] HIT` vs `[cache] MISS` before trusting a suspiciously-fast real-render verification. To force a fresh encode for A/B testing on the same project/settings, delete the specific cached file (`grep [cache] sig=` for the hash, then `rm` it from the cache dir) rather than changing settings, which would also change what's being compared.
-**Context:** Any real-render A/B verification (encoder swap, bitrate change, filter change) on the same project without an intervening settings change. Cache dir location: see the `USERPROFILE`-not-inherited-into-WSL gap below (it's often NOT at the intended `%APPDATA%\rushcut\render-cache\` path).
+**Solution:** Always grep the log for `[cache] HIT` vs `[cache] MISS` before trusting a suspiciously-fast real-render verification. To force a fresh encode for A/B testing on the same project/settings, delete the specific cached file (`grep [cache] sig=` for the hash, then `rm` it from the cache dir) rather than changing settings, which would also change what's being compared. Same trap applies to the "hand-written manifest + direct `wsl python3 run.py`" repro pattern (re-running the exact same manifest JSON used for an earlier real render to "re-verify a fix" also silently hits `TIMING:cache=hit`) — there, mutate one cache-signature field (e.g. bump a clip's `in_ms` by 1) to force a miss, or check the `render_cache=hit/miss` field in the `ANALYSIS:` line, and always give the copied manifest a fresh `job_id` + throwaway `output_path` so it doesn't clobber the original job's temp dir or the user's real output file.
+**Context:** Any real-render A/B verification (encoder swap, bitrate change, filter change) on the same project without an intervening settings change, or any manual-manifest pipeline re-verification (see #98/#99 precedent) re-running the SAME manifest twice. Cache dir location: see the `USERPROFILE`-not-inherited-into-WSL gap below (it's often NOT at the intended `%APPDATA%\rushcut\render-cache\` path).
 
 ## Workflow — chained `Select-String | Select-String` does not AND-match across separate log lines
 
@@ -87,7 +82,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — `preview_start` kills the Tauri HMR connection; Vite-only preview is useless for Tauri UI
+## Workflow-CDP — `preview_start` kills the Tauri HMR connection; Vite-only preview is useless for Tauri UI
 
 **Problem:** `preview_start` on port 1420 kills any already-running Vite dev server (which the Tauri binary's WebView2 is connected to via HMR). After this, the user's open Tauri window loses HMR and never receives source updates. Additionally, the Vite-only preview cannot render Tauri UI pages because all `invoke()` calls fail immediately without the backend — every editor page shows "No clips found" or the loading spinner, making screenshots meaningless.
 **Solution:** For UI verification of Tauri screens, use `chrome-devtools` MCP against the running Tauri WebView2 (port 9222) — NOT `preview_*` MCP. Do NOT call `preview_start` if the user has `pnpm dev` already running. HMR alone is sufficient proof of delivery; take screenshots via `mcp__chrome-devtools__take_screenshot` only when the user confirms the Tauri app is open.
@@ -95,7 +90,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — orchestrator must pre-judge IPC-dependency before invoking rushcut-qa-reviewer
+## Workflow-CDP — orchestrator must pre-judge IPC-dependency before invoking rushcut-qa-reviewer
 
 **Problem:** `rushcut-qa-reviewer` (invoked by `rushcut-dev-plan` Step 6) uses `preview_*` MCP tools exclusively, which always drive Claude's own Electron browser against the bare Vite dev server — never a real Tauri binary's IPC layer, regardless of launch method (confirmed twice in #90: default launch, then binary + explicit CDP flag, both blocked identically). No `preview_*` tool schema exposes a CDP URL/port/"attach existing" parameter, and `.claude/launch.json` configs only support spawning a new process — there is no supported mechanism for the Preview MCP to attach to an external CDP endpoint (confirmed #93 via tool-schema inspection). Without a pre-check, the orchestrator burns a full background-agent round trip on every IPC-dependent screen just to receive `status: "blocked"`.
 **Solution:** Two-part permanent mitigation. (1) The reviewer itself (`rushcut-qa-reviewer.md` Branch A step 1) returns `status: "blocked"` immediately, without retrying, when a screen needs real `invoke()`/DB data. (2) `rushcut-dev-plan` SKILL.md Step 6 now has an orchestrator-side pre-check (step 1): before invoking the reviewer for a UI step, judge whether it needs `invoke()`/DB-backed data; if yes, skip the reviewer invocation entirely and record the check as "IPC-dependent — verify via WDIO or manual check" instead of dispatching and waiting on a guaranteed-blocked verdict.
@@ -112,7 +107,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — launching the debug binary with WebView2 remote-debug port
+## Workflow-CDP — launching the debug binary with WebView2 remote-debug port
 
 **Problem:** `cmd /c "set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=... && start rushcut.exe"` spawns a detached process via `start` that does NOT inherit the inline `set`. Port 9222 is never opened. Same failure with `cmd /c "start /b /wait ..."`. The variable is silently dropped.
 **Solution:** Set the env var in PowerShell, then launch with `Start-Process` — this pattern works on Windows PowerShell 5.x and correctly propagates the variable to the child process: `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"; Start-Process "C:\apps\rushcut\src-tauri\target\debug\rushcut.exe"`. Confirm the port is up with `Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue` before running WDIO.
@@ -128,7 +123,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — `gh` CLI returns silently empty via the Bash tool; use PowerShell
+## Workflow-gh — `gh` CLI returns silently empty via the Bash tool; use PowerShell
 
 **Problem:** `gh issue view <n> --repo ... --comments` invoked via the Bash tool returned zero output — no error, no data — despite `gh` being authenticated and healthy (`gh auth status` confirmed logged in). Wasted several round trips (piping to a file, redirecting stderr) before suspecting the tool rather than the command.
 **Solution:** Re-run the identical `gh` command via the PowerShell tool — it worked immediately. Treat `gh` like WSL: always use PowerShell in this repo, never Bash.
@@ -287,7 +282,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — CDP synthetic drag unreliable in film mode
+## Workflow-CDP — CDP synthetic drag unreliable in film mode
 
 **Problem:** Simulating a dnd-kit drag via CDP `pointerdown/pointermove/pointerup` on a StickyFilmStrip tile in film mode also triggers `crossSeekToClip` (the tile click handler fires during the drag sequence), which advances the film playhead mid-drag. The film then auto-advances, making the drag result indeterminate.
 **Solution:** For dnd-kit drag verification on the filmstrip, use a programmatic Tauri invoke (`reorder_clips_cmd`) followed by a `get_project` assertion to confirm `sort_order` changed — not synthetic pointer events. CDP synthetic drag is reliable only when no competing pointer-event handlers exist on the draggable element.
@@ -312,14 +307,6 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 ## FFmpeg — filter_complex output label syntax
 
 - **Output labels must appear directly after the filter with no preceding comma** — `afade=t=out:st=X:d=Y[mus]` is correct; `afade=t=out:st=X:d=Y,[mus]` (comma before the label) causes FFmpeg to parse `[mus]` as an input to a non-existent next filter and fail. Trailing commas in Python f-string filter fragments are the usual culprit — always move the comma to the START of optional filter fragments: `fade = f",afade=..." if enabled else ""`, then append `f"volume=0.4{fade}[mus]"` so the label abuts the last real filter regardless of which branch is taken.
-
----
-
-## Workflow — Multi-line Python scripts passed via inline -c or PowerShell string are silently corrupted
-
-**Problem:** Writing a multi-line diagnostic/repair Python script as an inline `-c` argument to Bash or as an inline PowerShell string corrupts quote characters. Git Bash mangling and PowerShell string escaping both turn valid Python (`'%tagecoach%'`, `'file:' + db`) into syntax errors that Python reports as `SyntaxError: invalid syntax` or `unexpected token '('`. The corruption is silent — the printed command looks fine, but the actual bytes Python receives are wrong.
-**Solution:** Write every multi-line diagnostic or repair script to a named temp file first (`%TEMP%\rushcut\diag_NAME.py` or `repair_NAME.py`), then call it via PowerShell WSL invocation: `wsl -d Ubuntu-24.04 -u root -- python3 /mnt/c/Users/Manasak/AppData/Local/Temp/rushcut/NAME.py`. The file round-trip preserves all quotes verbatim. Keep diagnostic scripts around (don't delete them immediately) — they are useful if the same data needs re-inspection.
-**Context:** Any session requiring WSL Python to query or modify the SQLite DB directly. Applies to both `diag_*.py` and `repair_*.py` scripts. Confirmed in V1.1 session.
 
 ---
 
@@ -440,7 +427,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — profiling/driving the Tauri WebView2: chrome-devtools MCP does NOT attach to it
+## Workflow-CDP — profiling/driving the Tauri WebView2: chrome-devtools MCP does NOT attach to it
 
 **Problem:** To run a performance trace on the running Tauri app, the chrome-devtools MCP launches its OWN separate Chrome (a blank/unrelated page) instead of attaching to the Tauri WebView2 on port 9222 — so MCP perf tools profile the wrong browser.
 **Solution:** Launch the binary with CDP (`scripts/launch-cdp.mjs`), then drive the WebView2's DevTools Protocol DIRECTLY: get the page target's `webSocketDebuggerUrl` from `http://localhost:9222/json/list`, open it with Node 22's built-in `WebSocket` (no `ws` dep), and send raw CDP (`Tracing.start/end`, `Runtime.evaluate` with `awaitPromise` to call `__TAURI_INTERNALS__.invoke(...)`). Combine `Tracing` frame/raster counts with in-page `requestAnimationFrame` + `requestVideoFrameCallback` samplers for a complete fps picture. Drive UI via `Runtime.evaluate` clicking `[data-testid=...]`. Same port-9222/WDIO conflict caveat applies — free the port before any WDIO run.
@@ -472,11 +459,11 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 - **`volumedetect` mean_volume is unreliable on DJI wind-noise footage** — DJI clips with wind noise register mean_volume of -14 to -16 dBFS. Using this as a relative anchor (e.g. `clip_mean + offset_db`) pushes music to -26 to -28 dBFS at "balanced" preset — effectively inaudible. Use `loudnorm` integrated LUFS instead, or clamp the measured mean to a floor (e.g. -20 dBFS) before computing the offset.
 - **`crop` filter has NO `eval` option in FFmpeg 6.1.1** — adding `:eval=frame` to a `crop` filter raises `Error applying option 'eval' to filter 'crop': Option not found`. Only the `scale` filter requires `eval=frame` for time-varying dimensions. The `crop` filter's `x` and `y` expressions re-evaluate every frame natively without any flag — pass the time-varying expressions as the x/y arguments directly.
 
-## Workflow — WSL inline commands: use script files not nested quoting
+## Workflow-WSL — WSL inline commands: use script files not nested quoting
 
-**Problem:** Passing complex bash commands through PowerShell → WSL → bash requires three layers of quoting. Variables, semicolons, and tee/pipe operators all have characters that get swallowed or mis-escaped by each shell layer, causing silent failures or syntax errors that are very hard to diagnose.
-**Solution:** Write the command to a `.sh` file in a Windows temp path (e.g. `/mnt/c/Users/Manasak/AppData/Local/Temp/`), then invoke `wsl -d Ubuntu-24.04 -u root -- bash /mnt/c/.../script.sh`. The script file avoids all quoting layers entirely. Use this pattern for any WSL command beyond a simple one-liner.
-**Context:** Any session running multi-step FFmpeg pipelines or Python scripts via WSL from PowerShell.
+**Problem:** Passing complex bash commands through PowerShell → WSL → bash requires three layers of quoting. Variables, semicolons, and tee/pipe operators all have characters that get swallowed or mis-escaped by each shell layer, causing silent failures or syntax errors that are very hard to diagnose. This also applies specifically to `$var` references: `wsl -- bash -lc "for f in a.mp4 b.mp4; do echo \"$f\"; done"` run via the PowerShell tool fails with a PowerShell parser error (`Variable reference is not valid`) — PowerShell tries to interpret `$f` itself before the string ever reaches `bash -lc`, even though it's meant as a bash loop variable. Confirmed 2026-07-11 probing candidate clip durations for the #104 diagnostic.
+**Solution:** Write the command to a `.sh` file in a Windows temp path (e.g. `/mnt/c/Users/Manasak/AppData/Local/Temp/`), then invoke `wsl -d Ubuntu-24.04 -u root -- bash /mnt/c/.../script.sh`. The script file avoids all quoting layers entirely — including the `$var`-collision case above. Use this pattern for any WSL command beyond a simple one-liner, or any command containing a `$variable` or spanning multiple lines.
+**Context:** Any session running multi-step FFmpeg pipelines or Python scripts via WSL from PowerShell. Same underlying principle as the "multi-line diagnostic/repair scripts must be written to a temp .py file" rule in `.claude/rules/pipeline.md` — this extends it to any multi-line or `$`-containing bash invocation, not just Python `-c` strings.
 
 ---
 
@@ -907,7 +894,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — CDP eval requires a pre-running app — do not orchestrate from tool calls
+## Workflow-CDP — CDP eval requires a pre-running app — do not orchestrate from tool calls
 
 **Problem:** Attempts to start Vite (`pnpm dev:vite`) and the Tauri binary from inside Bash/PowerShell tool calls fail silently — the processes die between tool calls because each tool call runs in a fresh child shell. Diagnostic confusion follows when CDP port 9222 is occupied by a wrong process or is empty.
 **Solution:** Visual eval (MCP screenshots) and E2E runs both require the app to already be running. Check `netstat -ano | findstr :9222` first; if not live, ask the user to run `pnpm dev` in their terminal. Do NOT attempt to orchestrate Vite + binary from within tool calls.
@@ -936,7 +923,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — `gh project item-add` silently does nothing unless `--format json` is passed
+## Workflow-gh — `gh project item-add` silently does nothing unless `--format json` is passed
 
 **Problem:** `gh project item-add 1 --owner bondybondbond --url <issue-url>` (no `--format` flag) prints nothing on success — reads exactly like a silent failure (no error, no diagnostic output).
 **Solution:** Add `--format json`: `gh project item-add 1 --owner bondybondbond --url <issue-url> --format json` prints the created item directly, including `.id` — the project item node ID needed for subsequent field-update mutations — with zero follow-up query. Only fall back to the GraphQL `addProjectV2ItemById` mutation if `--format json` itself is unavailable.
@@ -944,7 +931,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — `gh project item-list` default limit silently truncates results; false "item not found"
+## Workflow-gh — `gh project item-list` default limit silently truncates results; false "item not found"
 
 **Problem:** `gh project item-list 1 --owner bondybondbond --format json` with no `--limit` flag defaults to a small page (~30 items) and silently omits items outside that window — including a just-created issue. Looking up that issue's node ID by number then returns nothing, making it look like `item-add` failed (or a field-update GraphQL mutation fails with an unhelpful `Could not resolve to a node with the global id of ''`) when the item was actually added fine.
 **Solution:** Always pass an explicit `--limit 500` (or check `totalCount` first) comfortably above current backlog size when searching `item-list` output for a specific item right after creating it: `gh project item-list 1 --owner bondybondbond --format json --limit 500`. Never rely on the default page size.
@@ -978,7 +965,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — PowerShell `$PID` is a reserved read-only variable; use Bash for `gh api graphql`
+## Workflow-gh — PowerShell `$PID` is a reserved read-only variable; use Bash for `gh api graphql`
 
 **Problem:** PowerShell has a built-in automatic variable `$PID` (the current process ID). It is case-insensitive — assigning `$pid = "PVT_kwHO..."` throws `Cannot overwrite variable PID because it is read-only or constant`. Any GraphQL mutation that stores a project ID in `$pid` will silently abort the block.
 **Solution:** Use a different variable name (`$projId`, `$projectNodeId`), OR use Bash for `gh api graphql` calls that reference a project ID — Bash has no such reserved variable conflict and is required for multi-line heredoc mutations anyway.
@@ -986,7 +973,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — `gh issue view` returns empty body when issue has no comments; use `--json`
+## Workflow-gh — `gh issue view` returns empty body when issue has no comments; use `--json`
 
 **Problem:** `gh issue view <number> --repo owner/repo --comments` prints nothing when there are no comments — not even the issue body. The `--comments` flag apparently suppresses the body-only output path in some `gh` versions.
 **Solution:** Use `gh issue view <number> --repo owner/repo --json number,title,body,comments` to reliably get the body + comment array regardless of whether comments exist.
@@ -1082,15 +1069,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
-## Workflow — Reusing a real render's manifest for pipeline re-verification hits the render cache silently
-
-**Problem:** After a code change to `render.py`'s Step 1-5 logic (the render-cache-covered path), re-running the exact same manifest JSON that was used for an earlier real render to "re-verify the fix" produces `TIMING:cache=hit` — the render cache (#19, keyed on clip in/out points + transitions + zoom + cards, NOT job_id) recognises the identical settings and skips Step 1-5 entirely, copying the cached clean intermediate instead. The re-run "succeeds" and completes fast, but it never touched the code being verified — a false-positive verification.
-**Solution:** Before reusing a manifest for pipeline verification, mutate one field that's part of the cache signature (e.g. bump a clip's `in_ms` by 1) to force `TIMING:cache=miss`, or check the `render_cache=hit/miss` field in the `ANALYSIS:` stdout line to confirm which path actually ran before trusting the result. Always give the copied manifest a fresh `job_id` and a throwaway `output_path` too, so it doesn't clobber the original job's temp dir or the user's real output file.
-**Context:** Any session verifying a `pipeline/render.py` change via the "hand-written manifest + direct `wsl python3 run.py` invocation" repro pattern (see #98/#99 precedent) — especially when re-running the SAME manifest twice (e.g. once to prove a new code path, once after to prove a refactor/cleanup pass didn't break it).
-
----
-
-## Workflow — One-off Python/sqlite checks across PowerShell -> WSL -> Python — pipe via stdin, skip the temp file
+## Workflow-WSL — One-off Python/sqlite checks across PowerShell -> WSL -> Python — pipe via stdin, skip the temp file
 
 **Problem:** `python3 -c "..."` invoked from PowerShell through `wsl -d Ubuntu-24.04 -u root` breaks — quoting collapses across three shells (PowerShell -> bash -> python), producing `SyntaxError`/`command not found` errors even for a one-line script. The documented fix for *multi-line* scripts (write to a temp `.py` file, then invoke) works but is a two-step round trip (Write tool + PowerShell call) that's overkill for a single ad-hoc DB read.
 **Solution:** For a one-off script (DB inspection, quick assertion check, args dump) that doesn't need to persist on disk, use a PowerShell here-string piped directly into `wsl ... python3` via stdin — no temp file, no quoting collapse: `$py = @'<multi-line python>'@; $py | wsl -d Ubuntu-24.04 -u root python3`. Bash never re-parses the string (it arrives on stdin, not as a `-c` argument), so triple-quotes, f-strings, and nested quotes all pass through untouched.
@@ -1147,12 +1126,6 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** `ffprobe -show_entries frame=pkt_pts_time,pict_type,key_frame -of csv=p=0` was assumed to emit columns in the exact order listed (`pkt_pts_time,pict_type,key_frame`). It doesn't — ffprobe uses its own internal canonical field order regardless of the order requested (observed: `key_frame,pict_type,pts_time`). A script that indexes CSV columns positionally based on the requested order (e.g. `parts[2] == "1"` expecting `key_frame` there) silently reads the wrong field and can report a plausible-but-wrong result (e.g. "0 keyframes found" on a file that has several) with no error.
 **Solution:** Never trust requested `-show_entries` order for positional CSV parsing. Either use `-of csv=p=0` and verify actual column order on a known sample first, or use `-of json`/`-of default` (key=value pairs, order-independent) and parse by field name instead of position. For any diagnostic script that probes structured FFmpeg/ffprobe output and could silently produce a plausible-but-wrong zero/empty result, assert the result is non-empty before trusting it (e.g. `assert len(keyframes) > 0, "parsing bug or genuinely no keyframes -- verify before proceeding"`) — a silent zero is a parsing bug until proven otherwise.
 **Context:** Any diagnostic or pipeline script using `ffprobe ... -show_entries ... -of csv`. Confirmed 2026-07-11 during the #104 GOP-structure diagnostic — an initial "0 keyframes" result was actually 4 real keyframes misread due to this column-order assumption.
-
-## Workflow — PowerShell inline `$var` inside a `wsl bash -lc "..."` double-quoted string collides with PowerShell's own variable syntax
-
-**Problem:** `wsl -d Ubuntu-24.04 -u root -- bash -lc "for f in a.mp4 b.mp4; do echo \"$f\"; done"` run via the PowerShell tool fails with a PowerShell parser error (`Variable reference is not valid`) — PowerShell tries to interpret `$f` itself before the string ever reaches `bash -lc`, even though it's meant as a bash loop variable.
-**Solution:** Don't inline multi-line (or `$var`-containing) bash scripts as a PowerShell double-quoted argument to `wsl ... bash -lc "..."`. Write the script to a `.sh` file first (Write tool), then invoke it directly: `wsl -d Ubuntu-24.04 -u root -- bash /mnt/c/Users/.../script.sh`. Same underlying principle as the existing "multi-line diagnostic/repair scripts must be written to a temp .py file" rule in `.claude/rules/pipeline.md` — extend it to any multi-line or `$`-containing bash invoked from PowerShell, not just Python `-c` strings.
-**Context:** Any WSL/bash command run via the PowerShell tool that needs a loop, a `$variable`, or spans multiple lines. Confirmed 2026-07-11 probing candidate clip durations for the #104 diagnostic.
 
 ## Pipeline — `TIMING:normalise=` / `t_normalise_s` brackets B-0 pre-trim, not just `normalise()` work
 
