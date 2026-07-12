@@ -24,7 +24,7 @@ Built solo, originally as a personal tool for cutting drone/action-camera footag
 
 - **Windows 11** (uses Win32-specific APIs; not cross-platform)
 - **WSL2** with an Ubuntu distro (the render pipeline runs as Python inside WSL2, python3 + Pillow)
-- **FFmpeg** installed in both places: inside your WSL2 distro, and as a Windows-native `ffmpeg.exe` on your Windows `PATH` (the two are used for different pipeline steps — see `.claude/rules/pipeline.md` if you're digging into internals)
+- **FFmpeg** installed in both places: inside your WSL2 distro, and as a Windows-native `ffmpeg.exe` on your Windows `PATH` (the two are used for different pipeline steps)
 - **AMD GPU** recommended for hardware-accelerated encoding (AMF). Falls back to CPU encoding (libx264) automatically if AMF isn't available — slower, but works on any hardware including Nvidia/Intel.
 - **Node.js + pnpm**, **Rust** (stable toolchain) for building the app itself
 
@@ -47,6 +47,7 @@ First run: point it at a folder of video clips, trim each one, arrange them on t
 - **AMD-only hardware acceleration today.** The GPU encode path (AMF) is built and tested on AMD only. Nvidia (NVENC) and Intel (QSV) paths don't exist yet — if you're on Nvidia hardware, you're on the CPU (libx264) fallback, which is slower but fully functional.
 - **HEVC playback depends on a Windows extension.** Some source footage (e.g. DJI HEVC) needs the Microsoft HEVC Video Extension installed for in-app preview; without it, RushCut falls back to the raw file automatically, but preview scrubbing is less smooth.
 - **1080p quality parity with 4K is unverified.** Recent quality work (CQP encoding) has been tuned and TV-checked primarily against 4K DJI footage; 1080p sources haven't had the same verification pass.
+- **Zoomed (Ken Burns) footage looks softer than non-zoomed footage.** Noticed during the CQP TV-check — likely in the zoom filter chain's scaling, not the encoder. Under investigation, tracked in the issues.
 
 ## Contributing
 

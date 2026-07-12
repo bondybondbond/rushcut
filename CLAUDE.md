@@ -44,6 +44,8 @@
 
 ## Docs model (what lives where)
 
+`.claude/` (rules, skills, hooks, agents) is local Claude Code dev tooling — gitignored, not part of the public repo. It exists on the maintainer's own machine; a fresh clone won't have it. References to `.claude/rules/*` and `.claude/skills/*` below are for local dev sessions that have it, not a promise to public contributors.
+
 Four buckets — keep them separate; never let one accumulate another's content:
 
 - **State** (current phase + next task): **MEMORY.md only** (auto-loaded each session). Overwrite, never append a diary.
