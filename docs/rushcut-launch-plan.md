@@ -104,7 +104,7 @@ Short file, three sections:
 1. Revoke the token at github.com/settings/tokens immediately, regardless of publish timing — it's dead weight sitting in history either way.
 2. Before making the repo public, scrub it from git history (`git filter-repo` or BFG) — removing it from HEAD alone is not enough, it's present across ~10+ historical commits. This is a destructive, force-push-requiring operation; do it deliberately, not as a drive-by step.
 
-**Username scan is whole-repo, not docs-only.** `Manasak` (personal Windows username) appears in 12+ tracked files, not just docs — including `pipeline/run.py`, `pipeline/utils.py`, `wdio.conf.ts`, `src/pages/Arrange.tsx`, `scripts/compare_renders.py`, and `docs/LEARNINGS.md` (path examples). Grep the whole repo (`git grep -n Manasak`), not just `docs/`.
+**Username scan is whole-repo, not docs-only.** The personal Windows username appeared in 12+ tracked files, not just docs — including `pipeline/run.py`, `pipeline/utils.py`, `wdio.conf.ts`, `src/pages/Arrange.tsx`, `scripts/compare_renders.py`, and `docs/LEARNINGS.md` (path examples). Grep the whole repo for it, not just `docs/`.
 
 Before making the repo public:
 - Whole-repo username/path scan (see above), not just `docs/`
