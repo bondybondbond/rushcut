@@ -239,3 +239,23 @@ Not a rematch — the two tools aren't competing for the same job. Route by ques
 - Human — only two things now, per the user's explicit tightening: a genuinely irreducible taste verdict (flagged immediately at the session's start, not queued for later), or a crisis neither consultant can resolve. No other check-in point survives.
 
 **Known constraint carried forward:** newly-created `.claude/agents/*.md` files are not registered as a `subagent_type` mid-session (the Agent tool's registry is fixed at conversation start — see the #122 trial note above). `rushcut-real-pp-auditor` will work correctly starting from the *next* fresh session after this file was created, not retroactively within the session that created it.
+
+---
+
+## Merge vs. keep-separate — resolved, and the fully-autonomous end-to-end flow (2026-07-13)
+
+**Should `rushcut-pp-consultant` and `rushcut-real-pp-auditor` be one agent?** Asked and answered: no, keep them separate. They are not two labels on the same capability — they're mechanistically different. `rushcut-pp-consultant` is Claude (Sonnet) with its own context window, fast/cheap, deep repo access, for anything with a code-legible answer. `rushcut-real-pp-auditor` drives an actual different foundation model (GLM-5.2, via real Perplexity through a live browser) — genuine cross-architecture reasoning and materially broader search than an internal `WebSearch` call, which cannot be replicated by any internal-only agent configuration. Verified in practice, not just asserted: on its first real run (prepping #124's JTBD/competitor angle), the auditor reversed its own initial finding ("competitors revert to originals at export") after weighing it against `docs/speed-goal.md`'s render-time constraint — real outside reasoning. It also correctly declined an out-of-scope task (verifying Claude Code's own documentation, handed to it in the same session) rather than stretching to do it, confirming its scope boundary holds under real use.
+
+**Three safety/isolation claims independently verified** (official docs + direct repo inspection, not just assumed):
+1. Subagents get an isolated context window with no inheritance of the calling session's history — confirmed by `code.claude.com/docs/en/sub-agents` ("Each subagent runs in its own context window... works independently") and empirically (every subagent spawn this session required explicit context-passing).
+2. Subagents cannot write, at any stage — all three current agents (`rushcut-pp-consultant`, `rushcut-real-pp-auditor`, `rushcut-qa-reviewer`) have `tools:` frontmatter with no `Edit`/`Write` at all.
+3. The hard-gate's "spawn-first, block-second" design has no self-arming race for a fresh session — the compliant-spawn check runs unconditionally before any transcript read. `code.claude.com/docs/en/hooks` confirms `PreToolUse` hooks under the same matcher run in parallel with no documented precedence rule for conflicting decisions, but this design has no cross-hook state dependency, so that's not a risk here. The one real incident (documented in `feedback-deterministic-hooks-pattern.md`) was a one-time bootstrapping artifact, not a structural flaw.
+
+**The full flow, as the user explicitly redefined it:**
+1. User says "dev plan" + an issue number, optionally adding taste/success-definition direction.
+2. Step 0 fires immediately: `rushcut-real-pp-auditor` spawns in the background (hard-gated, not optional).
+3. Research (Steps 1-4), then the Step 1.5 JTBD gate — resolved by the auditor's findings, or `rushcut-pp-consultant` if Chrome wasn't connected.
+4. Plan production (Steps 5a/5b) via `rushcut-pp-consultant`'s Round 1/2 — no human pause unless a genuine taste fork surfaces (flagged immediately, not queued).
+5. Implementation (Step 6) — `rushcut-qa-reviewer` reviews each step in the background; testing/rendering happens here, in the steps between planning and wrapup, not bolted on at the end.
+6. Step 6.9 — `rushcut-pp-consultant`'s Round 4 (wrap-readiness) is now the actual authorization gate, checked against `docs/PRD-DEV.md`/`speed-goal.md`/`quality-goal.md` as a stand-in for the user's own standing taste. A clean approval auto-triggers `Skill(rushcut-wrapup)` — no "does this match success?" human ask anymore. An unresolved concern after one fix-and-retry is the "crisis neither consultant can resolve" exception, and surfaces to the user.
+7. Step 7 — one consolidated final report once wrapup completes. This, plus any Step 5 taste-verdict ask, are the only two points the user hears from the orchestrator about this batch.
