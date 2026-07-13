@@ -221,3 +221,21 @@ Not a rematch — the two tools aren't competing for the same job. Route by ques
 3. **Batch every human-escalation item — never drip them one at a time.** If a `[human opinion needed]` item surfaces mid-session, do not stop right there. Collect it, keep going (routing everything else through the subagent/PP ladder), and present ALL accumulated `[human opinion needed]` items together in a single ask — ideally as early in the session as possible (e.g. immediately after Step 5a's findings are in, before deep planning work), so the user answers once and isn't pulled back in repeatedly.
 4. **Standing constraints survive autonomy.** Logs-first (never propose a sync/perf/quality fix without real log/timing data) and one-fix-at-a-time (don't let subagent-granted scope authority turn into bundling unrelated fixes) still apply — the subagent is instructed to flag violations of either as plan objections, same as any other correctness issue.
 5. **This is now the default posture for every `rushcut-dev-plan` session while this trial file exists** — not something the orchestrator opts into per-session. If the orchestrator finds itself typing `AskUserQuestion` or a mandatory-stop message for anything other items 3's two carve-outs, that's the signal it just repeated the #97 mistake.
+
+---
+
+## Deterministic dual-consultant spawn — supersedes manual-drive-chrome-inline (adopted 2026-07-13, after the #97 JTBD reframe)
+
+**What changed:** the "Tandem model" section above still describes the orchestrator *itself* driving `claude-in-chrome` inline, synchronously, only when it judges a market/taste question has come up. Two things prompted a tighter version, both surfaced in the #97 session:
+
+1. The orchestrator never actually reached for real PP for #97's own JTBD question — `rushcut-pp-consultant` (same-architecture Claude) approved the original developer-framed copy without catching the gap. It took the *user* separately consulting real Perplexity outside this pipeline entirely to catch it. A same-architecture subagent judging whether a user story is "really" user-framed vs. developer-framed is exactly the kind of question it's least equipped to catch in itself — it doesn't have an outside vantage point on what it just wrote.
+2. The user, reviewing this, explicitly directed: spawn the real-PP consultation **deterministically and immediately** at the start of every `rushcut-dev-plan` session (not as a judgment call the orchestrator makes mid-session), as its own independent agent with its own context window (not the orchestrator driving Chrome inline in its own context), specifically scoped to JTBD/DoD verification and competitor research.
+
+**What was built:** `.claude/agents/rushcut-real-pp-auditor.md` — a proper spawnable agent (not inline orchestrator browser-driving) encoding the exact setup checklist and prompt templates from this doc's "Tandem model" section, scoped narrowly to JTBD/DoD/competitor-research questions. `rushcut-dev-plan` SKILL.md's new Step 0 spawns it via the `Agent` tool with `run_in_background: true` as the very first action of every session, before Step 1 even begins — so its research (user-story sanity check + competitor angle) is ready by the time Step 1.5 needs it, rather than the session stalling on a synchronous browser-automation round.
+
+**Routing is now three-way, not two-way:**
+- `rushcut-pp-consultant` (Claude subagent) — code-correctness lane, unchanged from the Tandem model above.
+- `rushcut-real-pp-auditor` (real Perplexity/GLM-5.2 via `claude-in-chrome`, spawned deterministically) — JTBD/DoD/competitor-research lane, replacing the orchestrator's old ad-hoc inline drive.
+- Human — only two things now, per the user's explicit tightening: a genuinely irreducible taste verdict (flagged immediately at the session's start, not queued for later), or a crisis neither consultant can resolve. No other check-in point survives.
+
+**Known constraint carried forward:** newly-created `.claude/agents/*.md` files are not registered as a `subagent_type` mid-session (the Agent tool's registry is fixed at conversation start — see the #122 trial note above). `rushcut-real-pp-auditor` will work correctly starting from the *next* fresh session after this file was created, not retroactively within the session that created it.
