@@ -62,10 +62,12 @@ export default function Trimmer() {
   const activeFilmSlotRef = useRef<"a" | "b">("a");
   // Incremented each time loadIntoSlot runs for a slot — invalidates stale rVFC callbacks
   const slotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 });
-  // #90: transient note shown when a Film-mode clip's proxy is missing/corrupt and we
-  // fell back to the source file (ported from Sound.tsx #51).
-  const [proxyFallbackNote, setProxyFallbackNote] = useState(false);
-  const proxyNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // #90/#97: persistent note shown when a Film-mode clip's proxy is missing/corrupt and we
+  // fell back to the source file (ported from Sound.tsx #51). Cleared when that clip's
+  // proxy-progress event fires or the user dismisses it — no auto-dismiss timer.
+  const [proxyFallbackClipId, setProxyFallbackClipId] = useState<string | null>(null);
+  const proxyFallbackClipIdRef = useRef<string | null>(null);
+  useEffect(() => { proxyFallbackClipIdRef.current = proxyFallbackClipId; }, [proxyFallbackClipId]);
 
   // Dual-buffer clip preview (#10): two persistent video elements for clip mode, same
   // ping-pong pattern as the film engine — keeps the outgoing frame visible while the
@@ -181,6 +183,9 @@ export default function Trimmer() {
         setClips((prev) =>
           prev.map((c) => c.id === clipId ? { ...c, proxy_path: winPath } : c)
         );
+        if (proxyFallbackClipIdRef.current === clipId) {
+          setProxyFallbackClipId(null);
+        }
         setSelectedClip((prev) => {
           if (!prev || prev.id !== clipId) return prev;
           // #29: only swap the in-view clip's src when its source actually FAILED
@@ -867,12 +872,7 @@ export default function Trimmer() {
     v.load();
 
     if (isActive) {
-      setProxyFallbackNote(true);
-      if (proxyNoteTimerRef.current !== null) clearTimeout(proxyNoteTimerRef.current);
-      proxyNoteTimerRef.current = setTimeout(() => {
-        setProxyFallbackNote(false);
-        proxyNoteTimerRef.current = null;
-      }, 4000);
+      setProxyFallbackClipId(clip.id);
     }
   }
 
@@ -1143,6 +1143,23 @@ export default function Trimmer() {
       }
       transitionValue={transitionVal}
       soundMood={soundMoodVal}
+      timelineGutter={
+        viewMode === "film" && proxyFallbackClipId ? (
+          <div className="h-full flex items-start p-3">
+            <div className="w-full bg-white/5 border border-white/10 border-l-2 border-l-[#FF8A65] rounded-md p-3 flex items-start justify-between gap-2">
+              <p className="text-sm text-[#e5e5e5]">Video may look choppy right now -- it'll smooth out on its own.</p>
+              <button
+                type="button"
+                onClick={() => setProxyFallbackClipId(null)}
+                className="text-[#a3a3a3] hover:text-[#e5e5e5] flex-shrink-0 leading-none"
+                aria-label="Dismiss"
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+        ) : null
+      }
       timelineHud={
         <StickyFilmStrip
           clips={clips}
@@ -1445,12 +1462,6 @@ export default function Trimmer() {
         </div>
       )}
 
-      {/* #90: transient note when a Film-mode clip's proxy was missing and we fell back to the source file */}
-      {viewMode === "film" && proxyFallbackNote && (
-        <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
-          <p className="text-sm text-[#e5e5e5] whitespace-nowrap">Optimised preview missing for one clip -- using the original file.</p>
-        </div>
-      )}
     </EditorShell>
   );
 }

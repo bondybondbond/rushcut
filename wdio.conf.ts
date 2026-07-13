@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import http from "http";
 import { trackedTestProjects, clearTrackedTestProjects } from "./e2e/helpers/testProjects";
+import { ensureMatchingEdgeDriver } from "./e2e/helpers/edgeDriver";
 
 let appProcess: ChildProcess;
 let msEdge: ChildProcess;
@@ -169,6 +170,10 @@ export const config: WebdriverIO.Config = {
 
     // Brief pause for DOM hydration after CDP reports the route.
     await new Promise<void>((r) => setTimeout(r, 2000));
+
+    // Auto-resolve a matching msedgedriver instead of relying on a hand-pinned binary that
+    // goes stale the moment WebView2 auto-updates (#97 follow-on).
+    await ensureMatchingEdgeDriver(CDP_PORT);
 
     // Layer 1: --disable-bidi prevents BiDi WebSocket negotiation entirely.
     // Without this, WDIO v9 + msedgedriver 146 negotiate BiDi and call

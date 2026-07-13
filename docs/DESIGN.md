@@ -1093,11 +1093,11 @@ Both slot `<video>` elements must have `onError` handlers. `onError` does NOT bu
 **Dual-buffer aware logic:** check `slot === activeFilmSlotRef.current` to decide recovery path:
 
 - **Inactive (preloaded) slot:** retry silently — swap src to `convertFileSrc(local_path)` and re-`load()`. No toast. If this also fails, leave the slot unplayable (it will be skipped when promoted).
-- **Active (playing) slot:** swap src + resume `play()` mid-playback; show a transient non-blocking note (4s auto-dismiss). If local_path also fails, advance past the clip.
+- **Active (playing) slot:** swap src + resume `play()` mid-playback; show a persistent, non-blocking note in the timeline gutter (see below). If local_path also fails, advance past the clip.
 
 Stamp each slot's `<video>` element with `dataset.clipId` and `dataset.usingSource` ("0"=proxy, "1"=source) at every src-set site (`loadIntoSlot`, `preloadIntoSlot`, `crossSeekToClip`). The handler reads these to resolve which clip failed and whether it has already retried the source — preventing infinite retry loops.
 
-**Toast pattern for proxy fallback note:** `fixed bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none`, `bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg`, body `text-sm text-[#e5e5e5] whitespace-nowrap`. Clear with a `proxyNoteTimerRef` to avoid accumulation across clips.
+**Inline gutter pattern for proxy-prep note (#97, replaces the old floating toast):** rendered via `EditorShell`'s `timelineGutter` prop, inside the blank `w-52` gutter left of the filmstrip — never overlapping it. Uses the Inline Warning Panel tokens: `bg-white/5 border border-white/10 border-l-2 border-l-[#FF8A65] rounded-md p-3`, body `text-sm text-[#e5e5e5]`. Copy is reassurance-framed around what the user experiences, not internal process state: `"Video may look choppy right now -- it'll smooth out on its own."` (no "proxy"/"optimised preview"/"preparing" jargon — see #97's JTBD re-evaluation: "preparing" still described the system's internal state, not the user's actual concern). **No auto-dismiss timer** — persists until the clip's `proxy-progress` event fires (tracked by clip id, not a boolean) or the user clicks the X. Both Trimmer and Sound implement this identically (`proxyFallbackClipId` state + ref, cleared in the `proxy-progress` listener).
 
 ---
 

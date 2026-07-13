@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Play, Pause } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Clip, ProjectWithClips } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
@@ -127,9 +128,11 @@ export default function Sound() {
   const [isFilmPaused, setIsFilmPaused] = useState(false);
   const [filmPlayIdx, setFilmPlayIdx] = useState(0);    // drives "Clip N / M" label
   const [filmPlayheadMs, setFilmPlayheadMs] = useState<number | undefined>(undefined); // strip needle position (telescoped)
-  // #51: transient note shown when a clip's proxy is missing and we fell back to the source file
-  const [proxyFallbackNote, setProxyFallbackNote] = useState(false);
-  const proxyNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // #51/#97: persistent note shown when a clip's proxy is missing and we fell back to the
+  // source file. Cleared when that clip's proxy-progress event fires or the user dismisses it.
+  const [proxyFallbackClipId, setProxyFallbackClipId] = useState<string | null>(null);
+  const proxyFallbackClipIdRef = useRef<string | null>(null);
+  useEffect(() => { proxyFallbackClipIdRef.current = proxyFallbackClipId; }, [proxyFallbackClipId]);
 
   const configured = useConfiguredTabs(projectId ?? "");
 
@@ -196,6 +199,27 @@ export default function Sound() {
       .catch(() => {});
   }, [projectId]);
 
+  // #97: Sound previously had no proxy-progress listener at all, so a fallback note here
+  // could never self-clear on completion (unlike Trimmer's). Mirrors Trimmer.tsx's listener.
+  useEffect(() => {
+    if (!projectId) return;
+    let unlisten: (() => void) | undefined;
+    listen<{ projectId: string; clipId: string; winPath: string }>(
+      "proxy-progress",
+      (ev) => {
+        if (ev.payload.projectId !== projectId) return;
+        const { clipId, winPath } = ev.payload;
+        setClips((prev) =>
+          prev.map((c) => c.id === clipId ? { ...c, proxy_path: winPath } : c)
+        );
+        if (proxyFallbackClipIdRef.current === clipId) {
+          setProxyFallbackClipId(null);
+        }
+      }
+    ).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [projectId]);
+
   // Both film slots start hidden; setSlotVisible manages visibility imperatively (avoids React async paint race)
   useEffect(() => {
     if (filmVideoARef.current) { filmVideoARef.current.style.opacity = "0"; filmVideoARef.current.style.pointerEvents = "none"; }
@@ -206,7 +230,6 @@ export default function Sound() {
     return () => {
       audioRef.current?.pause();
       if (previewTimerRef.current !== null) clearTimeout(previewTimerRef.current);
-      if (proxyNoteTimerRef.current !== null) clearTimeout(proxyNoteTimerRef.current);
       // Stop rough-mix playback on route leave
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
@@ -272,12 +295,7 @@ export default function Sound() {
     v.load();
 
     if (isActive) {
-      setProxyFallbackNote(true);
-      if (proxyNoteTimerRef.current !== null) clearTimeout(proxyNoteTimerRef.current);
-      proxyNoteTimerRef.current = setTimeout(() => {
-        setProxyFallbackNote(false);
-        proxyNoteTimerRef.current = null;
-      }, 4000);
+      setProxyFallbackClipId(clip.id);
     }
   }
 
@@ -918,6 +936,23 @@ export default function Sound() {
       openingTransition={openingTransitionVal}
       closingTransition={closingTransitionVal}
       soundMood={sound.mood}
+      timelineGutter={
+        proxyFallbackClipId ? (
+          <div className="h-full flex items-start p-3">
+            <div className="w-full bg-white/5 border border-white/10 border-l-2 border-l-[#FF8A65] rounded-md p-3 flex items-start justify-between gap-2">
+              <p className="text-sm text-[#e5e5e5]">Video may look choppy right now -- it'll smooth out on its own.</p>
+              <button
+                type="button"
+                onClick={() => setProxyFallbackClipId(null)}
+                className="text-[#a3a3a3] hover:text-[#e5e5e5] flex-shrink-0 leading-none"
+                aria-label="Dismiss"
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+        ) : null
+      }
       timelineHud={
         <StickyFilmStrip
           clips={clips}
@@ -1297,13 +1332,6 @@ export default function Sound() {
                 {`${fmtMs(0)} / ${fmtMs(totalMs)}`}
               </span>
             </div>
-
-            {/* #51: transient note when a clip's proxy was missing and we fell back to the source file */}
-            {proxyFallbackNote && (
-              <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
-                <p className="text-sm text-[#e5e5e5] whitespace-nowrap">Optimised preview missing for one clip -- using the original file.</p>
-              </div>
-            )}
           </div>
 
           {/* Right sidebar: music controls */}

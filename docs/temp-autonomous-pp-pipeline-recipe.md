@@ -154,6 +154,7 @@ Build a temporary subagent using this exact recipe (same verbatim round template
 ### Effectiveness — did it catch real bugs?
 
 **Yes, substantively.** Across 4 rounds the subagent caught three defects that would have shipped without it:
+
 1. **Round 2 (plan critique):** an early draft's "delete lines 965-970" instruction would have deleted `shuffle_between`'s read too, crashing **every multi-clip render** with `UnboundLocalError` on `has_xfade` — a far worse regression than the bug being fixed, and outside what the all-single-clip verification matrix could ever catch.
 2. **Round 2:** an early draft used unconditional `str()` for the wrap-pass's ffmpeg command instead of `to_win_path(...) if is_amf else str(...)` — would have silently broken every 4K AMF single-clip render (feeds a WSL path to Windows-native `ffmpeg.exe`), invisible in CLI testing (CLI always falls back to libx264).
 3. **Round 3 (final check):** "mirror `_boundary_reencode` exactly" would have dropped audio entirely — that helper maps video-only by design (U1g does audio separately on a whole-project track); the single-clip path has no such separate track and needed the audio map added explicitly.
@@ -167,16 +168,56 @@ All four were caught via direct code reads (`Read`/`Grep` against the real repo)
 
 ### Token cost
 
-| Round | Tokens |
-|---|---|
-| 1 — findings+ask | 102,087 |
-| 2 — plan critique | 96,059 |
-| 3 — final check | 98,420 |
-| 4 — wrap-readiness | 91,989 |
-| **Total** | **~388,600** |
+| Round              | Tokens       |
+| ------------------ | ------------ |
+| 1 — findings+ask   | 102,087      |
+| 2 — plan critique  | 96,059       |
+| 3 — final check    | 98,420       |
+| 4 — wrap-readiness | 91,989       |
+| **Total**          | **~388,600** |
 
 For comparison, the #121 PP-browser trial's stated bottleneck was browser-automation round-trip overhead (CDP typing timeouts, quadratic `get_page_text` thread re-reads), not Claude-side token cost — that session didn't log a comparable token figure, so this isn't a clean apples-to-apples number, but ~390K tokens across 4 rounds for one small backend fix is a real, non-trivial cost on its own terms (roughly 4x a typical single-agent implementation pass for a fix this size).
 
 ### Verdict
 
 **Keep using the subagent for this class of task (contained backend/pipeline bug, no UI) — it earned its cost on #122.** It's mechanically cheaper than the PP-browser loop (no CDP timeouts, no model-selector re-verification, no thread-history re-reads) and lost nothing on cross-model diversity for this particular bug, because none of the three real catches needed it. Open question for a future trial: pick an issue where the *right* answer plausibly depends on outside-the-codebase judgment (a UX/taste call, an FFmpeg approach where "what do competitors do" genuinely matters) — that's the shape of task most likely to expose the diversity gap this trial didn't.
+
+**PP's own read on the #122 result (pasted back in, 2026-07-12):** asked to self-assess whether it would have caught the same 3 bugs, PP said 2 of 3 yes (the `shuffle_between` scope crash and the AMF `to_win_path` gap are both "just reading Python"/grepping the existing convention, not architecture-specific), and called the 3rd (dropped audio from copying `_boundary_reencode` too literally) "a tool-access question, not a model-diversity question" — i.e. it would catch it too, given the same ability to read the actual helper function. PP's conclusion: none of #122's bugs needed outside-the-codebase knowledge, so the diversity gap didn't show up because the task never exercised it. This matches Claude's own verdict above and is the basis for the tandem model below.
+
+---
+
+## Tandem model (adopted 2026-07-12, for all future trials)
+
+Not a rematch — the two tools aren't competing for the same job. Route by question shape:
+
+- **Internal subagent (`rushcut-pp-consultant`, via `general-purpose` + persona pasted inline per the registry-reload trap above)** — code-correctness rounds: root-cause findings, plan critique, implementation audit, wrap-readiness. Anything answerable by reading the actual repo. Cheap, fast, no browser babysitting, no reliability tax. Default for this half of every session.
+- **Real Perplexity (RushCut Space, GLM-5.2, via `claude-in-chrome`)** — market/taste-shaped rounds only: "what does DaVinci/CapCut/Premiere do here," "what would a user expect," a naming/copy/positioning call, anything with no code-legible right answer. Only invoke this round when the actual question at that point in the plan is genuinely outside-the-codebase — don't run it reflexively every session just because the recipe exists.
+
+### Orchestrator checklist before a market-research round (verify every time, state doesn't persist)
+
+1. **Is Chrome connected?** Call `list_connected_browsers`. If nothing is connected, stop and ask the user to confirm the "Claude for Chrome" extension is installed and signed into the same Anthropic account (One-time setup step 1 above) — do not guess a URL or attempt a headless workaround.
+2. **Select the browser.** `select_browser` with the returned `deviceId`.
+3. **Navigate to Perplexity and the RushCut Space.** Go to Perplexity's site and open the **RushCut Space** from the left sidebar (no direct deep-link URL is tracked in this doc — always navigate via the sidebar, since Space URLs aren't guaranteed stable). Confirm via `read_page`/`get_page_text` that the Space name is visible before sending anything.
+4. **Re-verify the model selector on EVERY send, not just the first.** It silently resets to a default ("Best"/"Pro") after navigation and, per prior-session findings, sometimes between sends in the same thread too. Set it to a model with Thinking on — GLM-5.2 has this on by default, no extra toggle. Screenshot-check the button label before typing, every time.
+5. **Send the exact verbatim round template** for the round type being run (see "The exact prompt templates" section above) — do not paraphrase or compress it.
+6. **Read the answer via the copy-button, not `get_page_text` on the whole page.** Per the "Efficiency fix" section above: wait ~30s, click PP's copy-to-clipboard icon under its answer, read the clipboard. `get_page_text` re-reads the entire growing thread every time and was the single biggest token cost of trial #1 — don't repeat that mistake.
+7. **A `type()` CDP timeout is usually cosmetic** — the text almost always lands anyway (see Learnings #2 above). Don't blindly retry; wait ~5s and check via a targeted read instead of a full screenshot.
+
+`.claude/agents/rushcut-pp-consultant.md` has been updated to state explicitly that market-research-shaped questions are out of its scope under this tandem model — it should not attempt `WebSearch`/`WebFetch` as a substitute for real outside judgment; that routes to real PP per this section instead.
+
+---
+
+## Autonomous decision authority (adopted 2026-07-12, correction after #97 session)
+
+**What went wrong:** during the #97 planning session, the orchestrator (the Claude Code session driving `rushcut-dev-plan`) stopped to ask the user directly, twice, on questions that should have been decided by the subagent (or escalated to PP) first — once for the Step 5a "what does success look like" acceptance-criteria question, and once for a scope-expansion decision (whether to fix an identical duplicated bug found in a second file). Both times the orchestrator second-guessed whether to invoke the subagent instead of just invoking it. The user's correction, verbatim in spirit: *the agent is supposed to tackle all of such questions — make the necessary changes so it catches them automatically, decides in the user's place throughout, and only stops the user when clearly tagged `[human opinion needed]`.*
+
+**Orchestrator rule going forward — no more per-round deliberation:**
+
+1. **Auto-invoke, don't decide whether to invoke.** The instant `rushcut-dev-plan` reaches a checkpoint that would normally pause for a user check-in (Step 5a's acceptance-criteria question, Step 5b's plan critique, the pre-build final check, wrap-readiness, and any ad-hoc scope/objection question that comes up mid-session), invoke `rushcut-pp-consultant` immediately. Do not weigh "is this worth asking the subagent" — that weighing is itself the mistake #97 made twice.
+2. **Escalation ladder, in order:**
+   - Subagent (`rushcut-pp-consultant`) decides — this is the default for anything with a code-legible answer, including scope calls informed by what's actually in the repo.
+   - If the subagent states it has no strong opinion (typically because the question is market/taste-shaped) — route to real Perplexity next, per the existing "Tandem model" checklist above.
+   - Only if the question is **genuinely irreducible** (a pure personal-preference call PP itself can't settle, or an action blocked by tool restrictions needing the human's own hands/credentials/click) does the orchestrator stop and ask the actual user — and it must tag the ask clearly: **`[human opinion needed]`**.
+3. **Batch every human-escalation item — never drip them one at a time.** If a `[human opinion needed]` item surfaces mid-session, do not stop right there. Collect it, keep going (routing everything else through the subagent/PP ladder), and present ALL accumulated `[human opinion needed]` items together in a single ask — ideally as early in the session as possible (e.g. immediately after Step 5a's findings are in, before deep planning work), so the user answers once and isn't pulled back in repeatedly.
+4. **Standing constraints survive autonomy.** Logs-first (never propose a sync/perf/quality fix without real log/timing data) and one-fix-at-a-time (don't let subagent-granted scope authority turn into bundling unrelated fixes) still apply — the subagent is instructed to flag violations of either as plan objections, same as any other correctness issue.
+5. **This is now the default posture for every `rushcut-dev-plan` session while this trial file exists** — not something the orchestrator opts into per-session. If the orchestrator finds itself typing `AskUserQuestion` or a mandatory-stop message for anything other items 3's two carve-outs, that's the signal it just repeated the #97 mistake.

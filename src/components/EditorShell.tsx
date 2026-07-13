@@ -25,6 +25,8 @@ interface EditorShellProps {
   soundMood?: string | null;
   /** Overall timeline HUD (StickyFilmStrip). Omit on Render screen. */
   timelineHud?: ReactNode;
+  /** Content for the left gutter beside the filmstrip (e.g. proxy-prep note). Omit to leave blank. */
+  timelineGutter?: ReactNode;
   children: ReactNode;
 }
 
@@ -42,6 +44,7 @@ export function EditorShell({
   closingTransition,
   soundMood,
   timelineHud,
+  timelineGutter,
   children,
 }: EditorShellProps) {
   return (
@@ -71,8 +74,10 @@ export function EditorShell({
         {/* Timeline row — always same proportions across screens */}
         {timelineHud && (
           <div className="flex flex-shrink-0 border-t-2 border-[#99B3FF]/30">
-            {/* Left gutter — mirrors pantry width, blank (reserved for future) */}
-            <div className="w-52 flex-shrink-0 bg-[#0a0a0a]" />
+            {/* Left gutter — mirrors pantry width; hosts proxy-prep note when provided */}
+            <div className="w-52 flex-shrink-0 bg-[#0a0a0a]">
+              {timelineGutter}
+            </div>
             {/* Filmstrip fills the center */}
             <div className="flex-1 min-w-0 overflow-hidden">
               {timelineHud}
