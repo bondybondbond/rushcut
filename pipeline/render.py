@@ -331,21 +331,19 @@ def decide_clip_source(
     When True, always normalise regardless of proxy state -- diagnostic lever
     for A/B testing proxy-vs-normalise quality (see #118).
 
-    zoom bypass (#124): background proxies are QP30 -- speed-tuned for scrubbing
-    preview, not delivery. #118 confirmed via real TV-check that zoom magnifies
-    QP30 compression artifacts enough to be visibly softer than a full re-normalise.
-    Non-zoomed clips don't show this (artifacts only become visible once zoom
-    magnifies them), so the bypass is scoped to zoom_mode, not blanket -- a blanket
-    bypass would regress every zero-zoom render's speed for no visible gain.
-    NOTE: any future pan/tilt/crop-style effect that also magnifies QP30 artifacts
-    the way zoom does should be added to this same condition.
+    #124 (shipped 2026-07-14, REVERTED same day): briefly added a zoom_mode
+    early-return here to bypass proxy reuse for zoomed clips, per #118's TV-check
+    finding. A second TV check on the real shipped code path (not just the debug
+    force_normalise flag) found no visible quality improvement, while the real
+    measured cost was +93s/2 zoomed clips (~46.5s/clip) at 4K -- unacceptable
+    against the already-1.7-2.35x-over-target speed ceiling for zero confirmed
+    benefit. Reverted. Do not re-add a zoom-scoped bypass here without a TV check
+    on the actual shipped code path (not the debug flag) CONFIRMING benefit first,
+    on both a small sample AND the realistic full-project scale -- see #116/#124.
     """
     pwsl = clip_meta.get("proxy_path_wsl")
     if force_normalise:
         return False, pwsl, "force_normalise flag set"
-    zoom_mode = clip_meta.get("zoom_mode")
-    if zoom_mode and zoom_mode != "none":
-        return False, pwsl, f"zoom bypass: force normalise for zoom_mode={zoom_mode}"
     required_proxy_h = 2160 if output_resolution == "4k" else 1080
     valid = bool(pwsl and is_valid_proxy(pwsl))
     height, proxy_fps_int = _proxy_meta(pwsl) if valid else (0, 0)
