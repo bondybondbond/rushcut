@@ -151,6 +151,7 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** `gh issue view <n> --repo ... --comments` invoked via the Bash tool returned zero output — no error, no data — despite `gh` being authenticated and healthy (`gh auth status` confirmed logged in). Wasted several round trips (piping to a file, redirecting stderr) before suspecting the tool rather than the command.
 **Solution:** Re-run the identical `gh` command via the PowerShell tool — it worked immediately. Treat `gh` like WSL: always use PowerShell in this repo, never Bash.
 **Context:** Any `gh issue/pr/api/project` command during dev-plan research or wrapup. Consistent with the existing CLAUDE.md rule "WSL and PowerShell: use the PowerShell tool, not Bash" — this extends the same rule to `gh`.
+**Related trap (2026-07-15):** `gh issue comment <n> --body "multi-line text with embedded double-quotes"` run via the PowerShell tool fails with `accepts 1 arg(s), received N` — PowerShell's own quote-parsing splits the body into separate args before `gh` ever sees it, even though the same string as a single-line no-quotes body works fine. This is silent-ish (a clear error, but easy to misread as a `gh` usage mistake rather than a shell-quoting one). Fix: write the body to a temp `.md` file with the Write tool, then pass `--body-file <path>` instead of `--body "..."` — sidesteps shell quoting entirely and is the only reliable way to post any comment with line breaks or embedded quotes.
 
 ---
 
