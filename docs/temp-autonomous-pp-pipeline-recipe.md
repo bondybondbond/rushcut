@@ -259,3 +259,12 @@ Not a rematch — the two tools aren't competing for the same job. Route by ques
 5. Implementation (Step 6) — `rushcut-qa-reviewer` reviews each step in the background; testing/rendering happens here, in the steps between planning and wrapup, not bolted on at the end.
 6. Step 6.9 — `rushcut-pp-consultant`'s Round 4 (wrap-readiness) is now the actual authorization gate, checked against `docs/PRD-DEV.md`/`speed-goal.md`/`quality-goal.md` as a stand-in for the user's own standing taste. A clean approval auto-triggers `Skill(rushcut-wrapup)` — no "does this match success?" human ask anymore. An unresolved concern after one fix-and-retry is the "crisis neither consultant can resolve" exception, and surfaces to the user.
 7. Step 7 — one consolidated final report once wrapup completes. This, plus any Step 5 taste-verdict ask, are the only two points the user hears from the orchestrator about this batch.
+
+---
+
+## Model tiering + one-session-per-issue (adopted 2026-07-14)
+
+Two follow-on refinements from the user, both encoded directly in `.claude/agents/rushcut-real-pp-auditor.md`:
+
+- **Model tiering, not a single default.** The auditor runs rarely (twice per issue: JTBD verification, then competitor research), so use the strongest available model for those two mandatory gates — **GPT-5.6 Terra, Thinking toggle ON** — rather than defaulting to GLM-5.2 out of habit. GLM-5.2 remains fine for any incidental third query beyond the two gates (e.g. an ad-hoc market/taste escalation from `rushcut-pp-consultant` mid-plan).
+- **One new Perplexity session per GitHub issue, never a reused thread across issues.** Gate 1 (JTBD verification) is what creates the new session — typed into the Space's empty-state "Start a session in RushCut" compose box, not into an existing thread from the Sessions list. Gate 2 (competitor research), and any later incidental query on the SAME issue, stay in that same thread. A genuinely different issue number always starts a fresh session via the empty-state box.
