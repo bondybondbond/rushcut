@@ -330,10 +330,22 @@ def decide_clip_source(
     force_normalise (#120): debug-only override, set via manifest settings.
     When True, always normalise regardless of proxy state -- diagnostic lever
     for A/B testing proxy-vs-normalise quality (see #118).
+
+    zoom bypass (#124): background proxies are QP30 -- speed-tuned for scrubbing
+    preview, not delivery. #118 confirmed via real TV-check that zoom magnifies
+    QP30 compression artifacts enough to be visibly softer than a full re-normalise.
+    Non-zoomed clips don't show this (artifacts only become visible once zoom
+    magnifies them), so the bypass is scoped to zoom_mode, not blanket -- a blanket
+    bypass would regress every zero-zoom render's speed for no visible gain.
+    NOTE: any future pan/tilt/crop-style effect that also magnifies QP30 artifacts
+    the way zoom does should be added to this same condition.
     """
     pwsl = clip_meta.get("proxy_path_wsl")
     if force_normalise:
         return False, pwsl, "force_normalise flag set"
+    zoom_mode = clip_meta.get("zoom_mode")
+    if zoom_mode and zoom_mode != "none":
+        return False, pwsl, f"zoom bypass: force normalise for zoom_mode={zoom_mode}"
     required_proxy_h = 2160 if output_resolution == "4k" else 1080
     valid = bool(pwsl and is_valid_proxy(pwsl))
     height, proxy_fps_int = _proxy_meta(pwsl) if valid else (0, 0)
@@ -644,8 +656,9 @@ def run_pipeline(
     # Partition clips: use proxy as normalise substitute where available.
     # Required proxy height depends on output resolution (>=1080p for 1080p,
     # >=2160p for 4K). Background gen (Batch N) encodes at 2160p so proxies qualify
-    # for both. The decision lives in decide_clip_source() so warm_zoom.py mirrors
-    # the render's proxy-vs-normalise partition exactly.
+    # for both. The decision lives in decide_clip_source() -- render.py is
+    # currently its only caller (warm_zoom.py, referenced here previously, no
+    # longer exists per the embed-zoom-in-filter_complex refactor, #67/#79).
     proxy_clip_indices: set[int] = set()
     norm_clip_indices:  list[int] = []
 
