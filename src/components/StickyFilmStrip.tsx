@@ -563,7 +563,14 @@ export function StickyFilmStrip({
             {labelTicks.map((tick) => (
               <span
                 key={`lbl-${tick.ms}`}
-                style={{ position: "absolute", top: 8, left: tick.x, transform: "translateX(-50%)" }}
+                style={{
+                  position: "absolute",
+                  top: 8,
+                  left: tick.x,
+                  // The ms=0 label sits at the track's left edge — centering it would clip
+                  // its left half ("0:00" -> "00") against the scroll container's edge.
+                  transform: tick.ms === 0 ? undefined : "translateX(-50%)",
+                }}
                 className="text-[10px] font-mono text-white whitespace-nowrap leading-none"
               >
                 {fmtMs(tick.ms)}

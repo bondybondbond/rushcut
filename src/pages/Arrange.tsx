@@ -1187,6 +1187,12 @@ export default function Arrange() {
                                 {KB_SPEEDS.find(s => s.value === zoomState.kbSpeed)?.sub ?? ""}
                               </p>
                             </div>
+                            {/* Previewer-only judder note (60fps compositor vs 30fps source
+                                content) -- inherent, doesn't reach the render. See
+                                docs/LEARNINGS.md "WebView2 -- gradual zoom preview judder". */}
+                            <p className="text-xs text-[#a3a3a3] italic">
+                              Preview may look slightly stuttery during the zoom -- final render is unaffected.
+                            </p>
                           </>
                         )}
 

@@ -70,5 +70,9 @@ export function zoomLabel(zoomMode: string | null): string {
     return `Fixed zoom ${FIXED_AMOUNTS.find(a => a.value === z.fixedRatio)?.label ?? ""}`.trim();
   }
   const amt = KB_AMOUNTS.find(a => a.value === z.kbRatio)?.label ?? "";
-  return `Gradual ${z.kbDir === "out" ? "out" : "in"} ${amt}`.trim();
+  const base = `Gradual ${z.kbDir === "out" ? "out" : "in"} ${amt}`.trim();
+  // Previewer-only judder (60fps compositor vs 30fps source) never reaches the render --
+  // see docs/LEARNINGS.md "WebView2 -- gradual zoom preview judder is 30fps source content".
+  // ASCII only (CLAUDE.md) -- no emoji/unicode in UI strings.
+  return `${base} -- previewer may look slightly stuttery, final render is unaffected`;
 }
