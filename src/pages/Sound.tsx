@@ -112,6 +112,7 @@ export default function Sound() {
   const filmVideoARef = useRef<HTMLVideoElement>(null);  // slot A
   const filmVideoBRef = useRef<HTMLVideoElement>(null);  // slot B
   const activeFilmSlotRef = useRef<"a" | "b">("a");      // which slot is currently visible
+  const pendingGateSlotRef = useRef<"a" | "b" | null>(null); // slot mid-frame-reveal-gate (playing but not yet active/visible) — #91
   const slotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 }); // invalidates stale rVFC callbacks
   const musicAudioRef = useRef<HTMLAudioElement>(null);  // music track during rough mix
   const filmPlayingRef = useRef(false);                  // imperative flag (avoids stale closures)
@@ -323,7 +324,15 @@ export default function Sound() {
     }).requestVideoFrameCallback;
 
     function check(_now: number, metadata: { mediaTime: number }) {
-      if (!filmPlayingRef.current || slotGenRef.current[slot] !== thisGen) return;
+      // Only a genuine invalidation (superseded load/gen) should abandon the poll.
+      // A pause must NOT abandon it — rVFC fires per presented frame, so a bare
+      // `return` here would leave nothing listening once resumeFilmPlayback plays
+      // the video again, permanently stranding this reveal (#91 fix).
+      if (slotGenRef.current[slot] !== thisGen) return;
+      if (!filmPlayingRef.current) {
+        rVFC?.call(v, check);
+        return;
+      }
       const frameTime = metadata?.mediaTime ?? v.currentTime;
       if (frameTime >= targetSec - TOLERANCE_SEC) {
         onReady();
@@ -341,9 +350,15 @@ export default function Sound() {
     if (rVFC) {
       rVFC.call(v, check);
     } else {
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        if (filmPlayingRef.current && slotGenRef.current[slot] === thisGen) onReady();
-      }));
+      function fallbackCheck() {
+        if (slotGenRef.current[slot] !== thisGen) return;
+        if (!filmPlayingRef.current) {
+          requestAnimationFrame(() => requestAnimationFrame(fallbackCheck));
+          return;
+        }
+        onReady();
+      }
+      requestAnimationFrame(() => requestAnimationFrame(fallbackCheck));
     }
   }
 
@@ -364,9 +379,16 @@ export default function Sound() {
 
     function activate() {
       if (!filmPlayingRef.current || !v || slotGenRef.current[slot] !== thisGen) return;
-      activeFilmSlotRef.current = slot;
-      v.volume = Math.min(1, filmClip.clip_volume ?? 1.0);
+      // #91 fix: defer the activeFilmSlotRef flip + reveal until the frame gate
+      // confirms the compositor actually shows the target frame — flipping early
+      // (as this used to) lets handleFilmTimeUpdate start driving progress off this
+      // slot's currentTime before the still-hidden video has caught up.
+      pendingGateSlotRef.current = slot;
       gateFrameRevealThen(v, slot, thisGen, seekMs / 1000, () => {
+        if (pendingGateSlotRef.current === slot) pendingGateSlotRef.current = null;
+        if (slotGenRef.current[slot] !== thisGen || !filmPlayingRef.current) return;
+        activeFilmSlotRef.current = slot;
+        v.volume = Math.min(1, filmClip.clip_volume ?? 1.0);
         setSlotVisible(slot);
         const nextIdx = idx + 1;
         if (nextIdx < inFilmRef.current.length) {
@@ -394,9 +416,12 @@ export default function Sound() {
     const v = getFilmVideo(slot);
     if (!v) return;
     const src = convertFileSrc(filmClip.proxy_path ?? filmClip.local_path);
+    slotGenRef.current[slot]++;
+    const thisGen = slotGenRef.current[slot];
     v.src = src;
     stampSlot(v, filmClip);
     v.addEventListener("loadedmetadata", () => {
+      if (slotGenRef.current[slot] !== thisGen) return;
       v.currentTime = (filmClip.in_ms ?? 0) / 1000;
     }, { once: true });
     v.load();
@@ -421,7 +446,9 @@ export default function Sound() {
       if (slotGenRef.current[targetSlot] !== thisGen || !filmPlayingRef.current) return;
       newV.addEventListener("seeked", () => {
         if (slotGenRef.current[targetSlot] !== thisGen || !filmPlayingRef.current) return;
+        pendingGateSlotRef.current = targetSlot;
         gateFrameRevealThen(newV, targetSlot, thisGen, seekMs / 1000, () => {
+          if (pendingGateSlotRef.current === targetSlot) pendingGateSlotRef.current = null;
           filmPlayIdxRef.current = idx;
           setFilmPlayIdx(idx);
           activeFilmSlotRef.current = targetSlot;
@@ -458,6 +485,14 @@ export default function Sound() {
     // buffered/preloaded slot firing `ended` post-seek). Without this, the advance
     // state machine plays one extra clip with no music sync. See U6 follow-up Bug A.
     if (!filmPlayingRef.current) return;
+
+    // Pause the outgoing slot FIRST, synchronously, before anything else. A paused
+    // video fires no more `timeupdate`, which is what actually prevents a second
+    // `advanceFilmClipRough` re-entry while the reveal below waits on the frame gate
+    // (#91 fix — activeFilmSlotRef used to flip synchronously here and do that job;
+    // now it doesn't flip until the frame is confirmed, so pause must stand alone).
+    getFilmVideo(activeFilmSlotRef.current)?.pause();
+
     const prevClip = inFilmRef.current[filmPlayIdxRef.current];
     if (prevClip) {
       clipStartMsRef.current += Math.max(
@@ -472,41 +507,50 @@ export default function Sound() {
       return;
     }
 
-    // Snap progress to new clip's start position immediately — avoids the brief
-    // "go back a bit" jitter where progress holds at end-of-clip-N until clip-N+1's
-    // first timeupdate fires.
-    if (progressBarFillRef.current && totalMs > 0) {
-      progressBarFillRef.current.style.width = `${Math.min(100, (clipStartMsRef.current / totalMs) * 100)}%`;
-    }
-    if (elapsedLabelRef.current) {
-      elapsedLabelRef.current.textContent = `${fmtMs(clipStartMsRef.current)} / ${fmtMs(totalMs)}`;
-    }
-
-    // Dual-buffer advance: swap to the preloaded inactive slot, then play it.
-    // Slot-gen invalidation replaces the old isAdvancingRef guard.
+    const nextClip = inFilmRef.current[nextIdx];
     const nextSlot: "a" | "b" = activeFilmSlotRef.current === "a" ? "b" : "a";
     const nextV = getFilmVideo(nextSlot);
+    if (!nextV || !nextClip) return;
 
-    getFilmVideo(activeFilmSlotRef.current)?.pause();
+    // Preload for this slot may not have started/finished yet (very short clips can
+    // outrun the lookahead preload) — fall back to a full load rather than gating on
+    // a video that was never given the right src.
+    if (nextV.dataset.clipId !== nextClip.id) {
+      loadIntoSlot(nextIdx, nextSlot);
+      return;
+    }
 
-    filmPlayIdxRef.current = nextIdx;
-    setFilmPlayIdx(nextIdx);
-    activeFilmSlotRef.current = nextSlot;
-    setSlotVisible(nextSlot);
+    const targetSec = (nextClip.in_ms ?? 0) / 1000;
+    const thisGen = slotGenRef.current[nextSlot];
 
-    if (nextV) {
-      const nextClip = inFilmRef.current[nextIdx];
-      if (nextClip) nextV.volume = Math.min(1, nextClip.clip_volume ?? 1.0);
-      nextV.play().catch(() => {
-        // Inactive slot wasn't preloaded yet — load it fresh
-        loadIntoSlot(nextIdx, nextSlot);
-      });
+    // #91 fix: don't reveal the next clip / snap progress until the compositor has
+    // actually confirmed the target frame (same gate loadIntoSlot/crossSeekToClip
+    // already use) — was previously an unguarded, immediate reveal (see LEARNINGS.md
+    // "WebView2 — GPU compositor presents frame 0 first").
+    pendingGateSlotRef.current = nextSlot;
+    gateFrameRevealThen(nextV, nextSlot, thisGen, targetSec, () => {
+      if (pendingGateSlotRef.current === nextSlot) pendingGateSlotRef.current = null;
+      if (slotGenRef.current[nextSlot] !== thisGen || !filmPlayingRef.current) return;
+
+      filmPlayIdxRef.current = nextIdx;
+      setFilmPlayIdx(nextIdx);
+      activeFilmSlotRef.current = nextSlot;
+      nextV.volume = Math.min(1, nextClip.clip_volume ?? 1.0);
+      setSlotVisible(nextSlot);
+
+      if (progressBarFillRef.current && totalMs > 0) {
+        progressBarFillRef.current.style.width = `${Math.min(100, (clipStartMsRef.current / totalMs) * 100)}%`;
+      }
+      if (elapsedLabelRef.current) {
+        elapsedLabelRef.current.textContent = `${fmtMs(clipStartMsRef.current)} / ${fmtMs(totalMs)}`;
+      }
+
       const afterNextIdx = nextIdx + 1;
       if (afterNextIdx < inFilmRef.current.length) {
         const afterNextSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
         preloadIntoSlot(afterNextIdx, afterNextSlot);
       }
-    }
+    });
   }
 
   function handleFilmTimeUpdate(slot: "a" | "b", currentTimeSec: number) {
@@ -564,6 +608,7 @@ export default function Sound() {
     clipStartMsRef.current = 0;
     activeFilmSlotRef.current = "a";
     slotGenRef.current = { a: 0, b: 0 };
+    pendingGateSlotRef.current = null;
     setFilmPlayIdx(0);
     setIsFilmPlaying(true);
 
@@ -589,7 +634,12 @@ export default function Sound() {
 
   function pauseFilmPlayback() {
     filmPlayingRef.current = false;
-    getFilmVideo(activeFilmSlotRef.current)?.pause();
+    // Pause BOTH slots, not just the active one — a pending advance/load gate (#91)
+    // may already have the inactive slot playing (still invisible) while it waits
+    // for its frame to be confirmed. Leaving it running would keep drifting past
+    // its target during the pause and desync the eventual reveal.
+    filmVideoARef.current?.pause();
+    filmVideoBRef.current?.pause();
     musicAudioRef.current?.pause();
     setIsFilmPlaying(false);
     setIsFilmPaused(true);
@@ -598,6 +648,13 @@ export default function Sound() {
   function resumeFilmPlayback() {
     filmPlayingRef.current = true;
     getFilmVideo(activeFilmSlotRef.current)?.play().catch(() => {});
+    // Also resume the slot mid-frame-reveal-gate (#91), if any — pauseFilmPlayback
+    // paused it too, and without resuming it here that pending advance/load would
+    // never resolve. Only the slot the gate is actually tracking, never a merely
+    // preloaded-and-waiting slot (which must stay paused until its own turn).
+    if (pendingGateSlotRef.current && pendingGateSlotRef.current !== activeFilmSlotRef.current) {
+      getFilmVideo(pendingGateSlotRef.current)?.play().catch(() => {});
+    }
     musicAudioRef.current?.play().catch(() => {});
     setIsFilmPlaying(true);
     setIsFilmPaused(false);
@@ -605,6 +662,7 @@ export default function Sound() {
 
   function stopFilmPlayback() {
     filmPlayingRef.current = false;
+    pendingGateSlotRef.current = null;
     filmVideoARef.current?.pause();
     filmVideoBRef.current?.pause();
     musicAudioRef.current?.pause();
