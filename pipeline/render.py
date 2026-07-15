@@ -943,6 +943,11 @@ def run_pipeline(
     has_open = opening_transition != "none"
     has_close = closing_transition != "none"
     boundary_reencode_s = [0.0]
+    # #119: estimated total duration fed to ffmpeg_run_progress's fraction
+    # calc, stashed so it can be compared against the REAL output duration
+    # after Step 5 -- lets drift between the estimate and reality show up in
+    # the log instead of silently causing a tail mini-freeze/jump.
+    progress_est_duration_s = [None]
 
     if len(current_paths) == 1:
         # Single-clip shortcut: no filter_complex needed (CLAUDE.md) for the
@@ -1002,6 +1007,7 @@ def run_pipeline(
         else:
             # #119: interior progress ticks during the single-clip encode.
             _single_lo, _single_hi = checkpoints["cards"], checkpoints["render"]
+            progress_est_duration_s[0] = durations[0]
 
             def _single_tick(frac: float, _lo=_single_lo, _hi=_single_hi) -> None:
                 report(int(_lo + frac * (_hi - _lo)))
@@ -1137,6 +1143,7 @@ def run_pipeline(
             # May raise ValueError if a boundary clip has no solo region.
             plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
             progress["total"] = len(plan)
+            progress_est_duration_s[0] = total
             log.info(
                 "[U1g] segmented render: %d batches total=%.3fs xfade_dur=%.3f",
                 len(plan), total, xf,
@@ -1631,6 +1638,7 @@ def run_pipeline(
                 sum(durations) - (len(current_paths) - 1) * clamp_xfade_dur(durations)
                 if has_xfade else sum(durations)
             )
+            progress_est_duration_s[0] = _multi_total_s
             _multi_lo, _multi_hi = checkpoints["cards"], checkpoints["render"]
 
             def _multi_tick(frac: float, _lo=_multi_lo, _hi=_multi_hi) -> None:
@@ -1642,6 +1650,23 @@ def run_pipeline(
 
     encoder_name = codec_args[1] if len(codec_args) > 1 else "libx264"
     render_s = time.time() - t0
+    # #119: log estimate-vs-actual duration drift for the progress-tick fraction
+    # calc. The monolithic estimate (sum(durations) minus xfade overlap) is an
+    # approximation, not a probe of the real encoded output -- if it drifts
+    # significantly from actual on real-world footage, the progress fraction
+    # would reach 100% early/late, causing a mini-freeze/jump at the tail. This
+    # makes that drift visible in the log without affecting behavior.
+    if progress_est_duration_s[0] is not None:
+        try:
+            _actual_dur = get_duration(output)
+            _est_dur = progress_est_duration_s[0]
+            _drift_pct = (_actual_dur - _est_dur) / _est_dur * 100.0 if _est_dur else 0.0
+            log.info(
+                "[render][#119] progress duration estimate=%.3fs actual=%.3fs drift=%.3fs (%.1f%%)",
+                _est_dur, _actual_dur, _actual_dur - _est_dur, _drift_pct,
+            )
+        except Exception:
+            pass  # diagnostic only -- never let this affect the render
     print(f"TIMING:render={render_s:.1f}s encoder={encoder_name}", flush=True)
 
     # V4.1: Step 5 output is the clean, treatment-free intermediate. Publish it to
