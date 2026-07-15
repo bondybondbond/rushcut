@@ -58,7 +58,7 @@ from .transitions import (
 )
 from .trim import trim  # partial-GOP trim_smart() (#104) explored and removed --
                           # 19-31% real-render regression under contention, see #104
-from .utils import FFMPEG, ffmpeg_run, ffprobe_json, get_duration, get_frame_size, has_audio, log_av_sync
+from .utils import FFMPEG, ffmpeg_run, ffmpeg_run_progress, ffprobe_json, get_duration, get_frame_size, has_audio, log_av_sync
 from .zoom import build_zoom_vf
 
 log = logging.getLogger(__name__)
@@ -900,16 +900,21 @@ def run_pipeline(
     if is_amf and any(c.get("proxy_status") != "done" for c in clips):
         log.warning("[encoder] WARNING: background proxy gen may be running -- AMF throughput may be reduced")
 
-    def _run_with_amf_fallback(cmd: list, fallback_cmd_fn) -> bool:
+    def _run_with_amf_fallback(cmd: list, fallback_cmd_fn, on_tick=None, total_duration_s=None) -> bool:
         """Run cmd; on AMF failure rebuild with libx264 and retry once.
 
         Returns True if this call fell back to libx264, False if it stayed on
         the originally requested encoder. Used by #65 Phase A to build a
         per-batch encoder_outcome_by_idx alongside the existing shared
         amf_fallback_flag (which only tracks "did ANY call fall back").
+
+        #119: on_tick/total_duration_s (optional) enable interior progress
+        ticks during the PRIMARY encode attempt via ffmpeg_run_progress. The
+        rare libx264 retry-on-AMF-failure below stays on plain ffmpeg_run --
+        uncommon secondary path, not worth the added complexity.
         """
         try:
-            ffmpeg_run(cmd)
+            ffmpeg_run_progress(cmd, on_tick, total_duration_s)
             return False
         except RuntimeError as e:
             if is_amf:
@@ -995,7 +1000,15 @@ def run_pipeline(
             # Cheap intermediate has no AMF path -- nothing to fall back from.
             ffmpeg_run(cmd)
         else:
-            _run_with_amf_fallback(cmd, _fallback_single)
+            # #119: interior progress ticks during the single-clip encode.
+            _single_lo, _single_hi = checkpoints["cards"], checkpoints["render"]
+
+            def _single_tick(frac: float, _lo=_single_lo, _hi=_single_hi) -> None:
+                report(int(_lo + frac * (_hi - _lo)))
+
+            _run_with_amf_fallback(
+                cmd, _fallback_single, on_tick=_single_tick, total_duration_s=durations[0]
+            )
 
         if needs_oc_single:
             # #122: wrap the plain-scaled inner render with an open/close
@@ -1210,6 +1223,11 @@ def run_pipeline(
                 )
                 fell_back = _run_with_amf_fallback(cmd, _fb_batch)
                 encoder_outcome_by_idx[bi] = not fell_back
+                # #119: tick once per completed batch -- real progress, not a
+                # fake timer. Batches are the natural granularity for U1g; no
+                # frame-level tracking needed on top of this.
+                _lo, _hi = checkpoints["cards"], checkpoints["render"]
+                report(int(_lo + (bi + 1) / progress["total"] * (_hi - _lo)))
                 is_boundary = bi == 0 or bi == len(plan) - 1
                 log.info(
                     "[U1g] batch %d encoder_outcome amf_ok=%s boundary=%s",
@@ -1605,7 +1623,22 @@ def run_pipeline(
                     + [str(output)]
                 )
 
-            _run_with_amf_fallback(cmd, _fallback_multi)
+            # #119: interior progress ticks during the monolithic multi-clip
+            # encode. total_duration_s mirrors the same overlap-subtraction
+            # plan_video_batches() uses for U1g (xfade shortens the joined
+            # output by xfade_dur per cut).
+            _multi_total_s = (
+                sum(durations) - (len(current_paths) - 1) * clamp_xfade_dur(durations)
+                if has_xfade else sum(durations)
+            )
+            _multi_lo, _multi_hi = checkpoints["cards"], checkpoints["render"]
+
+            def _multi_tick(frac: float, _lo=_multi_lo, _hi=_multi_hi) -> None:
+                report(int(_lo + frac * (_hi - _lo)))
+
+            _run_with_amf_fallback(
+                cmd, _fallback_multi, on_tick=_multi_tick, total_duration_s=_multi_total_s
+            )
 
     encoder_name = codec_args[1] if len(codec_args) > 1 else "libx264"
     render_s = time.time() - t0

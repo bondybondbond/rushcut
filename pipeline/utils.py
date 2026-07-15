@@ -60,6 +60,83 @@ def ffmpeg_run(cmd: list[str]) -> None:
         )
 
 
+def ffmpeg_run_progress(cmd: list[str], on_tick=None, total_duration_s: float | None = None) -> None:
+    """Run an FFmpeg command like ffmpeg_run(), but stream `-progress pipe:1`
+    output and call on_tick(fraction: float) as frames encode (#119).
+
+    Falls back to plain ffmpeg_run(cmd) when on_tick/total_duration_s aren't
+    usable, and fails open on any read/parse problem -- this is a UX tick
+    source only, never load-bearing for the render itself. Confirmed via
+    #119 spike (2026-07-15) that `-progress` streams incrementally (not
+    bursted at exit) on both native WSL ffmpeg and Windows ffmpeg.exe via
+    the WSL interop bridge (the AMF encode path's binary).
+    """
+    if not on_tick or not total_duration_s or total_duration_s <= 0:
+        ffmpeg_run(cmd)
+        return
+
+    tracked_cmd = cmd[:1] + ["-progress", "pipe:1", "-nostats"] + cmd[1:]
+    log.info("[ffmpeg] %s", " ".join(str(c) for c in tracked_cmd))
+    _log_dir = os.environ.get("RUSHCUT_LOG_DIR", "/tmp/rushcut")
+    stderr_path = f"{_log_dir}/ffmpeg-stderr-last.log"
+    try:
+        Path(stderr_path).parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        stderr_path = None
+
+    try:
+        stderr_file = open(stderr_path, "w") if stderr_path else subprocess.DEVNULL
+        proc = subprocess.Popen(
+            tracked_cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True, bufsize=1
+        )
+    except Exception:
+        log.warning("[ffmpeg][#119] failed to start tracked encode, falling back to plain run", exc_info=True)
+        if stderr_path and stderr_file not in (None, subprocess.DEVNULL):
+            stderr_file.close()
+        ffmpeg_run(cmd)
+        return
+
+    last_pct = -1
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line.startswith("out_time_us="):
+                continue
+            try:
+                out_us = int(line.split("=", 1)[1])
+            except (ValueError, IndexError):
+                continue  # e.g. "out_time_us=N/A" before the first frame
+            frac = min(1.0, max(0.0, (out_us / 1_000_000.0) / total_duration_s))
+            pct = int(frac * 100)
+            if pct != last_pct:
+                last_pct = pct
+                try:
+                    on_tick(frac)
+                except Exception:
+                    pass  # never let a UX tick failure break the encode
+    except Exception:
+        log.warning("[ffmpeg][#119] progress-tick read loop failed, encode continues", exc_info=True)
+    finally:
+        proc.stdout.close()
+        returncode = proc.wait()
+        if stderr_path:
+            stderr_file.close()
+
+    if returncode != 0:
+        stderr_tail = ""
+        if stderr_path:
+            try:
+                with open(stderr_path) as f:
+                    stderr_tail = f.read()[-4000:]
+            except Exception:
+                stderr_tail = "(could not read stderr log)"
+        raise RuntimeError(
+            f"FFmpeg failed (exit {returncode}):\n"
+            f"CMD: {' '.join(str(c) for c in tracked_cmd)}\n"
+            f"STDERR: {stderr_tail}"
+        )
+
+
 def ffprobe_json(args: list[str]) -> dict:
     """Run ffprobe and return parsed JSON output."""
     cmd = [FFPROBE, "-v", "error"] + args + ["-print_format", "json"]
