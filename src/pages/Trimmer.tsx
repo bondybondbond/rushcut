@@ -4,7 +4,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Clip, ProjectWithClips } from "@/types/project";
+import { open, confirm } from "@tauri-apps/plugin-dialog";
+import type { Clip, ClipMeta, ProjectWithClips } from "@/types/project";
 import { MediaPantry } from "@/components/trimmer/MediaPantry";
 import { TrimBar } from "@/components/trimmer/TrimBar";
 import { StickyFilmStrip, cardTextColor } from "@/components/StickyFilmStrip";
@@ -298,6 +299,83 @@ export default function Trimmer() {
     setVideoCanPlay(false);
     setSourceFailed(false);
     generatingProxyRef.current.delete(next.id);
+  }
+
+  // #40: append new source clips to the pantry without leaving Trimmer. Mirrors Upload.tsx's
+  // handlePickFiles (open -> probe_files) but calls add_clips_cmd (existing-project append,
+  // server-side dedupe by local_path) instead of create_project.
+  async function handleAddClips() {
+    if (!projectId) return;
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "avi", "mts", "MP4", "MOV", "MKV"] }],
+      });
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      if (paths.length === 0) return;
+      const metas = await invoke<ClipMeta[]>("probe_files", { paths });
+      if (metas.length === 0) return;
+      const newClips = await invoke<Clip[]>("add_clips_cmd", { projectId, clips: metas });
+      if (newClips.length === 0) return;
+      const next = [...clips, ...newClips];
+      setClips(next);
+      projectCache.set(projectId, { name: projectName, clips: next });
+      // Boost priority: user explicitly asked for these clips mid-session, unlike Upload's
+      // initial bulk import which defers (lowPriority) — see rust-tauri.md's "one
+      // normal-priority boost per project" guard, which already covers concurrent-call safety.
+      invoke("generate_proxies_cmd", { projectId }).catch(() => {});
+    } catch (err) {
+      console.error("[trimmer] add clips failed", err);
+    }
+  }
+
+  // #40: right-click "Remove from project" on a pantry (include=0) tile. Cut rows (include=1)
+  // clone their metadata at creation time (no FK to the source row), so this never affects
+  // any clip already in the film. If the removed clip is the one currently loaded for review,
+  // fall back to the next pantry source (or first in-film clip) — same pattern as
+  // handleNav/handlePantrySelect, NOT handleDeleteCut (which only manages film playback index).
+  async function handleRemovePantryClip(pantryClip: Clip) {
+    // Competitor precedent (Premiere) surfaces whether the clip has timeline work before
+    // removal — cuts made from this source are unaffected (they clone their own data, no
+    // FK back to the source row), but the user should know they exist before losing the
+    // ability to re-trim from this pantry tile.
+    const cutCount = clips.filter(c => c.include === 1 && c.local_path === pantryClip.local_path).length;
+    const message = cutCount > 0
+      ? `Remove this clip from the project? It has ${cutCount} cut${cutCount !== 1 ? "s" : ""} already in your film — those won't be affected, but you won't be able to re-trim from this source afterward.`
+      : "Remove this clip from the project?";
+    const ok = await confirm(message);
+    if (!ok) return;
+
+    const isCurrentlySelected = clip?.id === pantryClip.id;
+    const remainingSourceClips = clips.filter(c => c.include === 0 && c.id !== pantryClip.id);
+    const remainingInFilm = clips
+      .filter(c => c.include === 1 && c.id !== pantryClip.id)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    const next = clips.filter(c => c.id !== pantryClip.id);
+
+    setClips(next);
+    if (projectId) projectCache.set(projectId, { name: projectName, clips: next });
+
+    if (isCurrentlySelected) {
+      const fallback = remainingSourceClips[0] ?? remainingInFilm[0] ?? null;
+      setSelectedClip(fallback);
+      setInMs(fallback?.in_ms ?? 0);
+      setOutMs(fallback ? (fallback.out_ms ?? fallback.duration_ms) : 0);
+      setCurrentMs(fallback?.in_ms ?? 0);
+      setFilmActiveId(null);
+      setIsPlaying(false);
+      setVideoCanPlay(false);
+      setSourceFailed(false);
+      if (fallback) generatingProxyRef.current.delete(fallback.id);
+    }
+
+    try {
+      await invoke("delete_clip_cmd", { clipId: pantryClip.id });
+    } catch (err) {
+      console.error("[trimmer] remove pantry clip failed, rolling back", err);
+      setClips(prev => [...prev, pantryClip]);
+    }
   }
 
   async function handleAddCutForClip(targetClip: Clip, cutInMs: number, cutOutMs: number) {
@@ -1139,6 +1217,8 @@ export default function Trimmer() {
           selectedId={clip.include === 0 ? clip.id : sourceClips.find(sc => sc.local_path === clip.local_path)?.id ?? null}
           onSelect={handlePantrySelect}
           inFilmPaths={cutPaths}
+          onAddClips={handleAddClips}
+          onRemoveClip={handleRemovePantryClip}
         />
       }
       transitionValue={transitionVal}

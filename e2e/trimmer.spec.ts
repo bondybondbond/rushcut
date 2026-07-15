@@ -205,4 +205,82 @@ describe("Trimmer screen", () => {
     ensureScreenshotsDir();
     await browser.saveScreenshot(path.join(SCREENSHOTS, "trimmer-C-trimbar.png"));
   });
+
+  // #40 -- Add/remove clips from Trimmer without returning to Upload.
+  // "Add clips" opens a native OS file picker and "Remove from project" triggers a native
+  // Win32 confirm() dialog (not a JS confirm()) -- neither is automatable via CDP, per the
+  // documented exceptions in .claude/rules/e2e.md ("Only permitted shortcut" + the separate
+  // "CDP evaluate_script dialogAction has no effect on Tauri plugin (Win32) dialogs" trap).
+  // Structural presence of both entry points is verified via the UI; the underlying
+  // add/remove behavior is verified via the same probe_files/add_clips_cmd/delete_clip_cmd
+  // invoke() shortcut already used for scan_folder + create_project in this file.
+
+  it("'+ Add clips' button is visible in the Media Pantry header", async () => {
+    if (!projectId) return;
+    const addBtn = await $('[data-testid="btn-add-clips"]');
+    await addBtn.waitForExist({ timeout: 5_000 });
+    expect(await addBtn.isDisplayed()).toBe(true);
+  });
+
+  it("right-click on a pantry tile shows 'Remove from project' context menu", async () => {
+    if (!projectId) return;
+    const tile = await $('[data-testid="pantry-tile"]');
+    await tile.waitForExist({ timeout: 5_000 });
+    await tile.click({ button: "right" });
+    const menuItem = await $('[data-testid="btn-remove-from-project"]');
+    await menuItem.waitForExist({ timeout: 5_000 });
+    expect(await menuItem.getText()).toContain("Remove from project");
+    // Dismiss without clicking -- clicking would fire a native Win32 confirm() dialog that
+    // WDIO cannot interact with (see comment above).
+    await browser.execute(() => document.body.click());
+  });
+
+  it("add_clips_cmd appends a new source clip and dedupes by local_path on re-add", async () => {
+    if (!projectId) return;
+    const result = await browser.execute(async (id: string) => {
+      const { invoke } = (window as any).__TAURI_INTERNALS__;
+      const metas: any[] = await invoke("scan_folder", { folderPath: "C:\\clips" });
+      if (!metas || metas.length === 0) return null;
+      // Reuse a path already scanned but not yet in this project's first 3 clips -- if the
+      // folder only has 3 files, this intentionally exercises the dedupe path on the 4th call.
+      const meta = metas[metas.length - 1];
+      const clipPayload = [{
+        filename: meta.filename,
+        local_path: meta.local_path,
+        size_bytes: meta.size_bytes,
+        duration_ms: meta.duration_ms,
+        width: meta.width,
+        height: meta.height,
+        has_audio: meta.has_audio,
+        thumbnail_data: meta.thumbnail_data ?? null,
+      }];
+      const first = await invoke("add_clips_cmd", { projectId: id, clips: clipPayload });
+      const second = await invoke("add_clips_cmd", { projectId: id, clips: clipPayload });
+      return { firstLen: first.length, secondLen: second.length };
+    }, projectId);
+    if (!result) return; // no clips found in C:\clips -- environment gap, not a regression
+    // First call inserts (0 or 1 depending on whether it was already one of the initial 3);
+    // second call with the identical local_path must always dedupe to 0.
+    expect(result.secondLen).toBe(0);
+  });
+
+  it("delete_clip_cmd removes a pantry clip so get_project no longer returns it", async () => {
+    if (!projectId) return;
+    const removed = await browser.execute(async (id: string) => {
+      const { invoke } = (window as any).__TAURI_INTERNALS__;
+      const before = await invoke("get_project", { projectId: id });
+      const pantryClip = before.clips.find((c: any) => c.include === 0);
+      if (!pantryClip) return null;
+      await invoke("delete_clip_cmd", { clipId: pantryClip.id });
+      const after = await invoke("get_project", { projectId: id });
+      return {
+        removedId: pantryClip.id,
+        stillPresent: after.clips.some((c: any) => c.id === pantryClip.id),
+        otherClipsIntact: after.clips.length === before.clips.length - 1,
+      };
+    }, projectId);
+    if (!removed) return; // no pantry clip left to remove -- environment gap, not a regression
+    expect(removed.stillPresent).toBe(false);
+    expect(removed.otherClipsIntact).toBe(true);
+  });
 });

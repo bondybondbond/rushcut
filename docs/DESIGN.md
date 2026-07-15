@@ -882,6 +882,42 @@ When a warning has an interactive action (e.g. "Try Again") or persists until a 
 - **No auto-dismiss:** persists until the underlying condition clears (clear via state reset)
 - **No red:** `#FF8A65` peach is the warning signal; red (`text-red-*`) is reserved for the hard error phase
 
+---
+
+## Right-click context menu (Batch V3, #40 — first use)
+
+Small floating menu triggered by `onContextMenu` on a tile/row (e.g. MediaPantry pantry tiles). Same dark surface as Toast, positioned at the cursor rather than fixed to a screen edge.
+
+- **Container:** `fixed z-50 bg-[#1a1a1a] border border-white/15 rounded-md shadow-lg py-1 min-w-[180px]`, positioned via inline `style={{ left: e.clientX, top: e.clientY }}` captured from the triggering `onContextMenu` event
+- **Item (destructive):** `w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 transition-colors` — matches the existing Destructive CTA red token, no border needed at this scale
+- **Item (non-destructive):** would use `text-sm text-[#e5e5e5] hover:bg-white/5` — not yet built, follow this convention when one is needed
+- **Dismiss:** a `window` `click`/`blur` listener registered only while the menu is open (`useEffect` keyed on menu state) — clicking anywhere (including the menu's own container, which calls `stopPropagation`) or losing window focus closes it
+- **`e.preventDefault()`** on the triggering `onContextMenu` is required to suppress the native OS context menu
+- Menu items that trigger a destructive action should still go through a `confirm()` step (see Toast/dialog patterns) — the context menu itself is not the confirmation
+
+```tsx
+onContextMenu={(e) => {
+  e.preventDefault();
+  setMenu({ x: e.clientX, y: e.clientY, target: someItem });
+}}
+
+{menu && (
+  <div
+    className="fixed z-50 bg-[#1a1a1a] border border-white/15 rounded-md shadow-lg py-1 min-w-[180px]"
+    style={{ left: menu.x, top: menu.y }}
+    onClick={(e) => e.stopPropagation()}
+  >
+    <button
+      type="button"
+      onClick={() => { onAction(menu.target); setMenu(null); }}
+      className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 transition-colors"
+    >
+      Destructive action label
+    </button>
+  </div>
+)}
+```
+
 ```tsx
 {stalled && (
   <div className="mt-3 flex items-center justify-between gap-4 rounded-md border border-white/10 border-l-2 border-l-[#FF8A65] bg-white/5 p-3">

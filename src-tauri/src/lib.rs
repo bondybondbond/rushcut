@@ -1174,8 +1174,10 @@ fn add_clip_cut_cmd(
     Ok(cut)
 }
 
-/// Delete a single cut row by id (multi-cut model, Batch A).
-/// Only removes the specific cut — never removes the source row.
+/// Delete a single clip row by id — either a cut (include=1, multi-cut model, Batch A)
+/// or a source/pantry row (include=0, Trimmer "Remove from project", #40). Cut rows clone
+/// their metadata from the source at creation time (no FK), so removing a source row never
+/// affects any cut already derived from it.
 #[tauri::command]
 fn delete_clip_cmd(clip_id: String) -> Result<(), String> {
     delete_clip(&clip_id).map_err(|e| format!("DB error (delete clip): {}", e))
@@ -1245,6 +1247,59 @@ fn create_project(name: String, clips: Vec<ClipMeta>) -> Result<String, String> 
     }
 
     Ok(project_id)
+}
+
+/// Append new source (include=0) clips to an already-existing project (#40, Trimmer
+/// "Add clips"). Mirrors create_project's per-clip Clip construction, but computes
+/// sort_order starting after the project's current max instead of from 0, and dedupes
+/// against local_paths already present in the project (server-side — the frontend's
+/// in-memory clips array can be stale). Returns only the newly-inserted rows so the
+/// caller can append to UI state without a full refetch.
+#[tauri::command]
+fn add_clips_cmd(project_id: String, clips: Vec<ClipMeta>) -> Result<Vec<Clip>, String> {
+    let project_data = get_project_with_clips(&project_id)
+        .map_err(|e| format!("DB error (get project): {}", e))?;
+
+    let existing_paths: std::collections::HashSet<&str> =
+        project_data.clips.iter().map(|c| c.local_path.as_str()).collect();
+    let max_order = project_data.clips.iter().map(|c| c.sort_order).max().unwrap_or(-1);
+
+    let mut inserted = Vec::new();
+    let mut next_idx: i64 = 0;
+    for meta in clips.iter() {
+        if existing_paths.contains(meta.local_path.as_str()) {
+            continue; // already in this project's pantry — skip silently
+        }
+        let clip = Clip {
+            id: Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            filename: meta.filename.clone(),
+            local_path: meta.local_path.clone(),
+            duration_ms: meta.duration_ms,
+            width: meta.width,
+            height: meta.height,
+            has_audio: meta.has_audio,
+            thumbnail_data: meta.thumbnail_data.clone(),
+            sort_order: max_order + 1 + next_idx,
+            created_at: db::now(),
+            in_ms: None,
+            out_ms: None,
+            focal_x: None,
+            focal_y: None,
+            zoom_mode: None,
+            include: 0,
+            proxy_path: None,
+            waveform_data: None,
+            codec_name: meta.codec_name.clone(),
+            clip_volume: 1.0,
+            proxy_status: None,
+        };
+        insert_clip(&clip).map_err(|e| format!("DB error (insert clip {}): {}", meta.filename, e))?;
+        next_idx += 1;
+        inserted.push(clip);
+    }
+
+    Ok(inserted)
 }
 
 /// Read a project and its clips from SQLite.
@@ -2468,6 +2523,7 @@ pub fn run() {
             scan_folder,
             probe_files,
             create_project,
+            add_clips_cmd,
             rename_project_cmd,
             update_clip_review_cmd,
             update_clip_volume_cmd,
