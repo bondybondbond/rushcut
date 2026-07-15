@@ -28,10 +28,11 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
 
 ## Outstanding hypotheses / relevant open issues (ranked)
 
-1. **#115 (P3-Low)** — opt-out toggle to skip the open/close boundary re-encode, follow-up to #88 (closed). Default stays ON (Best Quality) — opt-out only.
-2. **#106 (P3-Low)** — copy-stream normalise for already-compliant clips. Narrow: never fires on the primary DJI HEVC workload.
+1. **#131 (P2-Medium, RICE 35)** — GPU-accelerate or restructure the per-frame `scale=eval=frame,crop=...` Ken Burns filter in `zoom.py`. The first hypothesis in this whole investigation series aimed at the actual dominant cost bucket (`t_render_s`, 63-69% of total) rather than a peripheral lever (encoder choice, trim batching, boundary re-encode, decode hwaccel — all tried, all flat/NO-GO). Root cause identified by #113. **A NO-GO here makes it 6/6 lever-level speed investigations without a real win since #65 — that result should trigger a swimlane-pause conversation with the user, not another lever attempt.**
+2. **#115 (P3-Low)** — opt-out toggle to skip the open/close boundary re-encode, follow-up to #88 (closed). Default stays ON (Best Quality) — opt-out only.
+3. **#106 (P3-Low)** — copy-stream normalise for already-compliant clips. Narrow: never fires on the primary DJI HEVC workload.
 
-`t_trim_s` has no remaining candidate after #104 closed NO-GO (below) — #99's parallelism win (~1.2x) is the ceiling for that stage barring a fundamentally different approach. Remaining north-star gap is `t_render_s` (63–69% of total) — #88 above targets it. **#110 (hevc_amf) shipped but is NOT a `t_render_s` lever** — see below; it's a file-size win only, since decode/filter_complex compositing (not encode) dominates `t_render_s` in the real U1g path.
+`t_trim_s` has no remaining candidate after #104 closed NO-GO (below) — #99's parallelism win (~1.2x) is the ceiling for that stage barring a fundamentally different approach. Remaining north-star gap is `t_render_s` (63–69% of total) — #131 above is the first hypothesis to target it directly. **#110 (hevc_amf) and #113 (GPU decode) both shipped/probed but are NOT `t_render_s` levers** — see below; #110 is a file-size win only, #113 confirmed the real bottleneck is the CPU-bound Ken Burns filter, not decode or encode.
 
 ## Learning log (brief — tried, success/fail)
 
