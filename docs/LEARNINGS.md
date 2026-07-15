@@ -578,6 +578,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Proxy — `generate_proxies_cmd` without `allClips: true` never encodes a newly-added pantry clip, silently and forever (#40 follow-up, 2026-07-16)
+
+**Problem:** `generate_proxies_cmd`'s own code comment states it plainly (`lib.rs`, just above the `run_bg_proxy_batch` call): `allClips=false` (the default when the flag is omitted) encodes `include=1` (film) clips only. Trimmer's "Add clips" handler (#40) called `invoke("generate_proxies_cmd", { projectId })` with no `allClips` flag after inserting a new pantry (`include=0`) row — that row can never be selected by the batch, so `proxy_status` stays `null` forever, not just slowly. Confirmed via a real `invoke()` poll: `proxy_status` sat at `null` for a full 90s with zero transition to `"encoding"`, proving the clip was never even claimed, not just queued behind slow encoding.
+**Solution:** Any caller that wants a freshly-added pantry clip proxied must pass `allClips: true` — same as Upload.tsx's own initial-import call already does (`generate_proxies_cmd({projectId, lowPriority:true, allClips:true})`). Fixed in Trimmer.tsx's `handleAddClips`.
+**Context:** Any future call site that adds new `include=0` rows and expects them to get thumbnails/proxies without the user manually opening the clip first (which triggers the Trimmer mount-effect's own `anyWork` check separately). If `proxy_status` never leaves `null` after an add, check the `allClips` flag on the triggering call before suspecting an encode-speed problem.
+
+---
+
 ## Tauri — check-then-insert command guards need DB-level atomicity, not an in-memory Mutex
 
 **Problem:** `start_job` (`src-tauri/src/lib.rs:1218`) guards against duplicate renders with `get_active_job()` (a `SELECT`) followed much later by `insert_job()` (a separate `INSERT`) — no transaction, no unique constraint between them. Two or three calls can each pass the `SELECT` before any commits the `INSERT`, so all proceed. Confirmed live (#89, 2026-07-07): three duplicate renders fired at the same instant, spawned three concurrent 4K WSL pipelines, and all three died together from the resulting WSL memory pressure — the exact scenario the guard's own comment says it exists to prevent.

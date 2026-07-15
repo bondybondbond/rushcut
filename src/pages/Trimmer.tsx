@@ -324,7 +324,11 @@ export default function Trimmer() {
       // Boost priority: user explicitly asked for these clips mid-session, unlike Upload's
       // initial bulk import which defers (lowPriority) — see rust-tauri.md's "one
       // normal-priority boost per project" guard, which already covers concurrent-call safety.
-      invoke("generate_proxies_cmd", { projectId }).catch(() => {});
+      // allClips: true is REQUIRED here -- generate_proxies_cmd's default (allClips omitted/false)
+      // only encodes include=1 (film) clips; newly-added pantry rows are include=0 and would
+      // never get proxied without this flag (confirmed via a real invoke() test that left
+      // proxy_status null for 90s straight -- see docs/LEARNINGS.md Proxy entry 2026-07-16).
+      invoke("generate_proxies_cmd", { projectId, allClips: true }).catch(() => {});
     } catch (err) {
       console.error("[trimmer] add clips failed", err);
     }
