@@ -30,6 +30,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow-gh — backticks inside a double-quoted `gh issue comment --body "..."` trigger bash command substitution, silently corrupting the posted comment
+
+**Problem:** A markdown-formatted comment body containing inline-code spans like `` `docs/DESIGN.md` `` or a quoted phrase like `"drag-left swipe"` passed via `--body "..."` in the Bash tool gets parsed by Git Bash itself — backticks trigger command substitution (tries to execute the enclosed text as a shell command), silently dropping or mangling that segment of the posted comment. The `gh` call still succeeds and returns a valid comment URL, so nothing visibly fails; the corruption is only visible by re-reading the posted comment back.
+**Solution:** Write the comment body to a file (e.g. in the scratchpad dir) and pass it via `gh api repos/<owner>/<repo>/issues/comments/<id> -X PATCH -f body="$(cat file.md)"` (or `--body-file` on `gh issue comment` at creation time) instead of an inline double-quoted string with backticks. After any `gh issue comment`/`gh issue create` call whose body contains backticks, re-fetch it (`gh issue view <n> --json comments --jq '.comments[-1].body'`) to confirm it wasn't silently mangled, since the command's own success/URL output does not indicate corruption.
+**Context:** Any `gh issue create`/`gh issue comment` call with a markdown body containing inline code spans, run via the Bash tool (Git Bash). Confirmed on #35 wrapup (2026-07-16) — a comment segment referencing a quoted gesture name was silently dropped.
+
+---
+
 ## Workflow-WSL — piping a `wsl ...` command's output into a PowerShell-side cmdlet fails silently on Unix-only tools
 
 **Problem:** `wsl -- grep "..." /mnt/c/.../file.log | tail -30` runs `grep` inside WSL but the `|` is parsed by PowerShell itself, not passed through to WSL — the pipe target (`tail`) then executes as a PowerShell command, which doesn't exist there ("tail: command not recognized"). Any Unix-only filter (`tail`, `head`, `wc`, `sort`) chained onto a `wsl -- <cmd>` call this way fails the same way.
