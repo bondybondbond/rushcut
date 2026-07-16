@@ -29,7 +29,7 @@ import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import subprocess
@@ -748,6 +748,8 @@ def run_pipeline(
 
         if jobs:
             threads_per_worker = max(1, (os.cpu_count() or 4) // MAX_PARALLEL_TRIM)
+            total_jobs = len(jobs)
+            trim_lo, trim_hi = checkpoints["normalise"], checkpoints["trim"]
 
             def _trim_worker(i: int, p, start: float, end: float) -> None:
                 out = tmp / f"trim_{i}.mp4"
@@ -755,8 +757,16 @@ def run_pipeline(
 
             with ThreadPoolExecutor(max_workers=MAX_PARALLEL_TRIM) as pool:
                 futures = [pool.submit(_trim_worker, i, p, start, end) for i, p, start, end in jobs]
-                for f in futures:
+                # as_completed (not submission-order iteration) so a tick fires as soon as
+                # ANY clip finishes -- report per-clip so this stage doesn't appear stuck,
+                # same pattern as Step 1's _normalise_progress. `done` is only mutated here
+                # on the main thread (as_completed yields sequentially) -- no lock needed.
+                done = 0
+                for f in as_completed(futures):
                     f.result()  # re-raise any worker exception immediately (no swallowing)
+                    done += 1
+                    report_stage(f"Trimming clip {done} of {total_jobs}")
+                    report(int(trim_lo + done / total_jobs * (trim_hi - trim_lo)))
 
         current_paths = trimmed
     else:
