@@ -852,11 +852,33 @@ Rendered inside the timeline row's right aside (w-48), filling the same 100px he
 
 ---
 
+## Loading States (skeleton tiles + inline spinner)
+
+Consolidated here after the pattern was reimplemented independently three times (Upload's scan skeleton grid, Trimmer's clip-mode proxy-pending pill, and #133's pantry add-clips skeleton) without a shared reference. Use these two building blocks together whenever an async action needs to (a) show *where* new items will land and (b) disable the trigger control until it settles.
+
+**Skeleton tile** — placeholder for content not yet available (thumbnail, newly-added clip):
+```tsx
+<div className="rounded-md overflow-hidden border-2 border-white/10 bg-[#111111]" style={{ aspectRatio: "16/9" }}>
+  <div className="w-full h-full bg-white/10 animate-pulse" />
+</div>
+```
+
+**Inline spinner** (button/pill use) — peach ring, transparent top edge, spins via Tailwind `animate-spin`:
+```tsx
+<span className="inline-block w-2.5 h-2.5 border border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
+```
+Scale `w-*`/`h-*`/border width up for a standalone loading screen (e.g. `w-8 h-8 border-2`, used for full-page loading states).
+
+**Pairing rule:** when an action both inserts new items AND has a trigger button, drive both from the same pending-count/boolean state — disable the button + show the inline spinner, and render N skeleton tiles for N items in flight. Clear the state in a `try/finally` around the async chain so it can never get stuck on error. Do not build a separate "failed" skeleton visual state unless a real, common failure mode requires it — an existing `console.error` + normal clearing is enough for a first pass.
+
+---
+
 ## Toast / Snackbar
 
-Used for transient feedback (e.g. duplicate-cut guard). Not a modal — no blocking, no close button.
+Used for transient feedback (e.g. duplicate-cut guard, duplicate-add-clips guard). Not a modal — no blocking, no close button.
 
-- **Position:** `fixed bottom-6 left-1/2 -translate-x-1/2 z-50`
+- **Position (default, no left panel):** `fixed bottom-6 left-1/2 -translate-x-1/2 z-50`
+- **Position (screens with a left panel, e.g. Trimmer's Media Pantry):** `fixed bottom-20 left-4 z-50 max-w-[13rem]` — centered placement sits directly under the TrimBar/timeline scrubber on these screens and is easy to miss (confirmed #133 follow-up); anchoring bottom-left under the pantry column instead uses otherwise-empty space and stays clear of the timeline. Drop `whitespace-nowrap` when using a `max-w` so longer messages wrap.
 - **Background:** `bg-[#1a1a1a] border border-white/15`
 - **Warning accent:** `border-l-2 border-l-[#FF8A65]` (left border only)
 - **Text:** `text-sm text-[#e5e5e5]`

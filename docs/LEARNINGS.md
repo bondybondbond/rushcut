@@ -202,6 +202,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## React — client-side pre-filter beats server-side silent dedupe for user-facing feedback
+
+**Problem:** A bulk-add flow (`add_clips_cmd`) deduped duplicates server-side and silently dropped them from the returned array. The frontend only found out *after* probing every file (thumbnail + ffprobe, the slow step) and calling the insert command — so a duplicate file wasted the full processing time and, worse, gave zero feedback: `if (newClips.length === 0) return` just did nothing visible. User discovered this by re-adding a file already in the pantry and reported "it just doesn't work."
+**Solution:** When the client already holds the full candidate list to check against (e.g. `clips.map(c => c.local_path)`), filter duplicates out client-side *before* the expensive async chain starts — zero wasted probing, and the warning fires synchronously instead of after a multi-second round-trip. Keep the server-side dedupe as a defensive fallback for a stale client list (comment in `add_clips_cmd` already flags this), but don't rely on it as the primary UX signal.
+**Context:** `Trimmer.tsx` `handleAddClips` (#133 follow-up). Any bulk-add/bulk-import flow where the backend has its own authoritative dedupe/validation — check client-side first when the data needed for the check is already in memory, to avoid a silent "nothing happened" UX after a real wait.
+
+---
+
 ## React — imperative DOM updates for high-frequency media events
 
 **Problem:** React `setState` inside `onTimeUpdate` (fires 4–66 Hz) causes a re-render per tick. For a progress bar fill + elapsed label, this floods the React reconciler every 15–250ms, degrading playback smoothness.

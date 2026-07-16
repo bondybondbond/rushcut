@@ -45,6 +45,7 @@ export default function Trimmer() {
   const [videoCanPlay, setVideoCanPlay] = useState(false);
   const [sourceFailed, setSourceFailed] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [pendingAddCount, setPendingAddCount] = useState(0);
 
   const [viewMode, setViewMode] = useState<"clip" | "film">("clip");
   const [filmPlayIdx, setFilmPlayIdx] = useState(0);
@@ -312,23 +313,56 @@ export default function Trimmer() {
         filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "avi", "mts", "MP4", "MOV", "MKV"] }],
       });
       if (!selected) return;
-      const paths = Array.isArray(selected) ? selected : [selected];
+      const allPaths = Array.isArray(selected) ? selected : [selected];
+      if (allPaths.length === 0) return;
+      // Filter out files already in this project's pantry BEFORE probing -- probing is the
+      // slow step (ffprobe + thumbnail), so a duplicate should never trigger a skeleton tile
+      // or cost any processing time (#133 follow-up: user found the old flow silently probed
+      // and then dropped duplicates after the fact, with no visible reason).
+      const existingPaths = new Set(clips.map((c) => c.local_path));
+      const duplicateCount = allPaths.filter((p) => existingPaths.has(p)).length;
+      const paths = allPaths.filter((p) => !existingPaths.has(p));
+      if (duplicateCount > 0) {
+        setToast(
+          duplicateCount === 1
+            ? "Already in this project — 1 file skipped"
+            : `Already in this project — ${duplicateCount} files skipped`
+        );
+        setTimeout(() => setToast(null), 2500);
+      }
       if (paths.length === 0) return;
-      const metas = await invoke<ClipMeta[]>("probe_files", { paths });
-      if (metas.length === 0) return;
-      const newClips = await invoke<Clip[]>("add_clips_cmd", { projectId, clips: metas });
-      if (newClips.length === 0) return;
-      const next = [...clips, ...newClips];
-      setClips(next);
-      projectCache.set(projectId, { name: projectName, clips: next });
-      // Boost priority: user explicitly asked for these clips mid-session, unlike Upload's
-      // initial bulk import which defers (lowPriority) — see rust-tauri.md's "one
-      // normal-priority boost per project" guard, which already covers concurrent-call safety.
-      // allClips: true is REQUIRED here -- generate_proxies_cmd's default (allClips omitted/false)
-      // only encodes include=1 (film) clips; newly-added pantry rows are include=0 and would
-      // never get proxied without this flag (confirmed via a real invoke() test that left
-      // proxy_status null for 90s straight -- see docs/LEARNINGS.md Proxy entry 2026-07-16).
-      invoke("generate_proxies_cmd", { projectId, allClips: true }).catch(() => {});
+      setPendingAddCount(paths.length);
+      try {
+        const metas = await invoke<ClipMeta[]>("probe_files", { paths });
+        if (metas.length === 0) return;
+        const newClips = await invoke<Clip[]>("add_clips_cmd", { projectId, clips: metas });
+        const skippedCount = metas.length - newClips.length;
+        if (skippedCount > 0) {
+          // add_clips_cmd dedupes server-side by local_path (src-tauri/src/lib.rs add_clips_cmd)
+          // and silently drops duplicates -- surface it so a picked file that's already in the
+          // pantry doesn't look like the click did nothing (#133 follow-up).
+          setToast(
+            skippedCount === 1
+              ? "Already in this project — 1 file skipped"
+              : `Already in this project — ${skippedCount} files skipped`
+          );
+          setTimeout(() => setToast(null), 2500);
+        }
+        if (newClips.length === 0) return;
+        const next = [...clips, ...newClips];
+        setClips(next);
+        projectCache.set(projectId, { name: projectName, clips: next });
+        // Boost priority: user explicitly asked for these clips mid-session, unlike Upload's
+        // initial bulk import which defers (lowPriority) — see rust-tauri.md's "one
+        // normal-priority boost per project" guard, which already covers concurrent-call safety.
+        // allClips: true is REQUIRED here -- generate_proxies_cmd's default (allClips omitted/false)
+        // only encodes include=1 (film) clips; newly-added pantry rows are include=0 and would
+        // never get proxied without this flag (confirmed via a real invoke() test that left
+        // proxy_status null for 90s straight -- see docs/LEARNINGS.md Proxy entry 2026-07-16).
+        invoke("generate_proxies_cmd", { projectId, allClips: true }).catch(() => {});
+      } finally {
+        setPendingAddCount(0);
+      }
     } catch (err) {
       console.error("[trimmer] add clips failed", err);
     }
@@ -1223,6 +1257,7 @@ export default function Trimmer() {
           inFilmPaths={cutPaths}
           onAddClips={handleAddClips}
           onRemoveClip={handleRemovePantryClip}
+          pendingAddCount={pendingAddCount}
         />
       }
       transitionValue={transitionVal}
@@ -1539,10 +1574,12 @@ export default function Trimmer() {
         </div>
       </div>
 
-      {/* Toast — duplicate cut guard (above bottom tab bar) */}
+      {/* Toast — duplicate cut guard + duplicate add-clips guard. Bottom-left, under the Media
+          Pantry column (#133 follow-up: centered placement sat under the trimline/timeline and
+          was easy to miss; user asked to move it to the free space under the pantry instead). */}
       {toast && (
-        <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg pointer-events-none">
-          <p className="text-sm text-[#e5e5e5] whitespace-nowrap">{toast}</p>
+        <div className="fixed bottom-20 left-4 z-50 max-w-[13rem] px-4 py-2.5 bg-[#1a1a1a] border border-white/15 border-l-2 border-l-[#FF8A65] rounded-md shadow-lg shadow-black/50 pointer-events-none">
+          <p className="text-sm text-[#e5e5e5]">{toast}</p>
         </div>
       )}
 

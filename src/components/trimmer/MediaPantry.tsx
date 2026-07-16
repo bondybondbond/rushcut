@@ -8,6 +8,7 @@ interface MediaPantryProps {
   inFilmPaths: Set<string>;
   onAddClips?: () => void;
   onRemoveClip?: (clip: Clip) => void;
+  pendingAddCount?: number;
 }
 
 interface ContextMenuState {
@@ -16,7 +17,7 @@ interface ContextMenuState {
   clip: Clip;
 }
 
-export function MediaPantry({ clips, selectedId, onSelect, inFilmPaths, onAddClips, onRemoveClip }: MediaPantryProps) {
+export function MediaPantry({ clips, selectedId, onSelect, inFilmPaths, onAddClips, onRemoveClip, pendingAddCount = 0 }: MediaPantryProps) {
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
 
   useEffect(() => {
@@ -41,10 +42,14 @@ export function MediaPantry({ clips, selectedId, onSelect, inFilmPaths, onAddCli
             type="button"
             data-testid="btn-add-clips"
             onClick={onAddClips}
-            title="Add clips"
-            className="text-xs px-2 py-1 rounded border border-white/30 text-[#a3a3a3] hover:text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-all duration-200"
+            disabled={pendingAddCount > 0}
+            title={pendingAddCount > 0 ? "Adding clips..." : "Add clips"}
+            className="text-xs px-2 py-1 rounded border border-white/30 text-[#a3a3a3] hover:text-[#e5e5e5] hover:border-white/60 hover:bg-white/5 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
           >
-            + Add clips
+            {pendingAddCount > 0 && (
+              <span className="inline-block w-2.5 h-2.5 border border-[#FF8A65] border-t-transparent rounded-full animate-spin flex-shrink-0" />
+            )}
+            {pendingAddCount > 0 ? "Adding..." : "+ Add clips"}
           </button>
         )}
       </div>
@@ -115,6 +120,18 @@ export function MediaPantry({ clips, selectedId, onSelect, inFilmPaths, onAddCli
             </button>
           );
         })}
+        {/* #133: pending skeleton tiles for files just picked via "+ Add clips" — cleared
+            once probe_files/add_clips_cmd resolve (or fail) via Trimmer's pendingAddCount. */}
+        {Array.from({ length: pendingAddCount }).map((_, i) => (
+          <div
+            key={`pending-${i}`}
+            data-testid="pantry-pending-tile"
+            className="relative rounded-md overflow-hidden border-2 border-white/10 bg-[#111111]"
+            style={{ aspectRatio: "16/9" }}
+          >
+            <div className="w-full h-full bg-white/10 animate-pulse" />
+          </div>
+        ))}
       </div>
 
       {/* Right-click context menu (#40) — dark surface matches Toast token, destructive item red */}
