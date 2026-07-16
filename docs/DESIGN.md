@@ -164,9 +164,15 @@ Stacked in `flex gap-0.5`, `absolute bottom-1 right-1 z-10 pointer-events-none`:
 
 **Destination crop box (zoom-in only, paused only):** When `kbDir === "in"` and not playing, a thin peach rectangle shows the final crop destination. Drawn at `videoBox` level (outside the CSS-animated `videoWrapRef`) so it is NOT scaled by the zoom animation. Box math uses current paused progress (`approxKenBurnsProgress(t_raw)`) to project the source-frame crop into screen coordinates — box grows toward full-screen as zoom completes, then disappears when `t_raw >= 1` (animation done). Style: `border-2 border-[#FF8A65] rounded-sm pointer-events-none`, `boxShadow: "0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(0,0,0,0.6)"` (dark halo for visibility on bright footage).
 
-### Drag-left delete + DEL key
+### Click-to-arm delete bin + DEL key (V2.2, #35)
 
-Tile gets `tabIndex={0}`. On `mousedown`, window-level `mousemove` tracks `deltaX = Math.min(0, currentX - startX)`. Tile translates `translateX(deltaX)`. Past `deltaX < -40`: red overlay (`bg-red-400/30`). On `mouseup` with `deltaX < -40`: fire `onDeleteClip`. DEL / Backspace key on focused tile: fire `onDeleteClip` immediately. `rc-delete-flash` keyframe in `globals.css` for the removal animation.
+Replaces the earlier drag-left-swipe delete gesture (removed — no ghost behaviour). Clicking a filmstrip tile selects it (`onSelectClip`, wired for both Trimmer clip mode and film mode); while a clip is selected, a red bin button appears in the timeline gutter (left of the filmstrip) and clicking it removes the clip from the film. The bin disappears immediately on deselect or after deletion — it is never a permanent fixture, which keeps discovery-on-first-use (nearly every user clicks a clip early) without adding a persistent destructive control to the chrome.
+
+Bin button: `w-10 h-10` circular, DESIGN.md's canonical Destructive CTA tokens (`border-red-400/60 text-red-400 hover:bg-red-400/10 hover:border-red-400`), `Trash2` icon at `size={18}`. Rendered by the page (Trimmer), not by `StickyFilmStrip` itself, since the bin lives in the caller-owned `timelineGutter` slot alongside any other gutter content (e.g. the proxy-fallback banner) — stack vertically when both are present.
+
+Tile still gets `tabIndex={0}`; DEL / Backspace on a focused tile fires `onDeleteClip` immediately, independent of the bin/selection state — this is the keyboard-only path and needs no visual affordance.
+
+**Why not drag-to-bin:** the filmstrip already has drag-to-reorder (dnd-kit `SortableContext`) on these same tiles — a drag-based delete gesture would collide with reorder (same gesture start, ambiguous until drop). No major editor (DaVinci, Premiere, CapCut desktop) uses drag-to-trash for timeline clip deletion for this reason; they use select + Delete key / right-click / hover-X instead. Confirmed via competitor research on #35 (2026-07-16).
 
 ---
 

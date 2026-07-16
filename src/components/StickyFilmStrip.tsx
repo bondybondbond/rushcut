@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { VolumeX, Volume1, Trash2 } from "lucide-react";
+import { VolumeX, Volume1 } from "lucide-react";
 import {
   DndContext,
   closestCenter,
@@ -49,9 +49,9 @@ interface StickyFilmStripProps {
   clips: Clip[];
   projectId: string;
   activeId?: string | null;
-  /** If provided, shows a hover bin icon on each clip tile. Only Trimmer passes this. */
+  /** If provided, DEL/Backspace on a focused tile removes it. Only Trimmer passes this. */
   onDeleteClip?: (clipId: string) => void;
-  /** If provided, clicking a clip tile selects it. Only Arrange (Clips tab) passes this. */
+  /** If provided, clicking a clip tile selects it. Trimmer (both modes) and Arrange pass this. */
   onSelectClip?: (clipId: string) => void;
   /**
    * If provided, enables press-drag-to-reorder on the film tiles. The arg is the full ordered
@@ -186,18 +186,6 @@ function SortableFilmTile({
       <div className="absolute top-0.5 left-0.5 min-w-[16px] h-4 px-0.5 rounded bg-[#99B3FF] flex items-center justify-center z-10 pointer-events-none">
         <span className="text-[9px] text-[#0a0a0a] font-bold leading-none">{index + 1}</span>
       </div>
-      {/* Hover-reveal delete bin — only when onDeleteClip provided (Trimmer) */}
-      {onDeleteClip && (
-        <button
-          className="absolute top-0.5 right-0.5 w-5 h-5 flex items-center justify-center rounded bg-black/60 text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-20"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onDeleteClip(clip.id); }}
-          title="Remove from film"
-          tabIndex={-1}
-        >
-          <Trash2 size={12} strokeWidth={2.5} />
-        </button>
-      )}
       {/* Duration label */}
       <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 px-1 pb-0.5 pointer-events-none">
         <span className="text-[10px] text-white font-mono drop-shadow-sm">{fmtMs(trimmedMs)}</span>

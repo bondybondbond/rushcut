@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Play, Pause, ChevronLeft, ChevronRight } from "lucide-react";
+import { Play, Pause, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -1263,19 +1263,34 @@ export default function Trimmer() {
       transitionValue={transitionVal}
       soundMood={soundMoodVal}
       timelineGutter={
-        viewMode === "film" && proxyFallbackClipId ? (
-          <div className="h-full flex items-start p-3">
-            <div className="w-full bg-white/5 border border-white/10 border-l-2 border-l-[#FF8A65] rounded-md p-3 flex items-start justify-between gap-2">
-              <p className="text-sm text-[#e5e5e5]">Video may look choppy right now -- it'll smooth out on its own.</p>
+        (filmActiveId || (viewMode === "film" && proxyFallbackClipId)) ? (
+          <div className="h-full flex flex-col items-start gap-2 p-3">
+            {filmActiveId && (
               <button
                 type="button"
-                onClick={() => setProxyFallbackClipId(null)}
-                className="text-[#a3a3a3] hover:text-[#e5e5e5] flex-shrink-0 leading-none"
-                aria-label="Dismiss"
+                onClick={() => {
+                  const cut = clips.find(c => c.id === filmActiveId);
+                  if (cut) { handleDeleteCut(cut); setFilmActiveId(null); }
+                }}
+                className="w-10 h-10 rounded-full border border-red-400/60 text-red-400 hover:bg-red-400/10 hover:border-red-400 flex items-center justify-center transition-all duration-200 flex-shrink-0"
+                title="Remove clip from film"
               >
-                &times;
+                <Trash2 size={18} />
               </button>
-            </div>
+            )}
+            {viewMode === "film" && proxyFallbackClipId && (
+              <div className="w-full bg-white/5 border border-white/10 border-l-2 border-l-[#FF8A65] rounded-md p-3 flex items-start justify-between gap-2">
+                <p className="text-sm text-[#e5e5e5]">Video may look choppy right now -- it'll smooth out on its own.</p>
+                <button
+                  type="button"
+                  onClick={() => setProxyFallbackClipId(null)}
+                  className="text-[#a3a3a3] hover:text-[#e5e5e5] flex-shrink-0 leading-none"
+                  aria-label="Dismiss"
+                >
+                  &times;
+                </button>
+              </div>
+            )}
           </div>
         ) : null
       }
@@ -1288,10 +1303,14 @@ export default function Trimmer() {
             const cut = clips.find(c => c.id === clipId);
             if (cut) { handleDeleteCut(cut); if (filmActiveId === clipId) setFilmActiveId(null); }
           }}
-          onSelectClip={viewMode === "clip" ? (clipId) => {
-            const cut = clips.find(c => c.id === clipId && c.include === 1);
-            if (cut) handleFilmSelect(cut);
-          } : undefined}
+          onSelectClip={(clipId) => {
+            if (viewMode === "clip") {
+              const cut = clips.find(c => c.id === clipId && c.include === 1);
+              if (cut) handleFilmSelect(cut);
+            } else {
+              setFilmActiveId(clipId);
+            }
+          }}
           onReorder={handleReorder}
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
