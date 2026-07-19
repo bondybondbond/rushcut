@@ -452,6 +452,82 @@ export default function Trimmer() {
     }
   }
 
+  // #9: drag a trimmed cut from TrimBar and drop it at a specific position on the film
+  // strip. Reuses add_clip_cut_cmd (appends) then splices the new cut into the desired
+  // position and renumbers sort_order — the same merge/persist logic handleReorder already
+  // uses, so no new Rust command is needed. Treated as one logical transaction: if the
+  // reorder call fails, the whole add is rolled back (delete the cut + restore state) so
+  // the user never ends up with a clip silently misplaced at the end instead of where dropped.
+  async function handleDropCutAtIndex(insertIndex: number) {
+    if (!selectedClip || viewMode !== "clip") return;
+    if (outMs - inMs < 100) return; // no-op: no meaningful trim selection to drop
+
+    const isDuplicate = clips.some(
+      c =>
+        c.include === 1 &&
+        c.local_path === selectedClip.local_path &&
+        (c.in_ms ?? 0) === inMs &&
+        (c.out_ms ?? c.duration_ms) === outMs
+    );
+    if (isDuplicate) {
+      setToast("Already added — adjust handles to add a different cut");
+      setTimeout(() => setToast(null), 2500);
+      return;
+    }
+
+    const sourceRow = clips.find(c => c.include === 0 && c.local_path === selectedClip.local_path);
+    const sourceId = sourceRow?.id ?? selectedClip.id;
+    const previous = clips;
+
+    let newCut: Clip;
+    try {
+      newCut = await invoke<Clip>("add_clip_cut_cmd", {
+        projectId,
+        sourceClipId: sourceId,
+        inMs: inMs > 0 ? inMs : null,
+        outMs: outMs < selectedClip.duration_ms ? outMs : null,
+      });
+    } catch (err) {
+      console.error("[trimmer] drop-add cut failed", err);
+      return;
+    }
+
+    // Splice the new cut into the desired position among in-film clips, merge back into
+    // the full clips array, and renumber sort_order = full-array index (mirrors handleReorder).
+    const withNewCut = [...clips, newCut];
+    const inFilmIds = withNewCut.filter(c => c.include === 1).sort((a, b) => a.sort_order - b.sort_order).map(c => c.id);
+    const orderedInFilmIds = inFilmIds.filter(id => id !== newCut.id);
+    const clamped = Math.max(0, Math.min(insertIndex, orderedInFilmIds.length));
+    orderedInFilmIds.splice(clamped, 0, newCut.id);
+
+    const orderSet = new Set(orderedInFilmIds);
+    const byId = new Map(withNewCut.map((c) => [c.id, c]));
+    const reorderedFilm = orderedInFilmIds.map((id) => byId.get(id)!);
+    let k = 0;
+    const merged = withNewCut.map((c) => (orderSet.has(c.id) ? reorderedFilm[k++] : c));
+    const next = merged.map((c, i) => ({ ...c, sort_order: i }));
+
+    setClips(next);
+    if (projectId) projectCache.set(projectId, { name: projectName, clips: next });
+
+    try {
+      await invoke("reorder_clips_cmd", { clipIds: next.map((c) => c.id) });
+    } catch (err) {
+      console.error("[trimmer] drop-add reorder failed, rolling back whole add", err);
+      setClips(previous);
+      if (projectId) projectCache.set(projectId, { name: projectName, clips: previous });
+      invoke("delete_clip_cmd", { clipId: newCut.id }).catch(() => {});
+      return;
+    }
+
+    invoke("regenerate_thumbnail_at_cmd", {
+      projectId,
+      clipId: newCut.id,
+      localPath: newCut.local_path,
+      atMs: newCut.in_ms ?? 0,
+    }).catch(() => {});
+  }
+
   async function handleDeleteCut(cutClip: Clip) {
     // Clamp filmPlayIdx against the post-delete in-film list before setClips fires async.
     // setClips is async — `clips`/`inFilm` are still pre-delete in this render cycle, so
@@ -1317,6 +1393,7 @@ export default function Trimmer() {
           xfadeOverlapMs={filmXfadeOverlapMs}
           openCard={openCardStrip}
           closeCard={closeCardStrip}
+          onDropCut={viewMode === "clip" ? handleDropCutAtIndex : undefined}
         />
       }
     >
@@ -1567,6 +1644,7 @@ export default function Trimmer() {
                 onOutChange={handleOutChange}
                 onCommit={saveCurrentClip}
                 onSeek={handleSeek}
+                onDragCutStart={() => {}}
               />
             </div>
           )}

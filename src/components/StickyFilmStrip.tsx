@@ -79,6 +79,13 @@ interface StickyFilmStripProps {
   openCard?: StripCard | null;
   /** Close text card (#74). Same as openCard but appended after the last clip. */
   closeCard?: StripCard | null;
+  /**
+   * #9: called on drop when a TrimBar cut is dragged in (native HTML5 DnD, separate
+   * from the dnd-kit reorder above). Arg is the insertion index into the in-film clip
+   * list (0 = before the first clip, inFilm.length = append at the end). Presence
+   * enables the drop target and insertion-line indicator; absence leaves drag-in disabled.
+   */
+  onDropCut?: (insertIndex: number) => void;
 }
 
 // Zoom range: ~8px/s minimum, 2000px/s maximum
@@ -268,8 +275,10 @@ export function StickyFilmStrip({
   xfadeOverlapMs = 0,
   openCard = null,
   closeCard = null,
+  onDropCut,
 }: StickyFilmStripProps) {
   const [pxPerMs, setPxPerMs] = useState<number>(DEFAULT_PX_PER_MS);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const hasInitialized = useRef(false);
   const prevFilmLengthRef = useRef(0);
@@ -516,6 +525,49 @@ export function StickyFilmStrip({
     onSeek(pxToFilmMs(px));
   }
 
+  // #9: pixel position of an insertion boundary (0..inFilm.length) among clip tiles only,
+  // for the drag-in insertion-line indicator. Mirrors filmTimeToPx's segment-offset lookup
+  // but indexes into clip tiles specifically (clipSegBase skips a leading open card).
+  function insertIndexToPx(idx: number): number {
+    if (inFilm.length === 0) return segOffsets[clipSegBase] ?? 0;
+    if (idx < inFilm.length) return segOffsets[clipSegBase + idx];
+    const lastSeg = clipSegBase + inFilm.length - 1;
+    return segOffsets[lastSeg] + segWidths[lastSeg];
+  }
+
+  // #9: native HTML5 DnD drop target for dragging a trimmed cut in from TrimBar — kept
+  // fully separate from the dnd-kit DndContext below (different event model, same tiles,
+  // no collision: dnd-kit only listens for pointerdown on tiles, this only fires on the
+  // browser's native drag events).
+  function onDragOverClipRow(e: React.DragEvent<HTMLDivElement>) {
+    if (!onDropCut || !e.dataTransfer.types.includes("application/x-rushcut-cut")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    const el = trackRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const px = e.clientX - rect.left + el.scrollLeft;
+    let idx = 0;
+    for (let i = 0; i < inFilm.length; i++) {
+      const seg = clipSegBase + i;
+      const mid = segOffsets[seg] + segWidths[seg] / 2;
+      if (px > mid) idx = i + 1;
+    }
+    setDragOverIndex(idx);
+  }
+
+  function onDragLeaveClipRow(e: React.DragEvent<HTMLDivElement>) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOverIndex(null);
+  }
+
+  function onDropClipRow(e: React.DragEvent<HTMLDivElement>) {
+    if (!onDropCut || !e.dataTransfer.types.includes("application/x-rushcut-cut")) return;
+    e.preventDefault();
+    const idx = dragOverIndex ?? inFilm.length;
+    setDragOverIndex(null);
+    onDropCut(idx);
+  }
+
   function handleDragEnd(e: DragEndEvent) {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
@@ -541,6 +593,9 @@ export function StickyFilmStrip({
         style={{ scrollbarWidth: "none" }}
         onMouseDown={handleMouseDown}
         onClick={handleClick}
+        onDragOver={onDragOverClipRow}
+        onDragLeave={onDragLeaveClipRow}
+        onDrop={onDropClipRow}
       >
         <div
           className="h-full flex flex-col py-2 gap-0.5"
@@ -621,6 +676,29 @@ export function StickyFilmStrip({
                 borderRadius: "1px",
               }} />
             </div>
+          )}
+
+          {/* #9: drag-in insertion-line indicator — shows exactly where a dragged TrimBar
+              cut will land. Blue (#99B3FF) matches the existing filmstrip accent/tile
+              border color. Spans the clip row only (top: RULER_HEIGHT), unlike the
+              playhead which spans ruler+clips. */}
+          {dragOverIndex !== null && (
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                top: RULER_HEIGHT,
+                height: CLIP_HEIGHT,
+                left: insertIndexToPx(dragOverIndex),
+                zIndex: 25,
+                pointerEvents: "none",
+                transform: "translateX(-50%)",
+                width: 3,
+                background: "#99B3FF",
+                borderRadius: "1.5px",
+                boxShadow: "0 0 4px rgba(153,179,255,0.8)",
+              }}
+            />
           )}
 
           {/* Clip row — framed with blue border */}

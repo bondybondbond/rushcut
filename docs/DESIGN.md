@@ -1061,6 +1061,16 @@ Press-drag a film tile to reorder it; sibling tiles shift live to show the drop 
 - **No sessionStorage reads inside StickyFilmStrip** — all values come via props.
 - `transitionValue` and `soundMood` props REMOVED in Batch H — those live in `ChosenEffects` (EditorShell timeline row aside).
 
+### Drag-in from TrimBar (#9)
+
+Drag the current trim selection (TrimBar's peach "selected region") straight onto the film strip, landing at the dropped position — an extra shortcut alongside "+ Add to Film," which is unchanged.
+
+- **Library: native HTML5 drag-and-drop** (`draggable`, `dragstart`/`dragover`/`drop`), NOT `@dnd-kit`. The filmstrip's own reorder gesture (above) is a separate, internal `dnd-kit` `DndContext` — extending it to a cross-component source (TrimBar lives in a sibling subtree) would mean lifting that context out of `StickyFilmStrip`. Native DnD is a different event model entirely, so it coexists with the reorder gesture on the same tiles with no collision risk.
+- **Drag source:** `TrimBar`'s selected-region div, `draggable` when `onDragCutStart` is provided. `dataTransfer` carries a custom MIME marker (`application/x-rushcut-cut`) so drop targets can identify a cut drag vs. any other browser drag. A plain click still seeks (forwarded to the same `onTrackClick` the track uses) — native `dragstart` only fires after real pointer movement, so a no-move click still reaches the div's own `onClick`.
+- **Drop target:** `StickyFilmStrip`'s clip-row track, enabled when `onDropCut?: (insertIndex: number) => void` is provided. `onDragOver` computes the insertion index by walking clip tiles' midpoints (reuses the existing `segOffsets`/`segWidths` geometry, clip tiles only — card tiles are never valid insertion points) and renders a live insertion-line indicator; `onDrop` fires `onDropCut` with the final index.
+- **Insertion-line indicator:** `#99B3FF` (the existing filmstrip accent/tile-border colour), `3px` wide, spans just the clip row (`top: RULER_HEIGHT`, height `CLIP_HEIGHT`) — do not span the ruler like the playhead does, so it doesn't get confused with the playhead's own vertical line.
+- **Backend:** no new Rust command. Reuses `add_clip_cut_cmd` (appends) then splices the new clip's id into the desired position and renumbers `sort_order` via the same merge/persist logic `handleReorder` already uses for tile reorder, calling `reorder_clips_cmd` once. Treated as one logical transaction: if the reorder call fails after the add succeeded, the whole add is rolled back (state restored + the orphaned cut deleted) rather than leaving a clip silently misplaced at the end.
+
 ---
 
 ## Master Tab — Full-Screen Film Preview

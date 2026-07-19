@@ -16,6 +16,12 @@ interface TrimBarProps {
   onSeek?: (ms: number) => void;
   /** Other cuts from this source clip already committed to the film. Rendered as subtle green tint. */
   alreadyCutRegions?: Array<{ inMs: number; outMs: number }>;
+  /**
+   * #9: called when the user starts dragging the selected region out of the trim bar
+   * (native HTML5 drag-and-drop, kept separate from dnd-kit's pointer-based reorder on
+   * StickyFilmStrip). Presence enables the drag; absence leaves the region non-draggable.
+   */
+  onDragCutStart?: () => void;
 }
 
 function fmtMs(ms: number): string {
@@ -41,8 +47,10 @@ export function TrimBar({
   onCommit,
   onSeek,
   alreadyCutRegions,
+  onDragCutStart,
 }: TrimBarProps) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const dragGhostRef = useRef<HTMLDivElement>(null);
   const dragging = useRef<"in" | "out" | null>(null);
   // track whether a drag actually moved (suppress click after drag)
   const didDrag = useRef(false);
@@ -206,9 +214,28 @@ export function TrimBar({
           );
         })}
 
-        {/* Selected region highlight — z-3 (must be above waveform when added) */}
+        {/* Selected region highlight — z-3 (must be above waveform when added).
+            #9: draggable when onDragCutStart is provided, so the user can drag the
+            current trim selection straight onto the film strip. Still forwards plain
+            clicks to seek (onTrackClick) so click-to-seek behavior is unchanged —
+            native dragstart only fires after real pointer movement, so a no-move
+            click still reaches this div's own onClick. */}
         <div
-          className="absolute top-0 h-full pointer-events-none"
+          draggable={!!onDragCutStart}
+          onDragStart={(e) => {
+            e.dataTransfer.setData("application/x-rushcut-cut", "1");
+            e.dataTransfer.effectAllowed = "copy";
+            // The selected-region div itself renders at 22% opacity (by design, so it
+            // doesn't obscure the waveform underneath) — the browser's default drag ghost
+            // is a snapshot of that, so it's nearly invisible. Use a dedicated, opaque
+            // ghost element instead so the drag is clearly visible against the timeline.
+            if (dragGhostRef.current) {
+              e.dataTransfer.setDragImage(dragGhostRef.current, 20, 20);
+            }
+            onDragCutStart?.();
+          }}
+          onClick={onDragCutStart ? onTrackClick : undefined}
+          className={onDragCutStart ? "absolute top-0 h-full cursor-grab active:cursor-grabbing" : "absolute top-0 h-full pointer-events-none"}
           style={{
             left: `${inPct}%`,
             width: `${outPct - inPct}%`,
@@ -266,6 +293,26 @@ export function TrimBar({
       <p className="text-xs text-[#e5e5e5] mt-1.5 text-center">
         Click track to seek &middot; drag handles to trim &middot; saves on release
       </p>
+
+      {/* #9: dedicated drag-ghost element — see onDragStart above. Off-screen, reused
+          across drags; opaque so it reads clearly against the film strip while dragging. */}
+      {onDragCutStart && (
+        <div
+          ref={dragGhostRef}
+          aria-hidden
+          style={{
+            position: "fixed",
+            top: -1000,
+            left: -1000,
+            width: 120,
+            height: 40,
+            background: "rgba(255,138,101,0.92)",
+            border: "2px solid #FF8A65",
+            borderRadius: 6,
+            pointerEvents: "none",
+          }}
+        />
+      )}
     </div>
   );
 }

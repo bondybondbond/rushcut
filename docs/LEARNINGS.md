@@ -758,6 +758,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Tauri — native HTML5 drag-and-drop needs `dragDropEnabled: false` on Windows
+
+**Problem:** Adding `draggable`/`dragstart`/`dragover`/`drop` to page elements for in-app drag-and-drop (not OS file drop) produces a Windows "no-drop" cursor everywhere the user drags, with no `dragstart`/`dragover` handler effects visible — the drag silently never starts from the browser's perspective. `tauri.conf.json`'s window config has no `dragDropEnabled` key by default, which means it defaults to `true` (Tauri's own native OS-file-drop interception at the WebView2 layer), and this default swallows in-page HTML5 DnD on Windows too, not just OS file drops.
+**Solution:** Add `"dragDropEnabled": false` to the window entry in `tauri.conf.json`'s `app.windows[]` array. This is a native window/webview config, not a frontend setting — it only takes effect after a real `cargo build` (not `cargo check`) + process relaunch. Vite HMR cannot apply it, even though the feature itself (the draggable elements, the drop handlers) is pure frontend code. Re-verify any existing OS-file-drop feature (e.g. an upload dropzone using `dataTransfer.items`/`webkitGetAsEntry()`) after this change — disabling Tauri's native file-drop interception changes how the browser's own DnD handles OS files too, so it's a coupling risk, not purely additive.
+**Context:** Confirmed on #9 (2026-07-19) — TrimBar→StickyFilmStrip drag-to-add-to-timeline. This was flagged as a risk during planning (`rushcut-pp-consultant`, citing Tauri GitHub issues #14373/#13761/#4168) before implementation, then hit exactly as predicted on first live user test. Fix: `src-tauri/tauri.conf.json` window entry + `cargo build` + kill/relaunch `rushcut.exe`. Applies to any future in-page drag source/drop-target feature (not OS file drop, which `UploadZone.tsx` already handles via native `dataTransfer.items`).
+
+---
+
 ## Tauri / Windows dev
 
 - **Rustup PATH only applies to new terminals** — after `winget install Rustlang.Rustup`, `cargo` is available in newly opened terminals only. Existing CMD/PowerShell windows don't inherit the updated PATH. Fix for the current session: `$env:PATH += ";$env:USERPROFILE\.cargo\bin"`. Fix permanently: `[System.Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$env:USERPROFILE\.cargo\bin", "Machine")` then reopen terminal.
