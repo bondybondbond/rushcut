@@ -995,8 +995,19 @@ def run_pipeline(
                 af_parts.append(f"volume={vol0:.4f}")
                 log.info("[J] single-clip volume=%.4f", vol0)
 
+        # #123: apply per-clip zoom (Ken Burns / static crop) on the single-clip
+        # path too. zoom_vfs[0] is already built at Step 3 (unconditionally, same
+        # code path multi-clip uses) -- mirror _sv_node's zoom+canvas composition
+        # (transitions.py) by prepending it before the existing scale. build_zoom_vf()
+        # outputs at native clip dims for both branches, so this is safe in front of
+        # scale=-2:{h} without needing multi-clip's fixed-canvas pad/letterbox step.
+        single_zoom_vf = zoom_vfs[0] if zoom_vfs else None
+        single_vf = (f"{single_zoom_vf}," if single_zoom_vf else "") + f"scale=-2:{scale_h},format=yuv420p"
+        if single_zoom_vf:
+            log.info("[zoom-embed] single-clip zoom applied")
+
         def _build_single(b_argv, c_args, i_arg, o_arg, has_aud, af_p):
-            c = b_argv + ["-y", "-i", i_arg, "-vf", f"scale=-2:{scale_h},format=yuv420p"] + c_args
+            c = b_argv + ["-y", "-i", i_arg, "-vf", single_vf] + c_args
             if has_aud:
                 if af_p:
                     c += ["-af", ",".join(af_p)]
