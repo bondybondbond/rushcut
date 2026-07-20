@@ -211,17 +211,37 @@ def _force_yuv420p_tail(fc: str, v_out: str) -> str:
     return f"{rewritten}; [vpix]format=yuv420p{v_out}"
 
 
-def _sv_node(i: int, canvas: str, zoom_vfs: "list[str | None] | None") -> str:
+def _sv_node(
+    i: int,
+    canvas: str,
+    zoom_vfs: "list[str | None] | None",
+    clip_tbn_str: "str | None" = None,
+) -> str:
     """Per-clip pre-scale node `[{i}:v]...[sv{i}]`.
 
     When a zoom vf is supplied for this clip (embed-zoom path, issue #67), it is
     prepended BEFORE the fixed canvas: the zoom (kenburns scale=eval=frame,crop or
     static crop+scale) outputs source dims, the canvas scale-fit is then identity,
     and the trailing format/setparams still normalise colour for downstream AMF.
+
+    #136/#137: when clip_tbn_str is given, a trailing settb=clip_tbn_str pins the
+    output timebase explicitly. Without it, a zoomed clip's scale=eval=frame,crop
+    chain can renegotiate the stream timebase to a generic 1/1000000 instead of
+    preserving the container's 1/30000 -- invisible for hard cuts (concat doesn't
+    check timebase) but fatal for xfade, which rejects mismatched input timebases
+    (exit 234, same class as the existing color-source settb rule below). Confirmed
+    via real render: single-clip zoom + open/close failed with "First input link
+    main timebase (1/30000) do not match the corresponding second input link xfade
+    timebase (1/1000000)" until this was added -- and the SAME failure reproduced on
+    a 2-clip project, proving it was a pre-existing latent bug in the general xfade
+    path, not specific to n==1. Left opt-in (None = no settb) because
+    build_batch_video_fc's U1g caller (below) was NOT live-verified with this fix --
+    see #138.
     """
     z = zoom_vfs[i] if (zoom_vfs and i < len(zoom_vfs) and zoom_vfs[i]) else None
     pre = f"{z}," if z else ""
-    return f"[{i}:v]{pre}{canvas}[sv{i}]"
+    tb = f",settb={clip_tbn_str}" if clip_tbn_str else ""
+    return f"[{i}:v]{pre}{canvas}{tb}[sv{i}]"
 
 
 def build_batch_video_fc(
@@ -255,6 +275,11 @@ def build_batch_video_fc(
         f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
     v_out = "[vout]"
+    # #136/#137/#138: NOT passing clip_tbn_str here (unlike build_filter_complex
+    # below) -- the zoom+xfade timebase fix (#137) was only live-verified on the
+    # monolithic path. Leaving U1g's per-batch canvas untouched, byte-for-byte the
+    # pre-#136 behavior, until #138 verifies the fix on a real >4-clip batched
+    # zoom+xfade render.
     parts = [_sv_node(i, canvas, zoom_vfs) for i in range(n)]
     if n == 1:
         parts.append(f"[sv0]null{v_out}")
@@ -530,11 +555,24 @@ def build_filter_complex(
     # color metadata, so swscaler still sees prim:reserved and tries to negotiate
     # yuv444p for AMF → exit 127 / swscaler -129. setparams overrides the tag
     # to bt709 before xfade, so downstream AMF accepts yuv420p. See #64.
-    canvas = (
-        f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,"
-        f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,"
-        f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
-    )
+    #
+    # #136: n==1 has no other clip to share a canvas with, so it skips the pad
+    # step and preserves native aspect ratio instead (scale=-2:h) -- matching
+    # the behavior of the single-clip shortcut this function replaces. Padding
+    # a single portrait clip into a landscape canvas would add black bars that
+    # never existed before; that's a real regression, not just an implementation
+    # detail, so it's preserved deliberately rather than unified away.
+    if n == 1:
+        canvas = (
+            f"scale=-2:{scale_h},format=yuv420p,"
+            f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        )
+    else:
+        canvas = (
+            f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,"
+            f"pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,"
+            f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        )
 
     v_out = "[vout]"
 
@@ -569,7 +607,7 @@ def build_filter_complex(
     # -----------------------------------------------------------------------
     if transition == "none" and not shuffle_between and not has_open and not has_close:
         any_audio = any(audio_flags)
-        pre_scale = "; ".join(_sv_node(i, canvas, zoom_vfs) for i in range(n))
+        pre_scale = "; ".join(_sv_node(i, canvas, zoom_vfs, clip_tbn_str) for i in range(n))
         scaled_inputs = "".join(f"[sv{i}]" for i in range(n))
         video_filter = f"{pre_scale}; {scaled_inputs}concat=n={n}:v=1:a=0{v_out}"
         if not any_audio:
@@ -592,25 +630,34 @@ def build_filter_complex(
 
     # Pre-scale every clip input to fixed canvas — [sv0],[sv1],...
     for i in range(n):
-        all_parts.append(_sv_node(i, canvas, zoom_vfs))
+        all_parts.append(_sv_node(i, canvas, zoom_vfs, clip_tbn_str))
 
     # --- Between-clips video ---
     # Label for the output of the between-clip stage.
     # If open/close are also needed we use [vinner]; else wire straight to [vout].
     use_inner = has_open or has_close
     v_inner = "[vinner]" if use_inner else v_out
+    # #136: concat/xfade filters renegotiate their OWN output timebase (observed:
+    # 1/1000000, generic) regardless of what their inputs declared via settb -- the
+    # settb on [sv{i}] above does not survive through concat. So the between-clips
+    # stage writes to an internal [vraw] label first, then an explicit settb node
+    # pins v_inner's timebase before it's handed to the open/close xfade below.
+    # Confirmed via real render: without this, open+close+zoom on a single clip
+    # failed with the same "timebase do not match" xfade error even after the
+    # [sv{i}] settb fix, because concat=n=1 discarded it. See _sv_node docstring.
+    v_raw = "[vraw]"
 
     if transition == "none" and not shuffle_between:
-        # Concat (hard cuts) between clips → [vinner]
+        # Concat (hard cuts) between clips → [vraw]
         scaled_inputs = "".join(f"[sv{i}]" for i in range(n))
-        all_parts.append(f"{scaled_inputs}concat=n={n}:v=1:a=0{v_inner}")
+        all_parts.append(f"{scaled_inputs}concat=n={n}:v=1:a=0{v_raw}")
         total_between = sum(durations)
     elif n == 1:
-        # Single clip — no between-clips xfade; just rename [sv0] → [vinner]
-        all_parts.append(f"[sv0]null{v_inner}")
+        # Single clip — no between-clips xfade; just rename [sv0] → [vraw]
+        all_parts.append(f"[sv0]null{v_raw}")
         total_between = durations[0]
     else:
-        # Pairwise xfade chain between clips → [vinner]
+        # Pairwise xfade chain between clips → [vraw]
         prev_label = "[sv0]"
         cumulative = 0.0
         for i in range(1, n):
@@ -622,7 +669,7 @@ def build_filter_complex(
                 i, offset, cumulative + durations[i - 1], xfade_dur * i,
             )
             # Last xfade in the between-clip chain
-            out_label = v_inner if i == n - 1 else f"[v{i:02d}]"
+            out_label = v_raw if i == n - 1 else f"[v{i:02d}]"
             all_parts.append(
                 f"{prev_label}[sv{i}]"
                 f"xfade=transition={cut_name}:duration={xfade_dur}:offset={offset:.4f}"
@@ -631,6 +678,8 @@ def build_filter_complex(
             prev_label = out_label
             cumulative += durations[i - 1]
         total_between = sum(durations) - (n - 1) * xfade_dur
+
+    all_parts.append(f"{v_raw}settb={clip_tbn_str}{v_inner}")
 
     # --- Between-clips audio ---
     a_inner = "[ainner]" if use_inner else "[aout]"

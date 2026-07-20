@@ -6,7 +6,7 @@ Pipeline order:
   2.  silence trim   -> (if config.silence_removal) trim silence from clip edges
   3.  zoom           -> (if config.zoom, final mode only)
   4.  cards          -> prepend intro, append outro (if text provided)
-  5.  render         -> filter_complex xfade + scale, or single-clip shortcut
+  5.  render         -> filter_complex xfade + scale (uniform for any clip count, #136)
                         == the clean, treatment-free intermediate (V4.1 cache point)
   6.  audio treatment-> music mix and/or loudnorm applied on top of the clean
                         intermediate (_apply_audio_treatment)
@@ -944,9 +944,9 @@ def run_pipeline(
             else:
                 raise
 
-    # #121/#122: ANALYSIS emit below reads these regardless of branch --
-    # hoisted above both branches so the single-clip shortcut can apply
-    # opening/closing transitions too, instead of silently ignoring them.
+    # #121/#122: ANALYSIS emit below reads these -- computed once, ahead of
+    # the render path, so open/close transitions apply uniformly regardless
+    # of clip count (#136).
     transition = config.get("transition", "none")
     opening_transition = config.get("opening_transition", "none")
     closing_transition = config.get("closing_transition", "none")
@@ -959,715 +959,598 @@ def run_pipeline(
     # the log instead of silently causing a tail mini-freeze/jump.
     progress_est_duration_s = [None]
 
-    if len(current_paths) == 1:
-        # Single-clip shortcut: no filter_complex needed (CLAUDE.md) for the
-        # plain case. #122: when open/close is configured, add a second pass
-        # that wraps the plain-scaled render with build_open_close_post_fc --
-        # the same helper U1g's boundary re-encode uses for multi-clip.
-        log.info("[render] Single clip -- using simple -vf scale")
-        needs_oc_single = has_open or has_close
-        inner_tmp = render_work / "single_inner.mp4" if needs_oc_single else None
-        single_out = inner_tmp if needs_oc_single else output
+    # #136: single-clip renders used to take a separate hand-built -vf
+    # shortcut here (deleted). build_filter_complex() already handles n==1
+    # generically (native-AR canvas, inline open/close, per-clip zoom/volume)
+    # so every clip count now goes through the same code below -- a future
+    # per-clip effect can no longer be added to the multi-clip path while
+    # silently skipping single-clip (the #122/#123 bug class).
+    log.info("[J] clip_volumes=%s", clip_volumes)
+    shuffle_between = config.get("shuffle_between", False)
+    has_xfade = (transition != "none") or shuffle_between
+    # #88: boundary_reencode_s is already declared above (outer scope, so
+    # _render_segmented() can mutate it via closure and report_analysis()
+    # below can read it regardless of which render path ran) -- no need to
+    # redeclare it here.
+    # #114 Fix 1->fix: real per-boundary frame deltas (measured via the
+    # pre/post _probe_frame_count() calls in _boundary_reencode() below),
+    # summed here so the drift guardrail can compare the final concat
+    # against ACTUAL measured segment growth instead of a theoretical
+    # per-boundary formula. Root cause (2026-07-11 instrumented render,
+    # Stagecoach 2025): the open boundary's xfade uses offset=0, which per
+    # ffmpeg xfade semantics (output_duration = offset + second_stream_duration)
+    # adds ZERO frames beyond the inner segment's own length -- the old
+    # `total_after_open = inner_duration + 0.1` assumption in
+    # transitions.py was wrong for the offset=0 case. Measured: open
+    # delta=0 (not the assumed +3), close delta=4 (not the assumed +3).
+    # Tying the guardrail to real measured deltas sidesteps re-deriving a
+    # fragile xfade-duration formula and instead verifies concat integrity,
+    # which is what actually matters for sync risk.
+    oc_actual_frame_delta = [0]
 
-        # Inner pass: when wrapping, this is a throwaway intermediate, so
-        # encode it cheap (plain libx264, no AMF) rather than at the final
-        # codec_args -- otherwise open/close renders would double-encode the
-        # whole clip at final quality (once here, once in the wrap pass
-        # below), degrading quality relative to the no-transition case.
-        if needs_oc_single:
-            inner_argv, inner_codec_args, inner_is_amf = [FFMPEG], [
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "12",
-            ], False
-        else:
-            inner_argv, inner_codec_args, inner_is_amf = bin_argv, codec_args, is_amf
-
-        in_arg  = to_win_path(current_paths[0]) if inner_is_amf else str(current_paths[0])
-        out_arg = to_win_path(single_out)       if inner_is_amf else str(single_out)
-
-        # Per-clip volume multiplier (Batch J). volume=0 is valid — produces silence.
-        # V4.1: loudnorm is NOT applied here anymore. Step 5 produces the clean,
-        # treatment-free intermediate (cacheable); loudnorm is deferred to the
-        # final _apply_audio_treatment step so the cache is music-agnostic.
-        af_parts = []
-        if audio_flags[0]:
-            vol0 = clip_volumes[0] if clip_volumes else 1.0
-            if abs(vol0 - 1.0) > 1e-6:
-                af_parts.append(f"volume={vol0:.4f}")
-                log.info("[J] single-clip volume=%.4f", vol0)
-
-        # #123: apply per-clip zoom (Ken Burns / static crop) on the single-clip
-        # path too. zoom_vfs[0] is already built at Step 3 (unconditionally, same
-        # code path multi-clip uses) -- mirror _sv_node's zoom+canvas composition
-        # (transitions.py) by prepending it before the existing scale. build_zoom_vf()
-        # outputs at native clip dims for both branches, so this is safe in front of
-        # scale=-2:{h} without needing multi-clip's fixed-canvas pad/letterbox step.
-        single_zoom_vf = zoom_vfs[0] if zoom_vfs else None
-        single_vf = (f"{single_zoom_vf}," if single_zoom_vf else "") + f"scale=-2:{scale_h},format=yuv420p"
-        if single_zoom_vf:
-            log.info("[zoom-embed] single-clip zoom applied")
-
-        def _build_single(b_argv, c_args, i_arg, o_arg, has_aud, af_p):
-            c = b_argv + ["-y", "-i", i_arg, "-vf", single_vf] + c_args
-            if has_aud:
-                if af_p:
-                    c += ["-af", ",".join(af_p)]
-                c += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
-            c.append(o_arg)
-            return c
-
-        cmd = _build_single(inner_argv, inner_codec_args, in_arg, out_arg, audio_flags[0], af_parts)
-        log.info("[render] single-clip cmd: %s", " ".join(cmd))
-
-        def _fallback_single():
-            fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
-            return _build_single(fb_argv, fb_codec, str(current_paths[0]), str(single_out), audio_flags[0], af_parts)
-
-        if needs_oc_single:
-            # Cheap intermediate has no AMF path -- nothing to fall back from.
-            ffmpeg_run(cmd)
-        else:
-            # #119: interior progress ticks during the single-clip encode.
-            _single_lo, _single_hi = checkpoints["cards"], checkpoints["render"]
-            progress_est_duration_s[0] = durations[0]
-
-            def _single_tick(frac: float, _lo=_single_lo, _hi=_single_hi) -> None:
-                report(int(_lo + frac * (_hi - _lo)))
-
-            _run_with_amf_fallback(
-                cmd, _fallback_single, on_tick=_single_tick, total_duration_s=durations[0]
-            )
-
-        if needs_oc_single:
-            # #122: wrap the plain-scaled inner render with an open/close
-            # fade-to-black, reusing build_open_close_post_fc exactly as
-            # U1g's _boundary_reencode() does for multi-clip boundaries.
-            inner_dur = get_duration(inner_tmp)
-            iw, ih = get_frame_size(inner_tmp)
-            xf_single = clamp_xfade_dur([inner_dur])
-            pp_fc, pp_vmap, pp_amap = build_open_close_post_fc(
-                inner_duration=inner_dur,
-                has_audio=audio_flags[0],
-                scale_w=str(iw),
-                scale_h=str(ih),
-                target_fps_raw=target_fps_raw,
-                opening_transition=opening_transition if has_open else "none",
-                closing_transition=closing_transition if has_close else "none",
-                xfade_dur=xf_single,
-                clip_tbn_str=_fps_to_tbn(target_fps_raw),
-            )
-
-            def _build_wrap(b_argv, c_args, amf):
-                i_arg = to_win_path(inner_tmp) if amf else str(inner_tmp)
-                o_arg = to_win_path(output)     if amf else str(output)
-                c = b_argv + ["-y", "-i", i_arg, "-filter_complex", pp_fc, "-map", pp_vmap]
-                if pp_amap:
-                    c += ["-map", pp_amap]
-                c += ["-r", target_fps_raw] + c_args
-                if pp_amap:
-                    c += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
-                c.append(o_arg)
-                return c
-
-            wrap_cmd = _build_wrap(bin_argv, codec_args, is_amf)
-            log.info(
-                "[render][#122] single-clip open/close wrap: open=%s close=%s "
-                "inner_dur=%.3fs size=%dx%d",
-                has_open, has_close, inner_dur, iw, ih,
-            )
-
-            def _fallback_wrap():
-                fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
-                return _build_wrap(fb_argv, fb_codec, False)
-
-            _run_with_amf_fallback(wrap_cmd, _fallback_wrap)
-    else:
-        log.info("[J] clip_volumes=%s", clip_volumes)
-        shuffle_between = config.get("shuffle_between", False)
-        has_xfade = (transition != "none") or shuffle_between
-        # #88: isolate boundary-reencode cost from the bundled t_render_s
-        # figure. Declared here (outer scope) so _render_segmented() can
-        # mutate it via closure and report_analysis() below can read it
-        # regardless of which render path actually ran.
-        boundary_reencode_s = [0.0]
-        # #114 Fix 1->fix: real per-boundary frame deltas (measured via the
-        # pre/post _probe_frame_count() calls in _boundary_reencode() below),
-        # summed here so the drift guardrail can compare the final concat
-        # against ACTUAL measured segment growth instead of a theoretical
-        # per-boundary formula. Root cause (2026-07-11 instrumented render,
-        # Stagecoach 2025): the open boundary's xfade uses offset=0, which per
-        # ffmpeg xfade semantics (output_duration = offset + second_stream_duration)
-        # adds ZERO frames beyond the inner segment's own length -- the old
-        # `total_after_open = inner_duration + 0.1` assumption in
-        # transitions.py was wrong for the offset=0 case. Measured: open
-        # delta=0 (not the assumed +3), close delta=4 (not the assumed +3).
-        # Tying the guardrail to real measured deltas sidesteps re-deriving a
-        # fragile xfade-duration formula and instead verifies concat integrity,
-        # which is what actually matters for sync risk.
-        oc_actual_frame_delta = [0]
-
-        # Localise all /mnt/* inputs to WSL tmpfs before any FFmpeg encode.
-        # Opening 17+ Windows-filesystem files concurrently via the 9P driver
-        # floods the WSL kernel page-cache allocator and restarts the VM (exit 15).
-        # Sequential copy to tmpfs takes ~2s for ~400 MB; FFmpeg then reads from
-        # RAM-backed tmpfs with no 9P pressure.
-        def _localise_inputs(paths: list, dest: Path) -> list:
-            out = []
-            for i, p in enumerate(paths):
-                ps = str(p)
-                if ps.startswith("/mnt/"):
-                    local = dest / f"render_in_{i}.mp4"
-                    if not local.exists():
-                        log.info("[render] localise input %d: %s", i, Path(ps).name)
-                        shutil.copyfile(ps, str(local))
-                    out.append(local)
-                else:
-                    out.append(p)
-            return out
-
-        current_paths = _localise_inputs(current_paths, tmp)
-        log.info("[render] all inputs localised to tmpfs")
-
-        # ---------------------------------------------------------------
-        # U1g: segmented (memory-bounded) xfade render.
-        # A monolithic N-input 4K xfade graph buffers decoded 12.4 MB frames
-        # at every chained stage; on big projects peak RAM overflows the WSL
-        # VM and it is balloon-killed (exit 15). Fix: render the video xfade
-        # in overlap-by-one batches of BATCH_SIZE (chain depth stays small),
-        # join the segments with a lossless concat in each shared clip's solo
-        # region, render the (cheap) audio acrossfade in a single pass, and
-        # mux. See docs/batch-plan-u1-subbatches.md "Batch U1g".
-        # ---------------------------------------------------------------
-        BATCH_SIZE = 4
-
-        # Mutable progress holder so the outer fallback handler can report which
-        # batch was in flight (and its input size) when a failure occurred.
-        progress = {"batch": 0, "total": 0, "batch_len": 0}
-
-        # #65: per-batch encoder outcome, keyed by batch index. True = this
-        # batch's segment encoded on the originally requested encoder (AMF when
-        # is_amf); False = it fell back to libx264. Unlike the single shared
-        # amf_fallback_flag above (any-call-fell-back), this lets the boundary
-        # segment re-encode (seg_files[0]/seg_files[-1]) match the SAME encoder
-        # its segment actually used, avoiding a mixed-encoder concat (#64).
-        encoder_outcome_by_idx: dict[int, bool] = {}
-
-        def _render_segmented() -> None:
-            # #86: reuse the outer NTFS render_work (same job_id/base) so U1g segment
-            # outputs are AMF-writable /mnt/c paths, never /tmp -> UNC.
-            seg_tmp = render_work
-            seg_tmp.mkdir(parents=True, exist_ok=True)
-            log.info("[U1g] segment work dir: %s", seg_tmp)
-            xf = clamp_xfade_dur(durations)
-            per_cut_names = resolve_cut_names(
-                len(current_paths), transition, shuffle_between, cache_sig
-            )
-            # May raise ValueError if a boundary clip has no solo region.
-            plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
-            progress["total"] = len(plan)
-            progress_est_duration_s[0] = total
-            log.info(
-                "[U1g] segmented render: %d batches total=%.3fs xfade_dur=%.3f",
-                len(plan), total, xf,
-            )
-
-            # FPS for exact frame-count segmentation. Using -frames:v with counts
-            # derived from the GLOBAL frame grid makes the per-segment counts
-            # telescope to exactly round(total*fps) -- so boundary rounding cannot
-            # accumulate into progressive A/V drift across batches.
-            def _fps_float(raw: str) -> float:
-                if "/" in raw:
-                    a, c = raw.split("/")
-                    return float(a) / float(c)
-                return float(raw)
-            fps_f = _fps_float(target_fps_raw)
-            total_frames_expected = round(total * fps_f)
-
-            seg_files: list[Path] = []
-            covered_frames = 0
-            for bi, b in enumerate(plan):
-                idxs = b["clip_indices"]
-                progress["batch"] = bi + 1
-                progress["batch_len"] = len(idxs)
-                bdurs = b["local_durations"]
-                bpaths = [current_paths[k] for k in idxs]
-                # Global cut between clip k and k+1 == per_cut_names[k]; this
-                # batch's cuts are the global cuts idxs[0]..idxs[-2].
-                bnames = [per_cut_names[k] for k in idxs[:-1]]
-                bzoom = [zoom_vfs[k] for k in idxs] if zoom_vfs else None
-                vfc, v_out_b = build_batch_video_fc(bdurs, bnames, mode, output_resolution, xf, zoom_vfs=bzoom)
-
-                # Drop the leading (pre-window) part INSIDE the filter graph -- a
-                # "-c copy" trim snaps to GOP keyframes and drifts whole seconds
-                # (caught in U1g smoke test). setpts=0 resets each segment to PTS 0
-                # so the final concat -c copy joins cleanly.
-                start = b["seg_start_local"]
-                if start > 0.01:
-                    vfc = (
-                        vfc.replace(v_out_b, "[vpre]")
-                        + f"; [vpre]trim=start={start:.4f},setpts=PTS-STARTPTS{v_out_b}"
-                    )
-
-                # Exact end via integer frame count from the GLOBAL grid (telescopes).
-                g_start = b["seg_start_global"]
-                g_end = total if b["seg_end_local"] is None else b["seg_end_global"]
-                n_frames = round(g_end * fps_f) - round(g_start * fps_f)
-                covered_frames += n_frames
-
-                seg = seg_tmp / f"u1g_seg_{bi}.mp4"
-
-                def _build_batch(b_argv, c_args, paths, out_path, graph, vmap, nfr):
-                    if is_amf:
-                        in_args = [a for p in paths for a in ("-i", to_win_path(p))]
-                        o = to_win_path(out_path)
-                    else:
-                        in_args = [a for p in paths for a in ("-i", str(p))]
-                        o = str(out_path)
-                    return (
-                        b_argv + ["-y"] + in_args
-                        + ["-filter_complex", graph, "-map", vmap, "-an"]
-                        + ["-r", target_fps_raw, "-frames:v", str(nfr)]
-                        + c_args + [o]
-                    )
-
-                cmd = _build_batch(bin_argv, codec_args, bpaths, seg, vfc, v_out_b, n_frames)
-
-                def _fb_batch(_paths=bpaths, _graph=vfc, _vmap=v_out_b, _seg=seg, _nfr=n_frames):
-                    fb_argv, fb_codec, _ = video_encoder_args(
-                        mode, output_resolution, win_ffmpeg, force_libx264=True
-                    )
-                    in_args = [a for p in _paths for a in ("-i", str(p))]
-                    return (
-                        fb_argv + ["-y"] + in_args
-                        + ["-filter_complex", _graph, "-map", _vmap, "-an"]
-                        + ["-r", target_fps_raw, "-frames:v", str(_nfr)]
-                        + fb_codec + [str(_seg)]
-                    )
-
-                log.info(
-                    "[U1g] batch %d/%d clips %s start=%.3f frames=%d (global [%.3f,%.3f]) "
-                    "mem_avail_mb=%s",
-                    bi + 1, len(plan), idxs, start, n_frames, g_start, g_end,
-                    _mem_available_mb(),
-                )
-                fell_back = _run_with_amf_fallback(cmd, _fb_batch)
-                encoder_outcome_by_idx[bi] = not fell_back
-                # #119: tick once per completed batch -- real progress, not a
-                # fake timer. Batches are the natural granularity for U1g; no
-                # frame-level tracking needed on top of this.
-                _lo, _hi = checkpoints["cards"], checkpoints["render"]
-                report(int(_lo + (bi + 1) / progress["total"] * (_hi - _lo)))
-                is_boundary = bi == 0 or bi == len(plan) - 1
-                log.info(
-                    "[U1g] batch %d encoder_outcome amf_ok=%s boundary=%s",
-                    bi, encoder_outcome_by_idx[bi], is_boundary,
-                )
-                seg_files.append(seg)
-
-            # Sync assertion: total frames must telescope to round(total*fps).
-            drift_frames = abs(covered_frames - total_frames_expected)
-            log.info(
-                "[U1g] segment frames=%d expected=%d drift=%d frame(s) (%.1fms)",
-                covered_frames, total_frames_expected, drift_frames,
-                drift_frames / fps_f * 1000.0,
-            )
-            if drift_frames > 1:
-                raise RuntimeError(
-                    f"[U1g] frame-count drift {drift_frames} frames -- sync risk"
-                )
-
-            # #65: boundary-segment-only open/close re-encode. Replaces the old
-            # whole-film open/close post-pass (issue #31's _apply_open_close_post,
-            # deleted once this path was proven -- see git history) which
-            # re-encoded the ENTIRE inner film a second time just to apply a
-            # ~1.5s fade to/from black. Only the boundary segment(s) get a
-            # second-generation encode now.
-            def _boundary_codec_args(amf: bool) -> list:
-                if mode == "draft":
-                    _, c, _ = video_encoder_args(
-                        mode, output_resolution, win_ffmpeg,
-                        force_libx264=not amf, use_amf=use_amf, use_hevc_amf=use_hevc_amf,
-                    )
-                    return c
-                if amf and main_is_hevc:
-                    # #110: match the render's own hevc_amf family -- same
-                    # nv12/-b:v-explicit reasoning as the main encode branch
-                    # in encoder.py (AMF#514, AMF#273; see video_encoder_args).
-                    args = ["-c:v", "hevc_amf", "-pix_fmt", "nv12", "-profile:v", "main",
-                            "-rc", "vbr_peak", "-b:v", HEVC_FINAL_BITRATE_4K, "-maxrate", HEVC_AMF_MAXRATE_4K,
-                            "-bufsize", HEVC_AMF_MAXRATE_4K, "-quality", "quality"]
-                    return args
-                if amf:
-                    # CQP for 4K mirrors encoder.py's video_encoder_args 4K branch
-                    # (launch plan #1.1) -- boundary segments are the open/close
-                    # transitions, same pan/motion quality concern applies there.
-                    is_4k = output_resolution == "4k"
-                    if is_4k:
-                        args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
-                                "-rc", "cqp", "-qp_i", "18", "-qp_p", "20", "-quality", "quality"]
-                    else:
-                        # Bug fix: this branch previously always used the 4K
-                        # bitrate tier even for a 1080p AMF-opt-in boundary
-                        # re-encode -- now correctly uses the 1080p tier,
-                        # matching encoder.py's video_encoder_args.
-                        args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
-                                "-rc", "vbr_peak", "-b:v", FINAL_BITRATE, "-maxrate", AMF_MAXRATE,
-                                "-bufsize", AMF_MAXRATE, "-quality", "quality"]
-                    # Extended to 1080p AMF opt-in too (launch plan #1.2) -- previously 4K-only.
-                    args += ["-vbaq", "true", "-high_motion_quality_boost_enable", "true"]
-                    return args
-                return ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
-                        "-crf", "16", "-preset", "medium"]
-
-            def _first_frame_is_keyframe(path: Path) -> bool:
-                # Confirm a boundary re-encode starts on a keyframe -- should
-                # always hold for a fresh encode from a solo-region source; a
-                # missing leading keyframe would glitch playback/seek at the
-                # lossless concat boundary. One ffprobe call, no extra encode work.
-                data = ffprobe_json([
-                    "-select_streams", "v:0", "-show_entries", "frame=pict_type",
-                    "-read_intervals", "%+#1", str(path),
-                ])
-                frames = data.get("frames", [])
-                return bool(frames) and frames[0].get("pict_type") == "I"
-
-            def _boundary_reencode(idx: int, is_open: bool, is_close: bool) -> Path:
-                # Re-encode ONLY this boundary segment (video-only -- seg_files
-                # are already "-an") with the open/close xfade-to-black baked in.
-                # Writes a sibling file -- never overwrites seg_files[idx] in place.
-                seg = seg_files[idx]
-                iw, ih = get_frame_size(seg)
-                seg_dur = get_duration(seg)
-                # #114 Fix 1 (logs-first): `seg` is the already-completed, fully-flushed
-                # batch segment written by the U1g batch loop above -- this function only
-                # runs after ALL batches finish, so it's a stable, closed file at probe
-                # time (not a partial/in-progress write). Baseline probe before the
-                # boundary re-encode; paired with the post-probe below to isolate the
-                # per-boundary frame delta (open vs. close), since only the combined
-                # final-output check exists today.
-                pre_frames = _probe_frame_count(seg)
-                pp_fc, pp_vmap, _ = build_open_close_post_fc(
-                    inner_duration=seg_dur,
-                    has_audio=False,
-                    scale_w=str(iw),
-                    scale_h=str(ih),
-                    target_fps_raw=target_fps_raw,
-                    opening_transition=opening_transition if is_open else "none",
-                    closing_transition=closing_transition if is_close else "none",
-                    xfade_dur=xf,
-                    clip_tbn_str=_fps_to_tbn(target_fps_raw),
-                )
-                tag = "_".join(t for t, on in (("open", is_open), ("close", is_close)) if on)
-                out_seg = seg.with_name(f"{seg.stem}_{tag}.mp4")
-
-                # Encoder-consistency guard (#64 mixed-encoder concat): match the
-                # SAME encoder this segment's own batch already used
-                # (encoder_outcome_by_idx), so the lossless concat never mixes
-                # AMF/libx264 SPS/PPS across segments.
-                force_libx264 = (not is_amf) or (not encoder_outcome_by_idx.get(idx, False))
-                amf_for_this = not force_libx264
-
-                def _build(b_argv, c_args, amf):
-                    i_arg = to_win_path(seg) if amf else str(seg)
-                    o_arg = to_win_path(out_seg) if amf else str(out_seg)
-                    return (b_argv + ["-y", "-i", i_arg, "-filter_complex", pp_fc,
-                                       "-map", pp_vmap, "-r", target_fps_raw]
-                            + c_args + [o_arg])
-
-                pp_cmd = _build(bin_argv, _boundary_codec_args(amf_for_this), amf_for_this)
-
-                def _fb():
-                    fb_argv, _, _ = video_encoder_args(
-                        mode, output_resolution, win_ffmpeg, force_libx264=True
-                    )
-                    return _build(fb_argv, _boundary_codec_args(False), False)
-
-                log.info(
-                    "[U1g] boundary re-encode: idx=%d seg=%s open=%s close=%s "
-                    "inner_dur=%.3fs size=%dx%d force_libx264=%s",
-                    idx, seg.name, is_open, is_close, seg_dur, iw, ih, force_libx264,
-                )
-                fell_back = _run_with_amf_fallback(pp_cmd, _fb)
-
-                # Belt-and-braces: we requested this segment's OWN prior encoder
-                # choice (force_libx264=False because encoder_outcome_by_idx said
-                # AMF succeeded there) but this re-encode fell back anyway --
-                # stale/mismatched outcome, flag it before it silently produces a
-                # mixed-encoder concat.
-                if not force_libx264 and fell_back:
-                    log.warning(
-                        "[U1g] boundary re-encode encoder MISMATCH idx=%d: requested AMF "
-                        "(matching original segment) but this re-encode fell back to "
-                        "libx264 -- mixed-encoder concat risk (#64)", idx,
-                    )
-
-                if not _first_frame_is_keyframe(out_seg):
-                    log.warning(
-                        "[U1g] boundary re-encode idx=%d (%s) does NOT start on a "
-                        "keyframe -- lossless concat may glitch at this boundary",
-                        idx, out_seg.name,
-                    )
-
-                # #114 Fix 1 (logs-first): per-boundary frame delta, separate from the
-                # combined final-output check further down. Compare against
-                # oc_delta_expected's per-boundary assumption (round(0.1*fps_f)) to
-                # isolate whether the drift is per-boundary or a compounding artifact.
-                post_frames = _probe_frame_count(out_seg)
-                this_delta = post_frames - pre_frames
-                oc_actual_frame_delta[0] += this_delta
-                log.info(
-                    "[U1g][#114] boundary frame delta idx=%d open=%s close=%s "
-                    "pre=%d post=%d delta=%d",
-                    idx, is_open, is_close, pre_frames, post_frames, this_delta,
-                )
-
-                return out_seg
-
-            needs_open_close = has_open or has_close
-            # #88: timed at the call sites (not inside _boundary_reencode)
-            # since the 3 sites below are mutually exclusive -- only 1 or 2
-            # fire per render, so accumulating across them can't double-count.
-            # boundary_reencode_s itself is declared in the outer run_pipeline
-            # scope (near has_open/has_close) so report_analysis() can read it.
-
-            if needs_open_close:
-                # #65: bake the open/close fade into ONLY the boundary segment(s),
-                # before the lossless concat below.
-                #
-                # QA-reviewer-caught edge case: if open and close ever land on
-                # the SAME index (single-batch), two separate calls would have
-                # the second overwrite the first, silently dropping the opening
-                # fade. Structurally unreachable today -- plan_video_batches
-                # with BATCH_SIZE=4 always produces >=2 batches whenever this
-                # path runs (use_batched requires len(current_paths) >
-                # BATCH_SIZE) -- but handled explicitly rather than left as an
-                # implicit invariant that a future BATCH_SIZE/gate change could
-                # silently break.
-                last_idx = len(seg_files) - 1
-                if has_open and has_close and last_idx == 0:
-                    _t0_br = time.time()
-                    seg_files[0] = _boundary_reencode(0, is_open=True, is_close=True)
-                    boundary_reencode_s[0] += time.time() - _t0_br
-                else:
-                    if has_open:
-                        _t0_br = time.time()
-                        seg_files[0] = _boundary_reencode(0, is_open=True, is_close=False)
-                        boundary_reencode_s[0] += time.time() - _t0_br
-                    if has_close:
-                        _t0_br = time.time()
-                        seg_files[last_idx] = _boundary_reencode(last_idx, is_open=False, is_close=True)
-                        boundary_reencode_s[0] += time.time() - _t0_br
-
-            # Concat the segments (all identical codec/params) -> video_full.
-            concat_list = seg_tmp / "u1g_concat.txt"
-            concat_list.write_text("".join(f"file '{s}'\n" for s in seg_files))
-            video_full = seg_tmp / "u1g_video_full.mp4"
-            ffmpeg_run([
-                FFMPEG, "-y", "-f", "concat", "-safe", "0",
-                "-i", str(concat_list), "-c", "copy", str(video_full),
-            ])
-
-            # Single-pass audio over ALL clips (cheap; no 4K frame buffers).
-            # V4.1: no loudnorm here -- Step 5 is the clean, cacheable intermediate;
-            # loudnorm is deferred to the final _apply_audio_treatment step.
-            ln = None
-            afc, a_out_lbl = build_audio_only_fc(durations, audio_flags, clip_volumes, xf, ln)
-
-            # Video already carries the open/close fade (baked into the boundary
-            # segment(s) above, pre-concat when needs_open_close) -- mux straight
-            # to output, no whole-film video post-pass. Audio: apply the SAME
-            # acrossfade-to-silence fade issue #31 originally used, but only on
-            # the (already cheap) whole-project audio_full track, fully decoupled
-            # from video.
-            mux_target = output
-            if a_out_lbl:
-                audio_full = seg_tmp / "u1g_audio_full.m4a"
-                in_args = [a for p in current_paths for a in ("-i", str(p))]
-                ffmpeg_run(
-                    [FFMPEG, "-y"] + in_args
-                    + ["-filter_complex", afc, "-map", a_out_lbl, "-vn",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(audio_full)]
-                )
-                if needs_open_close:
-                    oc_afc, oc_amap = build_open_close_audio_fc(
-                        opening_transition, closing_transition, xf
-                    )
-                    audio_full_oc = seg_tmp / "u1g_audio_full_oc.m4a"
-                    ffmpeg_run([
-                        FFMPEG, "-y", "-i", str(audio_full),
-                        "-filter_complex", oc_afc, "-map", oc_amap,
-                        "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(audio_full_oc),
-                    ])
-                    audio_full = audio_full_oc
-                ffmpeg_run([
-                    FFMPEG, "-y", "-i", str(video_full), "-i", str(audio_full),
-                    "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(mux_target),
-                ])
+    # Localise all /mnt/* inputs to WSL tmpfs before any FFmpeg encode.
+    # Opening 17+ Windows-filesystem files concurrently via the 9P driver
+    # floods the WSL kernel page-cache allocator and restarts the VM (exit 15).
+    # Sequential copy to tmpfs takes ~2s for ~400 MB; FFmpeg then reads from
+    # RAM-backed tmpfs with no 9P pressure.
+    def _localise_inputs(paths: list, dest: Path) -> list:
+        out = []
+        for i, p in enumerate(paths):
+            ps = str(p)
+            if ps.startswith("/mnt/"):
+                local = dest / f"render_in_{i}.mp4"
+                if not local.exists():
+                    log.info("[render] localise input %d: %s", i, Path(ps).name)
+                    shutil.copyfile(ps, str(local))
+                out.append(local)
             else:
-                ffmpeg_run([FFMPEG, "-y", "-i", str(video_full), "-c", "copy", str(mux_target)])
+                out.append(p)
+        return out
 
-            if needs_open_close:
-                log.info(
-                    "[U1g] boundary-only open/close: video baked into boundary "
-                    "segment(s) pre-concat, audio treated on whole-project track "
-                    "-- no whole-film video re-encode this render"
+    current_paths = _localise_inputs(current_paths, tmp)
+    log.info("[render] all inputs localised to tmpfs")
+
+    # ---------------------------------------------------------------
+    # U1g: segmented (memory-bounded) xfade render.
+    # A monolithic N-input 4K xfade graph buffers decoded 12.4 MB frames
+    # at every chained stage; on big projects peak RAM overflows the WSL
+    # VM and it is balloon-killed (exit 15). Fix: render the video xfade
+    # in overlap-by-one batches of BATCH_SIZE (chain depth stays small),
+    # join the segments with a lossless concat in each shared clip's solo
+    # region, render the (cheap) audio acrossfade in a single pass, and
+    # mux. See docs/batch-plan-u1-subbatches.md "Batch U1g".
+    # ---------------------------------------------------------------
+    BATCH_SIZE = 4
+
+    # Mutable progress holder so the outer fallback handler can report which
+    # batch was in flight (and its input size) when a failure occurred.
+    progress = {"batch": 0, "total": 0, "batch_len": 0}
+
+    # #65: per-batch encoder outcome, keyed by batch index. True = this
+    # batch's segment encoded on the originally requested encoder (AMF when
+    # is_amf); False = it fell back to libx264. Unlike the single shared
+    # amf_fallback_flag above (any-call-fell-back), this lets the boundary
+    # segment re-encode (seg_files[0]/seg_files[-1]) match the SAME encoder
+    # its segment actually used, avoiding a mixed-encoder concat (#64).
+    encoder_outcome_by_idx: dict[int, bool] = {}
+
+    def _render_segmented() -> None:
+        # #86: reuse the outer NTFS render_work (same job_id/base) so U1g segment
+        # outputs are AMF-writable /mnt/c paths, never /tmp -> UNC.
+        seg_tmp = render_work
+        seg_tmp.mkdir(parents=True, exist_ok=True)
+        log.info("[U1g] segment work dir: %s", seg_tmp)
+        xf = clamp_xfade_dur(durations)
+        per_cut_names = resolve_cut_names(
+            len(current_paths), transition, shuffle_between, cache_sig
+        )
+        # May raise ValueError if a boundary clip has no solo region.
+        plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
+        progress["total"] = len(plan)
+        progress_est_duration_s[0] = total
+        log.info(
+            "[U1g] segmented render: %d batches total=%.3fs xfade_dur=%.3f",
+            len(plan), total, xf,
+        )
+
+        # FPS for exact frame-count segmentation. Using -frames:v with counts
+        # derived from the GLOBAL frame grid makes the per-segment counts
+        # telescope to exactly round(total*fps) -- so boundary rounding cannot
+        # accumulate into progressive A/V drift across batches.
+        def _fps_float(raw: str) -> float:
+            if "/" in raw:
+                a, c = raw.split("/")
+                return float(a) / float(c)
+            return float(raw)
+        fps_f = _fps_float(target_fps_raw)
+        total_frames_expected = round(total * fps_f)
+
+        seg_files: list[Path] = []
+        covered_frames = 0
+        for bi, b in enumerate(plan):
+            idxs = b["clip_indices"]
+            progress["batch"] = bi + 1
+            progress["batch_len"] = len(idxs)
+            bdurs = b["local_durations"]
+            bpaths = [current_paths[k] for k in idxs]
+            # Global cut between clip k and k+1 == per_cut_names[k]; this
+            # batch's cuts are the global cuts idxs[0]..idxs[-2].
+            bnames = [per_cut_names[k] for k in idxs[:-1]]
+            bzoom = [zoom_vfs[k] for k in idxs] if zoom_vfs else None
+            vfc, v_out_b = build_batch_video_fc(bdurs, bnames, mode, output_resolution, xf, zoom_vfs=bzoom)
+
+            # Drop the leading (pre-window) part INSIDE the filter graph -- a
+            # "-c copy" trim snaps to GOP keyframes and drifts whole seconds
+            # (caught in U1g smoke test). setpts=0 resets each segment to PTS 0
+            # so the final concat -c copy joins cleanly.
+            start = b["seg_start_local"]
+            if start > 0.01:
+                vfc = (
+                    vfc.replace(v_out_b, "[vpre]")
+                    + f"; [vpre]trim=start={start:.4f},setpts=PTS-STARTPTS{v_out_b}"
                 )
 
-                # Validate final frame count against the pre-open/close planned
-                # total + the REAL measured per-boundary delta (oc_actual_frame_delta,
-                # summed from the pre/post probes in _boundary_reencode() above).
-                # Uses total_frames_expected (the exact planned base, from the
-                # segment plan) rather than probing an intermediate file, since
-                # there's no single "inner" file in this path.
-                #
-                # #114 fix: this used to assume a symmetric round(0.1*fps_f) per
-                # active boundary (3+3=6 for both-on). Real instrumented data
-                # (2026-07-11, Stagecoach 2025, 20 clips/4K) showed that's wrong:
-                # the OPEN boundary's xfade uses offset=0, and per ffmpeg xfade
-                # semantics (output_duration = offset + second_stream_duration)
-                # that adds ZERO frames beyond the inner segment's own length --
-                # confirmed by a clean delta=0 measurement, not the assumed +3.
-                # The CLOSE boundary measured delta=4 (also not the assumed +3).
-                # Deriving "expected" from a duration-based formula was the root
-                # bug; using the actual measured per-boundary deltas instead ties
-                # this guardrail to ground truth and makes it check what actually
-                # matters -- concat integrity -- rather than re-deriving a
-                # fragile xfade-duration formula that doesn't hold for offset=0.
-                out_frames = _probe_frame_count(output)
-                oc_delta_expected = oc_actual_frame_delta[0]
-                expected_frames = total_frames_expected + oc_delta_expected
-                oc_drift_frames = abs(out_frames - expected_frames)
-                log.info(
-                    "[U1g] boundary-only open/close frames=%d expected=%d "
-                    "(base=%d + oc_delta=%d) drift=%d frame(s)",
-                    out_frames, expected_frames, total_frames_expected,
-                    oc_delta_expected, oc_drift_frames,
-                )
-                if oc_drift_frames > 1:
-                    raise _BoundaryDriftError(
-                        f"[U1g] boundary-only open/close drift {oc_drift_frames} "
-                        "frames -- sync risk"
-                    )
+            # Exact end via integer frame count from the GLOBAL grid (telescopes).
+            g_start = b["seg_start_global"]
+            g_end = total if b["seg_end_local"] is None else b["seg_end_global"]
+            n_frames = round(g_end * fps_f) - round(g_start * fps_f)
+            covered_frames += n_frames
 
-        # #65: open/close-to-black no longer forces the monolithic fallback --
-        # the inner content renders segmented and the open/close fade is baked
-        # into the boundary segment(s) before the lossless concat.
-        use_batched = len(current_paths) > BATCH_SIZE and has_xfade
-        did_batched = False
-        if use_batched:
-            try:
-                _render_segmented()
-                did_batched = True
-                fallback_label = "with fallback" if amf_fallback_flag[0] else "no fallback"
-                log.info(
-                    "[U1g] segmented render complete (%s) batches=%s clips_total=%s mem_avail_mb=%s",
-                    fallback_label, progress["total"], len(current_paths), _mem_available_mb(),
-                )
-            except Exception as e:  # noqa: BLE001 -- fall back to monolithic on any planner/encode failure
-                # #114 Fix 2: a drift-check failure is a correctness assertion, not a real
-                # ffmpeg crash -- falling back to monolithic here is exactly the OOM-prone
-                # path U1g batching exists to avoid at this scale (confirmed: monolithic
-                # OOM'd on AMF, OOM'd again on the libx264 retry, took WSL down hard enough
-                # to need `wsl --shutdown`). isinstance check inside this single except
-                # block (NOT a separate `except _BoundaryDriftError:` clause -- a
-                # more-specific clause ordered after this general one would never be
-                # reached, silently swallowed by it first). Do not fall back here --
-                # propagate a clean, user-facing error instead. Technical detail
-                # (per-boundary/final frame counts) is already in the log above via the
-                # drift check itself.
-                if isinstance(e, _BoundaryDriftError):
-                    log.error(
-                        "[U1g][#114] boundary drift check failed -- aborting render "
-                        "instead of falling back to monolithic (known OOM risk at this "
-                        "scale): %s", e,
-                    )
-                    raise RuntimeError(
-                        "Render failed: transition boundary sync check failed "
-                        "(open/close fade drift). Please retry, or disable one of the "
-                        "opening/closing transitions and try again."
-                    ) from e
-                # Logs-first instrumentation (issue #7): capture full diagnostics on
-                # the (exit-15-prone) monolithic fallback so the next in-the-wild
-                # failure can be designed against without re-running. Behaviour
-                # unchanged -- still falls back to monolithic this session.
-                cls, ffmpeg_exit = _classify_segmented_failure(e)
-                log.warning(
-                    "[U1g][fallback] class=%s exc_type=%s ffmpeg_exit=%s mem_avail_mb=%s batch=%s/%s "
-                    "batch_len=%s clips_total=%s exc=%r -- falling back to monolithic",
-                    cls, e.__class__.__name__, ffmpeg_exit, _mem_available_mb(), progress["batch"],
-                    progress["total"], progress["batch_len"], len(current_paths), e,
-                    exc_info=True,
-                )
-                did_batched = False
+            seg = seg_tmp / f"u1g_seg_{bi}.mp4"
 
-        if not did_batched:
-            # Monolithic single-graph path: small projects (<= BATCH_SIZE), the
-            # "none"/concat path, or a segmented fallback.
-            fc, v_out, a_out = build_filter_complex(
-                current_paths, durations, audio_flags,
-                transition=transition,
-                mode=mode,
-                output_resolution=output_resolution,
-                clip_volumes=clip_volumes,
-                shuffle_between=shuffle_between,
-                seed=cache_sig,
-                opening_transition=opening_transition,
-                closing_transition=closing_transition,
-                target_fps_raw=target_fps_raw,
-                clip_tbn_str=_fps_to_tbn(target_fps_raw),
-                zoom_vfs=zoom_vfs,
-            )
-            # V4.1: no loudnorm fused here -- Step 5 output is the clean, cacheable
-            # intermediate; loudnorm is deferred to the final _apply_audio_treatment.
-            a_map = a_out
-            log.info("[render] filter_complex:\n  %s", fc)
-
-            def _build_multi(b_argv, c_args, paths, out_path):
+            def _build_batch(b_argv, c_args, paths, out_path, graph, vmap, nfr):
                 if is_amf:
-                    in_args = [arg for p in paths for arg in ("-i", to_win_path(p))]
+                    in_args = [a for p in paths for a in ("-i", to_win_path(p))]
                     o = to_win_path(out_path)
                 else:
-                    in_args = [arg for p in paths for arg in ("-i", str(p))]
+                    in_args = [a for p in paths for a in ("-i", str(p))]
                     o = str(out_path)
                 return (
                     b_argv + ["-y"] + in_args
-                    + ["-filter_complex", fc, "-map", v_out]
-                    + (["-map", a_map] if a_map else [])
-                    + c_args
-                    + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
-                    + [o]
+                    + ["-filter_complex", graph, "-map", vmap, "-an"]
+                    + ["-r", target_fps_raw, "-frames:v", str(nfr)]
+                    + c_args + [o]
                 )
 
-            cmd = _build_multi(bin_argv, codec_args, current_paths, output)
+            cmd = _build_batch(bin_argv, codec_args, bpaths, seg, vfc, v_out_b, n_frames)
 
-            def _fallback_multi():
-                fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
-                in_args = [arg for p in current_paths for arg in ("-i", str(p))]
+            def _fb_batch(_paths=bpaths, _graph=vfc, _vmap=v_out_b, _seg=seg, _nfr=n_frames):
+                fb_argv, fb_codec, _ = video_encoder_args(
+                    mode, output_resolution, win_ffmpeg, force_libx264=True
+                )
+                in_args = [a for p in _paths for a in ("-i", str(p))]
                 return (
                     fb_argv + ["-y"] + in_args
-                    + ["-filter_complex", fc, "-map", v_out]
-                    + (["-map", a_map] if a_map else [])
-                    + fb_codec
-                    + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
-                    + [str(output)]
+                    + ["-filter_complex", _graph, "-map", _vmap, "-an"]
+                    + ["-r", target_fps_raw, "-frames:v", str(_nfr)]
+                    + fb_codec + [str(_seg)]
                 )
 
-            # #119: interior progress ticks during the monolithic multi-clip
-            # encode. total_duration_s mirrors the same overlap-subtraction
-            # plan_video_batches() uses for U1g (xfade shortens the joined
-            # output by xfade_dur per cut).
-            _multi_total_s = (
-                sum(durations) - (len(current_paths) - 1) * clamp_xfade_dur(durations)
-                if has_xfade else sum(durations)
+            log.info(
+                "[U1g] batch %d/%d clips %s start=%.3f frames=%d (global [%.3f,%.3f]) "
+                "mem_avail_mb=%s",
+                bi + 1, len(plan), idxs, start, n_frames, g_start, g_end,
+                _mem_available_mb(),
             )
-            progress_est_duration_s[0] = _multi_total_s
-            _multi_lo, _multi_hi = checkpoints["cards"], checkpoints["render"]
-
-            def _multi_tick(frac: float, _lo=_multi_lo, _hi=_multi_hi) -> None:
-                report(int(_lo + frac * (_hi - _lo)))
-
-            _run_with_amf_fallback(
-                cmd, _fallback_multi, on_tick=_multi_tick, total_duration_s=_multi_total_s
+            fell_back = _run_with_amf_fallback(cmd, _fb_batch)
+            encoder_outcome_by_idx[bi] = not fell_back
+            # #119: tick once per completed batch -- real progress, not a
+            # fake timer. Batches are the natural granularity for U1g; no
+            # frame-level tracking needed on top of this.
+            _lo, _hi = checkpoints["cards"], checkpoints["render"]
+            report(int(_lo + (bi + 1) / progress["total"] * (_hi - _lo)))
+            is_boundary = bi == 0 or bi == len(plan) - 1
+            log.info(
+                "[U1g] batch %d encoder_outcome amf_ok=%s boundary=%s",
+                bi, encoder_outcome_by_idx[bi], is_boundary,
             )
+            seg_files.append(seg)
+
+        # Sync assertion: total frames must telescope to round(total*fps).
+        drift_frames = abs(covered_frames - total_frames_expected)
+        log.info(
+            "[U1g] segment frames=%d expected=%d drift=%d frame(s) (%.1fms)",
+            covered_frames, total_frames_expected, drift_frames,
+            drift_frames / fps_f * 1000.0,
+        )
+        if drift_frames > 1:
+            raise RuntimeError(
+                f"[U1g] frame-count drift {drift_frames} frames -- sync risk"
+            )
+
+        # #65: boundary-segment-only open/close re-encode. Replaces the old
+        # whole-film open/close post-pass (issue #31's _apply_open_close_post,
+        # deleted once this path was proven -- see git history) which
+        # re-encoded the ENTIRE inner film a second time just to apply a
+        # ~1.5s fade to/from black. Only the boundary segment(s) get a
+        # second-generation encode now.
+        def _boundary_codec_args(amf: bool) -> list:
+            if mode == "draft":
+                _, c, _ = video_encoder_args(
+                    mode, output_resolution, win_ffmpeg,
+                    force_libx264=not amf, use_amf=use_amf, use_hevc_amf=use_hevc_amf,
+                )
+                return c
+            if amf and main_is_hevc:
+                # #110: match the render's own hevc_amf family -- same
+                # nv12/-b:v-explicit reasoning as the main encode branch
+                # in encoder.py (AMF#514, AMF#273; see video_encoder_args).
+                args = ["-c:v", "hevc_amf", "-pix_fmt", "nv12", "-profile:v", "main",
+                        "-rc", "vbr_peak", "-b:v", HEVC_FINAL_BITRATE_4K, "-maxrate", HEVC_AMF_MAXRATE_4K,
+                        "-bufsize", HEVC_AMF_MAXRATE_4K, "-quality", "quality"]
+                return args
+            if amf:
+                # CQP for 4K mirrors encoder.py's video_encoder_args 4K branch
+                # (launch plan #1.1) -- boundary segments are the open/close
+                # transitions, same pan/motion quality concern applies there.
+                is_4k = output_resolution == "4k"
+                if is_4k:
+                    args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                            "-rc", "cqp", "-qp_i", "18", "-qp_p", "20", "-quality", "quality"]
+                else:
+                    # Bug fix: this branch previously always used the 4K
+                    # bitrate tier even for a 1080p AMF-opt-in boundary
+                    # re-encode -- now correctly uses the 1080p tier,
+                    # matching encoder.py's video_encoder_args.
+                    args = ["-c:v", "h264_amf", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                            "-rc", "vbr_peak", "-b:v", FINAL_BITRATE, "-maxrate", AMF_MAXRATE,
+                            "-bufsize", AMF_MAXRATE, "-quality", "quality"]
+                # Extended to 1080p AMF opt-in too (launch plan #1.2) -- previously 4K-only.
+                args += ["-vbaq", "true", "-high_motion_quality_boost_enable", "true"]
+                return args
+            return ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
+                    "-crf", "16", "-preset", "medium"]
+
+        def _first_frame_is_keyframe(path: Path) -> bool:
+            # Confirm a boundary re-encode starts on a keyframe -- should
+            # always hold for a fresh encode from a solo-region source; a
+            # missing leading keyframe would glitch playback/seek at the
+            # lossless concat boundary. One ffprobe call, no extra encode work.
+            data = ffprobe_json([
+                "-select_streams", "v:0", "-show_entries", "frame=pict_type",
+                "-read_intervals", "%+#1", str(path),
+            ])
+            frames = data.get("frames", [])
+            return bool(frames) and frames[0].get("pict_type") == "I"
+
+        def _boundary_reencode(idx: int, is_open: bool, is_close: bool) -> Path:
+            # Re-encode ONLY this boundary segment (video-only -- seg_files
+            # are already "-an") with the open/close xfade-to-black baked in.
+            # Writes a sibling file -- never overwrites seg_files[idx] in place.
+            seg = seg_files[idx]
+            iw, ih = get_frame_size(seg)
+            seg_dur = get_duration(seg)
+            # #114 Fix 1 (logs-first): `seg` is the already-completed, fully-flushed
+            # batch segment written by the U1g batch loop above -- this function only
+            # runs after ALL batches finish, so it's a stable, closed file at probe
+            # time (not a partial/in-progress write). Baseline probe before the
+            # boundary re-encode; paired with the post-probe below to isolate the
+            # per-boundary frame delta (open vs. close), since only the combined
+            # final-output check exists today.
+            pre_frames = _probe_frame_count(seg)
+            pp_fc, pp_vmap, _ = build_open_close_post_fc(
+                inner_duration=seg_dur,
+                has_audio=False,
+                scale_w=str(iw),
+                scale_h=str(ih),
+                target_fps_raw=target_fps_raw,
+                opening_transition=opening_transition if is_open else "none",
+                closing_transition=closing_transition if is_close else "none",
+                xfade_dur=xf,
+                clip_tbn_str=_fps_to_tbn(target_fps_raw),
+            )
+            tag = "_".join(t for t, on in (("open", is_open), ("close", is_close)) if on)
+            out_seg = seg.with_name(f"{seg.stem}_{tag}.mp4")
+
+            # Encoder-consistency guard (#64 mixed-encoder concat): match the
+            # SAME encoder this segment's own batch already used
+            # (encoder_outcome_by_idx), so the lossless concat never mixes
+            # AMF/libx264 SPS/PPS across segments.
+            force_libx264 = (not is_amf) or (not encoder_outcome_by_idx.get(idx, False))
+            amf_for_this = not force_libx264
+
+            def _build(b_argv, c_args, amf):
+                i_arg = to_win_path(seg) if amf else str(seg)
+                o_arg = to_win_path(out_seg) if amf else str(out_seg)
+                return (b_argv + ["-y", "-i", i_arg, "-filter_complex", pp_fc,
+                                   "-map", pp_vmap, "-r", target_fps_raw]
+                        + c_args + [o_arg])
+
+            pp_cmd = _build(bin_argv, _boundary_codec_args(amf_for_this), amf_for_this)
+
+            def _fb():
+                fb_argv, _, _ = video_encoder_args(
+                    mode, output_resolution, win_ffmpeg, force_libx264=True
+                )
+                return _build(fb_argv, _boundary_codec_args(False), False)
+
+            log.info(
+                "[U1g] boundary re-encode: idx=%d seg=%s open=%s close=%s "
+                "inner_dur=%.3fs size=%dx%d force_libx264=%s",
+                idx, seg.name, is_open, is_close, seg_dur, iw, ih, force_libx264,
+            )
+            fell_back = _run_with_amf_fallback(pp_cmd, _fb)
+
+            # Belt-and-braces: we requested this segment's OWN prior encoder
+            # choice (force_libx264=False because encoder_outcome_by_idx said
+            # AMF succeeded there) but this re-encode fell back anyway --
+            # stale/mismatched outcome, flag it before it silently produces a
+            # mixed-encoder concat.
+            if not force_libx264 and fell_back:
+                log.warning(
+                    "[U1g] boundary re-encode encoder MISMATCH idx=%d: requested AMF "
+                    "(matching original segment) but this re-encode fell back to "
+                    "libx264 -- mixed-encoder concat risk (#64)", idx,
+                )
+
+            if not _first_frame_is_keyframe(out_seg):
+                log.warning(
+                    "[U1g] boundary re-encode idx=%d (%s) does NOT start on a "
+                    "keyframe -- lossless concat may glitch at this boundary",
+                    idx, out_seg.name,
+                )
+
+            # #114 Fix 1 (logs-first): per-boundary frame delta, separate from the
+            # combined final-output check further down. Compare against
+            # oc_delta_expected's per-boundary assumption (round(0.1*fps_f)) to
+            # isolate whether the drift is per-boundary or a compounding artifact.
+            post_frames = _probe_frame_count(out_seg)
+            this_delta = post_frames - pre_frames
+            oc_actual_frame_delta[0] += this_delta
+            log.info(
+                "[U1g][#114] boundary frame delta idx=%d open=%s close=%s "
+                "pre=%d post=%d delta=%d",
+                idx, is_open, is_close, pre_frames, post_frames, this_delta,
+            )
+
+            return out_seg
+
+        needs_open_close = has_open or has_close
+        # #88: timed at the call sites (not inside _boundary_reencode)
+        # since the 3 sites below are mutually exclusive -- only 1 or 2
+        # fire per render, so accumulating across them can't double-count.
+        # boundary_reencode_s itself is declared in the outer run_pipeline
+        # scope (near has_open/has_close) so report_analysis() can read it.
+
+        if needs_open_close:
+            # #65: bake the open/close fade into ONLY the boundary segment(s),
+            # before the lossless concat below.
+            #
+            # QA-reviewer-caught edge case: if open and close ever land on
+            # the SAME index (single-batch), two separate calls would have
+            # the second overwrite the first, silently dropping the opening
+            # fade. Structurally unreachable today -- plan_video_batches
+            # with BATCH_SIZE=4 always produces >=2 batches whenever this
+            # path runs (use_batched requires len(current_paths) >
+            # BATCH_SIZE) -- but handled explicitly rather than left as an
+            # implicit invariant that a future BATCH_SIZE/gate change could
+            # silently break.
+            last_idx = len(seg_files) - 1
+            if has_open and has_close and last_idx == 0:
+                _t0_br = time.time()
+                seg_files[0] = _boundary_reencode(0, is_open=True, is_close=True)
+                boundary_reencode_s[0] += time.time() - _t0_br
+            else:
+                if has_open:
+                    _t0_br = time.time()
+                    seg_files[0] = _boundary_reencode(0, is_open=True, is_close=False)
+                    boundary_reencode_s[0] += time.time() - _t0_br
+                if has_close:
+                    _t0_br = time.time()
+                    seg_files[last_idx] = _boundary_reencode(last_idx, is_open=False, is_close=True)
+                    boundary_reencode_s[0] += time.time() - _t0_br
+
+        # Concat the segments (all identical codec/params) -> video_full.
+        concat_list = seg_tmp / "u1g_concat.txt"
+        concat_list.write_text("".join(f"file '{s}'\n" for s in seg_files))
+        video_full = seg_tmp / "u1g_video_full.mp4"
+        ffmpeg_run([
+            FFMPEG, "-y", "-f", "concat", "-safe", "0",
+            "-i", str(concat_list), "-c", "copy", str(video_full),
+        ])
+
+        # Single-pass audio over ALL clips (cheap; no 4K frame buffers).
+        # V4.1: no loudnorm here -- Step 5 is the clean, cacheable intermediate;
+        # loudnorm is deferred to the final _apply_audio_treatment step.
+        ln = None
+        afc, a_out_lbl = build_audio_only_fc(durations, audio_flags, clip_volumes, xf, ln)
+
+        # Video already carries the open/close fade (baked into the boundary
+        # segment(s) above, pre-concat when needs_open_close) -- mux straight
+        # to output, no whole-film video post-pass. Audio: apply the SAME
+        # acrossfade-to-silence fade issue #31 originally used, but only on
+        # the (already cheap) whole-project audio_full track, fully decoupled
+        # from video.
+        mux_target = output
+        if a_out_lbl:
+            audio_full = seg_tmp / "u1g_audio_full.m4a"
+            in_args = [a for p in current_paths for a in ("-i", str(p))]
+            ffmpeg_run(
+                [FFMPEG, "-y"] + in_args
+                + ["-filter_complex", afc, "-map", a_out_lbl, "-vn",
+                   "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(audio_full)]
+            )
+            if needs_open_close:
+                oc_afc, oc_amap = build_open_close_audio_fc(
+                    opening_transition, closing_transition, xf
+                )
+                audio_full_oc = seg_tmp / "u1g_audio_full_oc.m4a"
+                ffmpeg_run([
+                    FFMPEG, "-y", "-i", str(audio_full),
+                    "-filter_complex", oc_afc, "-map", oc_amap,
+                    "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(audio_full_oc),
+                ])
+                audio_full = audio_full_oc
+            ffmpeg_run([
+                FFMPEG, "-y", "-i", str(video_full), "-i", str(audio_full),
+                "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(mux_target),
+            ])
+        else:
+            ffmpeg_run([FFMPEG, "-y", "-i", str(video_full), "-c", "copy", str(mux_target)])
+
+        if needs_open_close:
+            log.info(
+                "[U1g] boundary-only open/close: video baked into boundary "
+                "segment(s) pre-concat, audio treated on whole-project track "
+                "-- no whole-film video re-encode this render"
+            )
+
+            # Validate final frame count against the pre-open/close planned
+            # total + the REAL measured per-boundary delta (oc_actual_frame_delta,
+            # summed from the pre/post probes in _boundary_reencode() above).
+            # Uses total_frames_expected (the exact planned base, from the
+            # segment plan) rather than probing an intermediate file, since
+            # there's no single "inner" file in this path.
+            #
+            # #114 fix: this used to assume a symmetric round(0.1*fps_f) per
+            # active boundary (3+3=6 for both-on). Real instrumented data
+            # (2026-07-11, Stagecoach 2025, 20 clips/4K) showed that's wrong:
+            # the OPEN boundary's xfade uses offset=0, and per ffmpeg xfade
+            # semantics (output_duration = offset + second_stream_duration)
+            # that adds ZERO frames beyond the inner segment's own length --
+            # confirmed by a clean delta=0 measurement, not the assumed +3.
+            # The CLOSE boundary measured delta=4 (also not the assumed +3).
+            # Deriving "expected" from a duration-based formula was the root
+            # bug; using the actual measured per-boundary deltas instead ties
+            # this guardrail to ground truth and makes it check what actually
+            # matters -- concat integrity -- rather than re-deriving a
+            # fragile xfade-duration formula that doesn't hold for offset=0.
+            out_frames = _probe_frame_count(output)
+            oc_delta_expected = oc_actual_frame_delta[0]
+            expected_frames = total_frames_expected + oc_delta_expected
+            oc_drift_frames = abs(out_frames - expected_frames)
+            log.info(
+                "[U1g] boundary-only open/close frames=%d expected=%d "
+                "(base=%d + oc_delta=%d) drift=%d frame(s)",
+                out_frames, expected_frames, total_frames_expected,
+                oc_delta_expected, oc_drift_frames,
+            )
+            if oc_drift_frames > 1:
+                raise _BoundaryDriftError(
+                    f"[U1g] boundary-only open/close drift {oc_drift_frames} "
+                    "frames -- sync risk"
+                )
+
+    # #65: open/close-to-black no longer forces the monolithic fallback --
+    # the inner content renders segmented and the open/close fade is baked
+    # into the boundary segment(s) before the lossless concat.
+    use_batched = len(current_paths) > BATCH_SIZE and has_xfade
+    did_batched = False
+    if use_batched:
+        try:
+            _render_segmented()
+            did_batched = True
+            fallback_label = "with fallback" if amf_fallback_flag[0] else "no fallback"
+            log.info(
+                "[U1g] segmented render complete (%s) batches=%s clips_total=%s mem_avail_mb=%s",
+                fallback_label, progress["total"], len(current_paths), _mem_available_mb(),
+            )
+        except Exception as e:  # noqa: BLE001 -- fall back to monolithic on any planner/encode failure
+            # #114 Fix 2: a drift-check failure is a correctness assertion, not a real
+            # ffmpeg crash -- falling back to monolithic here is exactly the OOM-prone
+            # path U1g batching exists to avoid at this scale (confirmed: monolithic
+            # OOM'd on AMF, OOM'd again on the libx264 retry, took WSL down hard enough
+            # to need `wsl --shutdown`). isinstance check inside this single except
+            # block (NOT a separate `except _BoundaryDriftError:` clause -- a
+            # more-specific clause ordered after this general one would never be
+            # reached, silently swallowed by it first). Do not fall back here --
+            # propagate a clean, user-facing error instead. Technical detail
+            # (per-boundary/final frame counts) is already in the log above via the
+            # drift check itself.
+            if isinstance(e, _BoundaryDriftError):
+                log.error(
+                    "[U1g][#114] boundary drift check failed -- aborting render "
+                    "instead of falling back to monolithic (known OOM risk at this "
+                    "scale): %s", e,
+                )
+                raise RuntimeError(
+                    "Render failed: transition boundary sync check failed "
+                    "(open/close fade drift). Please retry, or disable one of the "
+                    "opening/closing transitions and try again."
+                ) from e
+            # Logs-first instrumentation (issue #7): capture full diagnostics on
+            # the (exit-15-prone) monolithic fallback so the next in-the-wild
+            # failure can be designed against without re-running. Behaviour
+            # unchanged -- still falls back to monolithic this session.
+            cls, ffmpeg_exit = _classify_segmented_failure(e)
+            log.warning(
+                "[U1g][fallback] class=%s exc_type=%s ffmpeg_exit=%s mem_avail_mb=%s batch=%s/%s "
+                "batch_len=%s clips_total=%s exc=%r -- falling back to monolithic",
+                cls, e.__class__.__name__, ffmpeg_exit, _mem_available_mb(), progress["batch"],
+                progress["total"], progress["batch_len"], len(current_paths), e,
+                exc_info=True,
+            )
+            did_batched = False
+
+    if not did_batched:
+        # Monolithic single-graph path: small projects (<= BATCH_SIZE), the
+        # "none"/concat path, or a segmented fallback.
+        fc, v_out, a_out = build_filter_complex(
+            current_paths, durations, audio_flags,
+            transition=transition,
+            mode=mode,
+            output_resolution=output_resolution,
+            clip_volumes=clip_volumes,
+            shuffle_between=shuffle_between,
+            seed=cache_sig,
+            opening_transition=opening_transition,
+            closing_transition=closing_transition,
+            target_fps_raw=target_fps_raw,
+            clip_tbn_str=_fps_to_tbn(target_fps_raw),
+            zoom_vfs=zoom_vfs,
+        )
+        # V4.1: no loudnorm fused here -- Step 5 output is the clean, cacheable
+        # intermediate; loudnorm is deferred to the final _apply_audio_treatment.
+        a_map = a_out
+        log.info("[render] filter_complex:\n  %s", fc)
+
+        def _build_multi(b_argv, c_args, paths, out_path):
+            if is_amf:
+                in_args = [arg for p in paths for arg in ("-i", to_win_path(p))]
+                o = to_win_path(out_path)
+            else:
+                in_args = [arg for p in paths for arg in ("-i", str(p))]
+                o = str(out_path)
+            return (
+                b_argv + ["-y"] + in_args
+                + ["-filter_complex", fc, "-map", v_out]
+                + (["-map", a_map] if a_map else [])
+                + c_args
+                + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
+                + [o]
+            )
+
+        cmd = _build_multi(bin_argv, codec_args, current_paths, output)
+
+        def _fallback_multi():
+            fb_argv, fb_codec, _ = video_encoder_args(mode, output_resolution, win_ffmpeg, force_libx264=True)
+            in_args = [arg for p in current_paths for arg in ("-i", str(p))]
+            return (
+                fb_argv + ["-y"] + in_args
+                + ["-filter_complex", fc, "-map", v_out]
+                + (["-map", a_map] if a_map else [])
+                + fb_codec
+                + (["-c:a", "aac", "-b:a", "128k", "-ar", "48000"] if a_map else [])
+                + [str(output)]
+            )
+
+        # #119: interior progress ticks during the monolithic multi-clip
+        # encode. total_duration_s mirrors the same overlap-subtraction
+        # plan_video_batches() uses for U1g (xfade shortens the joined
+        # output by xfade_dur per cut).
+        _multi_total_s = (
+            sum(durations) - (len(current_paths) - 1) * clamp_xfade_dur(durations)
+            if has_xfade else sum(durations)
+        )
+        progress_est_duration_s[0] = _multi_total_s
+        _multi_lo, _multi_hi = checkpoints["cards"], checkpoints["render"]
+
+        def _multi_tick(frac: float, _lo=_multi_lo, _hi=_multi_hi) -> None:
+            report(int(_lo + frac * (_hi - _lo)))
+
+        _run_with_amf_fallback(
+            cmd, _fallback_multi, on_tick=_multi_tick, total_duration_s=_multi_total_s
+        )
 
     encoder_name = codec_args[1] if len(codec_args) > 1 else "libx264"
     render_s = time.time() - t0
