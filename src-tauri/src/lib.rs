@@ -6,7 +6,7 @@ use base64::Engine as _;
 use db::{
     add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
-    get_stuck_processing_jobs,
+    get_setting, get_stuck_processing_jobs, set_setting,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_all_encoding_claims, reset_done_with_missing_proxy, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
     set_proxy_for_all_clips_with_path, update_clip_review,
@@ -25,7 +25,14 @@ use uuid::Uuid;
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_OUTPUT_DIR: &str = r"C:\clips\processed";
+// #13: key into the flat `settings` KV table for the user's chosen export folder.
+const OUTPUT_FOLDER_SETTING_KEY: &str = "output_folder";
+
+// Drives covered by tauri.conf.json's assetProtocol.scope (C:\**, D:\**, E:\**).
+// A folder outside these silently 403s in-app playback (no build/runtime error) --
+// see rust-tauri.md "Asset protocol scope". Reject at picker-confirm time instead
+// of letting the user discover a blank video player after a successful render.
+const ALLOWED_OUTPUT_DRIVES: [&str; 3] = ["C:", "D:", "E:"];
 
 // ---------------------------------------------------------------------------
 // Filename helpers
@@ -1008,6 +1015,51 @@ fn open_folder_cmd(folder: String) -> Result<(), String> {
     Ok(())
 }
 
+/// #13: check a folder exists and is actually writable by writing + deleting a
+/// probe file. `Path::exists()` alone doesn't catch permission-denied or a
+/// removed network share/USB drive that still resolves as a path.
+fn is_writable_dir(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if !p.is_dir() {
+        return Err("Folder does not exist".to_string());
+    }
+    let probe = p.join(".rushcut_write_test");
+    std::fs::write(&probe, b"x").map_err(|e| format!("Folder is not writable: {}", e))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// #13: read the last-used export folder (no validation -- caller re-validates
+/// on mount since a saved folder can go stale between sessions).
+#[tauri::command]
+fn get_output_folder_cmd() -> Result<Option<String>, String> {
+    get_setting(OUTPUT_FOLDER_SETTING_KEY).map_err(|e| format!("DB error: {}", e))
+}
+
+/// #13: re-check a previously-saved folder is still writable, without persisting
+/// anything. Used on Render-screen mount to catch a removed drive/revoked
+/// permission since the folder was last picked.
+#[tauri::command]
+fn validate_output_folder_cmd(folder: String) -> Result<(), String> {
+    is_writable_dir(&folder)
+}
+
+/// #13: validate + persist a freshly-picked export folder (called right after
+/// the native OS folder picker returns). Rejects drives outside the asset
+/// protocol scope (tauri.conf.json) up front -- otherwise the render would
+/// succeed but the in-app player would silently show nothing (403, no error).
+#[tauri::command]
+fn set_output_folder_cmd(folder: String) -> Result<(), String> {
+    let drive = folder.split('\\').next().unwrap_or("");
+    if !ALLOWED_OUTPUT_DRIVES.iter().any(|d| d.eq_ignore_ascii_case(drive)) {
+        return Err(format!(
+            "Please choose a folder on drive C, D, or E -- other drives aren't supported yet."
+        ));
+    }
+    is_writable_dir(&folder)?;
+    set_setting(OUTPUT_FOLDER_SETTING_KEY, &folder).map_err(|e| format!("DB error: {}", e))
+}
+
 /// U4g: open a file in the system DEFAULT player (not Explorer). Used for 4K
 /// output, where the in-app WebView2 <video> hits the decode ceiling.
 /// `cmd /c start "" "<path>"` invokes ShellExecute semantics and honours the
@@ -1322,7 +1374,13 @@ async fn start_job(
     app: AppHandle,
     project_id: String,
     settings_json: String,
+    output_dir: String,
 ) -> Result<String, String> {
+    // #13: the frontend gates the Render button on a validated folder, but
+    // re-check here too (defense in depth -- folder could go stale, e.g. a
+    // removed drive, between the Browse click and clicking Render).
+    is_writable_dir(&output_dir)?;
+
     // Batch U1: single-in-flight-job guard. If a render is already active for
     // this project, re-attach to it instead of spawning a duplicate pipeline.
     // Two concurrent 4K pipelines competing for WSL memory is the prime
@@ -1348,7 +1406,7 @@ async fn start_job(
     // with a still-existing file and silently overwrite it.
     let slug = slugify(&project_data.project.name);
     let prefix = format!("{}-", slug);
-    let max_suffix = std::fs::read_dir(DEFAULT_OUTPUT_DIR)
+    let max_suffix = std::fs::read_dir(&output_dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
               .filter_map(|e| {
@@ -1362,13 +1420,13 @@ async fn start_job(
         })
         .unwrap_or(0);
     let mut suffix = max_suffix + 1;
-    let mut output_path = format!(r"{}\{}-{:02}.mp4", DEFAULT_OUTPUT_DIR, slug, suffix);
+    let mut output_path = format!(r"{}\{}-{:02}.mp4", output_dir, slug, suffix);
     // Collision guard: max-suffix handles gaps, but a race (two renders kicked
     // off near-simultaneously) or an external write could still land on an
     // existing path. Bump past any collision rather than silently overwriting.
     while std::path::Path::new(&output_path).exists() {
         suffix += 1;
-        output_path = format!(r"{}\{}-{:02}.mp4", DEFAULT_OUTPUT_DIR, slug, suffix);
+        output_path = format!(r"{}\{}-{:02}.mp4", output_dir, slug, suffix);
     }
     eprintln!("[start_job] output suffix: {}, path: {}", suffix, output_path);
 
@@ -2551,6 +2609,9 @@ pub fn run() {
             diag_log_cmd,
             regenerate_thumbnail_at_cmd,
             file_exists_cmd,
+            get_output_folder_cmd,
+            validate_output_folder_cmd,
+            set_output_folder_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

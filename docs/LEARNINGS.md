@@ -296,6 +296,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## React — a `setState` call earlier in the SAME async function is not visible to code later in that same continuation
+
+**Problem:** `async function onMount() { ... setOutputFolder(x); ... await submitJob(...) }` — code inside `submitJob` (or any function it calls) that reads the `outputFolder` state variable via closure still sees the value from the render that *defined* the closure, not `x`, because React state updates only become visible on the next render — which hasn't happened yet within the same `await`-chained continuation. This is the same root cause as `is4kOverride` already existing in `Render.tsx`'s `submitJob(pid, is4kOverride?)` (the mount-effect resume path passes `is4K` explicitly rather than relying on the `has4K` state closure), but it's easy to reintroduce for a *new* piece of state without recognizing the pattern already has a fix elsewhere in the same file.
+**Solution:** Either (a) thread the fresh value through as an explicit override parameter (the existing `is4kOverride` pattern), or (b) mirror the state into a `useRef` that's updated synchronously in the same setter call (`function setX(v) { xRef.current = v; setXState(v); }`), and read `xRef.current` from any code that might run in the same continuation the state was just set in. (b) is less plumbing when the value is read from many call sites.
+**Context:** Any mount-effect or event handler that both sets state AND (directly or via a called function) reads that same state later in the same `async` body before the next render — e.g. Render.tsx's #13 folder-gate resume path (`outputFolderRef` mirror added to fix this exact case).
+
+---
+
 ## Workflow — Visual eval bail-out when user is absent
 
 **Problem:** `request_access` for computer-use shows a dialog that the user must approve within 5 minutes. If the user isn't at their desk, two consecutive 5-minute timeouts (10 min total) are burned before giving up.

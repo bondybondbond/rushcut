@@ -42,6 +42,17 @@ describe("Full E2E render — /render/:projectId", () => {
     trackTestProject(projectId);
   });
 
+  it("sets a valid export folder via invoke shortcut (#13: native OS folder dialog can't be WDIO-driven)", async () => {
+    // Must land BEFORE the Render screen ever mounts -- outputFolder is only
+    // fetched once on mount, so setting it later wouldn't be picked up without
+    // a remount. Same permitted-shortcut class as scan_folder/probe_files
+    // (.claude/rules/e2e.md) since Browse opens a native picker CDP can't drive.
+    await browser.execute(async () => {
+      const { invoke } = (window as any).__TAURI_INTERNALS__;
+      await invoke("set_output_folder_cmd", { folder: "C:\\clips\\processed" });
+    });
+  });
+
   it("navigates to project in Library and opens to /trimmer/", async () => {
     // invoke() bypasses Upload.tsx React state so no auto-nav fires.
     // Permitted shortcut per .claude/rules/e2e.md: pushState to /library
@@ -152,15 +163,12 @@ describe("Full E2E render — /render/:projectId", () => {
     // B: h1 is always the screen name "Render" (screen-naming rule introduced in U4g fixes)
     expect(await heading.getText()).toBe("Render");
 
-    // 4K projects show a resolution gate — wait up to 10s for the button, then click.
-    // Non-4K projects auto-start (no button); skip the wait and fall through.
+    // #13: the "ready" gate (Save-to folder, + resolution chips for 4K) is now
+    // unconditional -- btn-render-film always renders. The folder was already
+    // set via invoke shortcut above, so the button is enabled by the time we get here.
     const renderBtn = await $('[data-testid="btn-render-film"]');
-    try {
-      await renderBtn.waitForExist({ timeout: 10_000 });
-      await renderBtn.click();
-    } catch {
-      // No button = non-4K project auto-started; stage-label will appear without a click.
-    }
+    await renderBtn.waitForExist({ timeout: 10_000 });
+    await renderBtn.click();
 
     // T3: awaiting-proxies phase removed. Proxy wait is now hidden behind the
     // existing "starting" spinner; render bar appears once proxies land.

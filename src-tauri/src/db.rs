@@ -765,6 +765,28 @@ pub fn get_project_with_clips(project_id: &str) -> Result<ProjectWithClips, rusq
     Ok(ProjectWithClips { project, clips })
 }
 
+/// Generic key/value read from the `settings` table (#13: last-used export folder).
+pub fn get_setting(key: &str) -> Result<Option<String>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Generic key/value upsert into the `settings` table.
+pub fn set_setting(key: &str, value: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
 pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(

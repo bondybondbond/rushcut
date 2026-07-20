@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { Check, Play, Folder, RotateCcw } from "lucide-react";
 import type { ProjectWithClips, JobConfig, PipelineProgressEvent, Job } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
@@ -101,6 +101,20 @@ export default function Render() {
       return "1080p";
     }
   });
+  // #13: chosen export folder. null = not yet picked (or stale/removed since
+  // last use) -- Render button stays disabled until this is a validated path.
+  // outputFolderRef mirrors the state synchronously (like inFilmCountRef below)
+  // so startRenderNow reads the current value even when called from the same
+  // async continuation that just set it (state updates aren't visible to a
+  // stale closure until the next render -- the mount-effect resume path hits
+  // this exact case).
+  const [outputFolder, setOutputFolderState] = useState<string | null>(null);
+  const outputFolderRef = useRef<string | null>(null);
+  function setOutputFolder(v: string | null) {
+    outputFolderRef.current = v;
+    setOutputFolderState(v);
+  }
+  const [folderError, setFolderError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [doneMeta, setDoneMeta] = useState<DoneMeta | null>(null);
   // T5: true once the output file fails to LOAD (deleted from disk). Duration
@@ -212,6 +226,21 @@ export default function Render() {
     setRenderPref(`rc_render_res_${projectId}`, res);
   }
 
+  // #13: opens the native OS folder picker, then validates + persists the
+  // choice server-side. Validation (writable, on an allowed drive) happens
+  // here at Browse-time, not deferred to render-start.
+  async function handleBrowseFolder() {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (!selected || typeof selected !== "string") return;
+      await invoke("set_output_folder_cmd", { folder: selected });
+      setOutputFolder(selected);
+      setFolderError(null);
+    } catch (e) {
+      setFolderError(String(e));
+    }
+  }
+
   function onResizePointerDown(e: React.PointerEvent) {
     const el = videoContainerRef.current;
     if (!el) return;
@@ -232,6 +261,15 @@ export default function Render() {
   }
 
   async function startRenderNow(pid: string) {
+    // #13: the Render button is disabled without a validated folder, so this
+    // should never fire without one -- guard anyway rather than send an empty
+    // path to start_job. Reads the ref, not the state var (see declaration).
+    const outputDir = outputFolderRef.current;
+    if (!outputDir) {
+      setErrorMsg("Choose a folder to save your film to before rendering.");
+      setPhase("error");
+      return;
+    }
     const config = buildJobConfig(pid);
     setPhase("starting");
     // U1d: the moment we commit to handing the job to the pipeline, drop the
@@ -243,6 +281,7 @@ export default function Render() {
       const newJobId = await invoke<string>("start_job", {
         projectId: pid,
         settingsJson: JSON.stringify(config),
+        outputDir,
       });
       setJobId(newJobId);
       setStage("Starting up the magic...");
@@ -347,11 +386,9 @@ export default function Render() {
     setErrorMsg(null);
     setElapsedLabel("0s");
     completedRef.current = false;
-    if (has4K) {
-      setPhase("ready");
-      return;
-    }
-    await submitJob(projectId);
+    // #13: always re-enter the "ready" gate (Save-to folder is mandatory on
+    // every render, not just 4K's resolution pick).
+    setPhase("ready");
   }
 
   // U4g: cancel the in-flight render. Kills the WSL pipeline process group and
@@ -379,8 +416,21 @@ export default function Render() {
       invoke<RenderStatusResult>("get_render_status_cmd", { projectId }).catch(
         () => ({ active_job: null, latest_render: null }) as RenderStatusResult,
       ),
-    ]).then(async ([data, is4K, status]) => {
+      invoke<string | null>("get_output_folder_cmd").catch(() => null),
+    ]).then(async ([data, is4K, status, savedFolder]) => {
       if (cancelled) return;
+
+      // #13: a saved folder can go stale between sessions (removed drive,
+      // revoked permission) -- re-validate on every mount rather than trust it.
+      if (savedFolder) {
+        try {
+          await invoke("validate_output_folder_cmd", { folder: savedFolder });
+          setOutputFolder(savedFolder);
+        } catch (e) {
+          setOutputFolder(null);
+          setFolderError(`Previously used folder is no longer available: ${e}`);
+        }
+      }
 
       projectCache.set(projectId, { name: data.project.name, clips: data.clips });
       const included = data.clips.filter((c) => c.include !== 0);
@@ -450,12 +500,9 @@ export default function Render() {
         return;
       }
 
-      if (is4K) {
-        setPhase("ready");
-        return;
-      }
-
-      await submitJob(projectId);
+      // #13: every render now stops at the "ready" gate (Save-to folder is
+      // mandatory) -- previously non-4K projects auto-started with zero clicks.
+      setPhase("ready");
     }).catch(() => {
       if (cancelled) return;
       setErrorMsg("Failed to load project -- go back and try again.");
@@ -701,39 +748,84 @@ export default function Render() {
 
           <h1 className="text-3xl font-semibold text-[#FF8A65]">Render</h1>
 
-          {/* Ready — 4K gate */}
+          {/* Ready — Save-to folder (mandatory, #13) + Output Resolution (4K only) */}
           {phase === "ready" && (
             <div className="space-y-6">
+              {has4K && (
+                <div className="border border-white/15 rounded-lg p-6 space-y-4">
+                  <div>
+                    <p className="text-xl font-medium text-[#e5e5e5]">Output Resolution</p>
+                    <p className="text-sm text-[#a3a3a3] mt-0.5">
+                      Your project contains 4K clips. Choose your output resolution before rendering.
+                    </p>
+                  </div>
+                  <div className="flex gap-3">
+                    {(["1080p", "4k"] as const).map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        data-testid={`chip-res-${r}`}
+                        onClick={() => handleResSelect(r)}
+                        className={`text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
+                          outputRes === r
+                            ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+                            : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+                        }`}
+                      >
+                        {r === "4k" ? "4K" : "1080p"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="border border-white/15 rounded-lg p-6 space-y-4">
                 <div>
-                  <p className="text-xl font-medium text-[#e5e5e5]">Output Resolution</p>
+                  <p className="text-xl font-medium text-[#e5e5e5]">Save to</p>
                   <p className="text-sm text-[#a3a3a3] mt-0.5">
-                    Your project contains 4K clips. Choose your output resolution before rendering.
+                    Choose the folder your finished film will be saved to.
                   </p>
                 </div>
-                <div className="flex gap-3">
-                  {(["1080p", "4k"] as const).map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      data-testid={`chip-res-${r}`}
-                      onClick={() => handleResSelect(r)}
-                      className={`text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
-                        outputRes === r
-                          ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
-                          : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
-                      }`}
+                {outputFolder ? (
+                  <div className="flex items-center gap-3">
+                    <p
+                      data-testid="output-folder-path"
+                      className="text-base font-semibold text-[#e5e5e5] truncate flex-1"
                     >
-                      {r === "4k" ? "4K" : "1080p"}
+                      {outputFolder}
+                    </p>
+                    <button
+                      type="button"
+                      data-testid="btn-browse-folder"
+                      onClick={handleBrowseFolder}
+                      className="text-sm text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors shrink-0"
+                    >
+                      Change
                     </button>
-                  ))}
-                </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="btn-browse-folder"
+                    onClick={handleBrowseFolder}
+                    className="flex items-center gap-2 w-full px-4 py-3 rounded-md border border-dashed border-white/25 text-sm text-[#a3a3a3] hover:border-white/50 hover:text-[#e5e5e5] transition-all duration-200"
+                  >
+                    <Folder size={16} className="shrink-0" />
+                    Browse...
+                  </button>
+                )}
+                {folderError && (
+                  <p data-testid="output-folder-error" className="text-sm text-red-400">
+                    {folderError}
+                  </p>
+                )}
               </div>
 
               <button
                 data-testid="btn-render-film"
+                disabled={!outputFolder}
                 onClick={() => projectId && submitJob(projectId)}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base"
+                className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Render Film
               </button>
