@@ -197,6 +197,25 @@ Always **green** (`#22c55e`), never white/grey.
 </div>
 ```
 
+**Note:** the `.progress-indeterminate` marquee class above is documented but was never actually implemented in `globals.css` or used anywhere (confirmed via repo-wide grep, #140 session) — treat it as aspirational, not a real pattern to copy yet.
+
+### Stall pulse (Render screen, #140)
+
+When a real pipeline signal (`pipeline-progress`/`pipeline-stage`) hasn't arrived for >8s, the determinate bar switches to a subtle "still alive" pulse instead of sitting visually frozen — Tailwind's built-in `animate-pulse` on the existing fill, no custom keyframes:
+
+```tsx
+<div
+  className={`h-full bg-[#22c55e] rounded-full transition-all duration-500 ${barPulsing ? "animate-pulse" : ""}`}
+  style={{ width: `${progress}%` }}
+/>
+{barPulsing && (
+  <p className="text-xs text-[#a3a3a3] italic">Still working -- this can take a few minutes</p>
+)}
+```
+
+**Rule (learned live, #140):** never replace the real stage label with the reassurance text — a first pass did this and the user lost their place in the process. The stage label must always stay visible; the reassurance is additive.
+**Known gap (not yet fixed):** the current below-bar placement causes a layout jump (elapsed-timer line shifts down, then back up) when the note appears/disappears — confirmed by the user as "a bit funky." The correct fix is inline next to the stage label (`Trimming clip 2 of 4... · Still working`, separator dot, same line, nothing ever moves) — tracked as a follow-up issue, not yet built.
+
 ---
 
 ## Configure Panel Chips

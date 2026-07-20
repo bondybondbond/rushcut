@@ -155,6 +155,13 @@ export default function Render() {
   // Do not move that seed into render-body / useState init.
   const lastProgressAtRef = useRef<number>(Date.now());
   const [stalled, setStalled] = useState(false);
+  // #140: fast liveness watchdog, independent of the 30s/360s `stalled` banner
+  // above -- a much shorter (8s, per WinUI's documented determinate->indeterminate
+  // heuristic) threshold that just pulses the bar + swaps in reassuring text, so
+  // the user always sees motion during a real but silent stage (e.g. Step 2 trim
+  // reading proxy files from the slow WSL /mnt/c mount). Cleared by the same
+  // progress/stage listeners that already reset lastProgressAtRef.
+  const [barPulsing, setBarPulsing] = useState(false);
   // U4f: stage-aware stall threshold. The cold zoom stage emits one STAGE:zoom then
   // encodes silently (no PROGRESS) for up to ~7 min on a large project, which trips a
   // fixed 360s threshold falsely. On STAGE:zoom we extend this to 1 min/clip
@@ -480,6 +487,7 @@ export default function Render() {
       // U1e: liveness signal -- refresh the stall clock and clear any warning.
       lastProgressAtRef.current = Date.now();
       setStalled(false);
+      setBarPulsing(false);
     });
 
     const unlistenStage = listen<{ jobId: string; stage: string }>("pipeline-stage", (event) => {
@@ -496,6 +504,7 @@ export default function Render() {
       // progress for 2-3 min, so counting stage events here prevents false stalls.
       lastProgressAtRef.current = Date.now();
       setStalled(false);
+      setBarPulsing(false);
     });
 
     const unlistenDone = listen<PipelineProgressEvent & { analysis?: string | null }>("pipeline-done", (event) => {
@@ -566,11 +575,20 @@ export default function Render() {
       // U4f: threshold is stage-aware (extended during the cold zoom stage).
       if (Date.now() - lastProgressAtRef.current > maxStallMsRef.current) setStalled(true);
     }, 30_000);
+    // #140: independent fast watchdog (8s, not stage-aware) -- deliberately
+    // separate from stallCheck above, which exists for a different purpose (a
+    // soft "maybe stalled, offer retry" banner at a much longer threshold).
+    // This one only pulses the bar; it never implies the render might be dead.
+    const pulseCheck = setInterval(() => {
+      setBarPulsing(Date.now() - lastProgressAtRef.current > 8_000);
+    }, 1_500);
     return () => {
       clearInterval(interval);
       clearInterval(stallCheck);
+      clearInterval(pulseCheck);
       // U1e: leaving "rendering" (done/error) clears any standing stall warning.
       setStalled(false);
+      setBarPulsing(false);
       // U4f: reset the stage-aware threshold back to baseline for the next render.
       maxStallMsRef.current = 360_000;
     };
@@ -751,16 +769,26 @@ export default function Render() {
           {phase === "rendering" && (
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
+                {/* #140: the real stage string stays visible at all times -- user
+                    feedback on the first pass was that swapping it out for the
+                    reassurance text made them lose their place ("where in the
+                    process I am"). The reassurance now complements it as a
+                    separate line below instead of replacing it. */}
                 <span data-testid="stage-label" className="text-[#a3a3a3]">{stage}</span>
                 <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono">{progress}%</span>
               </div>
               <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                 <div
                   data-testid="progress-bar"
-                  className="h-full bg-[#22c55e] rounded-full transition-all duration-500"
+                  className={`h-full bg-[#22c55e] rounded-full transition-all duration-500 ${barPulsing ? "animate-pulse" : ""}`}
                   style={{ width: `${progress}%` }}
                 />
               </div>
+              {barPulsing && (
+                <p data-testid="still-working-note" className="text-xs text-[#a3a3a3] italic">
+                  Still working -- this can take a few minutes
+                </p>
+              )}
               <p data-testid="elapsed-timer" className="text-xs text-[#a3a3a3]">{elapsedLabel} elapsed</p>
 
               {/* U4g: cancel the in-flight render. Secondary/destructive style

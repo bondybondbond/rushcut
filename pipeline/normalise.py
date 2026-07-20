@@ -94,11 +94,18 @@ def normalise(
             str(out),
         ])
         log_av_sync(out, f"norm_{i}")
+        # #140: on_clip_done (report_stage/report, ultimately a stdout print()) must
+        # stay inside the lock -- it's called from this worker thread, concurrently
+        # with the other MAX_PARALLEL_NORMALISE workers' own calls. Previously this
+        # ran unlocked outside the `with lock:` block (same race class as Step 2
+        # trim's pre-#140 code): under real concurrency two workers' print() calls
+        # can interleave into a garbled stdout line, which Rust's STAGE:/PROGRESS:
+        # prefix-match then silently drops.
         with lock:
             done_count += 1
             n = done_count
-        if on_clip_done:
-            on_clip_done(n, total)
+            if on_clip_done:
+                on_clip_done(n, total)
 
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_NORMALISE) as pool:
         futures = [pool.submit(_worker, i, src) for i, src in enumerate(clip_paths)]

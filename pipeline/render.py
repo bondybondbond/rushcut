@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -773,22 +774,38 @@ def run_pipeline(
             total_jobs = len(jobs)
             trim_lo, trim_hi = checkpoints["normalise"], checkpoints["trim"]
 
-            def _trim_worker(i: int, p, start: float, end: float) -> None:
+            # #140: a per-job-START stage label (fired from the worker thread, below)
+            # gives fresh status text during the ~40s all-proxy flat window instead of
+            # nothing until the first completion. This is the first time report_stage/
+            # report get called from a worker thread for this stage -- report_lock
+            # covers BOTH this new start-call AND the pre-existing completion-calls in
+            # the main thread's as_completed loop below, since both now write to the
+            # same stdout stream concurrently. The old "no lock needed" reasoning (done
+            # only mutated on the main thread) no longer holds once a worker thread also
+            # calls report()/report_stage() for this stage.
+            report_lock = threading.Lock()
+
+            def _trim_worker(job_num: int, i: int, p, start: float, end: float) -> None:
+                with report_lock:
+                    report_stage(f"Trimming clip {job_num} of {total_jobs}...")
                 out = tmp / f"trim_{i}.mp4"
                 trimmed[i] = trim(p, start, end, out, threads=threads_per_worker)
 
             with ThreadPoolExecutor(max_workers=MAX_PARALLEL_TRIM) as pool:
-                futures = [pool.submit(_trim_worker, i, p, start, end) for i, p, start, end in jobs]
+                futures = [
+                    pool.submit(_trim_worker, job_num, i, p, start, end)
+                    for job_num, (i, p, start, end) in enumerate(jobs, start=1)
+                ]
                 # as_completed (not submission-order iteration) so a tick fires as soon as
                 # ANY clip finishes -- report per-clip so this stage doesn't appear stuck,
-                # same pattern as Step 1's _normalise_progress. `done` is only mutated here
-                # on the main thread (as_completed yields sequentially) -- no lock needed.
+                # same pattern as Step 1's _normalise_progress.
                 done = 0
                 for f in as_completed(futures):
                     f.result()  # re-raise any worker exception immediately (no swallowing)
                     done += 1
-                    report_stage(f"Trimming clip {done} of {total_jobs}")
-                    report(int(trim_lo + done / total_jobs * (trim_hi - trim_lo)))
+                    with report_lock:
+                        report_stage(f"Trimming clip {done} of {total_jobs}")
+                        report(int(trim_lo + done / total_jobs * (trim_hi - trim_lo)))
 
         current_paths = trimmed
     else:
