@@ -633,34 +633,24 @@ def run_pipeline(
         log.info("[cache] MISS %s", cache_sig)
     print(f"TIMING:cache={cache_status}", flush=True)
 
-    # Pre-trim: extract only the needed segment from each source clip before normalise.
-    # DJI clips can be 60-120s; user typically uses 5-30s. Normalising the full clip
-    # wastes 4-10x time. Fast copy-seek to [in_s - 2s, out_s + 0.5s], then normalise
-    # only the short segment. Step 2 fine-trims the normalised file with adjusted offsets.
-    # Original `clips` preserved intact for ANALYSIS metrics (source duration/resolution).
-    n_clips = len(clip_paths)
-    pre_trimmed_paths: list = [None] * n_clips
-    pipeline_clips:    list = [None] * n_clips
-
-    def _pretrim_worker(i: int, src_p: Path, cm: dict) -> None:
-        pre_trimmed_paths[i], pipeline_clips[i] = pretrim_one_clip(i, src_p, cm, tmp)
-
-    with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as pool:
-        futures = [pool.submit(_pretrim_worker, i, src_p, cm)
-                   for i, (src_p, cm) in enumerate(zip(clip_paths, clips))]
-        for f in futures:
-            f.result()
-
-    # Partition clips: use proxy as normalise substitute where available.
+    # Partition clips: use proxy as normalise substitute where available. Computed
+    # from the ORIGINAL `clips` (not B-0-mutated) BEFORE B-0 runs (#135) --
+    # decide_clip_source() only reads proxy_path_wsl, which B-0's pretrim never
+    # touches (it only rewrites in_ms/out_ms), so this partition is unaffected by
+    # B-0 either way. Doing it first lets B-0 skip proxy-eligible clips entirely
+    # instead of pre-trimming them and immediately discarding the result (the
+    # #135 root cause: in the reported proxy_skip=4/4 case, 100% of the 9.1s B-0
+    # stall was pretrim work thrown away because the proxy was used instead).
     # Required proxy height depends on output resolution (>=1080p for 1080p,
     # >=2160p for 4K). Background gen (Batch N) encodes at 2160p so proxies qualify
     # for both. The decision lives in decide_clip_source() -- render.py is
     # currently its only caller (warm_zoom.py, referenced here previously, no
     # longer exists per the embed-zoom-in-filter_complex refactor, #67/#79).
+    n_clips = len(clip_paths)
     proxy_clip_indices: set[int] = set()
     norm_clip_indices:  list[int] = []
 
-    for i, cm in enumerate(pipeline_clips):
+    for i, cm in enumerate(clips):
         use_proxy, _pwsl, reason = decide_clip_source(
             cm, output_resolution, target_fps_int,
             force_normalise=config.get("force_normalise", False),
@@ -682,18 +672,50 @@ def run_pipeline(
     # Initialise merged output array
     current_paths: list = [None] * n_clips
 
+    # Pre-trim: extract only the needed segment from each NORMALISE-BOUND source
+    # clip before normalise. DJI clips can be 60-120s; user typically uses 5-30s.
+    # Normalising the full clip wastes 4-10x time. Fast copy-seek to
+    # [in_s - 2s, out_s + 0.5s], then normalise only the short segment. Step 2
+    # fine-trims the normalised file with adjusted offsets. Proxy-eligible clips
+    # (#135) skip this entirely -- their B-0 output would be discarded anyway
+    # since the proxy already covers the full clip at the required resolution.
+    pre_trimmed_paths: list = [None] * n_clips
+    pipeline_clips:    list = list(clips)  # proxy indices stay byte-identical to `clips`
+    t_pretrim = time.time()
+
+    # #135: B-0 and the real normalise() call below share ONE combined per-clip
+    # tick budget spanning [0, checkpoints["normalise"]] -- 2 units per norm-bound
+    # clip (1 for its B-0 pretrim, 1 for its normalise encode) -- instead of
+    # reserving a fixed percentage sub-slice for B-0. A fixed % slice would be too
+    # narrow to survive int() rounding (B-0 is fast; normalise dominates the real
+    # wall time), silently reproducing the exact "flat window" bug this fix is
+    # for. as_completed (not submission-order) so a tick fires as soon as ANY
+    # clip's pretrim finishes, same pattern as Step 2 trim (#129).
+    total_units = 2 * len(norm_clip_indices)
+    units_done = 0
+
+    if norm_clip_indices:
+        def _pretrim_worker(i: int, src_p: Path, cm: dict) -> tuple:
+            return pretrim_one_clip(i, src_p, cm, tmp)
+
+        with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as pool:
+            futures = {pool.submit(_pretrim_worker, i, clip_paths[i], clips[i]): i
+                       for i in norm_clip_indices}
+            for f in as_completed(futures):
+                i = futures[f]
+                pre_trimmed_paths[i], pipeline_clips[i] = f.result()
+                units_done += 1
+                report_stage(f"Preparing clip {units_done} of {len(norm_clip_indices)}")
+                report(int(units_done / total_units * checkpoints["normalise"]))
+
+    print(f"TIMING:pretrim={time.time() - t_pretrim:.1f}s (jobs={len(norm_clip_indices)})", flush=True)
+
     # Proxy clips: proxy IS the normalised intermediate — point directly at it.
-    # _pretrim_worker already ran for all clips and wrote B-0-adjusted in_ms/out_ms into
-    # pipeline_clips[i] (offsets relative to the pretrim window start). Proxy covers the
-    # FULL clip so those adjusted offsets are wrong — restore the original in_ms/out_ms
-    # from `clips` so Step 2 applies the correct absolute offsets to the proxy.
+    # pipeline_clips[i] for these indices is still the original `clips[i]` (never
+    # touched by B-0 above), so no offset restore is needed -- unlike the old
+    # code path, there is nothing here to undo.
     for i in proxy_clip_indices:
-        current_paths[i] = Path(pipeline_clips[i]["proxy_path_wsl"])
-        pipeline_clips[i] = {
-            **pipeline_clips[i],
-            "in_ms": clips[i].get("in_ms"),
-            "out_ms": clips[i].get("out_ms"),
-        }
+        current_paths[i] = Path(clips[i]["proxy_path_wsl"])
 
     # Non-proxy clips: normalise from pre-trimmed source (existing B-0 path)
     if norm_clip_indices:
@@ -701,7 +723,7 @@ def run_pipeline(
 
         def _normalise_progress(done: int, total: int) -> None:
             report_stage(f"Preparing clip {done} of {total}")
-            report(int(done / total * checkpoints["normalise"]))
+            report(int((units_done + done) / total_units * checkpoints["normalise"]))
 
         normed = normalise(
             norm_src, tmp, mode=mode,
