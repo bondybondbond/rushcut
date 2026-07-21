@@ -1,4 +1,4 @@
-import type { JobConfig, TransitionValue } from "@/types/project";
+import type { CardSpec, JobConfig, TransitionValue } from "@/types/project";
 import { getRenderPref } from "@/utils/renderStore";
 
 export const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
@@ -130,11 +130,7 @@ export const DEFAULT_CONFIG: JobConfig = {
   opening_transition: "none",
   closing_transition: "none",
   shuffle_between: false,
-  intro_text: "",
-  intro_subtitle: "",
-  intro_color: "#000000",
-  outro_text: "",
-  outro_color: "#000000",
+  cards: [],
   zoom: false,
   filter_boring: true,
   music_volume: "balanced",
@@ -178,15 +174,17 @@ export function buildJobConfig(projectId: string): JobConfig {
   } catch { /* ignore */ }
   try {
     const cards = readCardsConfig(projectId);
+    const cardsList: CardSpec[] = [];
+    // #148: position is plain list-order (index-based) -- start card is always
+    // slot 0, end card uses the -1 sentinel so buildJobConfig never needs to
+    // know the project's clip count.
     if (cards.open.show) {
-      config.intro_text = cards.open.text;
-      config.intro_subtitle = cards.open.subtitle;
-      config.intro_color = cards.open.color;
+      cardsList.push({ text: cards.open.text, subtitle: cards.open.subtitle, color: cards.open.color, position: 0 });
     }
     if (cards.close.show) {
-      config.outro_text = cards.close.text;
-      config.outro_color = cards.close.color;
+      cardsList.push({ text: cards.close.text, color: cards.close.color, position: -1 });
     }
+    config.cards = cardsList;
   } catch { /* ignore */ }
   return config;
 }

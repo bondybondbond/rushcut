@@ -5,7 +5,7 @@ Pipeline order:
   1.  normalise      -> H.264/yuv420p/25fps/1080p/AAC
   2.  silence trim   -> (if config.silence_removal) trim silence from clip edges
   3.  zoom           -> (if config.zoom, final mode only)
-  4.  cards          -> prepend intro, append outro (if text provided)
+  4.  cards          -> splice each config.cards[] entry at its position (#148)
   5.  render         -> filter_complex xfade + scale (uniform for any clip count, #136)
                         == the clean, treatment-free intermediate (V4.1 cache point)
   6.  audio treatment-> music mix and/or loudnorm applied on top of the clean
@@ -536,19 +536,15 @@ def run_pipeline(
     global_zoom = config.get("zoom", False) and mode == "final"
     zoom_active = (has_per_clip_zoom or global_zoom) and mode == "final"
 
-    # Phase 2 format: intro_text / intro_color / outro_text / outro_color.
-    # Legacy Phase 1 format intro_card/end_card also handled as fallback.
-    intro_text = config.get("intro_text") or (config.get("intro_card") or {}).get("text", "")
-    intro_color = (
-        config.get("intro_color")
-        or (config.get("intro_card") or {}).get("color", "#000000")
-    )
-    outro_text = config.get("outro_text") or (config.get("end_card") or {}).get("text", "")
-    outro_color = (
-        config.get("outro_color")
-        or (config.get("end_card") or {}).get("color", "#000000")
-    )
-    cards_active = bool(intro_text) or bool(outro_text)
+    # #148: positioned card list replaces the old flat intro/outro fields. Each
+    # entry is {text, color, subtitle?, position} -- position is plain
+    # list-order (0 = before clip 0, N = after clip N-1, -1 = end sentinel).
+    # A card with blank/whitespace-only text never renders (matches the old
+    # `if intro_text:` gate behaviour).
+    cards_config = [
+        c for c in config.get("cards", []) if (c.get("text") or "").strip()
+    ]
+    cards_active = bool(cards_config)
 
     def _apply_audio_treatment(clean: Path, checkpoints: dict) -> Path:
         """V4.1: apply music + loudnorm on top of the clean intermediate.
@@ -911,37 +907,46 @@ def run_pipeline(
         for p, v, z in zip(current_paths, volume_by_index, zoom_vf_by_index)
     ]
 
-    # 4. Cards (pre-render as video segments, prepend/append).
+    # 4. Cards (pre-render as video segments, spliced at each card's position, #148).
     report_stage("cards")
     # Use actual clip dimensions so xfade size matches -- clips may not be 16:9.
     clip_w, clip_h = get_frame_size(current_paths[0])
     card_size = f"{clip_w}x{clip_h}"
 
-    # intro_text/intro_color/outro_text/outro_color resolved early (hoisted, see #12).
-    if intro_text:
-        log.info("[render] Step 4: intro card")
-        card = make_card(
-            text=intro_text,
-            color=intro_color,
+    # cards_config resolved early (hoisted, see #12 pattern) -- already filtered
+    # to blank-text entries in the intro/outro-era code above.
+    # position is plain list-order against the ORIGINAL (pre-card) items list:
+    # 0 = before index 0, N = after index N-1, -1 = end sentinel (independent
+    # of clip count, since the UI layer doesn't know it -- see buildJobConfig.ts).
+    # Cards are grouped by resolved slot and reconstructed in one pass (not
+    # repeated splicing) so multiple cards land in declared order, not
+    # accidental insertion order.
+    n_items = len(items)
+    cards_by_slot: "dict[int, list[ClipItem]]" = {}
+    for card_num, c in enumerate(cards_config, start=1):
+        log.info("[render] Step 4: card %d/%d at position=%s", card_num, len(cards_config), c.get("position"))
+        pos = c.get("position", -1)
+        idx = n_items if pos == -1 else max(0, min(int(pos), n_items))
+        card_path = make_card(
+            text=c["text"],
+            color=c.get("color", "#000000"),
             duration_s=3.0,
-            out_path=tmp / "intro_card.mp4",
+            out_path=tmp / f"card_{card_num}.mp4",
             size=card_size,
-            subtitle=config.get("intro_subtitle", ""),
+            subtitle=c.get("subtitle", ""),
             target_fps=target_fps_raw,
         )
-        items = [ClipItem(path=card, volume=1.0, zoom_vf=None, kind="card")] + items
+        cards_by_slot.setdefault(idx, []).append(
+            ClipItem(path=card_path, volume=1.0, zoom_vf=None, kind="card")
+        )
 
-    if outro_text:
-        log.info("[render] Step 4: outro card")
-        card = make_card(
-            text=outro_text,
-            color=outro_color,
-            duration_s=3.0,
-            out_path=tmp / "end_card.mp4",
-            size=card_size,
-            target_fps=target_fps_raw,
-        )
-        items = items + [ClipItem(path=card, volume=1.0, zoom_vf=None, kind="card")]
+    if cards_by_slot:
+        new_items: "list[ClipItem]" = []
+        for i in range(n_items + 1):
+            new_items.extend(cards_by_slot.get(i, []))
+            if i < n_items:
+                new_items.append(items[i])
+        items = new_items
 
     # Unzip back to flat lists right where they're needed -- the only place
     # current_paths/clip_volumes/zoom_vfs are (re)constructed from here on.
@@ -1711,7 +1716,7 @@ def run_pipeline(
 
         # Settings used
         music_on      = 0 if config.get("music_mood", "none") == "none" else 1
-        cards_on      = 1 if (config.get("intro_text") or config.get("outro_text")) else 0
+        cards_on      = 1 if any((c.get("text") or "").strip() for c in config.get("cards", [])) else 0
         zoom_on       = 1 if (config.get("zoom") or has_per_clip_zoom) else 0
         transition    = config.get("transition", "none")
 

@@ -59,17 +59,24 @@ export interface Job {
 
 export type TransitionValue = "none" | "crossfade" | "dip_to_black" | "wipe" | "wipe_down" | "zoom" | "dissolve" | "barn_door" | "band_wipe";
 
+// #148: one card = one entry in an ordered list, position is plain list-order
+// (index-based, matching DaVinci/Premiere/FCP/CapCut/OTIO convention) — not
+// anchored to a clip id. position 0 = before original clip index 0, N = after
+// clip index N-1, -1 = append at the very end regardless of clip count.
+export interface CardSpec {
+  text: string;
+  color: string; // #rrggbb background colour
+  subtitle?: string;
+  position: number;
+}
+
 export interface JobConfig {
   music_mood: "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
   transition: TransitionValue;
   opening_transition: TransitionValue;
   closing_transition: TransitionValue;
   shuffle_between: boolean;
-  intro_text: string;
-  intro_subtitle?: string;
-  intro_color: string; // #rrggbb background colour for intro card
-  outro_text: string;
-  outro_color: string; // #rrggbb background colour for outro card
+  cards: CardSpec[];
   zoom: boolean;
   filter_boring: boolean;
   music_volume: "subtle" | "balanced" | "prominent";

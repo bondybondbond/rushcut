@@ -9,7 +9,7 @@ Manifest JSON (written to %TEMP%\rushcut\<job_id>.json by Rust, passed as WSL pa
     "job_id": "...",
     "clips": [{"id":..., "filename":..., "local_path":"C:\\...", "duration_ms":...,
                "width":..., "height":..., "has_audio":...}],
-    "settings": {"music_mood":"cinematic","intro_text":"","outro_text":"","zoom":true},
+    "settings": {"music_mood":"cinematic","cards":[],"zoom":true},
     "output_path": "C:\\clips\\processed\\<job_id>.mp4"
   }
 
@@ -111,9 +111,6 @@ def main() -> None:
     settings = manifest.get("settings", {})
     output_path_win = manifest.get("output_path", f"C:\\clips\\processed\\{job_id}.mp4")
 
-    intro_text = settings.get("intro_text", "")
-    outro_text = settings.get("outro_text", "")
-
     # #86: NTFS-backed scratch base for Windows ffmpeg.exe (AMF) output targets.
     # manifest_path is always /mnt/c/Users/<user>/AppData/Local/Temp/rushcut/<id>.json
     # (Rust writes it to %TEMP%\rushcut), so its parent is a guaranteed NTFS /mnt/c path
@@ -136,11 +133,10 @@ def main() -> None:
             "closing_transition": settings.get("closing_transition", "none"),
             "shuffle_between": settings.get("shuffle_between", False),
             "silence_removal": settings.get("silence_removal", False),
-            "intro_color": settings.get("intro_color", "#000000"),
-            "intro_text": intro_text,
-            "intro_subtitle": settings.get("intro_subtitle", ""),
-            "outro_color": settings.get("outro_color", "#000000"),
-            "outro_text": outro_text,
+            # #148: positioned card list replaces the old flat intro/outro fields --
+            # each entry is {text, color, subtitle?, position}, position is plain
+            # list-order (0 = start, N = after clip N-1, -1 = end sentinel).
+            "cards": settings.get("cards", []),
             # music_volume is a preset string ("subtle"/"balanced"/"prominent").
             # Legacy numeric values (e.g. 40 from old saved projects) fall back to "balanced" (0.4).
             "music_volume": {"subtle": 0.2, "balanced": 0.4, "prominent": 0.7}.get(

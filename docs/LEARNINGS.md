@@ -31,6 +31,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — cleaning up a manual test-render's temp files deleted the real, shared render-timing-log.jsonl (#148, 2026-07-22)
+
+**Problem:** After running a manual `wsl -- python3 run.py` test render (verifying #148's card-splice logic against a scratch manifest under `%TEMP%\rushcut\`), the cleanup command `rm -rf` targeted the test's own manifest/log/output by name — but also included `render-timing-log.jsonl`, assuming it was per-test output. It isn't: `%TEMP%\rushcut\` is the SAME directory Rust writes every real render's manifest to, and `render-timing-log.jsonl` there is the one shared, cumulative history file every real render appends a line to (see `docs/speed-goal.md`, `.claude/rules/pipeline.md`'s render-cache/speed sections). The file was deleted with no git tracking and no recovery path. (In this specific incident the loss was low-stakes — the user confirmed all meaningful measurements were already written up in `docs/speed-goal.md`, the jsonl was just raw source — but the deletion itself was still a mistake, not a safe default.)
+**Solution:** Before any `rm`/`Remove-Item` on a shared temp directory (`%TEMP%\rushcut\`, WSL `/tmp`, or any dir Rust/run.py also writes to), list the directory first and delete ONLY files whose name embeds the test's own job-id/scratch marker — never a bare glob or a hardcoded "cleanup list" copied from wrapup's own Step 5 (that list is scoped to wrapup's own known test-artifact names, e.g. `eval-test-film-*`; a one-off manual test script needs its own equally-scoped delete list, not a superset that happens to include a real shared file by coincidence of directory).
+**Context:** Applies to any manual pipeline verification run outside the normal dev-plan/wrapup flow (a scratch manifest + direct `run.py` invocation to prove a code change works) — the cleanup step after such a test needs the same "list before delete, scope to files you created" discipline as any other destructive-action check, even though the directory is "just a temp folder."
+
+---
+
 ## Workflow — a formal scored self-improvement loop (per a generic "AI Loop Best Practices" framework) was evaluated and rejected for this project's dev-tooling gates
 
 **Problem:** A generic framework for self-improving AI loops (Trigger → Execute → Score → Gate(green/yellow/red) → Memory) implies any recurring AI-gated routine should have a numeric/categorical score and threshold tiers, not just binary pass/fail. Applied literally to RushCut's 5 dev-tooling pieces (`rushcut-dev-plan`, `rushcut-wrapup`, `rushcut-pp-consultant`, `rushcut-real-pp-auditor`, `rushcut-qa-reviewer`), all 5 lack a Score and a tiered Gate — reads like a real gap.

@@ -94,11 +94,21 @@ def signature(clips, config, output_resolution, mode, target_fps_raw) -> str:
         "shuffle_between": bool(config.get("shuffle_between", False)),
         "silence_removal": bool(config.get("silence_removal", False)),
         "zoom": bool(config.get("zoom", False)),
-        "intro_text": config.get("intro_text", "") or "",
-        "intro_subtitle": config.get("intro_subtitle", "") or "",
-        "intro_color": config.get("intro_color", "#000000"),
-        "outro_text": config.get("outro_text", "") or "",
-        "outro_color": config.get("outro_color", "#000000"),
+        # #148: positioned card list replaces the 5 flat intro/outro keys. Note:
+        # this changes the signature shape, so any pre-existing cached
+        # render-cache/*.mp4 becomes an unreachable cache-miss going forward --
+        # expected, harmless (one extra full re-render per previously-cached
+        # project), not a bug.
+        "cards": [
+            {
+                "text": (c.get("text") or "").strip(),
+                "color": c.get("color", "#000000"),
+                "subtitle": (c.get("subtitle") or "").strip(),
+                "position": c.get("position", -1),
+            }
+            for c in config.get("cards", [])
+            if (c.get("text") or "").strip()
+        ],
         "clips": clip_sig,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
