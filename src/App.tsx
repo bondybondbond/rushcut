@@ -4,7 +4,6 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import Upload from "@/pages/Upload";
 import Library from "@/pages/Library";
-import Review from "@/pages/Review";
 import Trimmer from "@/pages/Trimmer";
 import Arrange from "@/pages/Arrange";
 import Sound from "@/pages/Sound";
@@ -37,7 +36,6 @@ export default function App() {
         <Route path="/trimmer/:projectId" element={<Trimmer />} />
         <Route path="/arrange/:projectId" element={<Arrange />} />
         <Route path="/sound/:projectId" element={<Sound />} />
-        <Route path="/review/:projectId" element={<Review />} />
         <Route path="/render/:projectId" element={<Render />} />
       </Routes>
     </AppShell>
