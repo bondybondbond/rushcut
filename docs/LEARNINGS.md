@@ -344,6 +344,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — a subagent "round type" defined in the agent file is not real until an invoking skill actually calls it
+
+**Problem:** `rushcut-pp-consultant.md` defined a "Round 3 — final check" round (implementation audit + mandatory trap/best-practice web search) in its own prompt, but `rushcut-dev-plan/SKILL.md` never actually invoked Round 3 anywhere — the skill only called the consultant at Round 1 (pre-plan), Round 2 (plan critique of the plan *document*, not real code), and Round 4 (wrap-readiness, only after the whole batch's implementation was already finished). Net effect: no checkpoint ever reviewed actual per-step code against real-world traps while it was being built, despite the agent file appearing to promise exactly that. Confirmed 2026-07-21 when the user asked why the consultant wasn't catching per-step implementation issues.
+**Solution:** When an agent/subagent definition describes a capability ("Round N", "mode X"), grep the invoking skill/orchestrator for an actual call site before trusting the capability exists in practice — defining a round in the agent file is necessary but not sufficient. Fixed here by adding a distinct, risk-gated "Round 2.5 — per-step trap check" wired into `rushcut-dev-plan` Step 6 (fires in background per implementation step that touches `src-tauri/**`/`pipeline/**`/a new library/API, independent max-1-retry, and an explicit "confirm every fired Round 2.5 invocation has returned before Step 6.9/wrapup" check — added after the consultant's own Round 4 review caught that a background-fired verdict could otherwise go unread).
+**Context:** Any Claude Code agent/skill pairing where an `.claude/agents/*.md` file defines multiple "rounds" or "modes" and a separate `.claude/skills/*/SKILL.md` is responsible for invoking them at the right points.
+
+---
+
 ## E2E — Arrange focal-point drag-to-set has no WDIO coverage (accepted manual exception)
 
 **Problem:** `Arrange.tsx`'s focal-point picker only calls `saveReview(clip, { focal_x, focal_y })` when a real pointer-movement gesture crosses `DRAG_THRESHOLD_PX` (a plain mouse handler, not dnd-kit, but the same class of problem as the CDP synthetic-drag entry above) — a click with no movement just toggles play/pause instead. Simulating that threshold gesture reliably in WebdriverIO is flaky by nature (timing-sensitive, machine-speed-dependent), and setting the focal point correctly is itself partly a "taste" judgment (where's the interesting subject in frame) that a machine can't grade anyway.
