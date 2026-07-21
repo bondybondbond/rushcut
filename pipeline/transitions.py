@@ -228,15 +228,27 @@ def _sv_node(
     output timebase explicitly. Without it, a zoomed clip's scale=eval=frame,crop
     chain can renegotiate the stream timebase to a generic 1/1000000 instead of
     preserving the container's 1/30000 -- invisible for hard cuts (concat doesn't
-    check timebase) but fatal for xfade, which rejects mismatched input timebases
-    (exit 234, same class as the existing color-source settb rule below). Confirmed
-    via real render: single-clip zoom + open/close failed with "First input link
-    main timebase (1/30000) do not match the corresponding second input link xfade
-    timebase (1/1000000)" until this was added -- and the SAME failure reproduced on
-    a 2-clip project, proving it was a pre-existing latent bug in the general xfade
-    path, not specific to n==1. Left opt-in (None = no settb) because
-    build_batch_video_fc's U1g caller (below) was NOT live-verified with this fix --
-    see #138.
+    check timebase) but fatal when that output is later fed into a SECOND xfade
+    layer (the open/close-to-black wrap around the between-clips result), which
+    rejects mismatched input timebases (exit 234, same class as the existing
+    color-source settb rule below). Confirmed via real render: single-clip zoom +
+    open/close failed with "First input link main timebase (1/30000) do not match
+    the corresponding second input link xfade timebase (1/1000000)" until this was
+    added -- and the SAME failure reproduced on a 2-clip zoom + open/close project.
+
+    #138 (verified 2026-07-21): build_batch_video_fc's U1g caller (below) does NOT
+    need this fix and stays opt-in (None = no settb). Live-tested with a real
+    8-clip/3-batch render, zoom (including genuine kb_in_* dynamic Ken Burns, not
+    just static "medium") present in every batch, feeding directly into xfade
+    against non-zoomed clips -- exit 0, drift=0, no crash. Root cause: #137's crash
+    requires a zoom/xfade chain's output to be handed to a SECOND xfade layer (the
+    open/close wrap); build_batch_video_fc's per-batch chain is a single flat
+    xfade sequence with no such wrap -- U1g's open/close is handled entirely
+    separately via build_open_close_post_fc()/_boundary_reencode(), which already
+    has clip_tbn_str wired. The per-batch chain is structurally identical to
+    build_filter_complex()'s OWN safe between-clips xfade branch (the `else:`
+    pairwise-xfade case above the settb-on-v_inner line) -- that branch never
+    crashed either; only wrapping its output in a further xfade did.
     """
     z = zoom_vfs[i] if (zoom_vfs and i < len(zoom_vfs) and zoom_vfs[i]) else None
     pre = f"{z}," if z else ""
@@ -275,11 +287,13 @@ def build_batch_video_fc(
         f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
     v_out = "[vout]"
-    # #136/#137/#138: NOT passing clip_tbn_str here (unlike build_filter_complex
-    # below) -- the zoom+xfade timebase fix (#137) was only live-verified on the
-    # monolithic path. Leaving U1g's per-batch canvas untouched, byte-for-byte the
-    # pre-#136 behavior, until #138 verifies the fix on a real >4-clip batched
-    # zoom+xfade render.
+    # #138 (verified 2026-07-21, not applicable): NOT passing clip_tbn_str here
+    # (unlike build_filter_complex) -- confirmed via a real 8-clip/3-batch render
+    # (zoom, incl. dynamic kb_in_* Ken Burns, in every batch + crossfade) that this
+    # path never hits the #137 exit-234 bug. See _sv_node's docstring for the root
+    # cause: #137 requires wrapping a zoom/xfade chain's output in a SECOND xfade
+    # layer (open/close), which this per-batch chain never does -- U1g's open/close
+    # is handled separately by build_open_close_post_fc(), already settb-fixed.
     parts = [_sv_node(i, canvas, zoom_vfs) for i in range(n)]
     if n == 1:
         parts.append(f"[sv0]null{v_out}")
