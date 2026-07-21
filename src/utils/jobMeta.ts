@@ -53,6 +53,14 @@ export function durationLabel(job: Pick<Job, "analysis_summary">): string | null
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/** Bytes -> human-readable file size (issue #14). Decimal SI units (1 GB = 1000 MB =
+ * 1,000,000,000 bytes), matching FCP/Premiere/DaVinci/HandBrake convention -- not binary
+ * GiB. Whole-number MB under 1 GB, one-decimal GB at/above 1 GB. */
+export function formatFileSize(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1_000_000)} MB`;
+}
+
 export type RenderState = "idle" | "rendering" | "done" | "error";
 
 /** Map a job status (or absence of a job) to the T4 state machine state. */

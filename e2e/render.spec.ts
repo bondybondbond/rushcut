@@ -10,6 +10,7 @@
  */
 
 import { execFileSync } from "child_process";
+import { statSync } from "fs";
 import { trackTestProject } from "./helpers/testProjects";
 
 describe("Full E2E render — /render/:projectId", () => {
@@ -229,6 +230,21 @@ describe("Full E2E render — /render/:projectId", () => {
     const text = await filename.getText();
     expect(text.length).toBeGreaterThan(0);
     expect(text).toMatch(/\.mp4$/);
+  });
+
+  it("#14: file size cell shows the real on-disk byte size, not the placeholder", async () => {
+    const filename = await $('[data-testid="output-filename"]');
+    const outputName = await filename.getText();
+    const realBytes = statSync(`C:\\clips\\processed\\${outputName}`).size;
+    const expected = realBytes >= 1_000_000_000
+      ? `${(realBytes / 1_000_000_000).toFixed(1)} GB`
+      : `${Math.round(realBytes / 1_000_000)} MB`;
+
+    const sizeCell = await $('[data-testid="output-filesize"]');
+    await sizeCell.waitForExist({ timeout: 5_000 });
+    const shown = await sizeCell.getText();
+    expect(shown).not.toBe("--");
+    expect(shown).toBe(expected);
   });
 
   it("video element is fully loaded — readyState 4, no errors, duration >3s", async () => {

@@ -330,6 +330,15 @@ fn file_exists_cmd(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
+/// Size in bytes of a file on disk (issue #14 — File size stat on the Render done-state).
+/// Callers should gate this behind an existing `file_exists_cmd` true result rather than
+/// treating a metadata error here as a distinct failure mode — both checks answer the same
+/// underlying question (does this exact path exist).
+#[tauri::command]
+fn file_size_cmd(path: String) -> Result<u64, String> {
+    std::fs::metadata(&path).map(|m| m.len()).map_err(|e| e.to_string())
+}
+
 /// Get peak volume in dBFS by running volumedetect on the audio.
 /// Returns None if the clip has no audio or ffmpeg fails.
 fn get_peak_volume_db(src: &str) -> Option<f64> {
@@ -2609,6 +2618,7 @@ pub fn run() {
             diag_log_cmd,
             regenerate_thumbnail_at_cmd,
             file_exists_cmd,
+            file_size_cmd,
             get_output_folder_cmd,
             validate_output_folder_cmd,
             set_output_folder_cmd,

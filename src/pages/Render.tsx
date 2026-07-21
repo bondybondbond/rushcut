@@ -13,7 +13,7 @@ import { buildJobConfig, readTransitionConfig, cardDurationFlags } from "@/utils
 import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref, removeRenderPref } from "@/utils/renderStore";
 import { absoluteDateTime } from "@/utils/timeAgo";
-import { resLabel, durationLabel } from "@/utils/jobMeta";
+import { resLabel, durationLabel, formatFileSize } from "@/utils/jobMeta";
 
 // T5: metadata shown on the film/done view. `iso` is the render timestamp,
 // `analysisDuration` is the pipeline-reported duration used only as a fallback
@@ -143,10 +143,21 @@ export default function Render() {
   // both mean "file gone" on 1080p. Kept separate for now (videoMissing also distinguishes a
   // decode crash from a missing file); FUTURE: consolidate into one source of truth.
   const [fileOnDisk, setFileOnDisk] = useState(true);
+  // #14: byte-accurate file size for the done-state stats grid. Gated on
+  // fileOnDisk (not a second independent try/catch) -- both checks answer the
+  // same underlying question (does this exact path exist), so a missing file
+  // has one failure path, not two divergent ones.
+  const [fileSizeBytes, setFileSizeBytes] = useState<number | null>(null);
   useEffect(() => {
     if (phase !== "done" || !outputPath) return;
     invoke<boolean>("file_exists_cmd", { path: outputPath })
-      .then(setFileOnDisk)
+      .then((exists) => {
+        setFileOnDisk(exists);
+        if (!exists) { setFileSizeBytes(null); return; }
+        invoke<number>("file_size_cmd", { path: outputPath })
+          .then(setFileSizeBytes)
+          .catch(() => setFileSizeBytes(null));
+      })
       .catch(() => setFileOnDisk(true));
   }, [phase, outputPath]);
 
@@ -969,7 +980,9 @@ export default function Render() {
                     </div>
                     <div className="mt-[10px]">
                       <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4a4946] mb-[3px]">File size</div>
-                      <div className="text-[13px] text-[#7a7874]">--</div>
+                      <div data-testid="output-filesize" className="text-[15px] font-bold text-[#e8e6e2] tracking-tight leading-tight">
+                        {fileSizeBytes != null ? formatFileSize(fileSizeBytes) : "--"}
+                      </div>
                     </div>
                   </div>
 
