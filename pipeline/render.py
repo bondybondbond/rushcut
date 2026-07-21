@@ -31,6 +31,7 @@ import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import subprocess
@@ -66,6 +67,48 @@ log = logging.getLogger(__name__)
 
 # Step 2 trim parallelism (#99) — same cap/formula as normalise.py's MAX_PARALLEL_NORMALISE.
 MAX_PARALLEL_TRIM = min(4, os.cpu_count() or 1)
+
+
+@dataclass
+class ClipItem:
+    """One item in the post-zoom, pre-render clip sequence (#103).
+
+    Replaces the old current_paths/clip_volumes/zoom_vfs parallel-array pattern:
+    Step 4 card insertion prepends/appends ONE ClipItem per card instead of
+    mutating 3 separate lists in lockstep -- structurally impossible to drift,
+    since there's only one list to splice. See the module docstring's Step 4.
+    A future card-insertion site (mid-roll, #148) splices into this one list
+    too -- never add a new parallel array; extend ClipItem instead.
+
+    `kind` distinguishes a real clip from a card in the SAME ordered list
+    (default "clip"; card insertion passes kind="card") -- matching the
+    cross-editor pattern confirmed via real Perplexity competitor research on
+    #103 (OpenTimelineIO's Composable/Clip/Gap, MLT's playlist <blank>,
+    Resolve/Premiere effect-on-clip model): an inserted non-clip item is the
+    same item type in the same list, tagged by kind, never a special-cased
+    parallel structure. Not yet consumed by any code path -- #148 (positioned
+    card data model) is what will branch on it; carrying it now costs nothing
+    and avoids re-discovering this exact distinction there.
+    """
+    path: Path
+    volume: float
+    zoom_vf: "str | None"
+    kind: str = "clip"
+
+
+def unzip_clip_items(items: "list[ClipItem]") -> "tuple[list, list[float], list | None]":
+    """Flatten a ClipItem list back to (paths, volumes, zoom_vfs) for the
+    downstream transitions.py call signatures, which take flat lists by
+    position and are deliberately left untouched by #103.
+
+    zoom_vfs collapses to None (not a list of Nones) when no item carries a
+    zoom vf, preserving the pre-#103 sentinel contract some call sites rely on
+    (e.g. `if zoom_vfs else None` at the U1g batch site in run_pipeline).
+    """
+    paths = [it.path for it in items]
+    volumes = [it.volume for it in items]
+    zoom_vfs = [it.zoom_vf for it in items] if any(it.zoom_vf for it in items) else None
+    return paths, volumes, zoom_vfs
 
 # Progress bar stage weights (#12) — empirical buckets from render-timing-log.jsonl,
 # NOT live-derived from a single render (would overfit to one project's clip count/
@@ -825,10 +868,9 @@ def run_pipeline(
     t_zoom = time.time()
     zoom_proxy_input = 0
 
-    zoom_vfs: "list[str | None] | None" = None
+    zoom_vf_by_index: "list[str | None]" = [None] * len(current_paths)
     if zoom_active:
         log.info("[render] Step 3: zoom embed -- building per-clip vf strings")
-        zoom_vfs = [None] * len(current_paths)
         built = 0
         for i, (p, cm) in enumerate(zip(current_paths, pipeline_clips)):
             cz = cm.get("zoom_mode")
@@ -838,8 +880,8 @@ def run_pipeline(
                 eff, fx, fy = "gentle", None, None
             else:
                 continue
-            zoom_vfs[i] = build_zoom_vf(p, eff, fx, fy)
-            if zoom_vfs[i]:
+            zoom_vf_by_index[i] = build_zoom_vf(p, eff, fx, fy)
+            if zoom_vf_by_index[i]:
                 built += 1
         log.info("[zoom-embed] built %d/%d vf strings", built, len(current_paths))
     else:
@@ -850,13 +892,23 @@ def run_pipeline(
 
     # Per-clip audio volume multipliers (Batch J) — aligned 1:1 with current_paths.
     # pipeline_clips is still 1:1 with current_paths here (trim/zoom preserve length+order).
-    # Cards prepended/appended below get volume 1.0 (they carry no audio anyway).
     # Use explicit None-check — `or 1.0` would silently coerce 0.0 (mute) to 1.0 because
     # 0.0 is falsy in Python. A muted clip (volume=0.0) must stay 0.0, not become 1.0.
-    clip_volumes = [
+    volume_by_index = [
         float(v) if v is not None else 1.0
         for cm in pipeline_clips
         for v in (cm.get("clip_volume"),)
+    ]
+
+    # #103: single per-clip item list replaces the old current_paths/clip_volumes/
+    # zoom_vfs parallel arrays. Card insertion below prepends/appends ONE ClipItem
+    # per card -- structurally impossible for path/volume/zoom to drift out of
+    # sync, since there's only one list to splice instead of three to keep in
+    # lockstep. Cards get volume=1.0 (they carry no audio) and zoom_vf=None
+    # (never zoomed).
+    items: "list[ClipItem]" = [
+        ClipItem(path=p, volume=v, zoom_vf=z)
+        for p, v, z in zip(current_paths, volume_by_index, zoom_vf_by_index)
     ]
 
     # 4. Cards (pre-render as video segments, prepend/append).
@@ -877,10 +929,7 @@ def run_pipeline(
             subtitle=config.get("intro_subtitle", ""),
             target_fps=target_fps_raw,
         )
-        current_paths = [card] + current_paths
-        clip_volumes = [1.0] + clip_volumes
-        if zoom_vfs is not None:
-            zoom_vfs = [None] + zoom_vfs
+        items = [ClipItem(path=card, volume=1.0, zoom_vf=None, kind="card")] + items
 
     if outro_text:
         log.info("[render] Step 4: outro card")
@@ -892,14 +941,19 @@ def run_pipeline(
             size=card_size,
             target_fps=target_fps_raw,
         )
-        current_paths = current_paths + [card]
-        clip_volumes = clip_volumes + [1.0]
-        if zoom_vfs is not None:
-            zoom_vfs = zoom_vfs + [None]
+        items = items + [ClipItem(path=card, volume=1.0, zoom_vf=None, kind="card")]
 
-    # zoom_vfs must stay 1:1 with current_paths through card insertion (#98) --
-    # a length mismatch here silently misapplies zoom to the wrong clip in the
-    # monolithic path, or crashes with IndexError in the segmented path.
+    # Unzip back to flat lists right where they're needed -- the only place
+    # current_paths/clip_volumes/zoom_vfs are (re)constructed from here on.
+    current_paths, clip_volumes, zoom_vfs = unzip_clip_items(items)
+
+    # Tripwire (#98/#103): even though a single-list splice makes drift
+    # structurally impossible today, keep a cheap assert in case a future code
+    # path ever reconstructs these flat lists a different way.
+    assert len(current_paths) == len(clip_volumes) == len(items), (
+        f"current_paths/clip_volumes/items length mismatch: "
+        f"{len(current_paths)}/{len(clip_volumes)}/{len(items)}"
+    )
     assert zoom_vfs is None or len(zoom_vfs) == len(current_paths), (
         f"zoom_vfs/current_paths length mismatch: {len(zoom_vfs)} vs {len(current_paths)}"
     )
