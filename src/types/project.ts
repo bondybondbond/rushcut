@@ -68,6 +68,10 @@ export interface CardSpec {
   color: string; // #rrggbb background colour
   subtitle?: string;
   position: number;
+  // #149: entrance animation choice, captured for forward-compat only -- no
+  // FFmpeg-level card animation exists yet (unconsumed by render.py today,
+  // same precedent as ClipItem.kind in #103). Follow-up issue tracks wiring it in.
+  animation?: "none" | "appear" | "fade" | "fly_in";
 }
 
 export interface JobConfig {

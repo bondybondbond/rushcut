@@ -6,11 +6,11 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Clip, ProjectWithClips } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
-import { StickyFilmStrip } from "@/components/StickyFilmStrip";
+import { StickyFilmStrip, type PositionedCard } from "@/components/StickyFilmStrip";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
-import { readTransitionConfig, readCardsConfig } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readPlacedCards } from "@/utils/buildJobConfig";
 import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, trimmedMs, CARD_DUR_MS } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
@@ -151,12 +151,14 @@ export default function Sound() {
   }, 0);
   // DISPLAY value: effective runtime (transition overlap subtracted + card seconds added)
   // for the runtime label + music loop/coverage math, which times against the telescoped
-  // render (#62/#63). Read cards once; reuse for both the duration and the strip bookends.
-  const cardsCfg = readCardsConfig(projectId ?? "");
-  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), {
-    open: cardsCfg.open.show,
-    close: cardsCfg.close.show,
-  });
+  // render (#62/#63). Read cards once; reuse for both the duration and the strip tiles.
+  // #149: cards can now sit anywhere, not just open/close -- Sound's own seek-snap
+  // approximation below still only special-cases the leading/trailing regions (it has no
+  // card video to play back either way, #76), so only those two flags are derived here.
+  const placedCards = readPlacedCards(projectId ?? "");
+  const hasOpenCard = inFilm.length > 0 && placedCards.some((c) => c.beforeClipId === inFilm[0].id);
+  const hasCloseCardFlag = placedCards.some((c) => c.beforeClipId === null);
+  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), placedCards.length);
   // Keep inFilmRef current so playback callbacks always read the latest clip list
   // without needing to re-subscribe on every render.
   inFilmRef.current = inFilm;
@@ -576,7 +578,7 @@ export default function Sound() {
     if (now - lastPlayheadUpdateRef.current >= 100) {
       lastPlayheadUpdateRef.current = now;
       const xfMs = clampedXfadeMs(inFilmRef.current, readTransitionConfig(projectId ?? ""));
-      const cardLead = cardsCfg.open.show ? CARD_DUR_MS : 0;
+      const cardLead = hasOpenCard ? CARD_DUR_MS : 0;
       setFilmPlayheadMs(cardLead + filmTimeAtClipStart(inFilmRef.current, filmPlayIdxRef.current, xfMs, false) + offsetInClip);
     }
 
@@ -800,8 +802,6 @@ export default function Sound() {
     const clips = inFilmRef.current;
     if (clips.length === 0) return;
     const xfMs = clampedXfadeMs(clips, readTransitionConfig(projectId ?? ""));
-    const hasOpenCard = cardsCfg.open.show;
-    const hasCloseCard = cardsCfg.close.show;
     const cardLead = hasOpenCard ? CARD_DUR_MS : 0;
 
     // Open card region → seek to start of footage
@@ -812,7 +812,7 @@ export default function Sound() {
     }
 
     // Close card region → snap to last clip boundary
-    if (hasCloseCard && telescopedMs >= effectiveMs - CARD_DUR_MS) {
+    if (hasCloseCardFlag && telescopedMs >= effectiveMs - CARD_DUR_MS) {
       setFilmPlayheadMs(effectiveMs - CARD_DUR_MS);
       seekToFilmMs(totalMs);
       return;
@@ -1016,8 +1016,10 @@ export default function Sound() {
           clips={clips}
           projectId={projectId!}
           xfadeOverlapMs={clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""))}
-          openCard={cardsCfg.open.show ? { color: cardsCfg.open.color, text: cardsCfg.open.text } : null}
-          closeCard={cardsCfg.close.show ? { color: cardsCfg.close.color, text: cardsCfg.close.text } : null}
+          cards={placedCards.map((c): PositionedCard => ({
+            card: { id: c.id, color: c.color, text: c.text },
+            beforeClipId: c.beforeClipId,
+          }))}
           playheadMs={filmPlayheadMs}
           onSeek={handleStripSeek}
         />

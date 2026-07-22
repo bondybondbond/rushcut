@@ -149,3 +149,24 @@
   50%, 75% { clip-path: inset(0 0 0 0); }
   100%     { clip-path: inset(0 100% 0 0); }
 }
+
+/* Card entrance-animation preview (#149 polish round) — applied to the card's text
+   wrapper only (title+subtitle), never the coloured background box itself. 3s infinite
+   loop matching the rc-trans-* convention above: entrance happens early, holds visible,
+   resets for the next loop. "Appear" uses steps(1,end) for a true instant snap (no
+   easing) so it reads distinctly from "Fade"'s smooth ease-in-out. */
+@keyframes rc-card-appear-in {
+  0%, 20%  { opacity: 0; }
+  25%, 90% { opacity: 1; }
+  100%     { opacity: 0; }
+}
+@keyframes rc-card-fade-in {
+  0%       { opacity: 0; }
+  40%, 90% { opacity: 1; }
+  100%     { opacity: 0; }
+}
+@keyframes rc-card-fly-in {
+  0%       { opacity: 0; transform: translateY(14px); }
+  40%, 90% { opacity: 1; transform: translateY(0); }
+  100%     { opacity: 0; transform: translateY(14px); }
+}

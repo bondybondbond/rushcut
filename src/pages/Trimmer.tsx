@@ -8,10 +8,10 @@ import { open, confirm } from "@tauri-apps/plugin-dialog";
 import type { Clip, ClipMeta, ProjectWithClips } from "@/types/project";
 import { MediaPantry } from "@/components/trimmer/MediaPantry";
 import { TrimBar } from "@/components/trimmer/TrimBar";
-import { StickyFilmStrip, cardTextColor } from "@/components/StickyFilmStrip";
+import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
-import { readTransitionConfig, cardDurationFlags, readCardsConfig } from "@/utils/buildJobConfig";
+import { readTransitionConfig, cardDurationFlags, readPlacedCards } from "@/utils/buildJobConfig";
 import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, CARD_DUR_MS } from "@/utils/filmDuration";
 import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
@@ -1090,35 +1090,41 @@ export default function Trimmer() {
     const clips_ = inFilmRef.current;
     const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
 
-    // #74: cards bracket the film as first-class 3s elements. `filmMs` from the strip is
-    // card-inclusive, so map the card regions explicitly. The open card leads at
-    // [0, CARD_DUR_MS - xfade); the clip chain telescopes EXACTLY like the strip segments
-    // (every element but the last loses one xfade), and a close card (when present) makes the
-    // last clip telescope too. Clicking a card region parks the playhead + shows the colour
-    // overlay; it must NOT mis-seek a video (B-lite — no autoplay-through-card here).
-    const cards = readCardsConfig(projectId ?? "");
-    const hasOpen = cards.open.show && clips_.length > 0;
-    const hasClose = cards.close.show && clips_.length > 0;
-    const leadMs = hasOpen ? Math.max(0, CARD_DUR_MS - xfadeMs) : 0;
+    // #74/#149: cards bracket/interleave the film as first-class 3s elements. `filmMs` from
+    // the strip is card-inclusive, so walk clip-by-clip, checking for a card immediately
+    // before EACH clip (generalizes the old open-card-only special case) plus a trailing end
+    // card — mirroring StickyFilmStrip's own segment layout exactly so the two can never
+    // disagree. Every element but the very last one loses one xfade to the next element's
+    // cut (same telescoping rule as filmTimeAtClipStart/effectiveFilmMs). Clicking a card
+    // region parks the playhead + shows the colour overlay; it must NOT mis-seek a video
+    // (B-lite — no autoplay-through-card here).
+    const placedCards = clips_.length > 0 ? readPlacedCards(projectId ?? "") : [];
+    const cardBefore = new Map(
+      placedCards.filter((c) => c.beforeClipId !== null).map((c) => [c.beforeClipId as string, c]),
+    );
+    const endCard = placedCards.find((c) => c.beforeClipId === null) ?? null;
 
-    if (hasOpen && filmMs < leadMs) {
-      // Open-card region — park playhead on the card colour, leave the video paused.
-      activeFilmVideo()?.pause();
-      setCardHold({ filmMs, color: cards.open.color, text: cards.open.text, subtitle: cards.open.subtitle });
-      return;
-    }
-
-    // Clip-region (and close-card-region) walk in card-inclusive film-time.
-    let elapsed = leadMs;
+    let elapsed = 0;
     for (let i = 0; i < clips_.length; i++) {
+      const cardHere = cardBefore.get(clips_[i].id);
+      if (cardHere) {
+        const cardMs = Math.max(0, CARD_DUR_MS - xfadeMs); // never the last element — a clip always follows
+        if (filmMs < elapsed + cardMs) {
+          activeFilmVideo()?.pause();
+          setCardHold({ filmMs, color: cardHere.color, text: cardHere.text, subtitle: cardHere.subtitle });
+          return;
+        }
+        elapsed += cardMs;
+      }
+
       const trimmed = Math.max(
         0,
         (clips_[i].out_ms ?? clips_[i].duration_ms) - (clips_[i].in_ms ?? 0)
       );
-      // A clip telescopes unless it is the very last film element (i.e. last clip AND no close card).
-      const isLastElement = i === clips_.length - 1 && !hasClose;
+      // A clip telescopes unless it is the very last film element (i.e. last clip AND no end card).
+      const isLastElement = i === clips_.length - 1 && !endCard;
       const clipMs = Math.max(0, trimmed - (!isLastElement ? xfadeMs : 0));
-      if (filmMs < elapsed + clipMs || (i === clips_.length - 1 && !hasClose)) {
+      if (filmMs < elapsed + clipMs || (i === clips_.length - 1 && !endCard)) {
         setCardHold(null); // leaving any card region
         const offsetInClip = Math.max(0, filmMs - elapsed);
         const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
@@ -1145,10 +1151,10 @@ export default function Trimmer() {
       elapsed += clipMs;
     }
 
-    // Past the last clip with a close card present — close-card region. Park on its colour.
-    if (hasClose) {
+    // Past the last clip with an end card present — end-card region. Park on its colour.
+    if (endCard) {
       activeFilmVideo()?.pause();
-      setCardHold({ filmMs, color: cards.close.color, text: cards.close.text, subtitle: cards.close.subtitle });
+      setCardHold({ filmMs, color: endCard.color, text: endCard.text, subtitle: endCard.subtitle });
     }
   }
 
@@ -1164,10 +1170,11 @@ export default function Trimmer() {
     if (target < 0 || target >= list.length) return;
     diagLog(`film-nav dir=${dir} target=${target}`);
     // Render-time start of the target clip — seekFilmTo consumes card-inclusive telescoped
-    // render-time (#71/#74), so pass the open-card lead via hasOpenCard.
+    // render-time (#71/#74/#149), so pass the same per-clip card map filmTimeAtClipStart needs.
     const xfadeMs = clampedXfadeMs(list, readTransitionConfig(projectId ?? ""));
-    const hasOpen = readCardsConfig(projectId ?? "").open.show && list.length > 0;
-    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, hasOpen));
+    const placedCards = list.length > 0 ? readPlacedCards(projectId ?? "") : [];
+    const cardsBeforeClip = list.map((c) => placedCards.some((p) => p.beforeClipId === c.id));
+    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, cardsBeforeClip));
   }
 
   // #74: a card-region park is a paused, film-mode-only state. Clear it the moment playback
@@ -1214,20 +1221,21 @@ export default function Trimmer() {
   inFilmRef.current = inFilm;
   const inFilmCount = inFilm.length;
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
-  const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? ""));
+  const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "").count);
 
   // Render-time (telescoped) overlap per cut — shared by the playhead, seek + ruler (#71).
   const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
 
-  // #74: card tiles for the filmstrip. Cards are edited on Arrange and persisted to the store,
-  // so Trimmer reads them via readCardsConfig (no live in-memory state here).
-  const filmCards = readCardsConfig(projectId ?? "");
-  const openCardStrip = filmCards.open.show
-    ? { color: filmCards.open.color, text: filmCards.open.text }
-    : null;
-  const closeCardStrip = filmCards.close.show
-    ? { color: filmCards.close.color, text: filmCards.close.text }
-    : null;
+  // #74/#149: card tiles for the filmstrip + the per-clip "card precedes this clip" map
+  // used by filmTimeAtClipStart below (generalizes the old single hasOpenCard boolean to
+  // arbitrary mid-roll positions). Cards are edited on Arrange and persisted to the store,
+  // so Trimmer reads them via readPlacedCards (no live in-memory state here).
+  const filmPlacedCards = readPlacedCards(projectId ?? "");
+  const filmCardsForStrip: PositionedCard[] = filmPlacedCards.map((c) => ({
+    card: { id: c.id, color: c.color, text: c.text },
+    beforeClipId: c.beforeClipId,
+  }));
+  const filmCardsBeforeClip = inFilm.map((c) => filmPlacedCards.some((p) => p.beforeClipId === c.id));
 
   // Film playhead: how far we are in render-time (ms), for the StickyFilmStrip cursor.
   // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71); the
@@ -1237,7 +1245,7 @@ export default function Trimmer() {
     ? (cardHold && !isPlaying
         ? cardHold.filmMs
         : inFilm[filmPlayIdx]
-          ? filmTimeAtClipStart(inFilm, filmPlayIdx, filmXfadeOverlapMs, openCardStrip !== null)
+          ? filmTimeAtClipStart(inFilm, filmPlayIdx, filmXfadeOverlapMs, filmCardsBeforeClip)
             + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
           : undefined)
     : undefined;
@@ -1391,8 +1399,7 @@ export default function Trimmer() {
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
           xfadeOverlapMs={filmXfadeOverlapMs}
-          openCard={openCardStrip}
-          closeCard={closeCardStrip}
+          cards={filmCardsForStrip}
           onDropCut={viewMode === "clip" ? handleDropCutAtIndex : undefined}
         />
       }

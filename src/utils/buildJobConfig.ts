@@ -1,5 +1,6 @@
 import type { CardSpec, JobConfig, TransitionValue } from "@/types/project";
-import { getRenderPref } from "@/utils/renderStore";
+import { getRenderPref, setRenderPref } from "@/utils/renderStore";
+import { projectCache } from "@/utils/projectCache";
 
 export const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 export const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
@@ -54,74 +55,100 @@ export function readTransitionConfig(projectId: string): TransitionConfig {
   }
 }
 
-/** Resolved card colour for a peach/black/white swatch key. */
-const CARD_COLOR_MAP: Record<string, string> = { peach: "#FF8A65", black: "#0a0a0a", white: "#ffffff" };
-
-/** One side (open or close) of the cards config, resolved for display + manifest. */
-export interface CardSide {
-  /** True only when the card is enabled AND has a non-empty title -- mirrors the
-   * pipeline render gate `if intro_text:` (render.py). A card with no title never renders. */
-  show: boolean;
-  /** Trimmed card title. */
-  text: string;
-  /** Trimmed subtitle (open card only; always "" for close). */
-  subtitle: string;
-  /** Resolved background hex (#FF8A65 / #0a0a0a / #ffffff). */
-  color: string;
-}
-
-export interface CardsConfig {
-  open: CardSide;
-  close: CardSide;
-}
+export type CardAnimation = "none" | "appear" | "fade" | "fly_in";
 
 /**
- * Read the open/close card config from the render-pref store (localStorage key
- * `rc_cards_${projectId}`). Single source of truth for the enabled+title gate and
- * the colour map -- consumed by buildJobConfig (manifest), the duration model
- * (effectiveFilmMs), and the film-strip card bookends.
+ * A card placed anywhere in the sequence (#149, generalizes the old fixed
+ * start/end-only model). Anchored by clip id, not a raw index -- `beforeClipId`
+ * is the id of the clip this card sits immediately before; `null` means the very
+ * end of the film. Anchoring by id (the same pattern the filmstrip's drag-to-reorder
+ * already uses for clips) means a card stays pinned to its neighbour even if clips
+ * are reordered/deleted elsewhere in Arrange -- resolving to a wire-format integer
+ * only happens at buildJobConfig() time, against the CURRENT clip order.
  */
-export function readCardsConfig(projectId: string): CardsConfig {
-  const empty: CardsConfig = {
-    open: { show: false, text: "", subtitle: "", color: "#0a0a0a" },
-    close: { show: false, text: "", subtitle: "", color: "#0a0a0a" },
-  };
+export interface PlacedCard {
+  id: string;
+  text: string;
+  subtitle: string;
+  color: string; // resolved hex
+  animation: CardAnimation;
+  beforeClipId: string | null;
+}
+
+const CARDS_V2_STORAGE_KEY = (projectId: string) => `rc_cards_v2_${projectId}`;
+
+/**
+ * Read all placed cards from the render-pref store (localStorage key
+ * `rc_cards_v2_${projectId}` -- a new key, not a migration of the old fixed
+ * start/end `rc_cards_${projectId}` shape, to avoid misreading it). Filters out
+ * any card with an empty title -- mirrors the pipeline render gate
+ * `if (c.get("text") or "").strip()` (render.py) -- though in practice the UI
+ * never lets an empty-title card get placed in the first place.
+ */
+export function readPlacedCards(projectId: string): PlacedCard[] {
   try {
-    const raw = getRenderPref(`rc_cards_${projectId}`);
-    if (!raw) return empty;
-    const c = JSON.parse(raw) as {
-      start?: { enabled?: boolean; title?: string; subtitle?: string; color?: string };
-      end?: { enabled?: boolean; title?: string; color?: string };
-    };
-    const openText = (c.start?.title ?? "").trim();
-    const closeText = (c.end?.title ?? "").trim();
-    return {
-      open: {
-        show: !!c.start?.enabled && openText !== "",
-        text: openText,
-        subtitle: (c.start?.subtitle ?? "").trim(),
-        color: CARD_COLOR_MAP[c.start?.color ?? ""] ?? "#0a0a0a",
-      },
-      close: {
-        show: !!c.end?.enabled && closeText !== "",
-        text: closeText,
-        subtitle: "",
-        color: CARD_COLOR_MAP[c.end?.color ?? ""] ?? "#0a0a0a",
-      },
-    };
+    const raw = getRenderPref(CARDS_V2_STORAGE_KEY(projectId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as PlacedCard[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((c) => typeof c?.text === "string" && c.text.trim() !== "");
   } catch {
-    return empty;
+    return [];
   }
 }
 
+export function savePlacedCards(projectId: string, cards: PlacedCard[]): void {
+  setRenderPref(CARDS_V2_STORAGE_KEY(projectId), JSON.stringify(cards));
+}
+
 /**
- * Convenience for the duration model: which cards contribute real seconds to the film.
- * Sourced from persisted config -- used by every screen except Arrange's Cards tab,
- * which reads live in-memory card state instead so the estimate updates as you type.
+ * Resolve each card's clip-id anchor into the pipeline's wire-format index (#148:
+ * position 0..n = before clip[n], -1 = end sentinel), against the CURRENT clip
+ * order. If the anchor clip no longer exists (deleted after the card was placed),
+ * falls back deterministically to end-of-film -- closes the client-side-validation
+ * gap flagged when #148 shipped, instead of relying on the pipeline's silent
+ * out-of-range clamp.
  */
-export function cardDurationFlags(projectId: string): { open: boolean; close: boolean } {
-  const c = readCardsConfig(projectId);
-  return { open: c.open.show, close: c.close.show };
+export function resolveCardPositions(cards: PlacedCard[], inFilmClipIds: string[]): CardSpec[] {
+  return cards.map((c) => {
+    const idx = c.beforeClipId === null ? -1 : inFilmClipIds.indexOf(c.beforeClipId);
+    return {
+      text: c.text,
+      subtitle: c.subtitle || undefined,
+      color: c.color,
+      animation: c.animation,
+      position: idx,
+    };
+  });
+}
+
+/**
+ * Card count for the duration model (#149 generalizes #74's two-flag {open, close}
+ * shape to a plain count -- every placed card adds CARD_DUR_MS + one xfade overlap
+ * regardless of where it sits). Consumers that need live in-memory state instead
+ * (Arrange's Cards tab, as it's being edited) read their own PlacedCard[] directly.
+ */
+export function cardDurationFlags(projectId: string): { count: number } {
+  return { count: readPlacedCards(projectId).length };
+}
+
+/**
+ * Per-clip "does a card sit immediately before this clip" map, for
+ * filmTimeAtClipStart (#149 generalizes the old single hasOpenCard boolean to
+ * arbitrary mid-roll positions). `inFilmClipIds` must be the current in-film clip
+ * order (same list the caller uses everywhere else). Also reports whether a card
+ * sits at the very end, folding in any orphaned-anchor card (its clip was deleted)
+ * the same way resolveCardPositions does.
+ */
+export function cardGapsForClips(
+  cards: PlacedCard[],
+  inFilmClipIds: string[],
+): { beforeClip: boolean[]; atEnd: boolean } {
+  const beforeClip = inFilmClipIds.map((id) => cards.some((c) => c.beforeClipId === id));
+  const atEnd = cards.some(
+    (c) => c.beforeClipId === null || !inFilmClipIds.includes(c.beforeClipId),
+  );
+  return { beforeClip, atEnd };
 }
 
 export const DEFAULT_CONFIG: JobConfig = {
@@ -173,18 +200,16 @@ export function buildJobConfig(projectId: string): JobConfig {
     config.output_resolution = res === "4k" ? "4k" : "1080p";
   } catch { /* ignore */ }
   try {
-    const cards = readCardsConfig(projectId);
-    const cardsList: CardSpec[] = [];
-    // #148: position is plain list-order (index-based) -- start card is always
-    // slot 0, end card uses the -1 sentinel so buildJobConfig never needs to
-    // know the project's clip count.
-    if (cards.open.show) {
-      cardsList.push({ text: cards.open.text, subtitle: cards.open.subtitle, color: cards.open.color, position: 0 });
-    }
-    if (cards.close.show) {
-      cardsList.push({ text: cards.close.text, color: cards.close.color, position: -1 });
-    }
-    config.cards = cardsList;
+    const placed = readPlacedCards(projectId);
+    // #149: resolve each card's clip-id anchor against the CURRENT clip order (the
+    // manifest-build moment) into the pipeline's wire-format index -- see
+    // resolveCardPositions for why this must happen here, not at placement time.
+    const cachedClips = projectCache.get(projectId)?.clips ?? [];
+    const inFilmClipIds = cachedClips
+      .filter((c) => c.include === 1)
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((c) => c.id);
+    config.cards = resolveCardPositions(placed, inFilmClipIds);
   } catch { /* ignore */ }
   return config;
 }

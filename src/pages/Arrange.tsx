@@ -2,15 +2,15 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { ChevronLeft, ChevronRight, Play, Pause, Shuffle } from "lucide-react";
+import { ChevronLeft, ChevronRight, Play, Pause, Shuffle, Trash2 } from "lucide-react";
 import type { Clip, ProjectWithClips, TransitionValue } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
-import { StickyFilmStrip } from "@/components/StickyFilmStrip";
+import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/components/StickyFilmStrip";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 import { fmtMs } from "@/utils/fmtMs";
-import { readTransitionConfig } from "@/utils/buildJobConfig";
-import type { TransitionConfig } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readPlacedCards, savePlacedCards } from "@/utils/buildJobConfig";
+import type { TransitionConfig, PlacedCard, CardAnimation } from "@/utils/buildJobConfig";
 import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import {
@@ -25,28 +25,39 @@ function diagLog(line: string) {
 }
 
 type ArrangeTab = "zoom" | "transitions" | "cards" | "sound";
-type CardColor = "peach" | "black" | "white";
-interface CardsState {
-  start: { enabled: boolean; title: string; subtitle: string; color: CardColor };
-  end: { enabled: boolean; title: string; color: CardColor };
-}
-const CARD_COLORS: { id: CardColor; hex: string }[] = [
-  { id: "peach", hex: "#FF8A65" },
-  { id: "black", hex: "#0a0a0a" },
-  { id: "white", hex: "#ffffff" },
+// #149 (revised after live user feedback): black + white presets only -- a 3rd swatch
+// remembers the project's last custom colour (so picking a brand colour once carries
+// forward to the next card without reopening the OS picker), plus an always-present
+// "pick new" swatch that opens the native colour dialog (<input type="color">, which
+// WebView2/Chromium renders as the real Windows dialog -- no Tauri dialog plugin
+// needed). cardTextColor is the shared canonical version (StickyFilmStrip's, not a
+// local duplicate — see DESIGN.md "CSS preview card" note).
+const CARD_PRESET_COLORS = ["#0a0a0a", "#ffffff"];
+const CARD_LAST_COLOR_KEY = (projectId: string) => `rc_cards_last_color_${projectId}`;
+// "None" is first and the standard default -- matches the same convention already used
+// for opening/closing transitions (OPEN_CLOSE_OPTIONS above).
+const CARD_ANIMATIONS: { value: CardAnimation; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "appear", label: "Appear" },
+  { value: "fade", label: "Fade" },
+  { value: "fly_in", label: "Fly in" },
 ];
-const CARDS_STORAGE_KEY = (projectId: string) => `rc_cards_${projectId}`;
-function cardTextColor(hex: string): string {
-  // Mirror Pillow _luminance logic: lum > 0.179 → black text
-  if (hex.startsWith("#") && hex.length === 7) {
-    const r = parseInt(hex.slice(1, 3), 16) / 255;
-    const g = parseInt(hex.slice(3, 5), 16) / 255;
-    const b = parseInt(hex.slice(5, 7), 16) / 255;
-    const lin = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
-    const lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-    return lum > 0.179 ? "#000000" : "#ffffff";
-  }
-  return "#ffffff";
+// CSS animation shorthand per choice, applied to the preview card's text wrapper only
+// (#149 polish round) -- mirrors the Transitions tab's animated card-chip preview.
+// "none" has no entry -- the preview renders statically, no animation style applied.
+const CARD_ANIM_CSS: Partial<Record<CardAnimation, string>> = {
+  appear: "rc-card-appear-in 3s infinite steps(1, end)",
+  fade: "rc-card-fade-in 3s infinite ease-in-out",
+  fly_in: "rc-card-fly-in 3s infinite ease-in-out",
+};
+interface ComposedCard {
+  text: string;
+  subtitle: string;
+  color: string;
+  animation: CardAnimation;
+}
+function blankComposedCard(color: string = CARD_PRESET_COLORS[0]): ComposedCard {
+  return { text: "", subtitle: "", color, animation: "none" };
 }
 
 const TRANSITIONS: { value: TransitionValue; label: string }[] = [
@@ -211,13 +222,21 @@ export default function Arrange() {
     () => readTransitionConfig(projectId ?? "")
   );
 
-  const [cardsState, setCardsState] = useState<CardsState>(() => {
-    try {
-      const raw = projectId ? getRenderPref(CARDS_STORAGE_KEY(projectId)) : null;
-      if (raw) return JSON.parse(raw) as CardsState;
-    } catch { /* ignore */ }
-    return { start: { enabled: false, title: "", subtitle: "", color: "peach" }, end: { enabled: false, title: "The End", color: "black" } };
-  });
+  // #149: cards can be placed anywhere -- replaces the old fixed start/end-only CardsState.
+  const [placedCards, setPlacedCards] = useState<PlacedCard[]>(() => readPlacedCards(projectId ?? ""));
+  // Which existing placed card (if any) is selected in the filmstrip -- drives "Edit card"
+  // mode and the delete bin. null = composing a brand-new, not-yet-placed card.
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  // Remembers the last colour picked via the native OS picker, per project (#149 polish
+  // round) -- so a brand colour chosen once carries forward to the next new card instead
+  // of needing to reopen the OS dialog every time.
+  const [lastCustomColor, setLastCustomColor] = useState<string | null>(
+    () => (projectId ? getRenderPref(CARD_LAST_COLOR_KEY(projectId)) : null)
+  );
+  // In-progress "New card" draft -- kept SEPARATE from whatever's being edited, so
+  // switching to inspect/edit an existing card and back to "New card" never loses
+  // what was being typed (confirmed live: this used to reset on every mode switch).
+  const [newCardDraft, setNewCardDraft] = useState<ComposedCard>(() => blankComposedCard(lastCustomColor ?? undefined));
   const cardsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // U4: tracks the previous tab so the tab-switch effect can detect zoom-tab-leave.
   const prevTabRef = useRef<ArrangeTab>("zoom");
@@ -225,25 +244,29 @@ export default function Arrange() {
 
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   const clipCount = inFilm.length;
-  // #63: cards are real 3s clips -- source from live in-memory cardsState (not localStorage)
-  // so the runtime + bookends update instantly as the user toggles/types on the Cards tab.
-  // Mirrors the pipeline render gate: a card counts only when enabled AND titled.
-  const cardFlags = {
-    open: cardsState.start.enabled && cardsState.start.title.trim() !== "",
-    close: cardsState.end.enabled && cardsState.end.title.trim() !== "",
-  };
   // #62/#63: displayed runtime subtracts transition overlap (telescoped) + adds card seconds.
-  const totalMs = effectiveFilmMs(inFilm, transConfig, cardFlags);
+  // #149: source from live in-memory placedCards (not a re-read from localStorage) so the
+  // runtime + strip tiles update instantly as the user places/edits/deletes on the Cards tab.
+  const totalMs = effectiveFilmMs(inFilm, transConfig, placedCards.length);
 
-  // #74: live card tiles for the filmstrip — sourced from in-memory cardsState so the strip
-  // updates as the user toggles/types on the Cards tab (same source as cardFlags above).
-  const cardColorHex = (id: CardColor) => CARD_COLORS.find((c) => c.id === id)?.hex ?? "#0a0a0a";
-  const openCardStrip = cardFlags.open
-    ? { color: cardColorHex(cardsState.start.color), text: cardsState.start.title.trim() }
-    : null;
-  const closeCardStrip = cardFlags.close
-    ? { color: cardColorHex(cardsState.end.color), text: cardsState.end.title.trim() }
-    : null;
+  // #74/#149: live card tiles for the filmstrip — sourced from in-memory placedCards.
+  const cardsForStrip: PositionedCard[] = placedCards.map((c) => ({
+    card: { id: c.id, color: c.color, text: c.text },
+    beforeClipId: c.beforeClipId,
+  }));
+  // Per-clip "card precedes this clip" map for filmTimeAtClipStart (generalizes the old
+  // single cardFlags.open boolean to arbitrary mid-roll positions).
+  const cardsBeforeClip = inFilm.map((c) => placedCards.some((p) => p.beforeClipId === c.id));
+
+  // What the Cards tab form currently shows/edits: the selected existing card's live
+  // data when editing, or the persistent new-card draft otherwise. Derived (not its own
+  // state) so there's nothing to keep in sync -- editing a placed card always reads
+  // straight from placedCards, and switching away from "New card" and back can never
+  // lose the draft since newCardDraft is untouched by selection changes.
+  const editingCard = selectedCardId ? placedCards.find((c) => c.id === selectedCardId) ?? null : null;
+  const composed: ComposedCard = editingCard
+    ? { text: editingCard.text, subtitle: editingCard.subtitle, color: editingCard.color, animation: editingCard.animation }
+    : newCardDraft;
 
   const selectedClip = selectedClipId ? clips.find((c) => c.id === selectedClipId) ?? null : null;
   selectedClipRef.current = selectedClip;
@@ -262,23 +285,20 @@ export default function Arrange() {
         projectCache.set(projectId, { name: data.project.name, clips: data.clips });
         setProjectName(data.project.name);
         setClips(data.clips);
-        // Seed start title from project name only if no cards state was stored yet
-        const stored = getRenderPref(CARDS_STORAGE_KEY(projectId));
-        if (!stored) {
-          setCardsState((prev) => ({
-            ...prev,
-            start: { ...prev.start, title: data.project.name },
-          }));
-        }
       })
       .catch(() => {});
   }, [projectId]);
 
-  // Persist cardsState to the render-pref store (debounced for text changes, but we call this
-  // from both instant (toggle/swatch) and debounced (text input) paths).
-  const saveCardsState = useCallback((next: CardsState) => {
-    if (!projectId) return;
-    setRenderPref(CARDS_STORAGE_KEY(projectId), JSON.stringify(next));
+  // Mutate + persist placedCards in one step — called from every mutation path
+  // (place/edit/delete) so localStorage and in-memory state never drift. Takes an
+  // updater (not a plain next-array) so callers never risk acting on a stale closure
+  // of placedCards (e.g. a debounced text-edit firing after another change landed).
+  const mutateCards = useCallback((updater: (prev: PlacedCard[]) => PlacedCard[]) => {
+    setPlacedCards((prev) => {
+      const next = updater(prev);
+      if (projectId) savePlacedCards(projectId, next);
+      return next;
+    });
   }, [projectId]);
 
   // Pause the outgoing tab's video immediately on tab switch.
@@ -594,7 +614,7 @@ export default function Arrange() {
   // Render-time position of the current clip playback — drives the StickyFilmStrip playhead.
   // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71).
   const filmPlayheadMs = selectedIndex >= 0 && selectedClip
-    ? filmTimeAtClipStart(inFilm, selectedIndex, xfadeOverlapMs, cardFlags.open)
+    ? filmTimeAtClipStart(inFilm, selectedIndex, xfadeOverlapMs, cardsBeforeClip)
       + Math.max(0, currentMs - (selectedClip.in_ms ?? 0))
     : undefined;
 
@@ -783,6 +803,73 @@ export default function Arrange() {
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
+  // ── Cards tab (#149) ──────────────────────────────────────────────────────
+  // Just switches mode -- newCardDraft is untouched, so whatever was being typed
+  // before a detour into editing an existing card is still there (confirmed live:
+  // this used to reset the draft on every switch back to "New card").
+  function handleNewCard() {
+    setSelectedCardId(null);
+  }
+
+  // Persists the project's "last custom colour" whenever the native OS picker is used
+  // (never for a black/white preset click -- only genuine custom picks are remembered).
+  function handleCustomColorPick(hex: string) {
+    updateComposedField({ color: hex }, false);
+    setLastCustomColor(hex);
+    if (projectId) setRenderPref(CARD_LAST_COLOR_KEY(projectId), hex);
+  }
+
+  // Clicking a card tile in the filmstrip selects it -- the form (via the derived
+  // `composed` const above) then reads straight from placedCards, no copy needed.
+  function handleSelectCard(cardId: string) {
+    setSelectedCardId(cardId);
+  }
+
+  // Updates whatever the form currently shows: the persistent new-card draft when
+  // composing, or the selected placed card when editing -- instantly for swatch/
+  // animation picks, debounced for text fields.
+  function updateComposedField(patch: Partial<ComposedCard>, debounce: boolean) {
+    if (selectedCardId === null) {
+      setNewCardDraft((prev) => ({ ...prev, ...patch }));
+      return;
+    }
+    const cardId = selectedCardId;
+    const apply = () => mutateCards((prev) => prev.map((c) => (c.id === cardId ? { ...c, ...patch } : c)));
+    if (!debounce) { apply(); return; }
+    if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
+    cardsDebounceRef.current = setTimeout(apply, 300);
+  }
+
+  // Core placement, shared by drag-drop and "+ Add to film". Always creates a NEW
+  // card from the current draft -- this never repositions an already-placed card
+  // (dragging while editing an existing one is disabled below); reposition-after-
+  // placement is explicitly out of scope for #149.
+  function placeComposedCard(beforeClipId: string | null) {
+    const text = newCardDraft.text.trim();
+    if (text === "") return;
+    const card: PlacedCard = { id: crypto.randomUUID(), ...newCardDraft, text, beforeClipId };
+    mutateCards((prev) => [...prev, card]);
+    setNewCardDraft(blankComposedCard(lastCustomColor ?? undefined));
+  }
+
+  function handleDropCard(beforeClipId: string | null) {
+    placeComposedCard(beforeClipId);
+  }
+
+  function handleAddToFilm() {
+    placeComposedCard(null);
+  }
+
+  function handleDeleteCard(cardId: string) {
+    mutateCards((prev) => prev.filter((c) => c.id !== cardId));
+    setSelectedCardId(null);
+  }
+
+  function handleCardPreviewDragStart(e: React.DragEvent<HTMLDivElement>) {
+    e.dataTransfer.setData("application/x-rushcut-card", "1");
+    e.dataTransfer.effectAllowed = "copy";
+  }
+
   return (
     <EditorShell
       projectId={projectId ?? ""}
@@ -804,9 +891,26 @@ export default function Arrange() {
           onReorder={handleReorder}
           playheadMs={tab === "zoom" ? filmPlayheadMs : undefined}
           xfadeOverlapMs={xfadeOverlapMs}
-          openCard={openCardStrip}
-          closeCard={closeCardStrip}
+          cards={cardsForStrip}
+          activeCardId={tab === "cards" ? selectedCardId : null}
+          onSelectCard={tab === "cards" ? handleSelectCard : undefined}
+          onDropCard={tab === "cards" ? handleDropCard : undefined}
         />
+      }
+      timelineGutter={
+        tab === "cards" && selectedCardId !== null ? (
+          <div className="flex justify-center pt-2">
+            <button
+              type="button"
+              onClick={() => handleDeleteCard(selectedCardId)}
+              className="w-10 h-10 rounded-full flex items-center justify-center border border-red-400/60 text-red-400 hover:bg-red-400/10 hover:border-red-400 transition-all duration-200"
+              title="Delete this card"
+              aria-label="Delete this card"
+            >
+              <Trash2 size={18} />
+            </button>
+          </div>
+        ) : null
       }
     >
       <div className="flex flex-col flex-1 min-w-0">
@@ -1406,231 +1510,257 @@ export default function Arrange() {
           </div>
         )}
 
-        {/* ── Cards tab ───────────────────────────────────────────── */}
+        {/* ── Cards tab (#149, revised after live user feedback) ─────
+            Left rail + centre preview, mirroring the Transitions tab layout
+            (DESIGN.md "Left-rail + centre-preview layout"). */}
         {tab === "cards" && (
-          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex gap-6 max-w-5xl mx-auto items-start">
 
-            {/* ── Start card panel ── */}
-            <div className="border border-white/15 rounded-lg p-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-base font-medium text-[#e5e5e5]">Start card</p>
-                  <p className="text-sm text-[#a3a3a3]">Appears before your first clip.</p>
-                </div>
-                {/* Toggle */}
+              {/* Left: New card / Edit card mode indicator. Peach (not the usual
+                  #99B3FF chip blue) is a deliberate exception here — the user asked
+                  for the compose-mode choice to read with the same visual weight as
+                  the "Add to film" CTA, since it's the primary "what am I doing right
+                  now" signal on this screen. See DESIGN.md. */}
+              <aside className="w-40 flex-shrink-0 space-y-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    const next: CardsState = { ...cardsState, start: { ...cardsState.start, enabled: !cardsState.start.enabled } };
-                    setCardsState(next);
-                    saveCardsState(next);
-                  }}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none ${
-                    cardsState.start.enabled ? "bg-[#99B3FF]" : "bg-white/25"
+                  onClick={handleNewCard}
+                  data-testid="btn-new-card"
+                  className={`w-full text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
+                    selectedCardId === null
+                      ? "border-[#FF8A65] text-[#FF8A65] bg-[#FF8A65]/10"
+                      : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
                   }`}
-                  aria-pressed={cardsState.start.enabled}
                 >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${cardsState.start.enabled ? "translate-x-6" : "translate-x-1"}`} />
+                  New card
                 </button>
-              </div>
+                {/* Not independently clickable -- clicking a card tile in the filmstrip
+                    already enters edit mode; this just reflects that state. */}
+                <div
+                  data-testid="indicator-edit-card"
+                  className={`w-full text-sm rounded-md px-4 py-2 border font-medium text-center ${
+                    selectedCardId !== null
+                      ? "border-[#FF8A65] text-[#FF8A65] bg-[#FF8A65]/10"
+                      : "border-white/15 text-[#555555]"
+                  }`}
+                >
+                  Edit card
+                </div>
+                <p className="text-xs text-[#a3a3a3]">
+                  {selectedCardId === null
+                    ? "Composing a new card."
+                    : "Editing the selected card -- click another card, or New card, to switch."}
+                </p>
+              </aside>
 
-              <div className="flex gap-6">
-                {/* Left: inputs */}
-                <div className="flex-1 space-y-4">
-                  {/* Title */}
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Title</p>
-                    <input
-                      type="text"
-                      maxLength={60}
-                      value={cardsState.start.title}
-                      onChange={(e) => {
-                        const next: CardsState = { ...cardsState, start: { ...cardsState.start, title: e.target.value } };
-                        setCardsState(next);
-                        if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
-                        cardsDebounceRef.current = setTimeout(() => saveCardsState(next), 300);
-                      }}
-                      placeholder="Your film title"
-                      className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
-                    />
-                    <p className="text-xs text-[#a3a3a3] text-right">{cardsState.start.title.length}/60</p>
-                  </div>
+              {/* Centre: controls card + large animated preview */}
+              <div className="flex-1 space-y-6">
+                <div className="border border-white/15 rounded-lg p-6 space-y-5">
+                  <div className="flex gap-6">
+                    <div className="flex-1 space-y-4">
+                      {/* Title */}
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-[#e5e5e5]">Title</p>
+                        <input
+                          type="text"
+                          maxLength={60}
+                          value={composed.text}
+                          onChange={(e) => updateComposedField({ text: e.target.value }, true)}
+                          placeholder="e.g. Day Two: The Coast"
+                          className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
+                        />
+                        <p className="text-xs text-[#a3a3a3] text-right">{composed.text.length}/60</p>
+                      </div>
 
-                  {/* Subtitle */}
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Subtitle</p>
-                    <input
-                      type="text"
-                      maxLength={80}
-                      value={cardsState.start.subtitle}
-                      onChange={(e) => {
-                        const next: CardsState = { ...cardsState, start: { ...cardsState.start, subtitle: e.target.value } };
-                        setCardsState(next);
-                        if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
-                        cardsDebounceRef.current = setTimeout(() => saveCardsState(next), 300);
-                      }}
-                      placeholder="Optional — e.g. A film by Alex"
-                      className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
-                    />
-                    <p className="text-xs text-[#a3a3a3] text-right">{cardsState.start.subtitle.length}/80</p>
-                  </div>
+                      {/* Subtitle */}
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-[#e5e5e5]">Subtitle</p>
+                        <input
+                          type="text"
+                          maxLength={80}
+                          value={composed.subtitle}
+                          onChange={(e) => updateComposedField({ subtitle: e.target.value }, true)}
+                          placeholder="Optional"
+                          className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
+                        />
+                        <p className="text-xs text-[#a3a3a3] text-right">{composed.subtitle.length}/80</p>
+                      </div>
+                    </div>
 
-                  {/* Background swatch picker */}
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Background</p>
-                    <div className="flex gap-3">
-                      {CARD_COLORS.map(({ id, hex }) => (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => {
-                            const next: CardsState = { ...cardsState, start: { ...cardsState.start, color: id } };
-                            setCardsState(next);
-                            saveCardsState(next);
-                          }}
-                          style={{ background: hex }}
-                          className={`w-8 h-8 rounded-full transition-all focus:outline-none ${
-                            id === "black" ? "border border-white/30" : ""
-                          } ${
-                            cardsState.start.color === id
+                    {/* Background swatches -- black + white presets, a swatch that
+                        remembers the project's last custom colour, and an always-
+                        present "pick new" swatch opening the native OS colour picker
+                        (<input type="color">, rendered natively by WebView2/Chromium
+                        on Windows -- no Tauri dialog plugin needed). Revised after
+                        live feedback: no peach preset (peach is UI chrome, not a
+                        neutral card-colour default). */}
+                    <div className="flex-shrink-0 space-y-2">
+                      <p className="text-sm font-medium text-[#e5e5e5]">Background</p>
+                      <div className="flex gap-3">
+                        {CARD_PRESET_COLORS.map((hex) => (
+                          <button
+                            key={hex}
+                            type="button"
+                            onClick={() => updateComposedField({ color: hex }, false)}
+                            style={{ background: hex }}
+                            className={`w-8 h-8 rounded-full transition-all focus:outline-none ${
+                              hex === "#0a0a0a" ? "border border-white/30" : ""
+                            } ${
+                              composed.color === hex
+                                ? "ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]"
+                                : ""
+                            }`}
+                            aria-label={hex}
+                          />
+                        ))}
+                        {/* Fixed 3rd slot -- always reserved so the picker swatch never
+                            shifts position once a custom colour exists (confirmed
+                            confusing when this slot only appeared conditionally). Shows
+                            a dashed empty placeholder until a custom colour is picked. */}
+                        {lastCustomColor ? (
+                          <button
+                            type="button"
+                            onClick={() => updateComposedField({ color: lastCustomColor }, false)}
+                            style={{ background: lastCustomColor }}
+                            className={`w-8 h-8 rounded-full border border-white/30 transition-all focus:outline-none ${
+                              composed.color === lastCustomColor
+                                ? "ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]"
+                                : ""
+                            }`}
+                            aria-label="Last custom colour"
+                            title="Last custom colour used on this project"
+                          />
+                        ) : (
+                          <div
+                            className="w-8 h-8 rounded-full border border-dashed border-white/20"
+                            aria-hidden
+                            title="Your last custom colour will appear here"
+                          />
+                        )}
+                        <label
+                          className={`relative w-8 h-8 rounded-full cursor-pointer overflow-hidden focus-within:outline-none ${
+                            !CARD_PRESET_COLORS.includes(composed.color) && composed.color !== lastCustomColor
                               ? "ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]"
                               : ""
                           }`}
-                          aria-label={id}
-                        />
+                          style={{ background: "conic-gradient(from 0deg, #FF8A65, #99B3FF, #22c55e, #FF8A65)" }}
+                          title="Pick your own colour"
+                        >
+                          <input
+                            type="color"
+                            value={composed.color}
+                            onChange={(e) => handleCustomColorPick(e.target.value)}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            aria-label="Pick your own colour"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Animation -- horizontally scrollable chip row (#149 design
+                      choice: extends cleanly when more animation types are added,
+                      unlike stacked radio buttons). Also drives the live preview
+                      animation below. Stored for forward-compat only -- no FFmpeg-
+                      level card animation exists yet, see follow-up issue. */}
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-[#e5e5e5]">Animation</p>
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {CARD_ANIMATIONS.map(({ value, label }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => updateComposedField({ animation: value }, false)}
+                          data-testid={`chip-card-anim-${value}`}
+                          className={`flex-shrink-0 text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
+                            composed.animation === value
+                              ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
+                              : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
+                          }`}
+                        >
+                          {label}
+                        </button>
                       ))}
                     </div>
                   </div>
                 </div>
 
-                {/* Right: CSS preview */}
-                {(() => {
-                  const bgHex = CARD_COLORS.find((c) => c.id === cardsState.start.color)?.hex ?? "#0a0a0a";
-                  const textCol = cardTextColor(bgHex);
-                  const subtextCol = textCol === "#000000" ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.6)";
-                  return (
-                    <div
-                      className="w-40 flex-shrink-0 aspect-video rounded-md flex flex-col items-center justify-center gap-1 overflow-hidden"
-                      style={{ background: bgHex }}
-                    >
-                      {cardsState.start.title ? (
-                        <>
-                          <span className="text-xs font-medium text-center px-2 leading-tight" style={{ color: textCol }}>
-                            {cardsState.start.title}
-                          </span>
-                          {cardsState.start.subtitle && (
-                            <span className="text-[10px] text-center px-2 leading-tight" style={{ color: subtextCol }}>
-                              {cardsState.start.subtitle}
+                {/* Large centred preview -- also the drag handle for placing the card
+                    (#149 design choice). Only draggable while composing a brand-new
+                    card: dragging an already-placed card is disabled, since
+                    repositioning an existing card is out of scope for this issue.
+                    Plays the chosen entrance animation on loop, mirroring the
+                    Transitions tab's animated card-chip preview. */}
+                <div className="flex flex-col items-center gap-2">
+                  <p className="text-sm font-medium text-[#e5e5e5] self-start">Preview</p>
+                  {(() => {
+                    const textCol = cardTextColor(composed.color);
+                    const subtextCol = textCol === "#0a0a0a" ? "rgba(10,10,10,0.6)" : "rgba(229,229,229,0.6)";
+                    const draggableNow = selectedCardId === null && composed.text.trim() !== "";
+                    return (
+                      <div
+                        draggable={draggableNow}
+                        onDragStart={draggableNow ? handleCardPreviewDragStart : undefined}
+                        data-testid="card-preview"
+                        className={`w-full max-w-md aspect-video rounded-lg flex flex-col items-center justify-center gap-2 overflow-hidden border border-white/15 ${
+                          draggableNow ? "cursor-grab active:cursor-grabbing" : ""
+                        }`}
+                        style={{ background: composed.color }}
+                        title={draggableNow ? "Drag onto the timeline below to place this card" : undefined}
+                      >
+                        {composed.text ? (
+                          <div
+                            key={composed.animation}
+                            className="flex flex-col items-center gap-2 px-6"
+                            style={{ animation: CARD_ANIM_CSS[composed.animation] }}
+                          >
+                            <span className="font-semibold text-center" style={{ color: textCol, fontSize: "clamp(1rem, 3vw, 1.75rem)" }}>
+                              {composed.text}
                             </span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-[10px]" style={{ color: textCol === "#000000" ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.4)" }}>preview</span>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-
-            {/* ── End card panel ── */}
-            <div className="border border-white/15 rounded-lg p-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-base font-medium text-[#e5e5e5]">End card</p>
-                  <p className="text-sm text-[#a3a3a3]">Appears after your last clip.</p>
-                </div>
-                {/* Toggle */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next: CardsState = { ...cardsState, end: { ...cardsState.end, enabled: !cardsState.end.enabled } };
-                    setCardsState(next);
-                    saveCardsState(next);
-                  }}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none ${
-                    cardsState.end.enabled ? "bg-[#99B3FF]" : "bg-white/25"
-                  }`}
-                  aria-pressed={cardsState.end.enabled}
-                >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${cardsState.end.enabled ? "translate-x-6" : "translate-x-1"}`} />
-                </button>
-              </div>
-
-              <div className="flex gap-6">
-                {/* Left: input */}
-                <div className="flex-1 space-y-4">
-                  {/* Text */}
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Text</p>
-                    <input
-                      type="text"
-                      maxLength={40}
-                      value={cardsState.end.title}
-                      onChange={(e) => {
-                        const next: CardsState = { ...cardsState, end: { ...cardsState.end, title: e.target.value } };
-                        setCardsState(next);
-                        if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
-                        cardsDebounceRef.current = setTimeout(() => saveCardsState(next), 300);
-                      }}
-                      placeholder="e.g. The End"
-                      className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
-                    />
-                    <p className="text-xs text-[#a3a3a3] text-right">{cardsState.end.title.length}/40</p>
-                  </div>
-
-                  {/* Background swatch picker */}
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Background</p>
-                    <div className="flex gap-3">
-                      {CARD_COLORS.map(({ id, hex }) => (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => {
-                            const next: CardsState = { ...cardsState, end: { ...cardsState.end, color: id } };
-                            setCardsState(next);
-                            saveCardsState(next);
-                          }}
-                          style={{ background: hex }}
-                          className={`w-8 h-8 rounded-full transition-all focus:outline-none ${
-                            id === "black" ? "border border-white/30" : ""
-                          } ${
-                            cardsState.end.color === id
-                              ? "ring-2 ring-[#FF8A65] ring-offset-2 ring-offset-[#0a0a0a]"
-                              : ""
-                          }`}
-                          aria-label={id}
-                        />
-                      ))}
-                    </div>
-                  </div>
+                            {composed.subtitle && (
+                              <span className="text-center" style={{ color: subtextCol, fontSize: "clamp(0.75rem, 1.6vw, 1.1rem)" }}>
+                                {composed.subtitle}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-sm" style={{ color: textCol === "#0a0a0a" ? "rgba(10,10,10,0.4)" : "rgba(229,229,229,0.4)" }}>
+                            preview
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
-                {/* Right: CSS preview */}
-                {(() => {
-                  const bgHex = CARD_COLORS.find((c) => c.id === cardsState.end.color)?.hex ?? "#0a0a0a";
-                  const textCol = cardTextColor(bgHex);
-                  return (
-                    <div
-                      className="w-40 flex-shrink-0 aspect-video rounded-md flex items-center justify-center overflow-hidden"
-                      style={{ background: bgHex }}
-                    >
-                      {cardsState.end.title ? (
-                        <span className="text-xs font-medium text-center px-2 leading-tight" style={{ color: textCol }}>
-                          {cardsState.end.title}
-                        </span>
-                      ) : (
-                        <span className="text-[10px]" style={{ color: textCol === "#000000" ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.4)" }}>preview</span>
-                      )}
-                    </div>
-                  );
-                })()}
               </div>
+
+              {/* Right: non-drag fallback + discoverability hint -- only relevant
+                  while composing a brand-new card; hidden entirely while editing an
+                  already-placed one (there's nothing to add-to-film or drag). Kept
+                  as its own column (not centred below the preview) so it doesn't
+                  push the "click a card to edit" line out of view lower down. */}
+              {selectedCardId === null && (
+                <aside className="w-48 flex-shrink-0 space-y-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleAddToFilm}
+                    disabled={composed.text.trim() === ""}
+                    data-testid="btn-add-card-to-film"
+                    className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    + Add to film
+                  </button>
+                  <p className="text-sm text-[#a3a3a3]">
+                    Drag from preview to the timeline below to add the card exactly where you want it -- it snaps to the nearest cut.
+                  </p>
+                </aside>
+              )}
             </div>
 
-            <p className="text-sm text-[#a3a3a3]">
-              Cards are saved automatically. Toggle on before rendering to include them in your film.
+            <p className="text-sm text-[#a3a3a3] mt-4 max-w-5xl mx-auto">
+              Click a card in the timeline below to edit or delete it.
             </p>
           </div>
         )}

@@ -37,5 +37,19 @@ describe("Read-only live-app observation", () => {
         console.log(`[readonly-check] selector text=${JSON.stringify(text)} displayed=${displayed}`);
       }
     }
+
+    // Read-only browser console dump (added for #149 wrapup verification) -- guarded
+    // since attach-mode's capabilities don't set goog:loggingPrefs; if the driver
+    // doesn't support getLogs on this attach, this just no-ops instead of failing
+    // the whole (otherwise passive) check.
+    try {
+      const logs = await browser.getLogs("browser");
+      console.log(`[readonly-check] console-log-count=${logs.length}`);
+      for (const entry of logs as { level: string; message: string }[]) {
+        console.log(`[readonly-check] console[${entry.level}] ${entry.message}`);
+      }
+    } catch (e) {
+      console.log(`[readonly-check] getLogs unsupported on this attach: ${(e as Error).message}`);
+    }
   });
 });

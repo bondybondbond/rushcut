@@ -28,10 +28,10 @@ export function naiveFilmMs(inFilm: Clip[]): number {
 /**
  * Effective DISPLAYED runtime after subtracting transition overlap -- mirrors the
  * pipeline telescoping math (#62/#63). This is the value shown to the user as the film
- * runtime, NOT the absolute rendered-file duration. Open/close text cards are real 3s
- * clips that the pipeline prepends/appends and that join the same xfade chain, so when
- * present they add CARD_DUR_MS each AND one more xfade overlap each (#63). Pass `cards`
- * to account for them. Backend/music truth comes from get_duration(output).
+ * runtime, NOT the absolute rendered-file duration. Text cards are real 3s clips the
+ * pipeline splices in and that join the same xfade chain, so each active card adds
+ * CARD_DUR_MS AND one more xfade overlap regardless of where it sits (#63/#149). Pass
+ * the total card count via `cardCount`. Backend/music truth comes from get_duration(output).
  *
  * Mirrors render.py: has_xfade = (between != "none") || shuffleBetween;
  *   elements = clips + open-card + close-card
@@ -41,10 +41,9 @@ export function naiveFilmMs(inFilm: Clip[]): number {
 export function effectiveFilmMs(
   inFilm: Clip[],
   tc: TransitionConfig,
-  cards?: { open: boolean; close: boolean },
+  cardCount = 0,
 ): number {
   const n = inFilm.length;
-  const cardCount = (cards?.open ? 1 : 0) + (cards?.close ? 1 : 0);
 
   // Guard: no footage clips -> just the card seconds (nothing to crossfade between;
   // an all-empty clip manifest errors in start_job anyway, so this is purely defensive).
@@ -95,27 +94,32 @@ export function clampedXfadeMs(inFilm: Clip[], tc: TransitionConfig): number {
 
 /**
  * Render-time (telescoped) start of clip `index` in film-time ms: the naive cumulative
- * start of the preceding clips minus the overlap consumed by the `index` preceding cuts.
+ * start of the preceding clips minus the overlap consumed by the preceding cuts.
  * This is the ONE boundary formula shared by every screen's playhead feed (Trimmer,
  * Arrange, Sound) so they cannot fork into slightly different telescoping math (#71).
  * Pass the xfade value from clampedXfadeMs(inFilm, tc).
  *
- * When `hasOpenCard` is true (#74) an open text card is the first element of the film, so
- * it adds CARD_DUR_MS of lead time AND one more overlap (the card->clip-1 cut). The ruler
- * then starts at film-time 0 = card start, and this offset keeps every screen's playhead
- * aligned to the card-inclusive ruler. Defaults to false -> byte-identical to the pre-#74
- * formula for no-open-card projects.
+ * `cardsBeforeClip[i]` (#149, generalizes #74's single hasOpenCard boolean to arbitrary
+ * mid-roll positions) is true when a text card sits immediately before clip[i] -- each
+ * such card adds CARD_DUR_MS of lead time AND one more overlap (the card->clip cut) to
+ * every clip at or after it. `false` (default) means no cards at all, byte-identical to
+ * the pre-#149 formula. The old single-open-card case is just `[true]` (or omitted since
+ * only index 0 mattered) -- callers that don't care about card-precise timing (e.g. Sound's
+ * approximate playhead sync) can keep passing `false`.
  */
 export function filmTimeAtClipStart(
   inFilm: Clip[],
   index: number,
   xfadeMs: number,
-  hasOpenCard = false,
+  cardsBeforeClip: boolean[] | false = false,
 ): number {
   const lim = Math.min(index, inFilm.length);
   let naive = 0;
   for (let i = 0; i < lim; i++) naive += trimmedMs(inFilm[i]);
-  const lead = hasOpenCard ? CARD_DUR_MS : 0;
-  const cuts = lim + (hasOpenCard ? 1 : 0);
+  const arr = cardsBeforeClip || [];
+  let cardsBefore = 0;
+  for (let i = 0; i < lim; i++) if (arr[i]) cardsBefore++;
+  const lead = cardsBefore * CARD_DUR_MS;
+  const cuts = lim + cardsBefore;
   return Math.max(0, lead + naive - cuts * xfadeMs);
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import { VolumeX, Volume1 } from "lucide-react";
 import {
   DndContext,
@@ -20,12 +20,19 @@ import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
 import { CARD_DUR_MS, trimmedMs } from "@/utils/filmDuration";
 
-/** Resolved card data for a strip card tile (#74). */
+/** Resolved card data for a strip card tile (#74, generalized to any position in #149). */
 export interface StripCard {
-  /** Background hex (#FF8A65 / #0a0a0a / #ffffff) — already resolved by readCardsConfig. */
+  id: string;
+  /** Background hex — already resolved by the caller. */
   color: string;
-  /** Card title — used only for the tile tooltip; the tile shows the Intro/Outro badge. */
+  /** Card title — shown on the tile itself (generalized from the old fixed Intro/Outro badge). */
   text: string;
+}
+
+/** A card placed at a specific gap (#149). `beforeClipId: null` = end of film. */
+export interface PositionedCard {
+  card: StripCard;
+  beforeClipId: string | null;
 }
 
 /**
@@ -72,13 +79,18 @@ interface StickyFilmStripProps {
    */
   xfadeOverlapMs?: number;
   /**
-   * Open text card (#74). When set (enabled + titled), a 3s card tile is prepended at film
-   * time 0 and the ruler/playhead/seek geometry becomes card-inclusive so the strip length
-   * matches the card-inclusive top-bar runtime (effectiveFilmMs). Null/undefined = no card.
+   * All positioned text cards (#74, generalized to any position in #149). Each 3s card
+   * tile is spliced into the strip at its resolved gap and the ruler/playhead/seek
+   * geometry becomes card-inclusive so the strip length matches the card-inclusive
+   * top-bar runtime (effectiveFilmMs). At most one card per gap — the caller enforces
+   * this at placement time (rejects a drop onto an already-occupied gap), so this
+   * component never needs to resolve a same-anchor collision.
    */
-  openCard?: StripCard | null;
-  /** Close text card (#74). Same as openCard but appended after the last clip. */
-  closeCard?: StripCard | null;
+  cards?: PositionedCard[];
+  /** Currently selected card tile (Arrange's Cards tab), for the active-border highlight. */
+  activeCardId?: string | null;
+  /** If provided, clicking a card tile selects it (mirrors onSelectClip). */
+  onSelectCard?: (cardId: string) => void;
   /**
    * #9: called on drop when a TrimBar cut is dragged in (native HTML5 DnD, separate
    * from the dnd-kit reorder above). Arg is the insertion index into the in-film clip
@@ -86,6 +98,15 @@ interface StickyFilmStripProps {
    * enables the drop target and insertion-line indicator; absence leaves drag-in disabled.
    */
   onDropCut?: (insertIndex: number) => void;
+  /**
+   * #149: called on drop when a composed card is dragged in from Arrange's Cards tab
+   * (native HTML5 DnD, `application/x-rushcut-card`, same mechanism as onDropCut but a
+   * distinct mime type so both drag sources can coexist). Arg is the clip id the new
+   * card should sit immediately before, or null for the end of the film. A drop onto a
+   * gap that already has a card is rejected before this fires (see the occupied-gap
+   * check in onDragOverClipRow) — the caller never has to dedupe.
+   */
+  onDropCard?: (beforeClipId: string | null) => void;
 }
 
 // Zoom range: ~8px/s minimum, 2000px/s maximum
@@ -220,37 +241,39 @@ function SortableFilmTile({
 }
 
 /**
- * One card tile (#74) — open or close text card, drawn as a 3s block in the film colour.
- * Non-sortable, non-deletable: cards are structural film elements, not footage. Flanks the
- * SortableContext as a direct flex child so its width participates in the same gap layout.
+ * One card tile (#74, generalized to any position + made clickable/selectable in #149)
+ * — drawn as a 3s block in the card's own colour, showing its own title. Not reorderable
+ * (cards are placed by drag-from-panel, not drag-to-reorder — repositioning an already-
+ * placed card is out of scope for #149) but IS selectable, so it flanks the sortable
+ * SortableContext as a direct flex child (its width participates in the same gap layout)
+ * rather than living inside it.
  */
 function CardStripTile({
-  kind,
-  color,
-  text,
+  card,
   width,
+  isActive,
+  onSelectCard,
 }: {
-  kind: "open" | "close";
-  color: string;
-  text: string;
+  card: StripCard;
   width: number;
+  isActive: boolean;
+  onSelectCard?: (cardId: string) => void;
 }) {
-  const fg = cardTextColor(color);
-  const label = kind === "open" ? "Intro" : "Outro";
+  const fg = cardTextColor(card.color);
   return (
     <div
-      data-testid={`filmstrip-card-${kind}`}
-      className="relative flex-shrink-0 overflow-hidden border-2 border-[#99B3FF]/40"
-      style={{ width, height: CLIP_HEIGHT, background: color }}
-      title={text}
+      data-testid={`filmstrip-card-${card.id}`}
+      className={`relative flex-shrink-0 overflow-hidden border-2 transition-colors ${
+        isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/40"
+      } ${onSelectCard ? "cursor-pointer" : ""}`}
+      style={{ width, height: CLIP_HEIGHT, background: card.color }}
+      title={card.text}
+      onClick={onSelectCard ? (e) => { e.stopPropagation(); onSelectCard(card.id); } : undefined}
     >
-      {/* Intro/Outro badge — top-left, full word */}
-      <div
-        className="absolute top-0.5 left-0.5 px-1 h-4 rounded flex items-center justify-center z-10 pointer-events-none"
-        style={{ background: fg === "#0a0a0a" ? "rgba(10,10,10,0.12)" : "rgba(229,229,229,0.15)" }}
-      >
-        <span className="text-[10px] font-bold leading-none select-none" style={{ color: fg }}>
-          {label}
+      {/* Card title — centred, truncated to fit narrow tiles at zoomed-out scale */}
+      <div className="absolute inset-0 flex items-center justify-center px-1.5 pointer-events-none">
+        <span className="text-[10px] font-bold leading-tight text-center line-clamp-2 select-none" style={{ color: fg }}>
+          {card.text}
         </span>
       </div>
       {/* Duration stamp — bottom, mirrors the clip-tile treatment */}
@@ -273,12 +296,17 @@ export function StickyFilmStrip({
   playheadMs,
   onSeek,
   xfadeOverlapMs = 0,
-  openCard = null,
-  closeCard = null,
+  cards = [],
+  activeCardId = null,
+  onSelectCard,
   onDropCut,
+  onDropCard,
 }: StickyFilmStripProps) {
   const [pxPerMs, setPxPerMs] = useState<number>(DEFAULT_PX_PER_MS);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  // #149: true when the currently-hovered gap (during a card drag) already has a card —
+  // the drop is rejected and the insertion-line indicator switches to a "blocked" colour.
+  const [dragOverBlocked, setDragOverBlocked] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const hasInitialized = useRef(false);
   const prevFilmLengthRef = useRef(0);
@@ -299,26 +327,32 @@ export function StickyFilmStrip({
     .filter((c) => c.include === 1)
     .sort((a, b) => a.sort_order - b.sort_order);
 
-  // Card tiles join the film as first-class 3s elements (#74) — only when there is footage to
-  // bracket. The open card leads at film time 0; the close card trails the last clip. Both
-  // count as elements in the xfade chain exactly like effectiveFilmMs, so the ruler length
-  // matches the card-inclusive top-bar runtime.
-  const showOpen = !!openCard && inFilm.length > 0;
-  const showClose = !!closeCard && inFilm.length > 0;
+  // Card tiles join the film as first-class 3s elements (#74, generalized to any position
+  // in #149) — only when there is footage to bracket/interleave with. Each card is anchored
+  // by clip id (`beforeClipId`); at most one card per gap is guaranteed by the caller (the
+  // Cards tab rejects a drop onto an already-occupied gap), so a plain Map lookup is safe —
+  // this component never has to resolve a same-anchor collision itself.
+  const cardsActive = inFilm.length > 0 ? cards : [];
+  const cardBeforeClip = new Map(
+    cardsActive.filter((p) => p.beforeClipId !== null).map((p) => [p.beforeClipId as string, p.card]),
+  );
+  const endCard = cardsActive.find((p) => p.beforeClipId === null)?.card ?? null;
 
   type Seg =
-    | { kind: "card-open" | "card-close"; nativeMs: number; card: StripCard }
+    | { kind: "card"; nativeMs: number; card: StripCard }
     | { kind: "clip"; nativeMs: number; clip: Clip };
 
-  const segments: Seg[] = [
-    ...(showOpen ? [{ kind: "card-open" as const, nativeMs: CARD_DUR_MS, card: openCard! }] : []),
-    ...inFilm.map((c) => ({ kind: "clip" as const, nativeMs: trimmedMs(c), clip: c })),
-    ...(showClose ? [{ kind: "card-close" as const, nativeMs: CARD_DUR_MS, card: closeCard! }] : []),
-  ];
-
-  // Segment index of the first clip (0, or 1 when an open card leads). Lets the clip-tile
-  // render loop map clip index -> segment index for its width.
-  const clipSegBase = showOpen ? 1 : 0;
+  const segments: Seg[] = [];
+  // Segment index of each clip (generalizes the old constant clipSegBase — a card can now
+  // precede ANY clip, not just clip 0, so this is a running index, not a fixed offset).
+  const clipSegIndex: number[] = [];
+  for (const c of inFilm) {
+    const cardHere = cardBeforeClip.get(c.id);
+    if (cardHere) segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: cardHere });
+    clipSegIndex.push(segments.length);
+    segments.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c });
+  }
+  if (endCard) segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: endCard });
 
   // Render-time (telescoped) width per SEGMENT in ms (#71/#74). Every element but the last has
   // its tail consumed by the crossfade into the next element, so it contributes one xfade less.
@@ -335,7 +369,7 @@ export function StickyFilmStrip({
   const segWidths = renderMsArr.map((m) => Math.max(MIN_CLIP_WIDTH, Math.round(m * pxPerMs)));
 
   // Per-clip widths (the clip subset of segWidths) for the clip-tile render loop.
-  const clipWidths = inFilm.map((_, i) => segWidths[clipSegBase + i]);
+  const clipWidths = inFilm.map((_, i) => segWidths[clipSegIndex[i]]);
 
   const totalTrackPx = segWidths.reduce((s, w) => s + w + GAP_PX, 0)
     + Math.round(TRAIL_PAD_MS * pxPerMs);
@@ -527,45 +561,72 @@ export function StickyFilmStrip({
 
   // #9: pixel position of an insertion boundary (0..inFilm.length) among clip tiles only,
   // for the drag-in insertion-line indicator. Mirrors filmTimeToPx's segment-offset lookup
-  // but indexes into clip tiles specifically (clipSegBase skips a leading open card).
+  // but indexes into clip tiles specifically (clipSegIndex maps clip index -> segment index,
+  // accounting for however many cards precede it — generalized from the old constant
+  // clipSegBase, which only ever had to skip a single leading open card).
   function insertIndexToPx(idx: number): number {
-    if (inFilm.length === 0) return segOffsets[clipSegBase] ?? 0;
-    if (idx < inFilm.length) return segOffsets[clipSegBase + idx];
-    const lastSeg = clipSegBase + inFilm.length - 1;
+    if (inFilm.length === 0) return segOffsets[0] ?? 0;
+    if (idx < inFilm.length) return segOffsets[clipSegIndex[idx]];
+    const lastSeg = clipSegIndex[inFilm.length - 1];
     return segOffsets[lastSeg] + segWidths[lastSeg];
   }
 
-  // #9: native HTML5 DnD drop target for dragging a trimmed cut in from TrimBar — kept
-  // fully separate from the dnd-kit DndContext below (different event model, same tiles,
-  // no collision: dnd-kit only listens for pointerdown on tiles, this only fires on the
-  // browser's native drag events).
+  // Gap index (0..inFilm.length) already has a card placed at it — used to reject a card
+  // drop onto an occupied gap (#149 design decision: prevent stacking rather than build a
+  // tie-break UI for it). idx === inFilm.length means the end-of-film gap.
+  function gapOccupied(idx: number): boolean {
+    return idx < inFilm.length ? cardBeforeClip.has(inFilm[idx].id) : endCard !== null;
+  }
+
+  // #9/#149: native HTML5 DnD drop target for dragging a trimmed cut in from TrimBar OR a
+  // composed card in from Arrange's Cards tab — kept fully separate from the dnd-kit
+  // DndContext below (different event model, same tiles, no collision: dnd-kit only
+  // listens for pointerdown on tiles, this only fires on the browser's native drag events).
   function onDragOverClipRow(e: React.DragEvent<HTMLDivElement>) {
-    if (!onDropCut || !e.dataTransfer.types.includes("application/x-rushcut-cut")) return;
+    const isCut = !!onDropCut && e.dataTransfer.types.includes("application/x-rushcut-cut");
+    const isCard = !!onDropCard && e.dataTransfer.types.includes("application/x-rushcut-card");
+    if (!isCut && !isCard) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
     const el = trackRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const px = e.clientX - rect.left + el.scrollLeft;
     let idx = 0;
     for (let i = 0; i < inFilm.length; i++) {
-      const seg = clipSegBase + i;
+      const seg = clipSegIndex[i];
       const mid = segOffsets[seg] + segWidths[seg] / 2;
       if (px > mid) idx = i + 1;
+    }
+    if (isCard) {
+      const occupied = gapOccupied(idx);
+      e.dataTransfer.dropEffect = occupied ? "none" : "copy";
+      setDragOverBlocked(occupied);
+    } else {
+      e.dataTransfer.dropEffect = "copy";
+      setDragOverBlocked(false);
     }
     setDragOverIndex(idx);
   }
 
   function onDragLeaveClipRow(e: React.DragEvent<HTMLDivElement>) {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOverIndex(null);
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setDragOverIndex(null);
+      setDragOverBlocked(false);
+    }
   }
 
   function onDropClipRow(e: React.DragEvent<HTMLDivElement>) {
-    if (!onDropCut || !e.dataTransfer.types.includes("application/x-rushcut-cut")) return;
+    const isCut = !!onDropCut && e.dataTransfer.types.includes("application/x-rushcut-cut");
+    const isCard = !!onDropCard && e.dataTransfer.types.includes("application/x-rushcut-card");
+    if (!isCut && !isCard) return;
     e.preventDefault();
     const idx = dragOverIndex ?? inFilm.length;
+    const blocked = dragOverBlocked;
     setDragOverIndex(null);
-    onDropCut(idx);
+    setDragOverBlocked(false);
+    if (isCut) { onDropCut!(idx); return; }
+    if (blocked) return; // gap already has a card — silently reject, indicator already showed it
+    onDropCard!(idx < inFilm.length ? inFilm[idx].id : null);
   }
 
   function handleDragEnd(e: DragEndEvent) {
@@ -678,10 +739,12 @@ export function StickyFilmStrip({
             </div>
           )}
 
-          {/* #9: drag-in insertion-line indicator — shows exactly where a dragged TrimBar
-              cut will land. Blue (#99B3FF) matches the existing filmstrip accent/tile
-              border color. Spans the clip row only (top: RULER_HEIGHT), unlike the
-              playhead which spans ruler+clips. */}
+          {/* #9/#149: drag-in insertion-line indicator — shows exactly where a dragged
+              TrimBar cut or composed card will land. Blue (#99B3FF) matches the existing
+              filmstrip accent/tile border color; switches to red when a card drop would
+              land on an already-occupied gap (rejected, not stacked — see gapOccupied).
+              Spans the clip row only (top: RULER_HEIGHT), unlike the playhead which spans
+              ruler+clips. */}
           {dragOverIndex !== null && (
             <div
               aria-hidden
@@ -694,9 +757,9 @@ export function StickyFilmStrip({
                 pointerEvents: "none",
                 transform: "translateX(-50%)",
                 width: 3,
-                background: "#99B3FF",
+                background: dragOverBlocked ? "#f87171" : "#99B3FF",
                 borderRadius: "1.5px",
-                boxShadow: "0 0 4px rgba(153,179,255,0.8)",
+                boxShadow: dragOverBlocked ? "0 0 4px rgba(248,113,113,0.8)" : "0 0 4px rgba(153,179,255,0.8)",
               }}
             />
           )}
@@ -721,36 +784,45 @@ export function StickyFilmStrip({
               </div>
             ) : (
               <>
-                {showOpen && openCard && (
-                  <CardStripTile
-                    kind="open"
-                    color={openCard.color}
-                    text={openCard.text}
-                    width={segWidths[0]}
-                  />
-                )}
+                {/* #149: card tiles are interleaved as plain (non-sortable) siblings among
+                    the sortable clip tiles, inside the same SortableContext. dnd-kit's
+                    SortableContext is a context provider, not a DOM-structure requirement —
+                    each SortableFilmTile measures its own rect via useSortable, so a static
+                    sibling between two sortable items doesn't affect drag-to-reorder. */}
                 <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                   <SortableContext items={inFilm.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
-                    {inFilm.map((clip, idx) => (
-                      <SortableFilmTile
-                        key={clip.id}
-                        clip={clip}
-                        index={idx}
-                        width={clipWidths[idx]}
-                        isActive={clip.id === activeId}
-                        reorderable={reorderable}
-                        onSelectClip={onSelectClip}
-                        onDeleteClip={onDeleteClip}
-                      />
-                    ))}
+                    {inFilm.map((clip, idx) => {
+                      const cardHere = cardBeforeClip.get(clip.id);
+                      return (
+                        <Fragment key={clip.id}>
+                          {cardHere && (
+                            <CardStripTile
+                              card={cardHere}
+                              width={segWidths[clipSegIndex[idx] - 1]}
+                              isActive={cardHere.id === activeCardId}
+                              onSelectCard={onSelectCard}
+                            />
+                          )}
+                          <SortableFilmTile
+                            clip={clip}
+                            index={idx}
+                            width={clipWidths[idx]}
+                            isActive={clip.id === activeId}
+                            reorderable={reorderable}
+                            onSelectClip={onSelectClip}
+                            onDeleteClip={onDeleteClip}
+                          />
+                        </Fragment>
+                      );
+                    })}
                   </SortableContext>
                 </DndContext>
-                {showClose && closeCard && (
+                {endCard && (
                   <CardStripTile
-                    kind="close"
-                    color={closeCard.color}
-                    text={closeCard.text}
+                    card={endCard}
                     width={segWidths[segWidths.length - 1]}
+                    isActive={endCard.id === activeCardId}
+                    onSelectCard={onSelectCard}
                   />
                 )}
               </>

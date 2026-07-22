@@ -83,7 +83,7 @@ export default function Render() {
   const _cachedIncluded = (_cached?.clips ?? []).filter(c => c.include !== 0);
   const [inFilmCount, setInFilmCount] = useState(_cachedIncluded.length);
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
-  const [totalMs, setTotalMs] = useState(() => effectiveFilmMs(_cachedIncluded, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "")));
+  const [totalMs, setTotalMs] = useState(() => effectiveFilmMs(_cachedIncluded, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "").count));
   const [phase, setPhase] = useState<Phase>("starting");
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -447,7 +447,7 @@ export default function Render() {
       const included = data.clips.filter((c) => c.include !== 0);
       const count = included.length;
       // #62/#63: effective runtime (transition overlap subtracted + card seconds added), like the render.
-      const ms = effectiveFilmMs(included, readTransitionConfig(projectId), cardDurationFlags(projectId));
+      const ms = effectiveFilmMs(included, readTransitionConfig(projectId), cardDurationFlags(projectId).count);
       setInFilmCount(count);
       setTotalMs(ms);
       setProjectName(data.project.name);

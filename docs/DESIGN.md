@@ -222,6 +222,7 @@ When a real pipeline signal (`pipeline-progress`/`pipeline-stage`) hasn't arrive
 
 Chip active accent: `#99B3FF` (blue) — used for music mood, volume preset, transition chips.
 Card color-swatch selected ring: `#FF8A65` (peach) — kept for card background pickers only.
+**Second peach exception (#149):** the Cards tab's "New card"/"Edit card" mode toggle also uses peach instead of blue — explicit user call, since this is the primary "what am I doing right now" signal on that screen and should read with the same visual weight as the "Add to film" CTA. See "Mid-roll cards" below. Do not extend peach to other mode-toggles without an explicit reason — it remains an exception, not the new default.
 
 **Chip text size: minimum `text-sm`.** Chips are readable interactive content — `text-sm` (14px) minimum, not `text-xs`. Note: `SettingsPanel.tsx` currently uses `text-xs` on its chips (pre-15e deviation); new screens must use `text-sm`. Micro-controls that are not chips (e.g. the filmstrip "fit view" button) may use `text-xs` (12px, the global minimum).
 
@@ -699,6 +700,26 @@ Full-screen overlay over the video player when the playhead parks inside a card 
 ```
 
 Title: `font-semibold`, `clamp(1.25rem, 3vw, 2.5rem)`. Subtitle: `font-normal`, `clamp(0.875rem, 1.8vw, 1.5rem)`, `opacity: 0.75`. Both use `cardTextColor(hex)` for auto-contrast. Gap between title and subtitle: `gap-2`. Padding: `px-8`. Text is `select-none`.
+
+### Mid-roll cards — drag-to-place, New/Edit mode (#149, revised after live user feedback)
+
+Generalizes the old fixed Start-card/End-card panels to a card placeable anywhere in the sequence, anchored by clip id (not a raw index — see `PlacedCard.beforeClipId` in `buildJobConfig.ts`).
+
+**Layout: left rail + centred controls/preview**, mirroring the "Left-rail + centre-preview layout" pattern above (Transitions tab) — `flex gap-6 max-w-5xl mx-auto`: `aside w-40` (New/Edit mode) + `flex-1` (bordered controls card + large preview) + `aside w-48` (Add-to-film + hint, new-card mode only). Confirmed live that a flatter 3-column layout with the add-to-film button centred below the preview caused vertical overflow bad enough to push the "click a card to edit" hint off-screen — keeping that button+hint in their own right-hand column avoids the stack entirely.
+
+**"New card" / "Edit card" use peach (`#FF8A65`), not the usual `#99B3FF` chip blue — a second deliberate exception to the blue-chip-accent convention** (the first being the card-colour-picker ring). Explicit user call: this is the primary "what am I doing right now" signal on the screen and should read with the same visual weight as the "Add to film" CTA. "New card" is a real button (click → switch to the draft, deselect any filmstrip card — see below). "Edit card" is a non-interactive `<div>` styled identically to a chip — active (peach) when a card is selected, dim (`border-white/15 text-[#555555]`) otherwise; selection happens by clicking a card tile in the filmstrip, this element only reflects that state.
+
+**New-card draft is a separate, persistent state from whatever's being edited.** `newCardDraft` (title/subtitle/colour/animation) is never touched by selecting an existing card to inspect/edit — only `selectedCardId` changes. The form's displayed `composed` value is *derived*: the selected placed card's live data when editing, `newCardDraft` otherwise. Confirmed live this needed fixing — an earlier version reset the draft to blank every time the user detoured through "Edit card" and back, losing in-progress typing.
+
+**The live preview card IS the drag handle** — no separate chip/thumbnail is dragged. Made `draggable` only while composing a brand-new card (`selectedCardId === null && text.trim() !== ""`); dragging an already-placed card is disabled — repositioning an existing card is a separate, unshipped concern (#151). `onDragStart` sets `dataTransfer.setData("application/x-rushcut-card", "1")`, reusing the native HTML5 DnD mechanism `StickyFilmStrip` already had for dragging a trimmed cut in from TrimBar (#9) — a second mime type on the same drop-target handlers, not a parallel drag system.
+
+**Preview plays the chosen entrance animation on a 3s loop**, mirroring the Transitions tab's animated card-chip preview — `key={composed.animation}` on the animated wrapper forces a clean remount/restart when the choice changes. Animation choices: `None` (first, the default — no `style.animation` applied), `Appear` (`rc-card-appear-in`, `steps(1,end)` hard cut), `Fade` (`rc-card-fade-in`, ease-in-out), `Fly in` (`rc-card-fly-in`, ease-in-out + `translateY`). Keyframes in `globals.css`, applied to the text wrapper only, never the coloured background box. **Stored for forward-compat only — no FFmpeg-level card animation exists yet** (#152).
+
+**Occupied-gap drop rejection** (not a stacking/tie-break UI): when a dragged card hovers a gap that already has a card, the existing blue insertion-line indicator switches to red (`#f87171`) and the drop is a no-op.
+
+**Background swatches — 4 fixed slots, always in the same position**: black, white, a 3rd slot that remembers the project's last custom colour (or a dashed empty placeholder — `border-dashed border-white/20` — until one exists), and an always-present "pick new" swatch (conic-gradient fill, wraps a fully transparent native `<input type="color">`). Confirmed live: the 3rd slot must NEVER be conditionally rendered — its position shifting once a custom colour existed was confirmed confusing. No peach preset (peach is UI chrome, not a neutral card-colour default — dropped after live feedback, was in the first shipped version).
+
+**Delete via the existing click-to-arm bin**, not a new affordance — reuses the "Click-to-arm delete bin + DEL key" pattern (this doc, StickyFilmStrip patterns section) for card tiles: selecting a card tile shows the red bin button in `EditorShell`'s `timelineGutter` slot, exactly like the clip-delete bin in Trimmer.
 
 ---
 
