@@ -31,6 +31,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — computer-use burns round-trips hunting for a window across multi-monitor setups; check `windowLocations` first (2026-07-23)
+
+**Problem:** Confirmed live checking `rushcut.exe`'s console on this user's 2-monitor setup: several `screenshot`/`switch_display` round-trips were spent guessing which monitor actually held the target window before finding it, because `screenshot` only ever shows ONE display at a time and there's no window-enumeration tool in the computer-use toolset.
+**Solution:** `request_access`'s response already includes a `windowLocations` array (`{bundleId, displays: [{id, label, isPrimary}]}`) for every granted app, populated at grant time — read that FIRST and `switch_display` directly to the reported label, instead of screenshotting each display in turn to look for the window. Re-check `windowLocations` (call `request_access` again with the same app) if the app was just moved or relaunched, since the field reflects state at grant time, not live.
+**Context:** Any computer-use task on a machine with 2+ monitors, especially when the target app isn't the one currently in focus.
+
+---
+
 ## Workflow-GateMiss — Round 4 (wrap-readiness) approved #149 on code review alone; live testing found 5+ real UI bugs it couldn't have caught (2026-07-22)
 
 **What was approved:** `rushcut-pp-consultant`'s Round 4 wrap-readiness check for #149 (mid-roll cards) gave a clean APPROVE, explicitly noting "no live behavioral verification happened this session" was acceptable given the constraints (couldn't safely touch the user's live dev server), backed by careful static tracing + a WebSearch-based trap-check (Round 2.5) of the DnD mechanism specifically.
@@ -184,6 +192,22 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Problem:** `cmd /c "set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=... && start rushcut.exe"` spawns a detached process via `start` that does NOT inherit the inline `set`. Port 9222 is never opened. Same failure with `cmd /c "start /b /wait ..."`. The variable is silently dropped.
 **Solution:** Set the env var in PowerShell, then launch with `Start-Process` — this pattern works on Windows PowerShell 5.x and correctly propagates the variable to the child process: `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"; Start-Process "C:\apps\rushcut\src-tauri\target\debug\rushcut.exe"`. Confirm the port is up with `Get-NetTCPConnection -LocalPort 9222 -State Listen -ErrorAction SilentlyContinue` before running WDIO.
 **Context:** Any session that manually launches the Tauri debug binary with CDP remote-debugging flags before running E2E tests.
+
+---
+
+## Workflow-CDP — F12/right-click/Ctrl+Shift+I all no-op on the live WebView2 window; DevTools needs an explicit launch arg
+
+**Problem:** Confirmed via computer-use on the real, running debug binary (#149 session, 2026-07-23): pressing F12, right-clicking for "Inspect", and Ctrl+Shift+I on a normally-launched `rushcut.exe` window all produce zero visible effect — no DevTools panel, no context menu. This isn't a bug, it's WebView2's default (DevTools is off unless explicitly enabled), but it means none of the usual browser muscle-memory shortcuts work for checking console errors on a live instance.
+**Solution:** Add `--auto-open-devtools-for-tabs` to `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` at launch — DevTools then opens automatically as a real, inspectable window. Combine with the existing CDP flag in ONE string if both are needed (setting the env var twice overwrites, doesn't append): `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222 --auto-open-devtools-for-tabs"`. Confirmed by the user as a working fix in the same session. Tradeoff: this pops a DevTools window on every launch, including normal use — treat it as an opt-in debug-mode flag, not a permanent default, unless the user says otherwise.
+**Context:** Any time console-log verification is needed on a live `rushcut.exe` instance and neither the WDIO attach mode nor computer-use's own DevTools access is available.
+
+---
+
+## Tauri — `webviewInstallMode`/`fixedRuntime` does NOT pin the version the DEBUG binary uses — don't propose it for driver-mismatch fixes
+
+**Problem:** A plausible-sounding fix for the recurring msedgedriver/WebView2-Evergreen version-drift problem (see the "E2E — msedgedriver.azureedge.net CDN fully decommissioned" entry below) was proposed: pin WebView2 via `tauri.conf.json`'s `webviewInstallMode: { "type": "fixedRuntime", "version": "150.0.4078.65" }`. Checked against Tauri's actual config schema (2026-07-23) — this is wrong on two levels: (1) `fixedRuntime` takes a `path` to an actual downloaded, extracted WebView2 Fixed Version Runtime folder (~200MB+), not a bare version string — `{ "type": "fixedRuntime", "path": "./Microsoft.WebView2.FixedVersionRuntime.<version>/" }`, under `bundle.windows.webviewInstallMode`; (2) even done correctly, this setting only controls what gets bundled into a **production installer** at `tauri build` time — it has zero effect on `target/debug/rushcut.exe`, which always uses whatever Evergreen WebView2 is already installed system-wide regardless of this config.
+**Solution:** Don't implement `fixedRuntime` to fix a dev-loop/debug-binary driver-mismatch problem — it solves a different problem (installer determinism for end users installing a shipped build). The real fix for the debug-binary/msedgedriver drift is still the manual one already documented: re-download the matching driver build when it recurs. Verify any `webviewInstallMode` claim against `https://v2.tauri.app/distribute/windows-installer/` or the schema at `https://schema.tauri.app/config/2.0.0` before acting on it — this is an easy plausible-but-wrong claim to repeat.
+**Context:** Any future proposal to "pin the WebView2 version" to fix an msedgedriver/E2E compatibility issue.
 
 ---
 
