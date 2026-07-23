@@ -62,8 +62,26 @@ src/test-clips/
 spike/tmp/
 spike/output*
 
-# Claude Code dev tooling — not part of the product; settings.local.json must never be public
-.claude/
+# Claude Code dev tooling — not part of the product; settings.local.json must never be public.
+# Exception (2026-07-24, documented in CLAUDE.md's ".claude/ is gitignored" rule): 6 exact files
+# implementing the search-verification governance hooks are version-controlled — reviewable and
+# recoverable, not local-only. Everything else under .claude/ (skills, other agents,
+# settings.json/settings.local.json, local config) stays fully ignored, exactly as before.
+# Git will not apply a nested `!` negation under an excluded parent directory unless traversal is
+# explicitly reopened first — hence the `dir/` then `dir/*` pairs below, not a single pattern.
+.claude/*
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/enforce-pp-plan-gates.js
+!.claude/hooks/enforce-pp-wrapup-signoff.js
+!.claude/hooks/lib/
+.claude/hooks/lib/*
+!.claude/hooks/lib/transcript.js
+!.claude/hooks/lib/transcript.test.js
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/rushcut-real-pp-auditor.md
+!.claude/agents/rushcut-pp-consultant.md
 
 # Next.js build info
 tsconfig.tsbuildinfo
