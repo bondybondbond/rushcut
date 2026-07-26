@@ -199,22 +199,36 @@ Always **green** (`#22c55e`), never white/grey.
 
 **Note:** the `.progress-indeterminate` marquee class above is documented but was never actually implemented in `globals.css` or used anywhere (confirmed via repo-wide grep, #140 session) — treat it as aspirational, not a real pattern to copy yet.
 
-### Stall pulse (Render screen, #140)
+### Stall pulse (Render screen, #140/#141)
 
-When a real pipeline signal (`pipeline-progress`/`pipeline-stage`) hasn't arrived for >8s, the determinate bar switches to a subtle "still alive" pulse instead of sitting visually frozen — Tailwind's built-in `animate-pulse` on the existing fill, no custom keyframes:
+When a real pipeline signal (`pipeline-progress`/`pipeline-stage`) hasn't arrived for >8s, the determinate bar switches to a subtle "still alive" pulse instead of sitting visually frozen — Tailwind's built-in `animate-pulse` on the existing fill, no custom keyframes. The reassurance text lives inline next to the stage label (not below the bar) so nothing ever shifts when it appears/disappears:
 
 ```tsx
-<div
-  className={`h-full bg-[#22c55e] rounded-full transition-all duration-500 ${barPulsing ? "animate-pulse" : ""}`}
-  style={{ width: `${progress}%` }}
-/>
-{barPulsing && (
-  <p className="text-xs text-[#a3a3a3] italic">Still working -- this can take a few minutes</p>
-)}
+<div className="flex justify-between items-baseline text-sm gap-2">
+  <span className="flex items-baseline min-w-0">
+    <span data-testid="stage-label" className="text-[#a3a3a3] truncate" title={stage}>{stage}</span>
+    <span
+      data-testid="still-working-note"
+      aria-hidden={!barPulsing}
+      className={`italic text-[#a3a3a3] whitespace-nowrap shrink-0 transition-opacity duration-500 motion-reduce:transition-none ${
+        barPulsing ? "opacity-100" : "opacity-0"
+      } ${noteVisible ? "visible" : "invisible"}`}
+    >
+      {" · Still working"}
+    </span>
+  </span>
+  <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono shrink-0">{progress}%</span>
+</div>
+<div className="h-2 bg-white/10 rounded-full overflow-hidden">
+  <div
+    className={`h-full bg-[#22c55e] rounded-full transition-all duration-500 ${barPulsing ? "animate-pulse" : ""}`}
+    style={{ width: `${progress}%` }}
+  />
+</div>
 ```
 
 **Rule (learned live, #140):** never replace the real stage label with the reassurance text — a first pass did this and the user lost their place in the process. The stage label must always stay visible; the reassurance is additive.
-**Known gap (not yet fixed):** the current below-bar placement causes a layout jump (elapsed-timer line shifts down, then back up) when the note appears/disappears — confirmed by the user as "a bit funky." The correct fix is inline next to the stage label (`Trimming clip 2 of 4... · Still working`, separator dot, same line, nothing ever moves) — tracked as a follow-up issue, not yet built.
+**Layout-shift fix (#141):** the note span is permanently mounted (never `{barPulsing && <span>}`) — only `opacity`/`visibility` toggle, so it never triggers a reflow. `visibility` (Tailwind `invisible`/`visible`) is driven by a separate `noteVisible` state, synced true immediately on show but delayed ~500ms on hide (matching the opacity transition duration) so hiding fades instead of cutting instantly — see the full pattern + the `justify-between`/3-child gotcha in `docs/LEARNINGS.md` under the `CSS` tag. `stage-label` itself gets `truncate` + a `title` tooltip as a fallback in case a future very-long stage string would otherwise push the note off-row.
 
 ---
 

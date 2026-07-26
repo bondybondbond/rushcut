@@ -187,6 +187,18 @@ export default function Render() {
   // reading proxy files from the slow WSL /mnt/c mount). Cleared by the same
   // progress/stage listeners that already reset lastProgressAtRef.
   const [barPulsing, setBarPulsing] = useState(false);
+  // #141: delays hiding the "still working" note's `invisible` class until the
+  // opacity fade-out finishes, so the note fades smoothly instead of vanishing
+  // the instant barPulsing flips false. Appearing needs no delay (sync true).
+  const [noteVisible, setNoteVisible] = useState(false);
+  useEffect(() => {
+    if (barPulsing) {
+      setNoteVisible(true);
+      return;
+    }
+    const t = setTimeout(() => setNoteVisible(false), 500);
+    return () => clearTimeout(t);
+  }, [barPulsing]);
   // U4f: stage-aware stall threshold. The cold zoom stage emits one STAGE:zoom then
   // encodes silently (no PROGRESS) for up to ~7 min on a large project, which trips a
   // fixed 360s threshold falsely. On STAGE:zoom we extend this to 1 min/clip
@@ -871,14 +883,33 @@ export default function Render() {
           {/* Rendering */}
           {phase === "rendering" && (
             <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                {/* #140: the real stage string stays visible at all times -- user
-                    feedback on the first pass was that swapping it out for the
-                    reassurance text made them lose their place ("where in the
-                    process I am"). The reassurance now complements it as a
-                    separate line below instead of replacing it. */}
-                <span data-testid="stage-label" className="text-[#a3a3a3]">{stage}</span>
-                <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono">{progress}%</span>
+              <div className="flex justify-between items-baseline text-sm gap-2">
+                {/* #141: reassurance text now lives inline with the stage label
+                    (same flex sub-group so justify-between still only splits
+                    stage-side vs. percent-side) instead of a separate line below
+                    the progress bar -- the old placement caused the elapsed-timer
+                    line to jump when the note appeared/disappeared. The real
+                    stage string still stays visible at all times (#140 lesson:
+                    user lost their place when it was swapped out). The note span
+                    is permanently mounted and only opacity/visibility-toggled --
+                    never conditionally mounted -- so nothing reflows when it
+                    fades in/out; `noteVisible` delays `invisible` until the
+                    opacity fade-out finishes so hiding isn't an instant cut. */}
+                <span className="flex items-baseline min-w-0">
+                  <span data-testid="stage-label" className="text-[#a3a3a3] truncate" title={stage}>
+                    {stage}
+                  </span>
+                  <span
+                    data-testid="still-working-note"
+                    aria-hidden={!barPulsing}
+                    className={`italic text-[#a3a3a3] whitespace-nowrap shrink-0 transition-opacity duration-500 motion-reduce:transition-none ${
+                      barPulsing ? "opacity-100" : "opacity-0"
+                    } ${noteVisible ? "visible" : "invisible"}`}
+                  >
+                    {" · Still working"}
+                  </span>
+                </span>
+                <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono shrink-0">{progress}%</span>
               </div>
               <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                 <div
@@ -887,11 +918,6 @@ export default function Render() {
                   style={{ width: `${progress}%` }}
                 />
               </div>
-              {barPulsing && (
-                <p data-testid="still-working-note" className="text-xs text-[#a3a3a3] italic">
-                  Still working -- this can take a few minutes
-                </p>
-              )}
               <p data-testid="elapsed-timer" className="text-xs text-[#a3a3a3]">{elapsedLabel} elapsed</p>
 
               {/* U4g: cancel the in-flight render. Secondary/destructive style

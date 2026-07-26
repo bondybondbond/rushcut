@@ -31,11 +31,35 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — `tsc --noEmit` dumps ~20K chars of unrelated `e2e/*.spec.ts` type errors on every run; filter by path from the first invocation
+
+**Problem:** This repo's tsconfig picks up `e2e/**` alongside `src/**`, and the WDIO/Mocha globals (`browser`, `$`, `describe`, `it`, `expect`) aren't typed for a plain `tsc --noEmit` run — every invocation dumps dozens of pre-existing, unrelated "Cannot find name 'browser'" style errors that have nothing to do with whatever `src/` file was just edited. Running it unfiltered burns a full context page confirming errors that were never real.
+**Solution:** Pipe straight through a path filter on the first call, not after seeing the noise once: `npx tsc --noEmit 2>&1 | Select-String "src[\\/]pages[\\/]YourFile"` (PowerShell) — confirms zero *new* errors in the edited file without reading the e2e noise at all.
+**Context:** Any `tsc --noEmit` sanity check on a `src/` change in this repo — the e2e type gap is pre-existing and not worth fixing mid-session unless asked.
+
+---
+
 ## Workflow — computer-use burns round-trips hunting for a window across multi-monitor setups; check `windowLocations` first (2026-07-23)
 
 **Problem:** Confirmed live checking `rushcut.exe`'s console on this user's 2-monitor setup: several `screenshot`/`switch_display` round-trips were spent guessing which monitor actually held the target window before finding it, because `screenshot` only ever shows ONE display at a time and there's no window-enumeration tool in the computer-use toolset.
 **Solution:** `request_access`'s response already includes a `windowLocations` array (`{bundleId, displays: [{id, label, isPrimary}]}`) for every granted app, populated at grant time — read that FIRST and `switch_display` directly to the reported label, instead of screenshotting each display in turn to look for the window. Re-check `windowLocations` (call `request_access` again with the same app) if the app was just moved or relaunched, since the field reflects state at grant time, not live.
 **Context:** Any computer-use task on a machine with 2+ monitors, especially when the target app isn't the one currently in focus.
+
+---
+
+## CSS — always-mounted + delayed-`invisible` toggle avoids layout shift for reassurance/status text (#141)
+
+**Problem:** A "still working" style reassurance message that conditionally mounts/unmounts (`{condition && <span>}`) next to other flex siblings shifts layout every time it appears/disappears, even when placed inline on the same row as other content — the mount/unmount itself is the reflow trigger, not just page position.
+**Solution:** Keep the message permanently in the DOM as a flex sibling with `shrink-0 whitespace-nowrap`, and toggle only `opacity` for the fade. Don't pair `opacity-0` with an immediately-applied `invisible` (Tailwind's `visibility:hidden`) — that produces a discrete cut instead of a fade. Instead, drive a separate `noteVisible` state off the underlying boolean with a `setTimeout` matching the opacity transition duration (immediate on show, delayed on hide) so `invisible` only applies after the fade-out finishes. Group the always-visible label and the toggle-span under one wrapping flex child if a `justify-between` parent has more than 2 children — CSS `justify-content: space-between` spaces ALL children evenly, not just the first/last, so a 3-item row without this wrapper puts the middle item mid-row instead of adjacent to its neighbour.
+**Context:** Any inline status/reassurance text that fades in/out next to other content on the same flex row (Render screen, proxy-prep panels, any future stall/loading indicator).
+
+---
+
+## Workflow — `enforce-cpo-gate1-spawn.js` blocks the `rushcut-cpo` agent's own tool calls mid-Gate-1, not just the orchestrator's (2026-07-26, #156 dry-run on #141)
+
+**Problem:** The hook's job is to stop the orchestrating session from skipping straight past Gate 1 without spawning `rushcut-cpo` — but its block logic can't tell "the CPO subagent itself calling Grep/PowerShell while rendering its own Gate 1 verdict" apart from "the orchestrator dodging the spawn requirement." Confirmed live: `rushcut-cpo`'s own `Grep`(`docs/PRD-DEV.md`) and `PowerShell`(`gh issue view 141`) calls, made *during* its Gate 1 response, were both denied by `enforce-cpo-gate1-spawn.js`.
+**Solution:** Not yet fixed — CPO worked around it by rendering the verdict from context already in hand (MEMORY.md + CLAUDE.md + the user's pasted issue text) and explicitly flagged the gap in its response rather than silently degrading rigor. A real fix needs the hook to scope its block to the *orchestrator's* tool calls specifically (e.g. by transcript depth/agent-id), not every tool call system-wide after a Gate-1 trigger is detected. Tracked as a #156 rollout gap — same family as the Plan-Mode-scratch-file gap already noted for `enforce-pp-plan-gates.js` in MEMORY.md.
+**Context:** Applies to any hook (`enforce-cpo-gate1-spawn.js`, and likely `enforce-pp-plan-gates.js`/`enforce-pp-wrapup-signoff.js` by the same design) that blocks tool calls system-wide rather than scoping to the specific caller it's meant to gate.
 
 ---
 
