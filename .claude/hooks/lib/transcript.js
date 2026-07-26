@@ -373,11 +373,16 @@ function extractVerdict(resultText) {
 // are proxies, not verified against Perplexity's actual DOM/URL scheme (no live Perplexity
 // session was driven while building this) -- documented limitation, not a claim of certainty.
 
+// Rewritten 2026-07-24 (issue #156, CPO/Consultant/CC redesign): the old 4-gate auditor model
+// (one spawn covering Gates 1-2, a second covering Gates 3-4, each needing >=2 fingerprint matches
+// to count as "satisfied") is replaced by a single Gate 3 owned by rushcut-pp-consultant: ONE
+// Perplexity spawn, TWO sequential queries (breadth then depth) in the SAME thread. Gate 1 is now
+// CPO's own quick JTBD judgment (see enforce-cpo-gate1-spawn.js) with no search involved at all.
+// Gate 2 is Consultant's WebSearch-only competitor/context research (see countWebSearchDiversity
+// below), never Perplexity.
 const GATE_FINGERPRINTS = {
-  1: /Does this user story actually capture/,
-  2: /DaVinci Resolve, CapCut, Premiere Pro/,
-  3: /Is this a sound overall approach/,
-  4: /Search Stack Overflow, GitHub issues\/discussions, official docs/,
+  breadth: /Search developer communities, official documentation, GitHub issues, and Stack Overflow/,
+  depth: /Here is an implementation plan summary/,
 };
 
 // Documented, accepted gap (flagged by rushcut-pp-consultant's Round 2 review, 2026-07-24): this
@@ -424,10 +429,11 @@ function textsSimilar(a, b) {
   return a.slice(0, prefixLen) === b.slice(0, prefixLen);
 }
 
-// Reads a rushcut-real-pp-auditor spawn's own transcript and returns which gates (1-4, by
-// GATE_FINGERPRINTS) it actually proved via a full type(fingerprint)->submit->new-read cycle,
-// plus whether it hit the documented Chrome-unavailable tried-blocked case.
-// Returns { provenGates: Set<number>, triedBlocked: boolean, unreadable: boolean }.
+// Reads a rushcut-pp-consultant Gate 3 spawn's own transcript and returns which queries
+// ("breadth"/"depth", by GATE_FINGERPRINTS) it actually proved via a full
+// type(fingerprint)->submit->new-read cycle, plus whether it hit the documented
+// Chrome-unavailable tried-blocked case (falls back to WebSearch per the agent's own file).
+// Returns { provenGates: Set<"breadth"|"depth">, triedBlocked: boolean, unreadable: boolean }.
 function countGateCycles(transcriptPath, agentId) {
   const subPath = subagentTranscriptPath(transcriptPath, agentId);
   let lines;
@@ -471,8 +477,8 @@ function countGateCycles(transcriptPath, agentId) {
 
     if (ev.name === COMPUTER_TOOL && ev.input.action === "type" && typeof ev.input.text === "string") {
       if (currentDomain !== "perplexity") continue;
-      for (const [gateNum, fp] of Object.entries(GATE_FINGERPRINTS)) {
-        if (fp.test(ev.input.text)) pendingGate = { gate: Number(gateNum), submitted: false };
+      for (const [gateKey, fp] of Object.entries(GATE_FINGERPRINTS)) {
+        if (fp.test(ev.input.text)) pendingGate = { gate: gateKey, submitted: false };
       }
       continue;
     }
@@ -511,6 +517,63 @@ function countGateCycles(transcriptPath, agentId) {
   return { provenGates, triedBlocked, unreadable: false };
 }
 
+// --- Gate 2 proof (enforce-pp-plan-gates.js's rushcut-pp-consultant WebSearch check, #156) ---
+//
+// Gate 2 requires >=3 distinct WebSearch queries spanning >=2 different source types, per
+// rushcut-pp-consultant.md's "Search Engine Guidance" section. Source type is inferred from a
+// `site:` operator in the query text (or a changelog-style query with no site: at all, bucketed
+// separately) -- a proxy for "did this actually diversify sources," not a guarantee the query was
+// well-constructed. Distinctness is by exact query string, not semantic similarity -- a documented
+// limitation (two near-identical rephrasings of the same query would count as 2 distinct queries),
+// acceptable because Consultant is a cooperative, instructed agent, not adversarial.
+const SOURCE_TYPE_PATTERNS = {
+  "official-docs": /site:(?!github\.com|stackoverflow\.com|reddit\.com|news\.ycombinator\.com)[\w.-]+\.(dev|app|com\/docs|org)/i,
+  "github-issues": /site:github\.com/i,
+  stackoverflow: /site:stackoverflow\.com/i,
+  reddit: /site:reddit\.com/i,
+  hn: /site:news\.ycombinator\.com/i,
+  changelog: /\b(changelog|breaking changes|migration)\b/i,
+};
+
+// Reads a rushcut-pp-consultant spawn's own transcript and classifies its WebSearch calls by
+// source type. Returns { count: number, sourceTypes: Set<string> } -- count is DISTINCT query
+// strings (case-sensitive exact match), not total tool_use calls (a retried identical query
+// should not inflate the count).
+function countWebSearchDiversity(transcriptPath, agentId) {
+  const subPath = subagentTranscriptPath(transcriptPath, agentId);
+  let lines;
+  try {
+    const raw = fs.readFileSync(subPath, "utf8");
+    lines = raw.length ? raw.split("\n").filter(Boolean) : [];
+  } catch {
+    return { count: 0, sourceTypes: new Set(), unreadable: true };
+  }
+
+  const seenQueries = new Set();
+  const sourceTypes = new Set();
+  for (const l of lines) {
+    let entry;
+    try {
+      entry = JSON.parse(l);
+    } catch {
+      continue;
+    }
+    if (entry.type !== "assistant") continue;
+    const content = entry.message && entry.message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type !== "tool_use" || block.name !== "WebSearch") continue;
+      const query = String((block.input && block.input.query) || "");
+      if (!query) continue;
+      seenQueries.add(query);
+      for (const [type, pattern] of Object.entries(SOURCE_TYPE_PATTERNS)) {
+        if (pattern.test(query)) sourceTypes.add(type);
+      }
+    }
+  }
+  return { count: seenQueries.size, sourceTypes, unreadable: false };
+}
+
 // Returns the VERDICT of the MOST RECENT completed spawn among `spawns` (each { spawnIndex,
 // toolUseId }, as returned by findAgentSpawnsSince), or null if none are complete / none
 // rendered a marker. Deliberately "most recent," not "any" -- confirmed necessary by
@@ -541,6 +604,7 @@ module.exports = {
   subagentTranscriptPath,
   classifySubagentEvidence,
   countGateCycles,
+  countWebSearchDiversity,
   extractVerdict,
   latestVerdict,
 };

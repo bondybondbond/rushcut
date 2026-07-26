@@ -1,26 +1,34 @@
 #!/usr/bin/env node
-// Registered in .claude/settings.json 2026-07-23; this edit is the live self-lockout check
-// (confirms Edit still works on this exempt path once the hook is actually wired in).
-// PreToolUse hook: hard gate ensuring rushcut-dev-plan's search-required and approval-required
-// checkpoints actually happened -- with PROOF (real tool_use evidence read from a subagent's own
-// transcript, plus a structural VERDICT marker in its relayed result), not just "the agent was
-// spawned" (see enforce-pp-auditor-spawn.js, which only checks that) or a self-reported claim.
+// PreToolUse hook: hard gate ensuring rushcut-dev-plan's Gate 2 (competitor/context research) and
+// Gate 3 (plan + traps, Perplexity, CPO verdict) checkpoints actually happened -- with PROOF (real
+// tool_use evidence read from a subagent's own transcript, plus a structural VERDICT marker in the
+// CPO's relayed result), not just "the agent was spawned" or a self-reported claim.
 //
-// Origin: 2026-07-23, after the maintainer discovered a session shipped (#103/#148/#149) with no
-// mechanical proof that required grounding research actually happened. docs/LEARNINGS.md already
-// documents a near-identical prior gap ("a subagent round type... is not real until an invoking
-// skill actually calls it"). This hook closes both: it doesn't trust prose in an agent file or a
-// narrative claim by the orchestrator -- it re-derives proof from the transcript on every call,
-// mirroring enforce-skill-gate.js / enforce-pp-auditor-spawn.js's established pattern.
+// Rewritten 2026-07-24 (issue #156, CPO/Consultant/CC 3-role redesign) -- replaces the old
+// 4-gate rushcut-real-pp-auditor + rushcut-pp-consultant dual-spawn shape. New shape, per
+// docs/agent_plan.md:
+//   Gate 1 (JTBD) -- CPO only, no search, enforced separately by enforce-cpo-gate1-spawn.js.
+//   Gate 2 (competitor/context) -- rushcut-pp-consultant, Claude WebSearch only, >=3 distinct
+//     queries spanning >=2 source types (see countWebSearchDiversity in lib/transcript.js).
+//   Gate 3 (plan + traps) -- rushcut-pp-consultant, ONE Perplexity spawn, TWO sequential queries
+//     (breadth then depth) in the same thread, findings mapped to the plan and written to a
+//     scratch file; rushcut-cpo then reads that file and renders the actual VERDICT.
+//
+// Origin of the underlying "prove it, don't trust prose" approach: 2026-07-23, after the
+// maintainer discovered a session shipped (#103/#148/#149) with no mechanical proof that required
+// grounding research actually happened. This hook still doesn't trust prose in an agent file or a
+// narrative claim by the orchestrator -- it re-derives proof from the transcript on every call.
 //
 // Blocks: Edit / Write, during an active rushcut-dev-plan session, unless:
-//   (a) >=2 completed rushcut-real-pp-auditor spawns since dev-plan start each show real evidence
-//       (either genuinely reached Perplexity, or genuinely tried and were blocked by an
-//       unavailable Chrome -- with a documented pp-consultant fallback after it), AND
-//   (b) the MOST RECENT completed rushcut-pp-consultant spawn since dev-plan start rendered
-//       "VERDICT: APPROVE" specifically -- not just any marker (plan-approval gate; no search
-//       evidence required here, per design). Value and recency both matter, not presence alone
-//       -- see docs/LEARNINGS.md "mechanically verifying a subagent's real tool-call execution."
+//   (a) a completed rushcut-pp-consultant spawn since dev-plan start proves Gate 2 (>=3 distinct
+//       WebSearch queries, >=2 source types) -- OR a genuine tried-and-blocked Chrome-unavailable
+//       Gate 3 case exists with the documented WebSearch fallback noted, AND
+//   (b) a completed rushcut-pp-consultant spawn proves Gate 3 (both "breadth" and "depth" query
+//       cycles against real Perplexity, via the same type->submit->new-read proof as before), AND
+//   (c) the MOST RECENT completed rushcut-cpo spawn since dev-plan start rendered "VERDICT:
+//       APPROVE" specifically -- not just any marker. Value and recency both matter, not presence
+//       alone -- see docs/LEARNINGS.md "mechanically verifying a subagent's real tool-call
+//       execution."
 //
 // Scope: only Step 6 (implementation). Once Skill(rushcut-wrapup) has been called in this
 // transcript, this gate stops applying -- see the check right after skillIdx below.
@@ -28,7 +36,8 @@
 // Permanent structural exemption (not a temporary bypass -- this is the correct permanent scope
 // of the gate): editing the gate's OWN machinery must never be gated by the gate itself, or
 // fixing/extending it becomes circular by construction. Scoped narrowly to exactly the files that
-// ARE this dev-tooling machinery -- never product code, never docs, never wrapup.
+// ARE this dev-tooling machinery -- never product code, never docs, never workflow-skill-definition
+// files, never wrapup.
 
 const fs = require("fs");
 const path = require("path");
@@ -37,6 +46,7 @@ const {
   findAgentSpawnsSince,
   resolveAgentSpawn,
   countGateCycles,
+  countWebSearchDiversity,
   latestVerdict,
 } = require("./lib/transcript");
 
@@ -84,8 +94,9 @@ if (!GATED_TOOLS.has(toolName) || !transcriptPath) {
 // they stay in the exact-file set below (deliberately small, not meant to keep growing) rather
 // than being folded into the directory category.
 const EXEMPT_FILES = [
-  "/.claude/agents/rushcut-real-pp-auditor.md",
+  "/.claude/agents/rushcut-cpo.md",
   "/.claude/agents/rushcut-pp-consultant.md",
+  "/.claude/hooks/enforce-cpo-gate1-spawn.js",
   "/.claude/hooks/enforce-pp-plan-gates.js",
   "/.claude/hooks/enforce-pp-wrapup-signoff.js",
   "/.claude/hooks/lib/transcript.js",
@@ -94,7 +105,12 @@ const EXEMPT_FILES = [
   "/.gitignore",
   "/CLAUDE.md",
 ];
-const EXEMPT_PREFIXES = ["/docs/"];
+// `.claude/skills/**` added 2026-07-24 (#156): editing a SKILL.md file is workflow-definition
+// work, not product-code implementation -- same category rationale as `docs/**` below. Without
+// this, mid-migration edits to rushcut-dev-plan/SKILL.md or rushcut-wrapup/SKILL.md (required by
+// #156's own rollout, since both are being renumbered in the same atomic change as the agent/hook
+// rename) would risk a circular self-lockout (flagged by rushcut-pp-consultant's Round 2 review).
+const EXEMPT_PREFIXES = ["/docs/", "/.claude/skills/"];
 
 const filePath = String(toolInput.file_path || "");
 const normalized = filePath.replace(/\\/g, "/").toLowerCase();
@@ -135,64 +151,79 @@ if (findLastMatchingSkillCall(lines, "rushcut-wrapup") > skillIdx) {
   process.exit(0);
 }
 
-const AUDITOR = "rushcut-real-pp-auditor";
 const CONSULTANT = "rushcut-pp-consultant";
+const CPO = "rushcut-cpo";
 
-// Each real gate (1-4) requires its own proven type(fingerprint)->submit->new-read cycle, not
-// just "some browser tool fired" -- see countGateCycles in lib/transcript.js. Each auditor spawn
-// is supposed to cover 2 gates (1-2 at Step 0, 3-4 at Step 5a.5), so a spawn is only satisfied
-// once it proves >=2 distinct gates within its own transcript -- tightened 2026-07-24 after
-// external audit found the presence-only check could pass on a homepage read or an unsubmitted
-// typed query.
-const GATES_PER_SPAWN = 2;
+// Minimum diversity required for Gate 2, per rushcut-pp-consultant.md's own stated bar.
+const MIN_WEBSEARCH_QUERIES = 3;
+const MIN_SOURCE_TYPES = 2;
 
-const auditorSpawns = findAgentSpawnsSince(lines, skillIdx, AUDITOR).map((s) => ({
-  ...s,
-  resolved: resolveAgentSpawn(lines, s),
-}));
 const consultantSpawns = findAgentSpawnsSince(lines, skillIdx, CONSULTANT).map((s) => ({
   ...s,
   resolved: resolveAgentSpawn(lines, s),
 }));
+const cpoSpawns = findAgentSpawnsSince(lines, skillIdx, CPO).map((s) => ({
+  ...s,
+  resolved: resolveAgentSpawn(lines, s),
+}));
 
-let satisfiedAuditorCount = 0;
-for (const spawn of auditorSpawns) {
+// Gate 2: any completed Consultant spawn proving >=3 distinct WebSearch queries spanning >=2
+// source types, within that spawn's own transcript.
+let gate2Satisfied = false;
+for (const spawn of consultantSpawns) {
   if (!spawn.resolved || !spawn.resolved.complete) continue;
-  const { provenGates, triedBlocked } = countGateCycles(transcriptPath, spawn.resolved.agentId);
-  if (provenGates.size >= GATES_PER_SPAWN) {
-    satisfiedAuditorCount++;
-  } else if (triedBlocked) {
-    // Legitimate fallback: Chrome genuinely unavailable, confirmed via list_connected_browsers
-    // with nothing after -- only counts if a pp-consultant spawn exists after this point, per
-    // the documented Step 0 fallback (SKILL.md: "fall back to rushcut-pp-consultant... note the
-    // gap").
-    const fallbackExists = consultantSpawns.some((c) => c.spawnIndex > spawn.spawnIndex);
-    if (fallbackExists) satisfiedAuditorCount++;
+  const { count, sourceTypes } = countWebSearchDiversity(transcriptPath, spawn.resolved.agentId);
+  if (count >= MIN_WEBSEARCH_QUERIES && sourceTypes.size >= MIN_SOURCE_TYPES) {
+    gate2Satisfied = true;
+    break;
   }
 }
 
-// Value AND recency matter, not just marker presence (rushcut-pp-consultant's own Round 4
-// review, 2026-07-23: a stale or unrelated-round marker, or an unresolved OBJECTION, must not
-// satisfy a gate whose entire point is requiring actual approval of the LATEST round).
-const consultantApproved = latestVerdict(lines, consultantSpawns) === "APPROVE";
+// Gate 3: any completed Consultant spawn proving BOTH the "breadth" and "depth" Perplexity query
+// cycles (type(fingerprint)->submit->new-read, per countGateCycles), or a genuine tried-blocked
+// Chrome-unavailable case (Consultant's own documented WebSearch fallback for Gate 3).
+let gate3Satisfied = false;
+for (const spawn of consultantSpawns) {
+  if (!spawn.resolved || !spawn.resolved.complete) continue;
+  const { provenGates, triedBlocked } = countGateCycles(transcriptPath, spawn.resolved.agentId);
+  if (provenGates.has("breadth") && provenGates.has("depth")) {
+    gate3Satisfied = true;
+    break;
+  }
+  if (triedBlocked) {
+    gate3Satisfied = true;
+    break;
+  }
+}
+
+// CPO's Gate 3 VERDICT is the actual approval -- Consultant only researches, never approves.
+// Value AND recency matter, not just marker presence (a stale or unrelated-round marker, or an
+// unresolved OBJECTION, must not satisfy a gate whose entire point is requiring actual approval
+// of the LATEST round).
+const cpoApproved = latestVerdict(lines, cpoSpawns) === "APPROVE";
 
 const missing = [];
-if (satisfiedAuditorCount < 2) {
+if (!gate2Satisfied) {
   missing.push(
-    `real-Perplexity grounding evidence: ${satisfiedAuditorCount}/2 rushcut-real-pp-auditor spawns proven ` +
-      `(each needs >=${GATES_PER_SPAWN} proven gate-submission cycles -- a fingerprinted query typed on ` +
-      `Perplexity, an actual submit transition, and a genuinely new post-submit read -- not just any browser ` +
-      `tool call; or a genuine tried-and-blocked Chrome-unavailable case with a rushcut-pp-consultant fallback ` +
-      `after it). Spawn rushcut-real-pp-auditor ` +
-      `again to run the missing gate(s) before editing implementation files.`
+    `Gate 2 (competitor/context research): no completed rushcut-pp-consultant spawn proves >=${MIN_WEBSEARCH_QUERIES} ` +
+      `distinct WebSearch queries spanning >=${MIN_SOURCE_TYPES} source types. Spawn rushcut-pp-consultant to run Gate 2 ` +
+      `before editing implementation files.`
   );
 }
-if (!consultantApproved) {
+if (!gate3Satisfied) {
   missing.push(
-    `plan-approval sign-off: the most recent completed rushcut-pp-consultant spawn since dev-plan start did ` +
-      `not render "VERDICT: APPROVE" (either no spawn yet, no marker, or the latest verdict was ` +
-      `OBJECTION/DECLINE-OUT-OF-SCOPE). Spawn rushcut-pp-consultant (Round 2 -- plan critique), resolve any ` +
-      `objection, and ensure its final response ends with "VERDICT: APPROVE" before editing implementation files.`
+    `Gate 3 (plan + traps): no completed rushcut-pp-consultant spawn proves both the breadth and depth Perplexity ` +
+      `query cycles (a fingerprinted query typed on Perplexity, an actual submit transition, and a genuinely new ` +
+      `post-submit read -- not just any browser tool call), and no genuine tried-and-blocked Chrome-unavailable ` +
+      `case was found either. Spawn rushcut-pp-consultant to run Gate 3 before editing implementation files.`
+  );
+}
+if (!cpoApproved) {
+  missing.push(
+    `Gate 3 sign-off: the most recent completed rushcut-cpo spawn since dev-plan start did not render ` +
+      `"VERDICT: APPROVE" (either no spawn yet, no marker, or the latest verdict was OBJECTION/DECLINE-OUT-OF-SCOPE). ` +
+      `Spawn rushcut-cpo to read Consultant's Gate 3 findings-mapping file and render a verdict ending in ` +
+      `"VERDICT: APPROVE" before editing implementation files.`
   );
 }
 

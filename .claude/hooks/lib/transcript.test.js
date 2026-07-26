@@ -122,18 +122,22 @@ function test(name, fn) {
 
 // --- Gate-cycle fixtures ---
 
-const GATE1_TYPE = "thoughts? see github - issue 999@GitHub. Does this user story actually capture what a real user needs here? Is this solving a real pain point?";
-const GATE2_TYPE = "thoughts? the problem. Search for how DaVinci Resolve, CapCut, Premiere Pro handle this. What's their approach?";
-const REAL_ANSWER_1 = "A".repeat(600) + " -- direct answer about the JTBD framing, this is a genuinely new synthesized response from Perplexity covering the user story angle in detail.";
-const REAL_ANSWER_2 = "B".repeat(600) + " -- a completely different synthesized answer about competitor research, DaVinci and CapCut approaches discussed at length here.";
+// Fingerprint text must match GATE_FINGERPRINTS.breadth/.depth in transcript.js verbatim --
+// these are Gate 3's two sequential queries (breadth then depth), not the old 4-gate model's
+// per-gate templates.
+const BREADTH_TYPE =
+  "Search developer communities, official documentation, GitHub issues, and Stack Overflow for prior art on this problem.";
+const DEPTH_TYPE = "Here is an implementation plan summary -- does this hold up against real-world traps?";
+const REAL_ANSWER_1 = "A".repeat(600) + " -- direct answer about the breadth query, this is a genuinely new synthesized response from Perplexity covering prior art in detail.";
+const REAL_ANSWER_2 = "B".repeat(600) + " -- a completely different synthesized answer about the plan-fit depth query, traps and implementation risk discussed at length here.";
 
 function twoFullCycleCalls() {
   return [
     { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
-    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: GATE1_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
-    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: GATE2_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: DEPTH_TYPE } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_2 },
   ].map((c) => ({ ...c, resultText: c.resultText ?? "" }));
@@ -151,21 +155,21 @@ test("2-cycle spawn: both gates proven", () => {
   const dir = writeSpawnFixture("two-cycle", "agentTwoCycle", twoFullCycleCalls());
   const result = countGateCycles(transcriptPathFor(dir), "agentTwoCycle");
   assert.strictEqual(result.provenGates.size, 2, `expected 2 proven gates, got ${result.provenGates.size}`);
-  assert.ok(result.provenGates.has(1) && result.provenGates.has(2));
+  assert.ok(result.provenGates.has("breadth") && result.provenGates.has("depth"));
 });
 
 test("1-cycle spawn: only 1 gate proven when 2nd type/submit/read never happens", () => {
-  const calls = twoFullCycleCalls().slice(0, 4); // only gate 1's cycle
+  const calls = twoFullCycleCalls().slice(0, 4); // only the breadth cycle
   const dir = writeSpawnFixture("one-cycle", "agentOneCycle", calls);
   const result = countGateCycles(transcriptPathFor(dir), "agentOneCycle");
   assert.strictEqual(result.provenGates.size, 1);
-  assert.ok(result.provenGates.has(1));
+  assert.ok(result.provenGates.has("breadth"));
 });
 
 test("type without submit: read after type-but-no-submit does not prove the gate", () => {
   const calls = [
     { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
-    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: GATE1_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     // no submit action here -- read happens directly after typing, query never submitted
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
   ];
@@ -179,7 +183,7 @@ test("submit without new content: stale/homepage re-read does not prove the gate
   const calls = [
     { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: STALE }, // initial setup read
-    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: GATE1_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: STALE }, // same content again -- stale
   ];
@@ -198,7 +202,7 @@ test("textsSimilar edge case: shared boilerplate prefix but substantially longer
   const calls = [
     { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: FIRST_READ },
-    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: GATE1_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: SECOND_READ },
   ];
@@ -219,7 +223,7 @@ test("triedBlocked: a genuinely-attempted-but-interrupted spawn is NOT tried-blo
   const calls = [
     { name: "mcp__claude-in-chrome__list_connected_browsers", input: {}, resultText: "[{ok:true}]" },
     { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
-    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: GATE1_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     // interrupted here -- no submit, no read, spawn just stopped
   ];
   const dir = writeSpawnFixture("interrupted", "agentInterrupted", calls);

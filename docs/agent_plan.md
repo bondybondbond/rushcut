@@ -49,9 +49,10 @@
 **Role:** Insight engine. Supporting capacity. Delivers targeted research and best-practice grounding to strengthen decision-making for both CPO and CC.
 
 ### Owns
-- All searches — the only agent that runs web searches
+- All *gated* searches — Gate 2, Gate 3, and any deliberate mid-job research escalation from CC (see CC's decision-5 clarification below for what stays with CC instead)
 - **Perplexity** (browser automation): Gate 3 only — traps/best-practices first, then plan fit assessment. One spawn, one VERDICT. Sequential, never parallel.
 - **Claude WebSearch**: Gate 2 competitor/context research, and any mid-job CC lookups
+- **Round 2.5 (mid-build per-step trap check) [clarified, issue #156, 2026-07-24]** — a per-implementation-step trap check (unchanged mechanism from the pre-#156 model, survives unrenamed) is re-pointed specifically at Consultant's own WebSearch — never Perplexity (reserved for Gate 3 only), never CC's own quick-lookup WebSearch. See `rushcut-dev-plan` Step 6 item 2.5 for the trigger condition (Rust/Tauri/pipeline/new-library steps) and retry budget.
 - LEARNINGS.md (tactical layer) — sits on metrics, patterns, and insights
 - Competitive trends — can surface to CPO if assumptions need revisiting
 - Mid-job support — CC can request a targeted search during implementation; Consultant uses Claude WebSearch in this case
@@ -81,17 +82,35 @@
 | Situation | Go to |
 |---|---|
 | Strategic ambiguity, scope question, approval needed | **CPO** |
-| Technical lookup, best practice, mid-job research | **Consultant** (uses Claude WebSearch) |
+| Substantive technical lookup, best practice, mid-job research | **Consultant** (uses Claude WebSearch) |
+| Quick tactical lookup (<2 min, single fact/API check) | **CC's own WebSearch** — see decision-5 clarification below |
 | Taste / UX / "does this feel right" question | **User** |
 
 ### Never does
 - Strategic decisions
-- Market research
+- Substantive market/competitor research (that's Gate 2/Consultant's job)
 - Initiating Perplexity searches
+
+**[Clarified, issue #156, 2026-07-24] Decision 5 — quick-lookup carve-out:** CC keeps direct WebSearch
+access for fast, ungated, under-2-minute tactical lookups (a single API signature check, a quick "does
+this flag exist" confirmation) — these are NOT gated and do not route through Consultant. Anything
+substantive (competitor research, best-practice grounding, a deliberate mid-job research escalation)
+still goes to Consultant, gated or not, per the table above. The line is time/depth, not topic: a
+30-second syntax check stays with CC; anything that would take Consultant's own multi-query treatment
+does not.
 
 ---
 
 ## Gate Structure
+
+> **VERDICT-convention deviation (locked decision, issue #156, 2026-07-24):** the actual implementation
+> does NOT use the literal per-gate strings shown in the tables below (`GATE 3: APPROVED`,
+> `GATE 4: APPROVED`, etc.). It uses one unified marker across every verdict-bearing agent response:
+> a literal `VERDICT: APPROVE`, `VERDICT: OBJECTION`, or `VERDICT: DECLINE-OUT-OF-SCOPE` line, checked
+> mechanically by `.claude/hooks/lib/transcript.js`'s `extractVerdict()`/`VERDICT_RE` and
+> `latestVerdict()` (most-recent-wins, not first-found). Read every `✅ PASS` / `❌ FAIL` row below as the
+> SEMANTIC criteria a gate must meet — the actual required syntax is always `VERDICT: APPROVE` (or
+> `OBJECTION`/`DECLINE-OUT-OF-SCOPE`), never the gate-numbered string literally written in this doc.
 
 ### Overview
 
@@ -141,6 +160,23 @@
 | ❌ FAIL | Fewer than 3 `tool_use` WebSearch entries found in Consultant transcript, or queries did not span at least 2 different source types. Gate blocked. Consultant must re-run. |
 
 **Hard rule:** Hook checks Consultant transcript for actual `WebSearch` tool_use entries. CC cannot start dev plan drafting without this.
+
+---
+
+### Acceptance-Criteria Checkpoint (between Gate 2 and Gate 3, not a numbered gate)
+
+**[Clarified, issue #156, 2026-07-24] Decision 6 — a pre-draft checkpoint, not retroactive.** The
+original draft of this doc implied acceptance criteria were checked retroactively at Gate 3 — the user
+flagged this as a real gap: if Gate 3 later fails because CC misjudged scope, implementation-adjacent
+planning time is already wasted by the time anyone notices.
+
+**Owner:** CPO (quick sign-off, not a full VERDICT round)
+**When:** immediately after Gate 2 PASS, before CC drafts the full dev plan
+**Process:** CC drafts concrete binary pass/fail acceptance checks (see `rushcut-dev-plan` Step 5b
+format) right after Gate 2 completes. CPO gives a fast 2-line sign-off — "these look right" or "missing
+X" — before plan-drafting begins in earnest. This is deliberately lightweight: no search evidence
+required, no `VERDICT:` marker, just a quick scope-sanity confirmation so a misjudged acceptance bar
+gets caught before, not after, the plan is fully drafted and sent through Gate 3.
 
 ---
 

@@ -13,7 +13,7 @@ Each entry: `## <Tag> — <title>`, problem in ≤1 sentence, fix in ≤2 senten
 | `Workflow-gh`                                       | GitHub CLI / Projects GraphQL quirks — `gh issue`/`gh project` silent failures, truncation, reserved variable names |
 | `Workflow-WSL`                                      | WSL/PowerShell quoting and invocation mechanics — script-file-not-inline patterns |
 | `Workflow-CDP`                                      | CDP / `preview_*` MCP / Tauri IPC boundary — what can and can't attach to a running WebView2 |
-| `Workflow-GateMiss`                                 | A dev-tooling gate (`rushcut-pp-consultant`, `rushcut-qa-reviewer`, `rushcut-real-pp-auditor`, wrapup's own Step 0.3) approved/PASSed something later found wrong — see `rushcut-wrapup` Step 0.9 |
+| `Workflow-GateMiss`                                 | A dev-tooling gate (`rushcut-pp-consultant`, `rushcut-qa-reviewer`, `rushcut-cpo`, wrapup's own Step 0.3) approved/PASSed something later found wrong — see `rushcut-wrapup` Step 0.9 |
 | `React`                                            | Component/state/media-element patterns, refs, render lifecycle                           |
 | `WebView2`                                         | Video playback, first-frame repaint, GPU compositor, `play()`/seek races                 |
 | `FFmpeg`                                           | `filter_complex`, codecs, audio, version-specific option changes                         |
@@ -70,6 +70,16 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 **Context:** Applies to any future Claude Code hook or tooling that needs to verify a subagent (Agent tool, sync or async, possibly resumed via `SendMessage`) actually did something, rather than trusting its relayed summary text — and to any future exemption/allowlist design generally: prefer a principled category over a growing file list.
 
 ---
+
+## Workflow — clipboard read/write spike for Perplexity handoff (claude-in-chrome + computer-use) — PASS (2026-07-24, issue #156)
+
+**Problem:** #156's blueprint proposed a clipboard-based read/write mechanism (claude-in-chrome click + computer-use `read_clipboard`/`write_clipboard`) as an alternative to `get_page_text`/screenshot-OCR for driving Perplexity — needed to spike-test before committing any agent/hook file to depend on it.
+
+**Solution:** Both checks passed cleanly. **Read:** clicking Perplexity's copy-response icon then calling `read_clipboard` returned clean plain text, one answer only, no HTML noise. **Write:** `write_clipboard` with a canary string, followed by clicking the compose textarea and `ctrl+v`, landed the exact string with no truncation/reflow. **Zeroth check:** clipboard tools required an explicit `request_access` grant — `apps` must include a browser (granted at "read" tier automatically, which is fine since clipboard ops don't need browser click/type access) plus explicit `clipboardRead: true`/`clipboardWrite: true` flags; the first `request_access` call without a prior same-turn retry was rejected with a warning about browser access being unusual, but retrying in the same turn (as instructed by the tool's own error) succeeded immediately.
+
+**Real trap hit during the spike (not the mechanism itself, the surrounding UI):** the Perplexity compose box's mode selector defaults to "Learn step by step" or whatever was last used, NOT "Search" — clicking the mode-dropdown button and picking blind by coordinate landed on the wrong option twice before using `find`+`ref`-based clicks reliably selected "Search". **Always use `find` to get a `ref` for the exact "Search" `menuitemradio`, never guess coordinates** — the dropdown's option order shifts (Search / Deep research / Model council / Learn step by step) and a coordinate click can land on a locked/wrong mode without any error.
+
+**Context:** Applies to `rushcut-pp-consultant.md`'s planned Setup section (absorbing Perplexity-driving from the old auditor) — clipboard is confirmed viable as a **fallback only** (page-text/`get_page_text` should stay primary per real-Perplexity's own Gate 4 grounding research on this exact question — see the #156 dev-plan session's auditor spawns), with a one-time parity check (page-text vs. clipboard on the same response) and 3-way failure classification (connect/read/copy) recommended additions to any future spike-equivalent test, not yet built here since this pass only needed pass/fail viability proof.
 
 ## Workflow — `enforce-pp-plan-gates.js` blocks a Plan Mode session's own scratch-file write, since that path is outside both its repo-relative exemptions and its "implementation" concept entirely (2026-07-24)
 

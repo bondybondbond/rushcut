@@ -80,7 +80,7 @@ spike/output*
 !.claude/hooks/lib/transcript.test.js
 !.claude/agents/
 .claude/agents/*
-!.claude/agents/rushcut-real-pp-auditor.md
+!.claude/agents/rushcut-cpo.md
 !.claude/agents/rushcut-pp-consultant.md
 
 # Next.js build info
