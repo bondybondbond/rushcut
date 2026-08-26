@@ -660,6 +660,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## React — native `<video>`/`<audio>` `pause`/`play` events can fire synchronously inside the imperative call itself, ahead of any React state update from the same call site
+
+**Problem:** Calling `videoEl.pause()` from inside a React event handler (e.g. a `timeupdate` handler) does not reliably queue its `pause` DOM event as a later, async task the way the HTML spec's "queue a media element task" wording suggests — WebView2 can dispatch it synchronously within the `.pause()` call itself, before any `setState` call written later in the same function has even been queued, let alone committed. A listener guard written as `onPause={() => { if (!someReactState) setOtherState(false) }}` — intending "skip this native pause event while we're deliberately pausing for an unrelated reason" — fails silently: `someReactState` is still the OLD (pre-update) value at the instant the event fires, so the guard never engages. Confirmed on #150: pausing a film-mode video to show a title-card overlay (while wanting `isPlaying` to stay `true`, since the card is "still playing") kept getting its `isPlaying` flipped back to `false` by the video's own `onPause` handler, manifesting as a play/pause button needing 2+ clicks before it "caught up."
+**Solution:** Guard with a `useRef` set to the new value **before** the imperative `.pause()`/`.play()` call, never with React state checked after — a ref mutation is synchronously visible to every closure reading `.current`, with zero dependency on React's commit/render timing relative to the browser's event dispatch. `cardHoldAutoplayRef.current = true; videoEl.pause();` (ref first), then `onPause={() => { if (!cardHoldAutoplayRef.current) setIsPlaying(false); }}`.
+**Context:** Any `<video>`/`<audio>` element with `onPause`/`onPlay` (or similar native-event-driven state sync) where the same code path also imperatively calls `.pause()`/`.play()` for a reason that should NOT be reflected in that synced state. `src/pages/Trimmer.tsx` film-mode video elements (`filmVideoARef`/`filmVideoBRef`).
+
+---
+
 ## Proxy — proxy_status stuck at 'encoding' after binary kill
 
 **Problem:** `encode_one_clip` calls `claim_clip_for_encoding` which sets `proxy_status='encoding'` via an atomic DB CAS before starting FFmpeg. If the binary is killed mid-encode (WDIO `afterSession`, force-kill, Windows crash), the `proxy_status` stays `'encoding'` in the DB. On the next launch, `claim_clip_for_encoding` returns `false` (already claimed) → `reason=encoding-in-progress` skip → those clips never get proxies → the Render screen "preparing" spinner hangs forever.

@@ -49,11 +49,32 @@ export default function Trimmer() {
 
   const [viewMode, setViewMode] = useState<"clip" | "film">("clip");
   const [filmPlayIdx, setFilmPlayIdx] = useState(0);
-  // #74 B-lite: when the user clicks an open/close card region on the filmstrip, park the
-  // playhead at that card-inclusive film-time and show the card colour over the preview.
-  // Applies only while paused (gated below) — pressing play clears it and resumes the clip,
-  // so this never touches the dual-buffer / autoplay subsystem (continuous card-hold is #74-followup).
+  // #74/#150: when the playhead parks on a card region (manual seek OR natural auto-advance),
+  // show the card colour over the preview. During natural playback the card AUTOPLAYS for
+  // CARD_DUR_MS then continues on its own (#150 revision, live feedback: a card is a real
+  // 3s clip in the render, so preview should mirror that, not require a manual click) —
+  // isPlaying stays true throughout. A manual seek that lands on a card still just parks
+  // (isPlaying false, no timer) — B-lite, unchanged. cardHold is the single source of truth
+  // for "must not double-advance"; every legitimate exit path (the autoplay timer firing,
+  // togglePlay's manual pause/resume during a card, seekFilmTo landing elsewhere, leaving
+  // film mode) must clear it (and cardHoldTickerRef/cardHoldElapsedMs) back to null/0.
   const [cardHold, setCardHold] = useState<{ filmMs: number; color: string; text: string; subtitle: string } | null>(null);
+  // The in-film index to promote to once a card hold set by advanceFilmClip ends (timer
+  // fires, or the user manually skips ahead). null when nothing is pending (idle, or the
+  // hold was set by a manual seek instead, which has no pending promotion).
+  const pendingCardAdvanceIdxRef = useRef<number | null>(null);
+  // The autoplay-through-card countdown, as a ~100ms ticker (not a single setTimeout) so the
+  // playhead/needle can visibly move across the hold instead of sitting frozen (#150 live
+  // feedback: "the seeker keeps stopping" — a static freeze looked indistinguishable from
+  // the old silent-stop bug). Stopping the ticker (pause) preserves cardHoldElapsedMs so
+  // resuming continues from where it left off, not from a fresh 3s.
+  const cardHoldTickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cardHoldStartAtRef = useRef(0);
+  const [cardHoldElapsedMs, setCardHoldElapsedMs] = useState(0);
+  // true when the current cardHold was set by natural auto-advance (autoplay-through applies,
+  // pause/resume is a normal toggle); false when set by a manual seek onto a card region
+  // (B-lite park — pressing play just skips straight to the next clip, no countdown).
+  const cardHoldAutoplayRef = useRef(false);
   const filmModeRef = useRef(false);
   const filmPlayIdxRef = useRef(0);
   const inFilmRef = useRef<Clip[]>([]);
@@ -644,6 +665,26 @@ export default function Trimmer() {
   }
 
   function togglePlay() {
+    // #150: the play/pause button while parked on a card, instead of falling through to
+    // the raw v.paused/v.play() branch below (which has no clip parked to resume).
+    if (viewMode === "film" && cardHold) {
+      if (cardHoldAutoplayRef.current) {
+        // Autoplaying card (natural advance) — behave like pausing/resuming any other
+        // clip: freeze/re-arm the ticker from where it left off, don't skip ahead.
+        if (isPlaying) {
+          stopCardHoldTicker();
+          setIsPlaying(false);
+        } else {
+          setIsPlaying(true);
+          startCardHoldTicker(cardHoldElapsedMs);
+        }
+        return;
+      }
+      // Manual-seek park (B-lite, no autoplay) — pressing play skips straight past the card.
+      continueFromCardHold();
+      return;
+    }
+
     const v = viewMode === "film"
       ? getFilmVideo(activeFilmSlotRef.current)
       : activeClipVideo();
@@ -657,6 +698,19 @@ export default function Trimmer() {
       if (viewMode === "clip" && clip && (v.ended || v.currentTime * 1000 >= clip.duration_ms - 50)) {
         v.currentTime = inMs / 1000;
         setCurrentMs(inMs);
+      }
+      // #150 secondary bug: after advanceFilmClip's true end-of-film stop (no card;
+      // filmModeRef.current=false), handleFilmTimeUpdate's out_ms gate is disabled, so a
+      // blind v.play() would resume the raw source past its trim point. Restart from the
+      // beginning instead — mirrors the clip-mode restart-from-in-marker gate just above.
+      // seekFilmTo's own cross-slot/same-clip play handling (gated by forcePlay, since
+      // isPlaying is still false here) takes care of actually starting playback AND
+      // flips isPlaying itself once a frame is confirmed — do not set it here, or a
+      // restart that lands on an open card (paused, held) would wrongly read as playing.
+      if (viewMode === "film" && !filmModeRef.current) {
+        filmModeRef.current = true;
+        seekFilmTo(0, true);
+        return;
       }
       v.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
@@ -982,17 +1036,14 @@ export default function Trimmer() {
     v.load();
   }
 
-  /** Called from timeupdate on the active slot when the clip boundary is reached. */
-  function advanceFilmClip() {
-    const nextIdx = filmPlayIdxRef.current + 1;
-    diagLog(`film-advance next=${nextIdx}`);
-    if (nextIdx >= inFilmRef.current.length) {
-      getFilmVideo(activeFilmSlotRef.current)?.pause();
-      filmModeRef.current = false;
-      setIsPlaying(false);
-      return;
-    }
-
+  /**
+   * Promote clip[nextIdx] to active — the actual slot-swap/play/preload-lookahead body,
+   * unchanged from the pre-#150 advanceFilmClip. Shared by the natural-advance path
+   * (advanceFilmClip, when no card sits at the boundary) and by togglePlay's
+   * resume-past-a-card-hold path, so both go through the exact same readiness handling
+   * (optimistic play + fallback-reload) rather than a second, weaker ad hoc swap.
+   */
+  function promoteToFilmClip(nextIdx: number) {
     const nextSlot: "a" | "b" = activeFilmSlotRef.current === "a" ? "b" : "a";
     const nextV = getFilmVideo(nextSlot);
 
@@ -1021,6 +1072,113 @@ export default function Trimmer() {
         preloadIntoSlot(afterNextIdx, afterNextSlot);
       }
     }
+  }
+
+  /**
+   * #150: (re)start the autoplay-through-card ticker from `fromMs` elapsed — 0 for a fresh
+   * hold, cardHoldElapsedMs for resuming after a manual pause. ~100ms tick matches the
+   * existing playhead-throttle convention elsewhere in this codebase; ticks the visible
+   * needle position forward and fires continueFromCardHold once CARD_DUR_MS is reached.
+   */
+  function startCardHoldTicker(fromMs: number) {
+    cardHoldStartAtRef.current = performance.now() - fromMs;
+    if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
+    cardHoldTickerRef.current = setInterval(() => {
+      const elapsed = performance.now() - cardHoldStartAtRef.current;
+      if (elapsed >= CARD_DUR_MS) {
+        if (cardHoldTickerRef.current !== null) {
+          clearInterval(cardHoldTickerRef.current);
+          cardHoldTickerRef.current = null;
+        }
+        continueFromCardHold();
+      } else {
+        setCardHoldElapsedMs(elapsed);
+      }
+    }, 100);
+  }
+
+  /** Stop the ticker without resolving the hold — cardHoldElapsedMs is left as-is so a
+   *  subsequent startCardHoldTicker(cardHoldElapsedMs) resumes from the same position. */
+  function stopCardHoldTicker() {
+    if (cardHoldTickerRef.current !== null) {
+      clearInterval(cardHoldTickerRef.current);
+      cardHoldTickerRef.current = null;
+    }
+  }
+
+  /**
+   * #150: end a card hold — fired by the autoplay ticker when it elapses, or by
+   * togglePlay when the user manually skips ahead from a B-lite manual-seek park.
+   * Stops the ticker defensively (harmless if already stopped/never armed) and either
+   * promotes into the pending clip or cleanly ends film mode for a trailing end-card.
+   */
+  function continueFromCardHold() {
+    stopCardHoldTicker();
+    setCardHoldElapsedMs(0);
+    const pendingIdx = pendingCardAdvanceIdxRef.current;
+    setCardHold(null);
+    pendingCardAdvanceIdxRef.current = null;
+    cardHoldAutoplayRef.current = false;
+    if (pendingIdx === null || pendingIdx >= inFilmRef.current.length) {
+      filmModeRef.current = false;
+      setIsPlaying(false);
+      return;
+    }
+    promoteToFilmClip(pendingIdx);
+    setIsPlaying(true);
+  }
+
+  /** Called from timeupdate on the active slot when the clip boundary is reached. */
+  function advanceFilmClip() {
+    // #150 idempotency guard: already parked on a card — a stray re-entrant tick
+    // (timeupdate firing again before pause takes effect) must be a no-op, not a
+    // second transition. filmPlayIdxRef is never mutated while cardHold is set, so
+    // this is also true by construction — the explicit check just makes it self-evident.
+    if (cardHold) return;
+
+    const nextIdx = filmPlayIdxRef.current + 1;
+    diagLog(`film-advance next=${nextIdx}`);
+
+    // #150: card-aware boundary check — mirrors seekFilmTo's cardBefore/endCard lookup
+    // (same source: readPlacedCards). A card immediately before clips_[nextIdx], or a
+    // trailing end-card once nextIdx runs past the last clip, must pause and hold rather
+    // than silently advancing/stopping. This sits downstream of handleFilmTimeUpdate's
+    // existing `currentTimeSec >= outSec` (crossing, not equality) check.
+    const clips_ = inFilmRef.current;
+    const placedCards = clips_.length > 0 ? readPlacedCards(projectId ?? "") : [];
+    const cardBefore = new Map(
+      placedCards.filter((c) => c.beforeClipId !== null).map((c) => [c.beforeClipId as string, c]),
+    );
+    const endCard = placedCards.find((c) => c.beforeClipId === null) ?? null;
+    const upcomingCard = nextIdx < clips_.length ? cardBefore.get(clips_[nextIdx].id) : endCard;
+
+    if (upcomingCard) {
+      // #150 revision (live feedback): a card is a real CARD_DUR_MS clip in the render —
+      // autoplay through it like any other clip instead of requiring a manual click.
+      // isPlaying stays true; the countdown timer is what actually advances things.
+      // cardHoldAutoplayRef MUST be set true BEFORE pause() — the native 'pause' event can
+      // fire synchronously inside the pause() call itself (confirmed live, #150 double-click
+      // bug), before setCardHold's state update is even queued, let alone committed. A ref
+      // read is the only thing guaranteed current at that exact synchronous instant.
+      cardHoldAutoplayRef.current = true;
+      getFilmVideo(activeFilmSlotRef.current)?.pause();
+      const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
+      const cardsBeforeClip = clips_.map((c) => cardBefore.has(c.id));
+      const filmMs = filmTimeAtClipStart(clips_, nextIdx, xfadeMs, cardsBeforeClip);
+      pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end-card
+      setCardHold({ filmMs, color: upcomingCard.color, text: upcomingCard.text, subtitle: upcomingCard.subtitle });
+      startCardHoldTicker(0);
+      return;
+    }
+
+    if (nextIdx >= clips_.length) {
+      getFilmVideo(activeFilmSlotRef.current)?.pause();
+      filmModeRef.current = false;
+      setIsPlaying(false);
+      return;
+    }
+
+    promoteToFilmClip(nextIdx);
   }
 
   // #90: a Film-mode slot's <video> failed to load/play. Ported from Sound.tsx's
@@ -1084,9 +1242,12 @@ export default function Trimmer() {
    * accumulates per-clip render widths (trimmed - xfade, last clip keeps full length).
    * The within-clip offset still maps 1:1 to playback time, so seekToMs = in_ms + offset.
    */
-  function seekFilmTo(filmMs: number) {
+  function seekFilmTo(filmMs: number, forcePlay = false) {
     diagLog(`film-seek filmMs=${filmMs} playing=${isPlaying}`);
-    const wasPlaying = isPlaying;
+    // #150: forcePlay lets a caller (the end-of-film restart-from-beginning fix in
+    // togglePlay) start playback even though isPlaying is currently false — the normal
+    // nav/click callers never pass this and keep relying on the current play state.
+    const wasPlaying = forcePlay || isPlaying;
     const clips_ = inFilmRef.current;
     const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
 
@@ -1111,6 +1272,14 @@ export default function Trimmer() {
         const cardMs = Math.max(0, CARD_DUR_MS - xfadeMs); // never the last element — a clip always follows
         if (filmMs < elapsed + cardMs) {
           activeFilmVideo()?.pause();
+          setIsPlaying(false);
+          // #150: a manual seek that lands on a card must resume the SAME way an
+          // auto-advance-triggered hold does — pressing play promotes into clip[i],
+          // not a blind resume of whatever raw footage happened to be loaded.
+          pendingCardAdvanceIdxRef.current = i;
+          stopCardHoldTicker();
+          setCardHoldElapsedMs(0);
+          cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
           setCardHold({ filmMs, color: cardHere.color, text: cardHere.text, subtitle: cardHere.subtitle });
           return;
         }
@@ -1126,6 +1295,10 @@ export default function Trimmer() {
       const clipMs = Math.max(0, trimmed - (!isLastElement ? xfadeMs : 0));
       if (filmMs < elapsed + clipMs || (i === clips_.length - 1 && !endCard)) {
         setCardHold(null); // leaving any card region
+        pendingCardAdvanceIdxRef.current = null; // #150: any pending hold/promotion is now moot
+        stopCardHoldTicker();
+        setCardHoldElapsedMs(0);
+        cardHoldAutoplayRef.current = false;
         const offsetInClip = Math.max(0, filmMs - elapsed);
         const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
         filmModeRef.current = true;
@@ -1137,7 +1310,10 @@ export default function Trimmer() {
           if (v) {
             v.currentTime = seekToMs / 1000;
             setCurrentMs(seekToMs); // cursor jumps to click position immediately
-            if (wasPlaying) v.play().catch(() => {});
+            // #150: mirror crossSeekToClip's shouldPlay->setIsPlaying(true) reconciliation —
+            // needed when wasPlaying comes from forcePlay (restart-from-stop) rather than an
+            // already-true isPlaying, so the same-clip case flips state too, not just the video.
+            if (wasPlaying) v.play().then(() => setIsPlaying(true)).catch(() => {});
           }
         } else {
           // Different clip — Option H: cross-slot load with rVFC mediaTime gate.
@@ -1154,6 +1330,13 @@ export default function Trimmer() {
     // Past the last clip with an end card present — end-card region. Park on its colour.
     if (endCard) {
       activeFilmVideo()?.pause();
+      setIsPlaying(false);
+      // #150: trailing end-card sentinel — matches advanceFilmClip's own use of
+      // clips_.length to mean "nothing more to promote to, just end film mode."
+      pendingCardAdvanceIdxRef.current = clips_.length;
+      stopCardHoldTicker();
+      setCardHoldElapsedMs(0);
+      cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
       setCardHold({ filmMs, color: endCard.color, text: endCard.text, subtitle: endCard.subtitle });
     }
   }
@@ -1177,11 +1360,27 @@ export default function Trimmer() {
     seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, cardsBeforeClip));
   }
 
-  // #74: a card-region park is a paused, film-mode-only state. Clear it the moment playback
-  // starts or the user leaves film mode, so the overlay/playhead override never lingers.
+  // #74/#150: a card-region hold is a film-mode-only state (autoplay holds keep isPlaying
+  // true throughout, so isPlaying is no longer a valid clear-trigger on its own — every
+  // isPlaying transition while cardHold is set is already self-managed by togglePlay's
+  // card branch and continueFromCardHold). Leaving film mode still always clears it —
+  // safety net alongside the explicit clears in togglePlay/seekFilmTo/continueFromCardHold.
   useEffect(() => {
-    if (isPlaying || viewMode !== "film") setCardHold(null);
-  }, [isPlaying, viewMode]);
+    if (viewMode !== "film") {
+      setCardHold(null);
+      pendingCardAdvanceIdxRef.current = null;
+      stopCardHoldTicker();
+      setCardHoldElapsedMs(0);
+      cardHoldAutoplayRef.current = false;
+    }
+  }, [viewMode]);
+
+  // #150: don't let an armed autoplay-through-card ticker fire against an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
+    };
+  }, []);
 
   // Enter/exit film mode
   useEffect(() => {
@@ -1240,10 +1439,12 @@ export default function Trimmer() {
   // Film playhead: how far we are in render-time (ms), for the StickyFilmStrip cursor.
   // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71); the
   // open card adds its lead time so the playhead stays aligned with the card-inclusive ruler (#74).
-  // When parked on a card region (paused), the cardHold position overrides the clip-derived one.
+  // When parked on a card region (paused OR autoplaying through it), the cardHold position
+  // overrides the clip-derived one — #150: no longer gated on !isPlaying, since an autoplay
+  // hold keeps isPlaying true throughout.
   const filmPositionMs = viewMode === "film"
-    ? (cardHold && !isPlaying
-        ? cardHold.filmMs
+    ? (cardHold
+        ? cardHold.filmMs + cardHoldElapsedMs // #150: animate the needle across the autoplay hold
         : inFilm[filmPlayIdx]
           ? filmTimeAtClipStart(inFilm, filmPlayIdx, filmXfadeOverlapMs, filmCardsBeforeClip)
             + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
@@ -1505,8 +1706,13 @@ export default function Trimmer() {
               playsInline
               className="absolute inset-0 w-full h-full object-contain cursor-pointer"
               onClick={togglePlay}
-              onPause={() => { if (activeFilmSlotRef.current === "a") setIsPlaying(false); }}
-              onPlay={() => { if (activeFilmSlotRef.current === "a") setIsPlaying(true); }}
+              // #150: a card hold pauses this element on purpose (nothing to show) while the
+              // FILM keeps "playing" — the native pause event fires asynchronously, after
+              // advanceFilmClip's card branch already returned, so it must not stomp isPlaying
+              // back to false mid-autoplay. Skip while a card hold is active; togglePlay's own
+              // card branch is the sole owner of isPlaying in that state.
+              onPause={() => { if (activeFilmSlotRef.current === "a" && !cardHoldAutoplayRef.current) setIsPlaying(false); }}
+              onPlay={() => { if (activeFilmSlotRef.current === "a" && !cardHoldAutoplayRef.current) setIsPlaying(true); }}
               onTimeUpdate={(e) => {
                 if (activeFilmSlotRef.current !== "a") return;
                 const sec = (e.currentTarget as HTMLVideoElement).currentTime;
@@ -1524,8 +1730,8 @@ export default function Trimmer() {
               playsInline
               className="absolute inset-0 w-full h-full object-contain cursor-pointer"
               onClick={togglePlay}
-              onPause={() => { if (activeFilmSlotRef.current === "b") setIsPlaying(false); }}
-              onPlay={() => { if (activeFilmSlotRef.current === "b") setIsPlaying(true); }}
+              onPause={() => { if (activeFilmSlotRef.current === "b" && !cardHoldAutoplayRef.current) setIsPlaying(false); }}
+              onPlay={() => { if (activeFilmSlotRef.current === "b" && !cardHoldAutoplayRef.current) setIsPlaying(true); }}
               onTimeUpdate={(e) => {
                 if (activeFilmSlotRef.current !== "b") return;
                 const sec = (e.currentTarget as HTMLVideoElement).currentTime;
@@ -1560,7 +1766,8 @@ export default function Trimmer() {
             {/* #74: card-colour hold — shown when the playhead is parked on an open/close card
                 region (paused, film mode). Solid colour mirrors the strip card tile.
                 Text is interim: the final preview uses card preview proxies (#76). */}
-            {viewMode === "film" && cardHold && !isPlaying && (
+            {/* #150: shown throughout the autoplay hold too, not just while paused. */}
+            {viewMode === "film" && cardHold && (
               <div
                 className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center"
                 style={{ background: cardHold.color }}

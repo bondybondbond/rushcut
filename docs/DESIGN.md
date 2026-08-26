@@ -688,9 +688,11 @@ function cardTextColor(hex: string): string {
 
 `cardTextColor` is exported from `StickyFilmStrip.tsx` and imported wherever card text must contrast against the card background (Trimmer card-hold overlay). Two-tone return values: `"#0a0a0a"` (dark) for lum > 0.179, `"#e5e5e5"` (light) for lum ≤ 0.179. Note: the function in DESIGN.md above uses `"#000000"` / `"#ffffff"` — the live implementation uses the near-black/near-white tokens from the design system (`#0a0a0a` / `#e5e5e5`). Use the live version.
 
-### Card-hold colour overlay (Trimmer film mode)
+### Card-hold colour overlay (Trimmer film mode + Sound Master tab, #150)
 
-Full-screen overlay over the video player when the playhead parks inside a card region (open/close card). Pattern: `position:absolute inset-0`, bg = card hex (inline style), `zIndex` above video, centred flex column with title + subtitle.
+Full-screen overlay over the video player when the playhead parks inside a card region (open/mid-roll/close card). Pattern: `position:absolute inset-0`, bg = card hex (inline style), `zIndex` above video, centred flex column with title + subtitle. Ported verbatim into `Sound.tsx`'s Master-tab video area (`cardTextColor` imported from `StickyFilmStrip.tsx`), which previously had no card-overlay UI at all.
+
+**Autoplay-through, not indefinite hold (#150 revision, live user feedback):** during *natural* playback (auto-advance reaching a card), the overlay shows for `CARD_DUR_MS` (3s) then continues automatically — matching the fact that a card is a real 3-second clip in the render, so the preview should mirror that rather than stall waiting for a click. `isPlaying`/`isFilmPlaying` stays `true` throughout (the film IS still playing); the play/pause control genuinely pauses/resumes the countdown mid-card. Sound additionally keeps its music track playing straight through the card (deliberately never paused there) to match the render, where music is never silenced by a card. A manual seek that lands directly on a card (clicking that region on the strip) still just parks indefinitely in Trimmer (B-lite, unchanged) — the autoplay behavior is specific to reaching a card via natural forward playback.
 
 ```tsx
 {cardHold && (
