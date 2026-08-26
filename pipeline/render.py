@@ -152,6 +152,36 @@ def _compute_checkpoints(
     return out
 
 
+# Canonical major-stage order for the "Step N of M" indicator (#142). Mirrors
+# _compute_checkpoints' key set/order exactly -- render/audio are never
+# excluded (they always run, even as a fast passthrough).
+_STAGE_ORDER = ("normalise", "trim", "zoom", "cards", "render", "audio")
+
+
+def _active_stage_keys(
+    normalise_active: bool, trim_active: bool, zoom_active: bool, cards_active: bool
+) -> list:
+    """Ordered list of major stage keys that will actually run for this render.
+
+    Used to compute (step_index, step_total) for the "Step N of M" indicator --
+    a render with e.g. zoom off never counts a zoom step. Cache-hit callers pass
+    False/False/False/False directly (Steps 1-4 are skipped entirely on a
+    cache hit) rather than reusing the placeholder flags _compute_checkpoints
+    uses for its own % math. The cache-hit/miss decision is made once, upfront
+    (before any report_stage() call), so the returned list -- and therefore M --
+    is fixed for the entire life of a render; it never changes mid-render.
+    """
+    active = {
+        "normalise": normalise_active,
+        "trim": trim_active,
+        "zoom": zoom_active,
+        "cards": cards_active,
+        "render": True,
+        "audio": True,
+    }
+    return [k for k in _STAGE_ORDER if active[k]]
+
+
 def _fps_to_tbn(fps_raw: str) -> str:
     """Derive the libx264 container time_base string from the fps rational.
 
@@ -479,10 +509,21 @@ def run_pipeline(
             except Exception:
                 log.warning("[render] Failed to report progress %d%%", pct)
 
-    def report_stage(stage: str) -> None:
+    # #142: mutated once (cache-hit and cache-miss branches each assign it
+    # exactly once, right after their respective checkpoints are computed,
+    # before any tagged report_stage() call fires) then read-only for the rest
+    # of the render. report_stage reads it via closure -- no nonlocal needed.
+    active_stage_keys: list = []
+
+    def report_stage(stage: str, step_key: "str | None" = None) -> None:
         if on_stage:
+            idx = active_stage_keys.index(step_key) + 1 if step_key in active_stage_keys else None
+            total = len(active_stage_keys) if active_stage_keys else None
             try:
-                on_stage(stage)
+                if idx is not None and total is not None:
+                    on_stage(stage, idx, total)
+                else:
+                    on_stage(stage)
             except Exception:
                 pass
 
@@ -556,7 +597,7 @@ def run_pipeline(
           - draft / no audio -> passthrough (no loudnorm)
         Emits the TIMING:music line so both paths report consistently.
         """
-        report_stage("Mixing music")
+        report_stage("Mixing music", step_key="audio")
         report(checkpoints["render"])
         t_audio = time.time()
         if music_filename or custom_music_path_wsl:
@@ -636,6 +677,9 @@ def run_pipeline(
         # cache hit (the whole point is one instant jump straight to checkpoints["render"],
         # skipping the real per-clip proxy check that would cost real I/O on this fast path).
         checkpoints = _compute_checkpoints(True, trim_active, zoom_active, cards_active)
+        # #142: Steps 1-4 are skipped entirely on a cache hit -- only render+audio
+        # are real, regardless of what the % checkpoints above used for their math.
+        active_stage_keys = _active_stage_keys(False, False, False, False)
         report_stage("Preparing clips")
         report(checkpoints["render"])
         # Copy the cached clean intermediate into the job tmp dir, then apply the
@@ -708,6 +752,9 @@ def run_pipeline(
     # dynamic checkpoints for the rest of this (cache-miss) pipeline run.
     normalise_active = bool(norm_clip_indices)
     checkpoints = _compute_checkpoints(normalise_active, trim_active, zoom_active, cards_active)
+    # #142: real active-stage list for the "Step N of M" indicator, fixed for
+    # the rest of this render (cache-hit/miss is decided once, upfront).
+    active_stage_keys = _active_stage_keys(normalise_active, trim_active, zoom_active, cards_active)
 
     # Initialise merged output array
     current_paths: list = [None] * n_clips
@@ -745,7 +792,7 @@ def run_pipeline(
                 i = futures[f]
                 pre_trimmed_paths[i], pipeline_clips[i] = f.result()
                 units_done += 1
-                report_stage(f"Preparing clip {units_done} of {len(norm_clip_indices)}")
+                report_stage(f"Preparing clip {units_done} of {len(norm_clip_indices)}", step_key="normalise")
                 report(int(units_done / total_units * checkpoints["normalise"]))
 
     print(f"TIMING:pretrim={time.time() - t_pretrim:.1f}s (jobs={len(norm_clip_indices)})", flush=True)
@@ -762,7 +809,7 @@ def run_pipeline(
         norm_src = [pre_trimmed_paths[i] for i in norm_clip_indices]
 
         def _normalise_progress(done: int, total: int) -> None:
-            report_stage(f"Preparing clip {done} of {total}")
+            report_stage(f"Preparing clip {done} of {total}", step_key="normalise")
             report(int((units_done + done) / total_units * checkpoints["normalise"]))
 
         normed = normalise(
@@ -784,7 +831,7 @@ def run_pipeline(
     )
 
     # 2. Silence trim.
-    report_stage("Trimming clips")
+    report_stage("Trimming clips", step_key="trim")
     t0 = time.time()
 
     if trim_active:
@@ -826,7 +873,7 @@ def run_pipeline(
 
             def _trim_worker(job_num: int, i: int, p, start: float, end: float) -> None:
                 with report_lock:
-                    report_stage(f"Trimming clip {job_num} of {total_jobs}...")
+                    report_stage(f"Trimming clip {job_num} of {total_jobs}...", step_key="trim")
                 out = tmp / f"trim_{i}.mp4"
                 trimmed[i] = trim(p, start, end, out, threads=threads_per_worker)
 
@@ -843,7 +890,7 @@ def run_pipeline(
                     f.result()  # re-raise any worker exception immediately (no swallowing)
                     done += 1
                     with report_lock:
-                        report_stage(f"Trimming clip {done} of {total_jobs}")
+                        report_stage(f"Trimming clip {done} of {total_jobs}", step_key="trim")
                         report(int(trim_lo + done / total_jobs * (trim_hi - trim_lo)))
 
         current_paths = trimmed
@@ -860,7 +907,7 @@ def run_pipeline(
     # vf strings injected directly into filter_complex [sv{i}] nodes. No pre-encode
     # step: AMF absorbs scale=eval=frame at hardware speed with zero render-step
     # overhead (#67). Skipped in draft mode to keep previews quick.
-    report_stage("zoom")
+    report_stage("zoom", step_key="zoom")
     t_zoom = time.time()
     zoom_proxy_input = 0
 
@@ -908,7 +955,7 @@ def run_pipeline(
     ]
 
     # 4. Cards (pre-render as video segments, spliced at each card's position, #148).
-    report_stage("cards")
+    report_stage("cards", step_key="cards")
     # Use actual clip dimensions so xfade size matches -- clips may not be 16:9.
     clip_w, clip_h = get_frame_size(current_paths[0])
     card_size = f"{clip_w}x{clip_h}"
@@ -965,7 +1012,7 @@ def run_pipeline(
     report(checkpoints["cards"])
 
     # 5. Build filter_complex + render.
-    report_stage("Rendering")
+    report_stage("Rendering", step_key="render")
     # CRITICAL: durations must come from current_paths (post-trim), not original clips.
     report(checkpoints["cards"])
     log.info("[render] Step 5: render with xfade")

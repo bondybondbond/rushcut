@@ -1534,6 +1534,8 @@ async fn start_job(
         created_at: now.clone(),
         updated_at: now,
         current_stage: None,
+        current_stage_step: None,
+        current_stage_total: None,
     }) {
         // #89: idx_jobs_active_per_project rejected this insert — another
         // caller won the race and already has an active job for this
@@ -1639,15 +1641,33 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
             Err(_) => break,
         };
 
-        if let Some(stage_name) = line.strip_prefix("STAGE:") {
+        if let Some(stage_raw) = line.strip_prefix("STAGE:") {
+            // #142: parse the optional trailing "::N/M" ONCE right here, reuse
+            // the parsed (text, step, total) at both consumption points below
+            // (DB persist + event payload) -- mirrors the ANALYSIS: branch's
+            // existing parse-once-reuse pattern (`trimmed` below). Any parse
+            // failure (missing "::", non-numeric N/M) falls back to treating
+            // the whole line as plain stage text with no step info.
+            let stage_trimmed = stage_raw.trim();
+            let (stage_text, step, total): (&str, Option<i64>, Option<i64>) =
+                match stage_trimmed.rsplit_once("::") {
+                    Some((text, rest)) => match rest.split_once('/') {
+                        Some((s, t)) => match (s.parse::<i64>(), t.parse::<i64>()) {
+                            (Ok(s), Ok(t)) => (text, Some(s), Some(t)),
+                            _ => (stage_trimmed, None, None),
+                        },
+                        None => (stage_trimmed, None, None),
+                    },
+                    None => (stage_trimmed, None, None),
+                };
             // Batch U1: persist the stage so the Render screen can restore the
             // label when re-attaching to a render still in progress. Note this
             // is the ONLY place stage is written; the pipeline-progress payload
             // stays { jobId, progress } so it never clobbers the label.
-            let _ = update_job_stage(&job_id, stage_name.trim());
+            let _ = update_job_stage(&job_id, stage_text, step, total);
             let _ = app.emit(
                 "pipeline-stage",
-                json!({ "jobId": job_id, "stage": stage_name.trim() }),
+                json!({ "jobId": job_id, "stage": stage_text, "stepIndex": step, "stepTotal": total }),
             );
         } else if let Some(data) = line.strip_prefix("ANALYSIS:") {
             // Store motion analysis summary from pipeline (Batch 13).

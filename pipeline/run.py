@@ -15,7 +15,9 @@ Manifest JSON (written to %TEMP%\rushcut\<job_id>.json by Rust, passed as WSL pa
 
 Protocol (stdout, line-by-line):
   PROGRESS:<0-100>
-  STAGE:<human-readable stage name>
+  STAGE:<human-readable stage name>[::<step>/<total>]  -- #142: optional trailing
+    "::N/M" for the "Step N of M" indicator, present only when the stage belongs
+    to a known major stage (normalise/trim/zoom/cards/render/audio).
   ANALYSIS:clips_used=N,clips_total=M,clips_excluded=X
   DONE:<wsl_path_to_output>
   ERROR:<message>
@@ -49,8 +51,13 @@ def on_progress(pct: int) -> None:
     print(f"PROGRESS:{pct}", flush=True)
 
 
-def on_stage(stage: str) -> None:
-    print(f"STAGE:{stage}", flush=True)
+def on_stage(stage: str, step: int = None, total: int = None) -> None:
+    # #142: "Step N of M" indicator. Backward-compatible format -- old plain
+    # "STAGE:<text>" when step/total aren't both known for this call.
+    if step is not None and total is not None:
+        print(f"STAGE:{stage}::{step}/{total}", flush=True)
+    else:
+        print(f"STAGE:{stage}", flush=True)
 
 
 _analysis_buf: list = []

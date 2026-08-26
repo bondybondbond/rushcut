@@ -55,6 +55,8 @@ export interface Job {
   created_at: string;
   updated_at: string;
   current_stage: string | null; // Batch U1: live pipeline stage key, for resume label restore
+  current_stage_step: number | null; // #142: "Step N of M" position, for resume restore
+  current_stage_total: number | null;
 }
 
 export type TransitionValue = "none" | "crossfade" | "dip_to_black" | "wipe" | "wipe_down" | "zoom" | "dissolve" | "barn_door" | "band_wipe";

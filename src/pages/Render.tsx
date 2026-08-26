@@ -88,6 +88,11 @@ export default function Render() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Starting up the magic...");
+  // #142: "Step N of M" indicator, alongside the existing stage label. Both
+  // null until the first STAGE line carrying step info arrives (or on reattach,
+  // seeded from the persisted job row).
+  const [stepIndex, setStepIndex] = useState<number | null>(null);
+  const [stepTotal, setStepTotal] = useState<number | null>(null);
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string>(_cached?.name ?? "");
@@ -309,6 +314,10 @@ export default function Render() {
       setJobId(newJobId);
       setStage("Starting up the magic...");
       setProgress(0);
+      // #142: a fresh render has no step data yet -- clear any leftover N/M
+      // from a previous render on this same screen instance.
+      setStepIndex(null);
+      setStepTotal(null);
       // U1: seed the timer start for a brand-new render. The timer effect no
       // longer resets startTimeRef on entering "rendering" (so re-attach can
       // continue the original timer) -- fresh starts seed it here instead.
@@ -406,6 +415,10 @@ export default function Render() {
     setJobId(null);
     setProgress(0);
     setStage("Starting up the magic...");
+    // #142: clear any leftover N/M so a subsequent render's own step count is
+    // never confused with the previous render's.
+    setStepIndex(null);
+    setStepTotal(null);
     setErrorMsg(null);
     setElapsedLabel("0s");
     completedRef.current = false;
@@ -478,6 +491,9 @@ export default function Render() {
         // human label only when stage is genuinely unknown (job started, no
         // STAGE: line emitted yet).
         setStage(stageLabel(status.active_job.current_stage ?? "") || "Starting up...");
+        // #142: restore the step counter from the persisted job row.
+        setStepIndex(status.active_job.current_stage_step ?? null);
+        setStepTotal(status.active_job.current_stage_total ?? null);
         const startedAt = Date.parse(status.active_job.created_at);
         startTimeRef.current = Number.isNaN(startedAt) ? Date.now() : startedAt;
         // Show the continued elapsed value immediately (avoid a 1s "0s" flash).
@@ -560,9 +576,16 @@ export default function Render() {
       setBarPulsing(false);
     });
 
-    const unlistenStage = listen<{ jobId: string; stage: string }>("pipeline-stage", (event) => {
+    const unlistenStage = listen<{ jobId: string; stage: string; stepIndex?: number | null; stepTotal?: number | null }>("pipeline-stage", (event) => {
       if (event.payload.jobId !== jobId) return;
       setStage(stageLabel(event.payload.stage));
+      // #142: only update when both are present -- an untagged STAGE line
+      // (no step info) leaves the last-known N/M on screen rather than
+      // flashing it away for one tick.
+      if (event.payload.stepIndex != null && event.payload.stepTotal != null) {
+        setStepIndex(event.payload.stepIndex);
+        setStepTotal(event.payload.stepTotal);
+      }
       resetActivityTimer();
       // U4f: the cold zoom stage encodes silently (no PROGRESS) -- extend the stall
       // threshold to 1 min/clip (floor 360s, cap 600s) so it never trips falsely.
@@ -896,6 +919,14 @@ export default function Render() {
                     fades in/out; `noteVisible` delays `invisible` until the
                     opacity fade-out finishes so hiding isn't an instant cut. */}
                 <span className="flex items-baseline min-w-0">
+                  {/* #142: orientation cue paired with the existing % bar below --
+                      only rendered once both values are known (see the listener's
+                      both-present guard), so there's no flash of "Step null of null". */}
+                  {stepIndex != null && stepTotal != null && (
+                    <span data-testid="step-counter" className="text-[#a3a3a3] shrink-0">
+                      {`Step ${stepIndex} of ${stepTotal} · `}
+                    </span>
+                  )}
                   <span data-testid="stage-label" className="text-[#a3a3a3] truncate" title={stage}>
                     {stage}
                   </span>

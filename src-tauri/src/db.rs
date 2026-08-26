@@ -87,6 +87,10 @@ pub struct Job {
     // Batch U1: live pipeline stage (e.g. "render", "zoom"), persisted on each
     // STAGE: line so the Render screen can restore the label on re-attach.
     pub current_stage: Option<String>,
+    // #142: "Step N of M" position for the current_stage above, persisted the
+    // same way for reattach. Both None when the stage carried no step info.
+    pub current_stage_step: Option<i64>,
+    pub current_stage_total: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +167,26 @@ pub fn init(_app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     )? > 0;
     if !stage_col_exists {
         conn.execute("ALTER TABLE jobs ADD COLUMN current_stage TEXT", [])?;
+    }
+
+    // Additive migration: current_stage_step / current_stage_total columns (#142).
+    // Guarded independently per column, not a single representative check --
+    // each ALTER is its own idempotent operation.
+    let stage_step_col_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name='current_stage_step'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !stage_step_col_exists {
+        conn.execute("ALTER TABLE jobs ADD COLUMN current_stage_step INTEGER", [])?;
+    }
+    let stage_total_col_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name='current_stage_total'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !stage_total_col_exists {
+        conn.execute("ALTER TABLE jobs ADD COLUMN current_stage_total INTEGER", [])?;
     }
 
     // #89: self-heal any pre-existing duplicate active jobs before adding the
@@ -672,12 +696,19 @@ pub fn update_job_progress(job_id: &str, progress_pct: i64, status: &str) -> Res
 
 /// Batch U1: persist the live pipeline stage so the Render screen can restore
 /// the human-readable label when re-attaching to an in-flight render.
-pub fn update_job_stage(job_id: &str, stage: &str) -> Result<(), rusqlite::Error> {
+/// #142: also persists the "Step N of M" position (both None when the stage
+/// line carried no step/total, e.g. the one untagged early "Preparing clips" call).
+pub fn update_job_stage(
+    job_id: &str,
+    stage: &str,
+    step: Option<i64>,
+    total: Option<i64>,
+) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     let ts = now();
     conn.execute(
-        "UPDATE jobs SET current_stage = ?1, updated_at = ?2 WHERE id = ?3",
-        params![stage, ts, job_id],
+        "UPDATE jobs SET current_stage = ?1, current_stage_step = ?2, current_stage_total = ?3, updated_at = ?4 WHERE id = ?5",
+        params![stage, step, total, ts, job_id],
     )?;
     Ok(())
 }
@@ -790,7 +821,7 @@ pub fn set_setting(key: &str, value: &str) -> Result<(), rusqlite::Error> {
 pub fn get_job(job_id: &str) -> Result<Job, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage, current_stage_step, current_stage_total
          FROM jobs WHERE id = ?1",
         params![job_id],
         map_job_row,
@@ -811,6 +842,8 @@ fn map_job_row(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
         current_stage: row.get(10)?,
+        current_stage_step: row.get(11)?,
+        current_stage_total: row.get(12)?,
     })
 }
 
@@ -819,7 +852,7 @@ fn map_job_row(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
 pub fn get_active_job(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage, current_stage_step, current_stage_total
          FROM jobs WHERE project_id = ?1 AND status IN ('pending', 'processing')
          ORDER BY created_at DESC LIMIT 1",
         params![project_id],
@@ -837,7 +870,7 @@ pub fn get_active_job(project_id: &str) -> Result<Option<Job>, rusqlite::Error> 
 pub fn get_stuck_processing_jobs(min_age_secs: i64) -> Result<Vec<Job>, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage, current_stage_step, current_stage_total
          FROM jobs WHERE status = 'processing' AND datetime(created_at) < datetime('now', ?1)
          ORDER BY created_at ASC",
     )?;
@@ -851,7 +884,7 @@ pub fn get_stuck_processing_jobs(min_age_secs: i64) -> Result<Vec<Job>, rusqlite
 pub fn get_latest_render(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
     let conn = Connection::open(db_path())?;
     conn.query_row(
-        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage
+        "SELECT id, project_id, status, progress_pct, local_output_path, settings_json, error_message, analysis_summary, created_at, updated_at, current_stage, current_stage_step, current_stage_total
          FROM jobs WHERE project_id = ?1 AND status = 'done' AND local_output_path IS NOT NULL
          ORDER BY created_at DESC LIMIT 1",
         params![project_id],
