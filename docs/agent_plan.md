@@ -50,9 +50,9 @@
 
 ### Owns
 - All *gated* searches — Gate 2, Gate 3, and any deliberate mid-job research escalation from CC (see CC's decision-5 clarification below for what stays with CC instead)
-- **Perplexity** (browser automation): Gate 3 only — traps/best-practices first, then plan fit assessment. One spawn, one VERDICT. Sequential, never parallel.
+- **ChatGPT** (browser automation, RushCut Project — migrated off Perplexity 2026-08-25): Gate 3 only — traps/best-practices first, then plan fit assessment. One spawn, one VERDICT. Sequential, never parallel; may span two chats within the project if the free-tier quota pauses mid-gate (see `rushcut-pp-consultant.md`'s Setup step 6) — that's an accepted operational fallback, not a violation of "one spawn."
 - **Claude WebSearch**: Gate 2 competitor/context research, and any mid-job CC lookups
-- **Round 2.5 (mid-build per-step trap check) [clarified, issue #156, 2026-07-24]** — a per-implementation-step trap check (unchanged mechanism from the pre-#156 model, survives unrenamed) is re-pointed specifically at Consultant's own WebSearch — never Perplexity (reserved for Gate 3 only), never CC's own quick-lookup WebSearch. See `rushcut-dev-plan` Step 6 item 2.5 for the trigger condition (Rust/Tauri/pipeline/new-library steps) and retry budget.
+- **Round 2.5 (mid-build per-step trap check) [clarified, issue #156, 2026-07-24]** — a per-implementation-step trap check (unchanged mechanism from the pre-#156 model, survives unrenamed) is re-pointed specifically at Consultant's own WebSearch — never the Gate 3 ChatGPT tool (reserved for Gate 3 only), never CC's own quick-lookup WebSearch. See `rushcut-dev-plan` Step 6 item 2.5 for the trigger condition (Rust/Tauri/pipeline/new-library steps) and retry budget.
 - LEARNINGS.md (tactical layer) — sits on metrics, patterns, and insights
 - Competitive trends — can surface to CPO if assumptions need revisiting
 - Mid-job support — CC can request a targeted search during implementation; Consultant uses Claude WebSearch in this case
@@ -89,7 +89,7 @@
 ### Never does
 - Strategic decisions
 - Substantive market/competitor research (that's Gate 2/Consultant's job)
-- Initiating Perplexity searches
+- Initiating ChatGPT (Gate 3) searches
 
 **[Clarified, issue #156, 2026-07-24] Decision 5 — quick-lookup carve-out:** CC keeps direct WebSearch
 access for fast, ungated, under-2-minute tactical lookups (a single API signature check, a quick "does
@@ -180,26 +180,37 @@ gets caught before, not after, the plan is fully drafted and sent through Gate 3
 
 ---
 
-### Gate 3 — Plan + Traps (Perplexity)
+### Gate 3 — Plan + Traps (ChatGPT)
 **Skill:** `rushcut-dev-plan` (after CC drafts plan, before implementation)  
 **Owner:** Consultant (search) → CPO (verdict)  
-**Search engine:** Perplexity (browser automation, single sequential spawn)  
+**Search engine:** a real ChatGPT Project ("RushCut"), browser automation, sequential spawn — migrated off Perplexity 2026-08-25 (same contract, same fingerprints, same mechanical proof; only the execution backend changed)  
 **Input required:** CC's drafted dev plan  
 
-**Two-step merged process (single Perplexity session):**
+**Model identity / independence assumption:** the RushCut ChatGPT Project runs on the user's free tier, which has no model picker at all — every conversation runs OpenAI's standard default model, confirmed live (no selection possible or needed). The independence rationale Gate 3 depends on rests on this being a different company's foundation model (OpenAI vs. Anthropic) reasoning about the plan, not on pinning down which specific model variant is behind it.
+
+**Conversation-identity invariant (the actual thing Gate 3 needs proof of):** Query 1/2 typing + submission + a genuinely-new response happened in an authenticated conversation inside the RushCut Project. Domain detection (`navigate` URL containing `chatgpt.com`) is the current *implementation* of proving that, not the definition of the gate — see `lib/transcript.js`'s `countGateCycles()` header comment for what was live-verified. Because ChatGPT Projects aggregate many unrelated chats in one workspace (unlike Perplexity's per-space model), Consultant's own protocol additionally requires stating the GitHub issue number as the first line of every message (the wrong-chat guard) so both the thread and its auto-generated title self-identify.
+
+**Two-step process (one ChatGPT session by default — see quota note below):**
 1. Consultant runs Query 1 (breadth — traps and best practices)
 2. Consultant runs Query 2 (depth — plan fit against findings from Query 1)
 3. Consultant maps every finding to plan: "accounted for" or "NOT accounted for — flagging"
 4. CPO reviews mapping and issues final VERDICT
 
+**Free-tier quota (confirmed live, 2026-08-25 and 2026-08-26):** a fresh ChatGPT chat's first message succeeds, but an immediate follow-up in the SAME thread can hit a real "Chat paused until usage resets" block — not a soft warning, the compose box stops accepting input in that thread; confirmed twice now, including a deliberate forced test that hit it organically on both queries. Consultant's protocol (see `rushcut-pp-consultant.md` Setup step 8): continue in the same chat by default; if the pause banner appears, start a new chat within the RushCut Project (never outside it) and restate the issue number. Query 1 and Query 2 may therefore legitimately land in two different chats for the same issue — the findings-mapping table is what ties them together, not thread continuity.
+
+**Live-testing follow-up (2026-08-26, issue #158) — two real gaps found and fixed:**
+1. **Cross-chat issue correlation (hook-side fix, shipped).** A `chatgpt.com` domain hit plus two matching fingerprints only proved "a breadth-shaped and depth-shaped query happened" — nothing tied them to the SAME GitHub issue if they landed in separate chats. Confirmed as a real gap (not theoretical) via a deliberate forced cross-chat test. Fixed in `lib/transcript.js`: `countGateCycles()` now also extracts a `GitHub issue #<N>:` number from each proven gate's originating `type` event (via a separate `ISSUE_NUMBER_RE`, independent of `GATE_FINGERPRINTS` — the query templates themselves are unchanged) and returns it as `issueNumbers`. `enforce-pp-plan-gates.js` requires both gates' issue numbers to be present and equal — missing or mismatched fails closed. Full regression matrix (6 cases: same-issue/same-chat, same-issue/separate-chats, mismatched-issues, missing-prefix, real captured query text, retype-without-resubmit) in `lib/transcript.test.js`.
+2. **Retype/recovery false negative (agent-side fix only — a hook-side fix was proposed, empirically tested, and rejected).** A live run hit a ChatGPT compose-box quirk (Enter submits — an embedded `\n` in a `type` action fires a premature submit) that forced a retype, and the resulting messy submit/retype/read ordering meant a genuinely-completed breadth query went unproven. A candidate hook fix (preserve `submitted` state across a same-gate retype) was built and tested against both the real failing transcript AND a synthetic false-positive case (submit → retype → read an UNRELATED response, no further submit) — **the same fix that resolved the real case also proved the synthetic false positive**, because the two patterns are mechanically indistinguishable from tool-call structure alone (confirmed empirically, not just reasoned). Rejected on that basis — the verifier stays exactly as strict as it was. Fixed instead at the root cause, in `rushcut-pp-consultant.md`'s Setup steps 6–7: never embed a literal newline in a `type` action (single-line the whole query), and always read the response immediately after a submit, before composing the next query. `lib/transcript.test.js` locks in the rejected design's unsafety as a permanent regression guard ("retype/recovery without a new submit: FAIL").
+
 | Result | Criteria |
 |---|---|
-| ✅ PASS | 2 Perplexity `tool_use` entries confirmed in Consultant transcript. Findings mapped to plan. CPO issues `GATE 3: APPROVED`. |
-| ❌ FAIL — search missing | Fewer than 2 Perplexity tool_use entries in transcript. Hook blocks. Consultant must re-run. |
+| ✅ PASS | 2 ChatGPT `tool_use` cycles confirmed in Consultant transcript, both tagged with the SAME GitHub issue number. Findings mapped to plan. CPO issues `GATE 3: APPROVED`. |
+| ❌ FAIL — search missing | Fewer than 2 proven query cycles in transcript. Hook blocks. Consultant must re-run. |
+| ❌ FAIL — issue mismatch | Both query cycles proven, but their captured issue numbers are missing or don't match. Hook blocks with the specific numbers found. Consultant must re-run with a consistent `GitHub issue #<N>:` prefix. |
 | ❌ FAIL — CPO rejects | CPO finds plan does not adequately address flagged findings. Returns to CC for plan revision. Gate 3 re-runs in full. |
 
 **Hard rules:**
-- Perplexity session is always sequential — never run while another Perplexity session is active (browser contention)
+- A ChatGPT Gate 3 run is always sequential — never run while another Gate 3 spawn is active (browser contention)
 - CPO VERDICT must be explicit text string: `GATE 3: APPROVED` or `GATE 3: REJECTED — [reason]`
 - CC cannot begin any implementation until `GATE 3: APPROVED` appears in transcript
 
@@ -232,7 +243,7 @@ gets caught before, not after, the plan is fully drafted and sent through Gate 3
 Step 1: Gate 1 (JTBD) → CPO
 Step 2: Gate 2 (Context) → Consultant WebSearch
 Step 3: CC drafts dev plan
-Step 4: Gate 3 (Plan + Traps) → Consultant Perplexity → CPO VERDICT
+Step 4: Gate 3 (Plan + Traps) → Consultant ChatGPT → CPO VERDICT
 Step 5: CC implements
 ```
 
@@ -278,13 +289,13 @@ Step 5: Delivery
 
 ---
 
-### Perplexity — when and how
+### ChatGPT — when and how
 
-**Used in:** Gate 3 only (plan + traps, merged)
+**Used in:** Gate 3 only (plan + traps, merged) — migrated off Perplexity 2026-08-25, same templates and same purpose, different execution backend.
 
-**Goal:** Multi-model synthesis. Use Perplexity precisely because it reasons differently from Claude — the point is to surface blind spots and alternative approaches, not confirm what Claude already thinks.
+**Goal:** Multi-model synthesis. Use ChatGPT precisely because it's a different company's foundation model (OpenAI, not Anthropic) and reasons differently from Claude — the point is to surface blind spots and alternative approaches, not confirm what Claude already thinks.
 
-**Key principle (from official Perplexity docs):** Every prompt must specify BOTH how to search (retrieval mode) AND how to answer (output shape). A prompt that only asks a question gets a generic answer. A prompt that specifies sources + output format gets a structured, citable result.
+**Key principle:** Every prompt must specify BOTH how to search (retrieval mode) AND how to answer (output shape). A prompt that only asks a question gets a generic answer. A prompt that specifies sources + output format gets a structured, citable result. (No explicit search-mode toggle exists to select on the free tier — a well-specified prompt still auto-triggers a real web search when the query needs current information, confirmed live.)
 
 ---
 
@@ -329,7 +340,7 @@ Format as a table: Finding | Accounted for? | Risk if ignored
 - Alternative approaches with better production track records
 - Version-specific gotchas for the RushCut stack (Tauri, React, TypeScript)
 - UX/performance patterns from comparable tools (DaVinci, CapCut, Premiere)
-- Devil's advocate positions — Perplexity's multi-model synthesis may disagree with Claude's approach
+- Devil's advocate positions — ChatGPT's multi-model synthesis may disagree with Claude's approach
 
 **Pass threshold:** Consultant must produce the findings table and explicitly flag every "NOT accounted for" row to CPO. CPO decides whether each gap is acceptable or blocks the plan.
 

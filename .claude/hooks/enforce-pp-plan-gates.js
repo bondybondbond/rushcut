@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PreToolUse hook: hard gate ensuring rushcut-dev-plan's Gate 2 (competitor/context research) and
-// Gate 3 (plan + traps, Perplexity, CPO verdict) checkpoints actually happened -- with PROOF (real
+// Gate 3 (plan + traps, ChatGPT, CPO verdict) checkpoints actually happened -- with PROOF (real
 // tool_use evidence read from a subagent's own transcript, plus a structural VERDICT marker in the
 // CPO's relayed result), not just "the agent was spawned" or a self-reported claim.
 //
@@ -10,9 +10,12 @@
 //   Gate 1 (JTBD) -- CPO only, no search, enforced separately by enforce-cpo-gate1-spawn.js.
 //   Gate 2 (competitor/context) -- rushcut-pp-consultant, Claude WebSearch only, >=3 distinct
 //     queries spanning >=2 source types (see countWebSearchDiversity in lib/transcript.js).
-//   Gate 3 (plan + traps) -- rushcut-pp-consultant, ONE Perplexity spawn, TWO sequential queries
-//     (breadth then depth) in the same thread, findings mapped to the plan and written to a
-//     scratch file; rushcut-cpo then reads that file and renders the actual VERDICT.
+//   Gate 3 (plan + traps) -- rushcut-pp-consultant, ONE ChatGPT Project spawn, TWO sequential
+//     queries (breadth then depth), by default in the same thread, findings mapped to the plan
+//     and written to a scratch file; rushcut-cpo then reads that file and renders the actual
+//     VERDICT. (Migrated 2026-08-25 from Perplexity -- same contract, same fingerprints, same
+//     mechanical proof, different execution backend; see lib/transcript.js's countGateCycles
+//     header comment for what changed and what was live-verified.)
 //
 // Origin of the underlying "prove it, don't trust prose" approach: 2026-07-23, after the
 // maintainer discovered a session shipped (#103/#148/#149) with no mechanical proof that required
@@ -179,16 +182,26 @@ for (const spawn of consultantSpawns) {
   }
 }
 
-// Gate 3: any completed Consultant spawn proving BOTH the "breadth" and "depth" Perplexity query
-// cycles (type(fingerprint)->submit->new-read, per countGateCycles), or a genuine tried-blocked
-// Chrome-unavailable case (Consultant's own documented WebSearch fallback for Gate 3).
+// Gate 3: any completed Consultant spawn proving BOTH the "breadth" and "depth" ChatGPT query
+// cycles (type(fingerprint)->submit->new-read, per countGateCycles) AND -- added 2026-08-26,
+// issue #158 follow-up -- both cycles' captured issue numbers matching and non-null, or a genuine
+// tried-blocked Chrome-unavailable case (Consultant's own documented WebSearch fallback for Gate 3).
+// Without the issue-number check, a `chatgpt.com` domain hit plus two fingerprint matches would
+// pass even if Query 1 and Query 2 (which may legitimately land in separate chats under the
+// free-tier quota-pause fallback) belonged to two DIFFERENT GitHub issues -- confirmed as a real
+// gap, not theoretical, via live cross-chat testing (see docs/agent_plan.md's Gate 3 section).
 let gate3Satisfied = false;
+let gate3IssueMismatch = null; // set when both gates prove but issue numbers don't correlate -- a more specific failure than "not satisfied at all"
 for (const spawn of consultantSpawns) {
   if (!spawn.resolved || !spawn.resolved.complete) continue;
-  const { provenGates, triedBlocked } = countGateCycles(transcriptPath, spawn.resolved.agentId);
+  const { provenGates, issueNumbers, triedBlocked } = countGateCycles(transcriptPath, spawn.resolved.agentId);
   if (provenGates.has("breadth") && provenGates.has("depth")) {
-    gate3Satisfied = true;
-    break;
+    if (issueNumbers.breadth && issueNumbers.depth && issueNumbers.breadth === issueNumbers.depth) {
+      gate3Satisfied = true;
+      break;
+    }
+    gate3IssueMismatch = { breadth: issueNumbers.breadth, depth: issueNumbers.depth };
+    continue; // both fingerprints matched but issue numbers don't correlate -- keep checking other spawns rather than fail immediately
   }
   if (triedBlocked) {
     gate3Satisfied = true;
@@ -210,10 +223,17 @@ if (!gate2Satisfied) {
       `before editing implementation files.`
   );
 }
-if (!gate3Satisfied) {
+if (!gate3Satisfied && gate3IssueMismatch) {
   missing.push(
-    `Gate 3 (plan + traps): no completed rushcut-pp-consultant spawn proves both the breadth and depth Perplexity ` +
-      `query cycles (a fingerprinted query typed on Perplexity, an actual submit transition, and a genuinely new ` +
+    `Gate 3 (plan + traps): both the breadth and depth ChatGPT query cycles were proven, but their captured ` +
+      `GitHub issue numbers do not correlate (breadth tagged issue #${gate3IssueMismatch.breadth ?? "<none>"}, ` +
+      `depth tagged issue #${gate3IssueMismatch.depth ?? "<none>"}) -- both must reference the SAME issue, and ` +
+      `neither may be missing. Re-run Gate 3 with both queries opening on "GitHub issue #<N>: " for this issue.`
+  );
+} else if (!gate3Satisfied) {
+  missing.push(
+    `Gate 3 (plan + traps): no completed rushcut-pp-consultant spawn proves both the breadth and depth ChatGPT ` +
+      `query cycles (a fingerprinted query typed on chatgpt.com, an actual submit transition, and a genuinely new ` +
       `post-submit read -- not just any browser tool call), and no genuine tried-and-blocked Chrome-unavailable ` +
       `case was found either. Spawn rushcut-pp-consultant to run Gate 3 before editing implementation files.`
   );

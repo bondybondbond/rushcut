@@ -365,28 +365,60 @@ function extractVerdict(resultText) {
 // stale/cached re-read, or a typed-but-never-submitted query. This version requires, per gate,
 // in order: (1) a `type` action matching that gate's FIXED template fingerprint (see
 // GATE_FINGERPRINTS -- pulled verbatim from rushcut-real-pp-auditor.md's own gate templates,
-// not a length guess) while tracked domain state is Perplexity, (2) a submit transition
+// not a length guess) while tracked domain state is ChatGPT, (2) a submit transition
 // (key/left_click/navigate) after the type, (3) a read (get_page_text/read_page) after THAT
 // whose own tool_result content is both non-trivial (CONTENT_LENGTH_FLOOR, now a secondary
 // anti-empty guard only) AND genuinely NEW relative to every prior read in this transcript (not
 // a stale/homepage re-read) -- see textsSimilar. Domain tracking and content-delta comparison
-// are proxies, not verified against Perplexity's actual DOM/URL scheme (no live Perplexity
-// session was driven while building this) -- documented limitation, not a claim of certainty.
+// are proxies, not verified against ChatGPT's actual DOM scheme in fine detail (a live session
+// WAS driven to confirm the shape below, 2026-08-25 migration off Perplexity -- see
+// docs/LEARNINGS.md), but content-delta staleness detection specifically remains unverified
+// against a real repeated-read case.
 
 // Rewritten 2026-07-24 (issue #156, CPO/Consultant/CC redesign): the old 4-gate auditor model
 // (one spawn covering Gates 1-2, a second covering Gates 3-4, each needing >=2 fingerprint matches
 // to count as "satisfied") is replaced by a single Gate 3 owned by rushcut-pp-consultant: ONE
-// Perplexity spawn, TWO sequential queries (breadth then depth) in the SAME thread. Gate 1 is now
-// CPO's own quick JTBD judgment (see enforce-cpo-gate1-spawn.js) with no search involved at all.
-// Gate 2 is Consultant's WebSearch-only competitor/context research (see countWebSearchDiversity
-// below), never Perplexity.
+// research-tool spawn, TWO sequential queries (breadth then depth). Gate 1 is now CPO's own quick
+// JTBD judgment (see enforce-cpo-gate1-spawn.js) with no search involved at all. Gate 2 is
+// Consultant's WebSearch-only competitor/context research (see countWebSearchDiversity below),
+// never the Gate 3 tool.
+//
+// Migrated 2026-08-25 from Perplexity to a ChatGPT Project ("RushCut") as Gate 3's execution
+// backend -- same contract, same fingerprints, same mechanical proof; only the domain string and
+// the "same thread" assumption changed (see below). Live-verified against the real ChatGPT
+// Project UI before this change: (1) no mode/model toggle exists or is needed on the free tier
+// (no picker at all -- every conversation runs the standard default model); (2) driving the
+// compose box via `computer` type/Return does NOT re-fire a `navigate` tool call -- the SPA route
+// changes the tab's URL without a fresh `navigate` -- but this is harmless for domain tracking
+// since `currentDomain` only needs to be set ONCE per spawn (from the initial navigate to the
+// project URL) and nothing else in a Gate 3 spawn ever navigates to a different domain in between;
+// (3) the free tier enforces a real, reproducible quota: a fresh chat's first message succeeds,
+// but an immediate follow-up in the SAME thread is blocked ("Chat paused until usage resets") --
+// confirmed via direct testing, not assumed. Per the user (whose own ChatGPT app usage doesn't
+// hit this limit -- it's specific to driving the web UI): Consultant's own protocol is now
+// "continue in the same thread by default; if the pause banner appears, start a NEW chat within
+// the RushCut project and restate the GitHub issue number as the first line" -- so Query 1 and
+// Query 2 may legitimately land in two different chats, both still on chatgpt.com the whole time.
+// This is why `currentDomain` tracking (below) intentionally does not require both gates to share
+// one `navigate` call -- only that no OTHER domain was navigated to in between.
 const GATE_FINGERPRINTS = {
   breadth: /Search developer communities, official documentation, GitHub issues, and Stack Overflow/,
   depth: /Here is an implementation plan summary/,
 };
 
+// Cross-chat issue-number correlation (added 2026-08-26, issue #158 follow-up). Deliberately a
+// SEPARATE regex from GATE_FINGERPRINTS, matched independently against the same `type` event text
+// -- this keeps the query-template fingerprints themselves frozen (no wording change needed) while
+// closing a real gap found via live testing: a `chatgpt.com` domain hit alone proves "some ChatGPT
+// activity happened," not "breadth and depth research happened for the SAME issue." Confirmed via
+// direct testing (not assumed) that a mismatched-issue-number pair independently satisfies both
+// fingerprints today with nothing to catch the mismatch -- see the live cross-chat dry-run notes in
+// docs/agent_plan.md's Gate 3 section. `rushcut-pp-consultant.md`'s protocol requires every Gate 3
+// message to open with "GitHub issue #<N>: " -- this regex reads that back out as evidence.
+const ISSUE_NUMBER_RE = /GitHub issue #(\d+)/i;
+
 // Documented, accepted gap (flagged by rushcut-pp-consultant's Round 2 review, 2026-07-24): this
-// only proves SOME key/click happened after the fingerprinted type, on the Perplexity domain --
+// only proves SOME key/click happened after the fingerprinted type, on the ChatGPT domain --
 // a transcript alone can't confirm the click landed on the actual submit control vs. an unrelated
 // element on the page. Acceptable because the auditor is a cooperative, instructed agent
 // following its own documented protocol, not adversarial; tightening further would need real
@@ -433,7 +465,29 @@ function textsSimilar(a, b) {
 // ("breadth"/"depth", by GATE_FINGERPRINTS) it actually proved via a full
 // type(fingerprint)->submit->new-read cycle, plus whether it hit the documented
 // Chrome-unavailable tried-blocked case (falls back to WebSearch per the agent's own file).
-// Returns { provenGates: Set<"breadth"|"depth">, triedBlocked: boolean, unreadable: boolean }.
+// Returns { provenGates: Set<"breadth"|"depth">, issueNumbers: {breadth: string|null, depth:
+// string|null}, triedBlocked: boolean, unreadable: boolean }.
+//
+// Cross-chat correlation (added 2026-08-26, issue #158 follow-up): `issueNumbers` records which
+// GitHub issue number (per ISSUE_NUMBER_RE) was present in the SAME `type` event that satisfied
+// each proven gate's fingerprint -- null if that gate wasn't proven, or if the type text had no
+// issue-number prefix at all. The caller (enforce-pp-plan-gates.js) is responsible for requiring
+// both to be present AND equal; this function only reports what it found, it doesn't judge.
+// Deliberately does NOT verify the "wrong chat"/wrong-PROJECT guard (that the active conversation
+// is actually inside the RushCut ChatGPT Project, not just chatgpt.com generally) -- narrower gap,
+// same category, would need reading a `read_page` result's visible project/chat title, which this
+// function doesn't currently parse for content beyond the read-freshness check.
+//
+// Deliberately does NOT attempt to tolerate a retype/recovery sequence (e.g. an agent correcting a
+// premature-submit) as an alternate path to proof -- tested and rejected 2026-08-26: any state
+// change that credits a submit-then-retype-then-read sequence is mechanically indistinguishable
+// from crediting a submit-then-retype-then-UNRELATED-read false positive (empirically confirmed,
+// not just argued -- both patterns produce the identical tool-call shape). The fix for that failure
+// mode lives on the agent side instead (rushcut-pp-consultant.md's Gate 3 setup: never embed a
+// literal newline in a `type` action against ChatGPT's compose box -- Enter submits, so an embedded
+// `\n` mid-type fires a premature submit; and always read the response immediately after a submit,
+// before starting any further typing for the next query) -- keeping this verifier exactly as strict
+// as it already was, rather than teaching it to infer intent from an ambiguous pattern.
 function countGateCycles(transcriptPath, agentId) {
   const subPath = subagentTranscriptPath(transcriptPath, agentId);
   let lines;
@@ -441,7 +495,7 @@ function countGateCycles(transcriptPath, agentId) {
     const raw = fs.readFileSync(subPath, "utf8");
     lines = raw.length ? raw.split("\n").filter(Boolean) : [];
   } catch {
-    return { provenGates: new Set(), triedBlocked: false, unreadable: true };
+    return { provenGates: new Set(), issueNumbers: { breadth: null, depth: null }, triedBlocked: false, unreadable: true };
   }
 
   const events = [];
@@ -464,21 +518,25 @@ function countGateCycles(transcriptPath, agentId) {
   let currentDomain = null;
   const priorReadTexts = [];
   const provenGates = new Set();
-  let pendingGate = null; // { gate, submitted }
+  const issueNumbers = { breadth: null, depth: null };
+  let pendingGate = null; // { gate, submitted, issueNumber }
 
   for (const ev of events) {
     if (ev.name === LIST_BROWSERS_TOOL) sawListBrowsers = true;
 
     if (ev.name === NAVIGATE_TOOL && typeof ev.input.url === "string") {
-      currentDomain = ev.input.url.includes("perplexity") ? "perplexity" : "other";
+      currentDomain = ev.input.url.includes("chatgpt.com") ? "chatgpt" : "other";
       if (pendingGate && !pendingGate.submitted) pendingGate.submitted = true;
       continue;
     }
 
     if (ev.name === COMPUTER_TOOL && ev.input.action === "type" && typeof ev.input.text === "string") {
-      if (currentDomain !== "perplexity") continue;
+      if (currentDomain !== "chatgpt") continue;
       for (const [gateKey, fp] of Object.entries(GATE_FINGERPRINTS)) {
-        if (fp.test(ev.input.text)) pendingGate = { gate: gateKey, submitted: false };
+        if (fp.test(ev.input.text)) {
+          const issueMatch = ev.input.text.match(ISSUE_NUMBER_RE);
+          pendingGate = { gate: gateKey, submitted: false, issueNumber: issueMatch ? issueMatch[1] : null };
+        }
       }
       continue;
     }
@@ -490,11 +548,12 @@ function countGateCycles(transcriptPath, agentId) {
 
     if (READ_TOOLS.has(ev.name)) {
       const resultText = findToolResultText(lines, ev.toolUseId, ev.index + 1);
-      if (pendingGate && pendingGate.submitted && currentDomain === "perplexity") {
+      if (pendingGate && pendingGate.submitted && currentDomain === "chatgpt") {
         const isSubstantial = resultText.length >= CONTENT_LENGTH_FLOOR;
         const isNew = !priorReadTexts.some((prev) => textsSimilar(prev, resultText));
         if (isSubstantial && isNew) {
           provenGates.add(pendingGate.gate);
+          issueNumbers[pendingGate.gate] = pendingGate.issueNumber;
           pendingGate = null;
         }
       }
@@ -514,7 +573,7 @@ function countGateCycles(transcriptPath, agentId) {
   // rushcut-pp-consultant's own Round 2 review flagged that a looser bound wasn't independently
   // justified against any real 2-event failure shape.
   const triedBlocked = sawListBrowsers && provenGates.size === 0 && events.length === 1;
-  return { provenGates, triedBlocked, unreadable: false };
+  return { provenGates, issueNumbers, triedBlocked, unreadable: false };
 }
 
 // --- Gate 2 proof (enforce-pp-plan-gates.js's rushcut-pp-consultant WebSearch check, #156) ---

@@ -4,7 +4,7 @@
 // pipeline/_test_clipitem_splice.py) -- no external test framework, run manually via
 // `node .claude/hooks/lib/transcript.test.js`, not wired into CI. Exists specifically because
 // countGateCycles()/latestVerdict() implement the mechanical proof this session's gates depend
-// on; a synthetic-but-schema-accurate fixture proves the logic without needing a live Perplexity
+// on; a synthetic-but-schema-accurate fixture proves the logic without needing a live ChatGPT
 // session to run every time.
 //
 // Fixture schema notes (all reverse-engineered from real transcripts this session, not assumed):
@@ -128,12 +128,12 @@ function test(name, fn) {
 const BREADTH_TYPE =
   "Search developer communities, official documentation, GitHub issues, and Stack Overflow for prior art on this problem.";
 const DEPTH_TYPE = "Here is an implementation plan summary -- does this hold up against real-world traps?";
-const REAL_ANSWER_1 = "A".repeat(600) + " -- direct answer about the breadth query, this is a genuinely new synthesized response from Perplexity covering prior art in detail.";
+const REAL_ANSWER_1 = "A".repeat(600) + " -- direct answer about the breadth query, this is a genuinely new synthesized response from ChatGPT covering prior art in detail.";
 const REAL_ANSWER_2 = "B".repeat(600) + " -- a completely different synthesized answer about the plan-fit depth query, traps and implementation risk discussed at length here.";
 
 function twoFullCycleCalls() {
   return [
-    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
@@ -168,7 +168,7 @@ test("1-cycle spawn: only 1 gate proven when 2nd type/submit/read never happens"
 
 test("type without submit: read after type-but-no-submit does not prove the gate", () => {
   const calls = [
-    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     // no submit action here -- read happens directly after typing, query never submitted
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
@@ -181,7 +181,7 @@ test("type without submit: read after type-but-no-submit does not prove the gate
 test("submit without new content: stale/homepage re-read does not prove the gate", () => {
   const STALE = "C".repeat(600) + " homepage boilerplate text that never changes across reads.";
   const calls = [
-    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: STALE }, // initial setup read
     { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
@@ -200,7 +200,7 @@ test("textsSimilar edge case: shared boilerplate prefix but substantially longer
   const FIRST_READ = BOILERPLATE_PREFIX + "D".repeat(310); // setup/model-check read, ~360 chars
   const SECOND_READ = BOILERPLATE_PREFIX + "E".repeat(900); // genuinely new, much longer answer
   const calls = [
-    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
     { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: FIRST_READ },
     { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
@@ -209,6 +209,139 @@ test("textsSimilar edge case: shared boilerplate prefix but substantially longer
   const dir = writeSpawnFixture("boilerplate-prefix", "agentBoilerplate", calls);
   const result = countGateCycles(transcriptPathFor(dir), "agentBoilerplate");
   assert.strictEqual(result.provenGates.size, 1, "a substantially longer new answer must prove the gate despite a shared opening prefix");
+});
+
+// --- Fix 2: cross-chat issue-number correlation (issue #158 follow-up, 2026-08-26) ---
+// Mirrors enforce-pp-plan-gates.js's own gate3Satisfied logic: both gates proven AND their
+// issueNumbers equal and non-null. countGateCycles() only REPORTS issueNumbers; this helper is
+// what actually judges pass/fail, same as the real hook does.
+function gate3Passes(result) {
+  if (!result.provenGates.has("breadth") || !result.provenGates.has("depth")) return false;
+  const { breadth, depth } = result.issueNumbers;
+  return Boolean(breadth) && Boolean(depth) && breadth === depth;
+}
+
+function issueTagged(n, text) {
+  return `GitHub issue #${n}: ${text}`;
+}
+
+test("Fix 2 matrix — same issue, same chat: PASS", () => {
+  const calls = [
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(158, BREADTH_TYPE) } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(158, DEPTH_TYPE) } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_2 },
+  ];
+  const dir = writeSpawnFixture("fix2-same-chat", "agentFix2SameChat", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentFix2SameChat");
+  assert.strictEqual(gate3Passes(result), true, "same issue in the same chat must pass");
+});
+
+test("Fix 2 matrix — same issue, separate chats (quota-pause fallback shape): PASS", () => {
+  const calls = [
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(158, BREADTH_TYPE) } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(158, DEPTH_TYPE) } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_2 },
+  ];
+  const dir = writeSpawnFixture("fix2-separate-chats-match", "agentFix2SeparateMatch", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentFix2SeparateMatch");
+  assert.strictEqual(gate3Passes(result), true, "same issue across separate chats must still pass");
+});
+
+test("Fix 2 matrix — different issues, separate chats: FAIL", () => {
+  const calls = [
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(158, BREADTH_TYPE) } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(999, DEPTH_TYPE) } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_2 },
+  ];
+  const dir = writeSpawnFixture("fix2-mismatched-issues", "agentFix2Mismatch", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentFix2Mismatch");
+  assert.ok(result.provenGates.has("breadth") && result.provenGates.has("depth"), "both fingerprints must still independently prove -- the mismatch is caught at the correlation layer, not by hiding the underlying proof");
+  assert.strictEqual(result.issueNumbers.breadth, "158");
+  assert.strictEqual(result.issueNumbers.depth, "999");
+  assert.strictEqual(gate3Passes(result), false, "mismatched issue numbers across chats must fail Gate 3");
+});
+
+test("Fix 2 matrix — missing issue prefix entirely: FAIL (fails closed)", () => {
+  const calls = twoFullCycleCalls(); // BREADTH_TYPE/DEPTH_TYPE with no "GitHub issue #N:" prefix at all
+  const dir = writeSpawnFixture("fix2-no-prefix", "agentFix2NoPrefix", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentFix2NoPrefix");
+  assert.ok(result.provenGates.has("breadth") && result.provenGates.has("depth"), "fingerprints still prove without the issue prefix -- GATE_FINGERPRINTS wording is unchanged");
+  assert.strictEqual(result.issueNumbers.breadth, null);
+  assert.strictEqual(result.issueNumbers.depth, null);
+  assert.strictEqual(gate3Passes(result), false, "a missing issue-number prefix on both sides must fail closed, not pass permissively");
+});
+
+test("Fix 2 matrix — real captured query text (issue #158, same chat): PASS", () => {
+  // Uses the ACTUAL typed text captured from the real live dry-run, not synthetic filler.
+  const realBreadthText =
+    "GitHub issue #158: Search developer communities, official documentation, GitHub issues, and Stack Overflow.\n\nTopic: Browser-automation-driven LLM research";
+  const realDepthText =
+    "GitHub issue #158: Here is an implementation plan summary: RushCut's Gate 3 research step migrated from Perplexity to a real ChatGPT Project driven via browser automation.";
+  const calls = [
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: realBreadthText } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: realDepthText } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_2 },
+  ];
+  const dir = writeSpawnFixture("fix2-real-text", "agentFix2RealText", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentFix2RealText");
+  assert.strictEqual(gate3Passes(result), true, "real captured query text with matching issue numbers must pass");
+});
+
+test("Fix 2 matrix — retype/recovery without a new submit: FAIL (locks in the #158 discovery — a retype cannot manufacture proof of a new submission)", () => {
+  // Deliberately reproduces the EXACT false-positive shape found live 2026-08-26: submit, then a
+  // same-gate retype, then a read with NO further submit after the retype. The rejected Fix 1
+  // design (preserving `submitted` across a same-gate retype) would have proven this. The shipped
+  // code must NOT -- confirmed here as a permanent regression guard, not just a one-off finding.
+  const calls = [
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(158, BREADTH_TYPE) } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } }, // submit #1
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: issueTagged(158, BREADTH_TYPE) } }, // retype, same gate, NO submit after this
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 }, // a fresh, substantial read -- but with no submit after the retype
+  ];
+  const dir = writeSpawnFixture("fix2-retype-no-resubmit", "agentFix2RetypeNoResubmit", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentFix2RetypeNoResubmit");
+  assert.strictEqual(result.provenGates.has("breadth"), false, "a retype with no submit afterward must NOT prove the gate, even though a fresh substantial read followed it");
+});
+
+test("thread switch mid-gate: breadth in one chat, depth in a NEW chat after a re-navigate, still proves both gates", () => {
+  // Models the free-tier quota fallback (2026-08-25 migration): Consultant hits ChatGPT's
+  // "Chat paused until usage resets" limit after Query 1, starts a fresh chat within the same
+  // RushCut project for Query 2 (a second `navigate` call, still chatgpt.com), and continues.
+  // currentDomain must stay "chatgpt" across the re-navigate, not reset/break the cycle.
+  const calls = [
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_1 },
+    // quota pause hit here -- Consultant starts a new chat in the same project for Query 2
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: DEPTH_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "left_click" } },
+    { name: "mcp__claude-in-chrome__get_page_text", input: {}, resultText: REAL_ANSWER_2 },
+  ].map((c) => ({ ...c, resultText: c.resultText ?? "" }));
+  const dir = writeSpawnFixture("thread-switch", "agentThreadSwitch", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentThreadSwitch");
+  assert.strictEqual(result.provenGates.size, 2, `expected 2 proven gates across the thread switch, got ${result.provenGates.size}`);
+  assert.ok(result.provenGates.has("breadth") && result.provenGates.has("depth"));
 });
 
 test("triedBlocked: exactly 1 event (list_connected_browsers only) is the fail-fast case", () => {
@@ -222,7 +355,7 @@ test("triedBlocked: exactly 1 event (list_connected_browsers only) is the fail-f
 test("triedBlocked: a genuinely-attempted-but-interrupted spawn is NOT tried-blocked", () => {
   const calls = [
     { name: "mcp__claude-in-chrome__list_connected_browsers", input: {}, resultText: "[{ok:true}]" },
-    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://www.perplexity.ai/spaces/rushcut" } },
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
     { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
     // interrupted here -- no submit, no read, spawn just stopped
   ];

@@ -1421,6 +1421,22 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow — empirically test a hook algorithm change against the real failing transcript AND a synthetic adversarial case before shipping it (2026-08-26, issue #158)
+
+**Problem:** A candidate fix for a real, live-discovered false negative in `countGateCycles()` (retype/recovery losing submit-progress) looked correct by inspection and by reasoning through the real failing trace. It was NOT correct — applying it also proved a synthetic false-positive scenario (submit → retype → read an unrelated response, no further submit), because the two patterns are mechanically indistinguishable from tool-call structure alone. This wasn't visible from reading the code or arguing about it; it only became visible by actually running both scenarios through the candidate implementation.
+**Solution:** Before editing shipped verification/enforcement logic, write a small standalone script implementing the candidate change, and run it against (a) the real transcript that exposed the original failure, confirming the fix actually resolves it, AND (b) a deliberately constructed adversarial case representing the worst-case exploit of the new leniency, confirming it does NOT pass. If the same change makes (a) pass and (b) fail correctly, ship it. If it makes both pass, the fix is unsafe — don't ship it; look for the fix at a different layer (in this case, the actual fix moved from the hook to the agent's own behavior, preventing the ambiguous pattern from occurring at all rather than teaching the verifier to tolerate it).
+**Context:** Any change to a PreToolUse hook, transcript-verification helper, or other mechanically-enforced gate in `.claude/hooks/`. Applies especially when the "fix" involves making a strict check more lenient in response to a real failure — leniency is exactly where false positives hide. See `.claude/hooks/lib/transcript.js`'s `countGateCycles()` header comment and `transcript.test.js`'s "Fix 2 matrix" tests for the concrete before/after.
+
+---
+
+## Workflow — `Bash` grep across the whole repo tree can time out; use the `Grep` tool instead (2026-08-26)
+
+**Problem:** `grep -rli "perplexity" ... .` via the Bash tool across the full RushCut repo (even with several directory exclusions) did not complete within the 120s default timeout and had to be moved to a background task that was never actually read — a wasted round trip.
+**Solution:** Use the dedicated `Grep` tool (ripgrep-based) for any repo-wide content search. It respects `.gitignore` automatically (so it doesn't walk `node_modules`, `target/`, etc.), returns in well under a second even on a full-repo search, and needs no manual exclusion flags.
+**Context:** Any content search spanning more than a couple of known directories. `Bash`/`grep` is fine for a single small, already-known file; anything broader should default to `Grep` from the start, not as a fallback after a timeout.
+
+---
+
 ## Pipeline — Step 2 trim had zero interior progress ticks; `as_completed` + checkpoint interpolation is the reusable fix shape (#129, fixed 2026-07-16)
 
 **Problem:** `render.py`'s Step 2 "Trimming clips" loop submitted all clip trims to a `ThreadPoolExecutor` then iterated `for f in futures: f.result()` (blocks in submission order) and called `report(checkpoints["trim"])` exactly once, after every clip finished — zero interior ticks. On a real 4K project this stage measured `t_trim_s=62.2s` (4 clips, `trim()` re-encodes per #96, not a stream copy) with the bar sitting dead at the prior checkpoint the entire time — the same "stuck then jumps" symptom #12 fixed for the whole-pipeline stage weighting, just recurring one level deeper inside a single stage that has real per-clip parallel work.
