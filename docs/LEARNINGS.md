@@ -13,7 +13,7 @@ Each entry: `## <Tag> — <title>`, problem in ≤1 sentence, fix in ≤2 senten
 | `Workflow-gh`                                       | GitHub CLI / Projects GraphQL quirks — `gh issue`/`gh project` silent failures, truncation, reserved variable names |
 | `Workflow-WSL`                                      | WSL/PowerShell quoting and invocation mechanics — script-file-not-inline patterns |
 | `Workflow-CDP`                                      | CDP / `preview_*` MCP / Tauri IPC boundary — what can and can't attach to a running WebView2 |
-| `Workflow-GateMiss`                                 | A dev-tooling gate (`rushcut-pp-consultant`, `rushcut-qa-reviewer`, `rushcut-cpo`, wrapup's own Step 0.3) approved/PASSed something later found wrong — see `rushcut-wrapup` Step 0.9 |
+| `Workflow-GateMiss`                                 | A dev-tooling gate approved/PASSed something later found wrong. **New entries go to `.claude/cc-improvement-log.md` (category `workflow-gate-miss`) as of 2026-08-27**, not here — the entry below is retained as history. Review rule unchanged: `rushcut-wrapup` Step 0.9 |
 | `React`                                            | Component/state/media-element patterns, refs, render lifecycle                           |
 | `WebView2`                                         | Video playback, first-frame repaint, GPU compositor, `play()`/seek races                 |
 | `FFmpeg`                                           | `filter_complex`, codecs, audio, version-specific option changes                         |
