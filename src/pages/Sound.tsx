@@ -11,7 +11,7 @@ import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
 import { readTransitionConfig, readPlacedCards } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, trimmedMs, CARD_DUR_MS } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, filmPlayheadAtClip, cardRegionMs, trimmedMs, CARD_DUR_MS } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
@@ -627,7 +627,14 @@ export default function Sound() {
   }
 
   function handleFilmTimeUpdate(slot: "a" | "b", currentTimeSec: number) {
-    // Ignore events from the inactive slot — only the active slot drives progress
+    // Ignore events from the inactive slot — only the active slot drives progress.
+    // #163/F6: this is also the seek-intermediate guard for the needle write below —
+    // crossSeekToClip/promoteToFilmClipRough only flip activeFilmSlotRef to the seeking
+    // slot INSIDE the rVFC frame-reveal gate (after the presented frame's mediaTime
+    // matches the seek target), and the outgoing slot is paused before every transition,
+    // so a mid-seek `timeupdate` carrying an intermediate currentTime can't reach the
+    // playhead. The one same-clip direct-seek path (seekToFilmMs) sets the needle
+    // explicitly first, so a trailing timeupdate only re-affirms the same position.
     if (!filmPlayingRef.current || slot !== activeFilmSlotRef.current) return;
     const clip = inFilmRef.current[filmPlayIdxRef.current];
     if (!clip) return;
@@ -644,13 +651,20 @@ export default function Sound() {
     const elapsedMs = clipStartMsRef.current + offsetInClip;
 
     // Strip playhead needle — throttled to ~10fps so the state write is cheap.
-    // Converts naive elapsed → telescoped strip-time via filmTimeAtClipStart.
+    // #163: feed the shared filmPlayheadAtClip so this needle matches the Trimmer needle
+    // AND the strip ruler for EVERY card position (open + mid-roll), not just the open
+    // card. The old `hasOpenCard ? CARD_DUR_MS : 0` term ignored mid-roll cards, so a clip
+    // following a mid-roll card sat one card-width too far left and the needle snapped
+    // backward when the card hold ended.
     const now = performance.now();
     if (now - lastPlayheadUpdateRef.current >= 100) {
       lastPlayheadUpdateRef.current = now;
       const xfMs = clampedXfadeMs(inFilmRef.current, readTransitionConfig(projectId ?? ""));
-      const cardLead = hasOpenCard ? CARD_DUR_MS : 0;
-      setFilmPlayheadMs(cardLead + filmTimeAtClipStart(inFilmRef.current, filmPlayIdxRef.current, xfMs, false) + offsetInClip);
+      const placedNow = readPlacedCards(projectId ?? "");
+      const cardsBeforeClip = inFilmRef.current.map((c) => placedNow.some((p) => p.beforeClipId === c.id));
+      setFilmPlayheadMs(
+        filmPlayheadAtClip(inFilmRef.current, filmPlayIdxRef.current, xfMs, cardsBeforeClip, offsetInClip),
+      );
     }
 
     // Imperative DOM updates — avoid React re-render at 4-66Hz timeupdate rate
@@ -748,6 +762,12 @@ export default function Sound() {
    */
   function startCardHoldTicker(fromMs: number, baseFilmMs: number) {
     cardHoldStartAtRef.current = performance.now() - fromMs;
+    // #163: baseFilmMs is the telescoped card-region START; clamp the needle to the
+    // card-region WIDTH so at the hold's end it sits exactly at the next clip's start
+    // (filmPlayheadAtClip for that clip == base + cardRegionMs) — no overshoot into the
+    // following clip during the last ~xfade of the 3s hold, no discontinuity on resume.
+    const holdXfadeMs = clampedXfadeMs(inFilmRef.current, readTransitionConfig(projectId ?? ""));
+    const holdRegionMs = cardRegionMs(holdXfadeMs);
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
@@ -759,7 +779,7 @@ export default function Sound() {
         continueFromCardHold();
       } else {
         setCardHoldElapsedMs(elapsed);
-        setFilmPlayheadMs(baseFilmMs + elapsed);
+        setFilmPlayheadMs(baseFilmMs + Math.min(elapsed, holdRegionMs));
       }
     }, 100);
   }

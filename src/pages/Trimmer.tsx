@@ -12,7 +12,7 @@ import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/component
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig, cardDurationFlags, readPlacedCards } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, CARD_DUR_MS } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, filmPlayheadAtClip, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
 import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
 
@@ -1437,17 +1437,23 @@ export default function Trimmer() {
   const filmCardsBeforeClip = inFilm.map((c) => filmPlacedCards.some((p) => p.beforeClipId === c.id));
 
   // Film playhead: how far we are in render-time (ms), for the StickyFilmStrip cursor.
-  // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71); the
-  // open card adds its lead time so the playhead stays aligned with the card-inclusive ruler (#74).
-  // When parked on a card region (paused OR autoplaying through it), the cardHold position
-  // overrides the clip-derived one — #150: no longer gated on !isPlaying, since an autoplay
-  // hold keeps isPlaying true throughout.
+  // Telescoped via the shared filmPlayheadAtClip so the playhead matches the ruler (#71) AND
+  // adds back the lead of the card immediately before the current clip (#163 — the raw
+  // filmTimeAtClipStart omits it by contract). When parked on a card region (paused OR
+  // autoplaying through it), the cardHold position overrides the clip-derived one — #150:
+  // no longer gated on !isPlaying, since an autoplay hold keeps isPlaying true throughout.
+  const filmCardRegionMs = cardRegionMs(filmXfadeOverlapMs);
   const filmPositionMs = viewMode === "film"
     ? (cardHold
-        ? cardHold.filmMs + cardHoldElapsedMs // #150: animate the needle across the autoplay hold
+        // #150 animate the needle across the autoplay hold; #163 clamp to the card-region
+        // width so it parks at the card's end (== the next clip's start) instead of
+        // overshooting into the following clip while the 3s hold runs out.
+        ? cardHold.filmMs + Math.min(cardHoldElapsedMs, filmCardRegionMs)
         : inFilm[filmPlayIdx]
-          ? filmTimeAtClipStart(inFilm, filmPlayIdx, filmXfadeOverlapMs, filmCardsBeforeClip)
-            + Math.max(0, currentMs - (inFilm[filmPlayIdx].in_ms ?? 0))
+          ? filmPlayheadAtClip(
+              inFilm, filmPlayIdx, filmXfadeOverlapMs, filmCardsBeforeClip,
+              currentMs - (inFilm[filmPlayIdx].in_ms ?? 0),
+            )
           : undefined)
     : undefined;
   const configured = useConfiguredTabs(projectId ?? "");

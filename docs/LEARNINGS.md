@@ -1253,6 +1253,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## UI — Film-mode strip needle steps backward ~xfadeMs at every crossfade cut (naive offset on a telescoped base)
+
+**Problem:** The film-mode playhead feed is `filmTimeAtClipStart(i, telescoped) + (currentMs - in_ms)`. The within-clip offset runs the clip's FULL un-telescoped length, but the next clip's telescoped start is `xfadeMs` earlier — so at each clip->clip crossfade boundary the needle reaches `start(i) + trimmed(i)` then jumps back to `start(i+1) == start(i) + trimmed(i) - xfadeMs`. Up to a ~1.5s visible backward step per cut; only present when a non-default transition (crossfade/dip) is active.
+**Solution:** Not yet fixed — pre-existing, surfaced by `src/utils/filmDuration.selftest.ts` during #163 (which fixed only the card-region variant of the same class). Tracked as **#164** (this backstep) and **#165** (the real fix: one authoritative sequence-time clock where the media element is a slave and every segment — clip, card, xfade zone — is a pure projection; Remotion/timingsrc/OTIO model). Do not "fix" it by clamping the offset to the telescoped width alone: that desyncs the needle from the actual media frame during the crossfade, where both clips are genuinely on screen.
+**Context:** `src/pages/Trimmer.tsx` `filmPositionMs`, `src/pages/Sound.tsx` `handleFilmTimeUpdate`, both via `filmPlayheadAtClip()` in `src/utils/filmDuration.ts`. Distinct from the "Partial-truth timeline elements" entry above (that's a decorative-tile geometry omission) and from the Sound seek-offset caveat under the `#74` follow-up (that's strip-CLICK mapping, not the playback needle).
+
+---
+
 ## Pipeline — `inject_silence_where_needed` replaces clips in-place, never adds them
 
 **Problem:** It was assumed that `inject_silence_where_needed` in `render.py` adds a new silent clip alongside the original, increasing clip count and adding an extra xfade overlap. Code was planned to compensate for this with a `has_silent_pad` flag in `effectiveFilmMs`.
