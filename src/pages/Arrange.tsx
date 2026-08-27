@@ -865,6 +865,15 @@ export default function Arrange() {
     setSelectedCardId(null);
   }
 
+  // #151: move an already-placed card to a different gap. Only the anchor changes --
+  // text/subtitle/colour/animation are untouched, and selectedCardId is left alone so
+  // the Cards-tab form mode stays put. mutateCards is the existing functional updater
+  // (stale-closure-safe per its own docstring), so a drag that spans time can't act on
+  // a stale placedCards snapshot.
+  function handleRepositionCard(cardId: string, beforeClipId: string | null) {
+    mutateCards((prev) => prev.map((c) => (c.id === cardId ? { ...c, beforeClipId } : c)));
+  }
+
   function handleCardPreviewDragStart(e: React.DragEvent<HTMLDivElement>) {
     e.dataTransfer.setData("application/x-rushcut-card", "1");
     e.dataTransfer.effectAllowed = "copy";
@@ -895,6 +904,7 @@ export default function Arrange() {
           activeCardId={tab === "cards" ? selectedCardId : null}
           onSelectCard={tab === "cards" ? handleSelectCard : undefined}
           onDropCard={tab === "cards" ? handleDropCard : undefined}
+          onRepositionCard={tab === "cards" ? handleRepositionCard : undefined}
         />
       }
       timelineGutter={

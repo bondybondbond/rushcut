@@ -107,6 +107,15 @@ interface StickyFilmStripProps {
    * check in onDragOverClipRow) — the caller never has to dedupe.
    */
   onDropCard?: (beforeClipId: string | null) => void;
+  /**
+   * #151: called on drop when an already-placed card tile is dragged to a different gap.
+   * An `application/x-rushcut-card-id` entry on the dataTransfer distinguishes this
+   * "move an existing card" case from onDropCard's "place a new card". First arg is the
+   * card id being moved; second is the clip id it should now sit immediately before, or
+   * null for the end of the film. A drop onto a gap already holding a *different* card,
+   * or back onto the card's own current gap, is rejected/no-oped before this fires.
+   */
+  onRepositionCard?: (cardId: string, beforeClipId: string | null) => void;
 }
 
 // Zoom range: ~8px/s minimum, 2000px/s maximum
@@ -241,34 +250,69 @@ function SortableFilmTile({
 }
 
 /**
- * One card tile (#74, generalized to any position + made clickable/selectable in #149)
- * — drawn as a 3s block in the card's own colour, showing its own title. Not reorderable
- * (cards are placed by drag-from-panel, not drag-to-reorder — repositioning an already-
- * placed card is out of scope for #149) but IS selectable, so it flanks the sortable
- * SortableContext as a direct flex child (its width participates in the same gap layout)
- * rather than living inside it.
+ * One card tile (#74, generalized to any position + made clickable/selectable in #149).
+ * Drawn as a 3s block in the card's own colour, showing its own title. Not a dnd-kit
+ * sortable — it flanks the sortable SortableContext as a direct flex child (its width
+ * participates in the same gap layout) rather than living inside it. It IS selectable,
+ * and (#151) when `draggable` is passed it can be dragged via native HTML5 DnD to a
+ * different gap: dragstart tags the dataTransfer with `application/x-rushcut-card` +
+ * `application/x-rushcut-card-id`, and the strip's own drop handlers route the move
+ * (see onDropClipRow / onRepositionCard). Native DnD and dnd-kit are separate event
+ * channels, so this never competes with the clip tiles' PointerSensor reorder.
  */
 function CardStripTile({
   card,
   width,
   isActive,
   onSelectCard,
+  draggable,
+  isDragging,
+  onCardDragStart,
+  onCardDragEnd,
 }: {
   card: StripCard;
   width: number;
   isActive: boolean;
   onSelectCard?: (cardId: string) => void;
+  /** #151: enable native drag-to-reposition this placed card (Arrange Cards tab only). */
+  draggable?: boolean;
+  /** #151: true while THIS card is the one being dragged — dims the origin tile. */
+  isDragging?: boolean;
+  onCardDragStart?: (cardId: string, e: React.DragEvent<HTMLDivElement>) => void;
+  onCardDragEnd?: () => void;
 }) {
   const fg = cardTextColor(card.color);
+  // #151: a native dragstart on this tile suppresses the browser-synthesised click that
+  // would otherwise follow mouseup — guard onSelectCard so a move never also selects.
+  const justDraggedRef = useRef(false);
   return (
     <div
       data-testid={`filmstrip-card-${card.id}`}
+      draggable={draggable ?? false}
       className={`relative flex-shrink-0 overflow-hidden border-2 transition-colors ${
         isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/40"
-      } ${onSelectCard ? "cursor-pointer" : ""}`}
-      style={{ width, height: CLIP_HEIGHT, background: card.color }}
+      } ${draggable ? "cursor-grab active:cursor-grabbing" : onSelectCard ? "cursor-pointer" : ""}`}
+      style={{ width, height: CLIP_HEIGHT, background: card.color, opacity: isDragging ? 0.45 : undefined }}
       title={card.text}
-      onClick={onSelectCard ? (e) => { e.stopPropagation(); onSelectCard(card.id); } : undefined}
+      onDragStart={
+        draggable
+          ? (e) => { justDraggedRef.current = true; onCardDragStart?.(card.id, e); }
+          : undefined
+      }
+      onDragEnd={
+        draggable
+          ? () => { onCardDragEnd?.(); setTimeout(() => { justDraggedRef.current = false; }, 0); }
+          : undefined
+      }
+      onClick={
+        onSelectCard
+          ? (e) => {
+              e.stopPropagation();
+              if (justDraggedRef.current) { justDraggedRef.current = false; return; }
+              onSelectCard(card.id);
+            }
+          : undefined
+      }
     >
       {/* Card title — centred, truncated to fit narrow tiles at zoomed-out scale */}
       <div className="absolute inset-0 flex items-center justify-center px-1.5 pointer-events-none">
@@ -301,12 +345,18 @@ export function StickyFilmStrip({
   onSelectCard,
   onDropCut,
   onDropCard,
+  onRepositionCard,
 }: StickyFilmStripProps) {
   const [pxPerMs, setPxPerMs] = useState<number>(DEFAULT_PX_PER_MS);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   // #149: true when the currently-hovered gap (during a card drag) already has a card —
   // the drop is rejected and the insertion-line indicator switches to a "blocked" colour.
   const [dragOverBlocked, setDragOverBlocked] = useState(false);
+  // #151: the already-placed card currently being dragged to a new gap (null when no
+  // card-move drag is in flight). The ref is read synchronously inside the native DnD
+  // handlers; the state drives the origin tile's dimmed styling.
+  const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
+  const draggingCardIdRef = useRef<string | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const hasInitialized = useRef(false);
   const prevFilmLengthRef = useRef(0);
@@ -575,7 +625,37 @@ export function StickyFilmStrip({
   // drop onto an occupied gap (#149 design decision: prevent stacking rather than build a
   // tie-break UI for it). idx === inFilm.length means the end-of-film gap.
   function gapOccupied(idx: number): boolean {
-    return idx < inFilm.length ? cardBeforeClip.has(inFilm[idx].id) : endCard !== null;
+    // #151: when a placed card is being dragged, its own current gap doesn't count as
+    // occupied — so dropping onto/adjacent to it isn't falsely rejected.
+    const dragId = draggingCardIdRef.current;
+    if (idx < inFilm.length) {
+      const occ = cardBeforeClip.get(inFilm[idx].id);
+      return occ != null && occ.id !== dragId;
+    }
+    return endCard !== null && endCard.id !== dragId;
+  }
+
+  // #151: native-DnD drag source lives on each CardStripTile; these fire from there.
+  function handleCardDragStart(cardId: string, e: React.DragEvent<HTMLDivElement>) {
+    e.dataTransfer.setData("application/x-rushcut-card", "1");
+    e.dataTransfer.setData("application/x-rushcut-card-id", cardId);
+    e.dataTransfer.effectAllowed = "move";
+    draggingCardIdRef.current = cardId;
+    // Defer the origin-tile dim: mutating the draggable node's own style *during* the
+    // dragstart tick makes Chromium/WebView2 abort the drag immediately (react-dnd
+    // #1085 / crbug 168544). rAF pushes the opacity change past dragstart. Guard so a
+    // same-frame abort (dragend before the frame) doesn't leave a stale dim behind.
+    requestAnimationFrame(() => {
+      if (draggingCardIdRef.current === cardId) setDraggingCardId(cardId);
+    });
+  }
+  function handleCardDragEnd() {
+    // Fires on every end path — successful drop, Esc, or release outside any target —
+    // so it's cleanup only, never where a move is decided.
+    draggingCardIdRef.current = null;
+    setDraggingCardId(null);
+    setDragOverIndex(null);
+    setDragOverBlocked(false);
   }
 
   // #9/#149: native HTML5 DnD drop target for dragging a trimmed cut in from TrimBar OR a
@@ -599,7 +679,8 @@ export function StickyFilmStrip({
     }
     if (isCard) {
       const occupied = gapOccupied(idx);
-      e.dataTransfer.dropEffect = occupied ? "none" : "copy";
+      const isMove = draggingCardIdRef.current !== null;
+      e.dataTransfer.dropEffect = occupied ? "none" : isMove ? "move" : "copy";
       setDragOverBlocked(occupied);
     } else {
       e.dataTransfer.dropEffect = "copy";
@@ -616,14 +697,29 @@ export function StickyFilmStrip({
   }
 
   function onDropClipRow(e: React.DragEvent<HTMLDivElement>) {
+    // #151: read the card-move id synchronously first — dataTransfer payload is only
+    // readable inside the drop handler (not dragover), and only before any await.
+    const moveCardId =
+      !!onRepositionCard && e.dataTransfer.types.includes("application/x-rushcut-card-id")
+        ? e.dataTransfer.getData("application/x-rushcut-card-id")
+        : "";
     const isCut = !!onDropCut && e.dataTransfer.types.includes("application/x-rushcut-cut");
     const isCard = !!onDropCard && e.dataTransfer.types.includes("application/x-rushcut-card");
-    if (!isCut && !isCard) return;
+    if (!isCut && !isCard && !moveCardId) return;
     e.preventDefault();
     const idx = dragOverIndex ?? inFilm.length;
     const blocked = dragOverBlocked;
     setDragOverIndex(null);
     setDragOverBlocked(false);
+    draggingCardIdRef.current = null;
+    setDraggingCardId(null);
+    if (moveCardId) {
+      if (blocked) return; // target gap holds a different card — silently reject
+      const targetAnchor = idx < inFilm.length ? inFilm[idx].id : null;
+      const current = cards.find((p) => p.card.id === moveCardId)?.beforeClipId;
+      if (current !== targetAnchor) onRepositionCard!(moveCardId, targetAnchor); // else: dropped back on its own gap — no-op
+      return;
+    }
     if (isCut) { onDropCut!(idx); return; }
     if (blocked) return; // gap already has a card — silently reject, indicator already showed it
     onDropCard!(idx < inFilm.length ? inFilm[idx].id : null);
@@ -797,10 +893,15 @@ export function StickyFilmStrip({
                         <Fragment key={clip.id}>
                           {cardHere && (
                             <CardStripTile
+                              key={cardHere.id}
                               card={cardHere}
                               width={segWidths[clipSegIndex[idx] - 1]}
                               isActive={cardHere.id === activeCardId}
                               onSelectCard={onSelectCard}
+                              draggable={!!onRepositionCard}
+                              isDragging={draggingCardId === cardHere.id}
+                              onCardDragStart={handleCardDragStart}
+                              onCardDragEnd={handleCardDragEnd}
                             />
                           )}
                           <SortableFilmTile
@@ -819,10 +920,15 @@ export function StickyFilmStrip({
                 </DndContext>
                 {endCard && (
                   <CardStripTile
+                    key={endCard.id}
                     card={endCard}
                     width={segWidths[segWidths.length - 1]}
                     isActive={endCard.id === activeCardId}
                     onSelectCard={onSelectCard}
+                    draggable={!!onRepositionCard}
+                    isDragging={draggingCardId === endCard.id}
+                    onCardDragStart={handleCardDragStart}
+                    onCardDragEnd={handleCardDragEnd}
                   />
                 )}
               </>

@@ -913,6 +913,14 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Tauri — mutating the drag-source element's style during `dragstart` aborts the drag in WebView2/Chromium
+
+**Problem:** A native-HTML5-DnD drag source that changes its own style/class inside the `dragstart` handler (e.g. a `setState` in `onDragStart` that applies `opacity: 0.45` to the same node that carries `draggable`) makes Chromium fire `dragend` immediately and cancel the drag — the drag never actually starts, or the drag image snapshots half-rendered. WebView2 shares Chromium's DnD implementation, so it hits there too. Root cause: crbug 168544 (wontfix) / react-dnd #1085. React 18 flushes a discrete-event `setState` synchronously right after the handler returns, so a "dim the origin tile" state change fired in `onDragStart` lands mid-`dragstart`.
+**Solution:** Keep the `dragstart` handler's synchronous body to the sanctioned `DataTransfer` calls only (`setData`, `effectAllowed`) plus plain refs. Defer any visual change to the source node by one frame — `requestAnimationFrame(() => setDimmed(id))` (or `setTimeout(…, 0)`), guarded against a same-frame abort (check the drag is still live before applying). Or apply the dim to an inner child wrapper, not the `draggable` element itself. Drag-tracking state that other handlers (`dragover`/`drop`) need immediately must live in a ref written synchronously — only the cosmetic state is deferred.
+**Context:** #151 (2026-08-27) — `CardStripTile` drag-to-reposition in `StickyFilmStrip.tsx`. Caught by `rushcut-pp-consultant` Round 2.5 before it shipped. Applies to any in-app drag source that also has a "picked-up" visual treatment. Not the same as the `dragDropEnabled` entry above (that's whether DnD works at all) — this is a drag that starts then instantly cancels.
+
+---
+
 ## Tauri / Windows dev
 
 - **Rustup PATH only applies to new terminals** — after `winget install Rustlang.Rustup`, `cargo` is available in newly opened terminals only. Existing CMD/PowerShell windows don't inherit the updated PATH. Fix for the current session: `$env:PATH += ";$env:USERPROFILE\.cargo\bin"`. Fix permanently: `[System.Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$env:USERPROFILE\.cargo\bin", "Machine")` then reopen terminal.
