@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, Fragment } from "react";
 import { VolumeX, Volume1 } from "lucide-react";
 import {
   DndContext,
@@ -360,6 +360,19 @@ export function StickyFilmStrip({
   const trackRef = useRef<HTMLDivElement>(null);
   const hasInitialized = useRef(false);
   const prevFilmLengthRef = useRef(0);
+  // #159 — react to a card add/remove while the clip count holds steady.
+  const prevCardCountRef = useRef(0);
+  const prevCardIdsRef = useRef<Set<string>>(new Set()); // to diff which card was just added
+  const prevCardsKeyRef = useRef("");                    // real card mutation vs bare pxPerMs change
+  // Film-time (telescoped ms) under the LEFT viewport edge at the last USER-driven scroll.
+  // Captured by onScroll only while auto-fit is OFF (manual zoom). null until first user scroll.
+  const lastAnchorMsRef = useRef<number | null>(null);
+  // True only for the instant between us writing scrollLeft imperatively and the resulting
+  // scroll event firing — so that event isn't mistaken for a user scroll (Gate 3 #159).
+  const programmaticScrollRef = useRef(false);
+  // Segment index whose card tile the layout effect must scroll into view after a
+  // card-triggered re-fit (auto-fit ON, ADD only). Consumed + nulled by that effect.
+  const pendingRevealSegRef = useRef<number | null>(null);
   const isDraggingRef = useRef(false);
   const dragStartXRef = useRef(0);
   const scrollStartRef = useRef(0);
@@ -387,6 +400,15 @@ export function StickyFilmStrip({
     cardsActive.filter((p) => p.beforeClipId !== null).map((p) => [p.beforeClipId as string, p.card]),
   );
   const endCard = cardsActive.find((p) => p.beforeClipId === null)?.card ?? null;
+
+  // #159: targeted change signal for card add / remove / reposition ONLY. Container resize
+  // stays owned by the ResizeObserver effects; card duration is the fixed CARD_DUR_MS
+  // constant; tile widths carry no font/text-content dependence — so this key never needs
+  // to observe pixel geometry. A deliberate model-level approximation (Gate 3 F12).
+  const cardCount = cardsActive.length;
+  const cardsKey = cardsActive
+    .map((p) => `${p.card.id}:${p.beforeClipId ?? "END"}`)
+    .join("|");
 
   type Seg =
     | { kind: "card"; nativeMs: number; card: StripCard }
@@ -524,10 +546,101 @@ export function StickyFilmStrip({
           setPxPerMs(Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, containerWidth / totalMs)));
           el.scrollLeft = 0;
         }
+      } else if (
+        cur === prevFilmLengthRef.current &&
+        cardCount !== prevCardCountRef.current &&
+        isAutoFitRef.current &&
+        totalMs > 0
+      ) {
+        // #159: a card was added/removed with the clip count unchanged. Re-fit the
+        // horizontal zoom to the new card-inclusive totalMs; the layout effect below then
+        // scrolls the new card into view (an ADD). MIN_PX_PER_MS / MIN_CLIP_WIDTH clamping
+        // means the whole film often can't fit, so "bring the card into view" is the goal.
+        // This branch can't self-retrigger: pxPerMs is not in this effect's dep array.
+        const containerWidth = el.getBoundingClientRect().width;
+        if (containerWidth > 0) {
+          const next = Math.max(MIN_PX_PER_MS, Math.min(MAX_PX_PER_MS, containerWidth / totalMs));
+          setPxPerMs((prev) => (Math.abs(prev - next) < 1e-6 ? prev : next)); // no-op guard
+        }
+        if (cardCount > prevCardCountRef.current) {
+          // ADD: find the newly-placed card and mark its segment for reveal.
+          const prevIds = prevCardIdsRef.current;
+          const addedId = cardsActive.map((p) => p.card.id).find((id) => !prevIds.has(id)) ?? null;
+          let seg = segments.length - 1; // default / end card / fallback
+          if (addedId && !(endCard && endCard.id === addedId)) {
+            const ci = inFilm.findIndex((c) => cardBeforeClip.get(c.id)?.id === addedId);
+            if (ci >= 0) seg = clipSegIndex[ci] - 1;
+          }
+          pendingRevealSegRef.current = seg;
+        } else if (el.scrollLeft !== 0) {
+          // REMOVE: mirror clip-delete — re-fit to the start.
+          programmaticScrollRef.current = true;
+          el.scrollLeft = 0;
+          requestAnimationFrame(() => { programmaticScrollRef.current = false; });
+        }
+        lastAnchorMsRef.current = null; // stale once we re-fit
       }
     }
     prevFilmLengthRef.current = cur;
-  }, [inFilm.length, totalMs]);
+    prevCardCountRef.current = cardCount;
+    prevCardIdsRef.current = new Set(cardsActive.map((p) => p.card.id));
+  }, [inFilm.length, totalMs, cardCount]);
+
+  // #159: after a card add/remove/reposition changed strip geometry, either scroll the new
+  // card into view (auto-fit path — pendingRevealSegRef set by the effect above) or, when the
+  // user has manually zoomed (auto-fit OFF), keep the film-time that was under the left
+  // viewport edge pinned so the downstream ripple doesn't snap the view. The scroll write
+  // itself is synchronous post-layout (useLayoutEffect, not gated behind rAF — WebView2
+  // throttles rAF on focus loss); rAF is used ONLY as a non-critical fallback to clear
+  // programmaticScrollRef. Re-runs on pxPerMs so it reads the re-fitted geometry the effect
+  // above committed (render -> commit -> this effect -> measure). Chromium `overflow-anchor` is left at its
+  // default: it's vertical-biased and auto-suppressed by the width mutations the re-fit makes,
+  // so manual restore is the reliable path here (revisit with `overflow-anchor: none` only if
+  // eval shows the two fighting).
+  useLayoutEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const cardsChanged = prevCardsKeyRef.current !== cardsKey;
+    prevCardsKeyRef.current = cardsKey;
+
+    // (1) Reveal a just-added card. Wins over the anchor branch via early return; the two are
+    // also mutually exclusive by auto-fit state (reveal = auto-fit ON, anchor = auto-fit OFF).
+    const reveal = pendingRevealSegRef.current;
+    if (reveal != null) {
+      pendingRevealSegRef.current = null;
+      const segLeft = segOffsets[reveal] ?? 0;
+      const segRight = segLeft + (segWidths[reveal] ?? 0);
+      const viewLeft = el.scrollLeft;
+      const viewRight = viewLeft + el.clientWidth;
+      // Clamp the target to the real scrollable range BEFORE comparing — otherwise an
+      // overshoot (segRight+GAP past scrollWidth) makes `target !== viewLeft` true, we arm
+      // programmaticScrollRef and write, but the browser clamps to an unchanged value so no
+      // `scroll` event fires and the flag never clears (Round 2.5). rAF is a second safety net
+      // for the sub-pixel/DPR-rounding case where the write still lands on the current value.
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      let target = viewLeft;
+      if (segLeft < viewLeft) target = segLeft - GAP_PX;
+      else if (segRight > viewRight) target = segRight - el.clientWidth + GAP_PX;
+      target = Math.min(Math.max(0, target), maxScroll);
+      if (target !== viewLeft) {
+        programmaticScrollRef.current = true;
+        el.scrollLeft = target;
+        requestAnimationFrame(() => { programmaticScrollRef.current = false; });
+      }
+      return;
+    }
+
+    // (2) Manual-zoom ripple: restore the film-time that was under the left viewport edge.
+    if (cardsChanged && !isAutoFitRef.current && lastAnchorMsRef.current != null) {
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      const t = Math.min(Math.max(0, filmTimeToPx(lastAnchorMsRef.current)), maxScroll);
+      if (Math.round(t) !== Math.round(el.scrollLeft)) {
+        programmaticScrollRef.current = true;
+        el.scrollLeft = t;
+        requestAnimationFrame(() => { programmaticScrollRef.current = false; });
+      }
+    }
+  }, [cardsKey, pxPerMs]);
 
   // Non-passive Ctrl+scroll zoom (passive wheel blocks preventDefault)
   useEffect(() => {
@@ -607,6 +720,21 @@ export function StickyFilmStrip({
     const rect = el.getBoundingClientRect();
     const px = e.clientX - rect.left + el.scrollLeft;
     onSeek(pxToFilmMs(px));
+  }
+
+  // #159: capture the anchor for the manual-zoom card-ripple restore. Ignores scrolls we
+  // triggered ourselves (reveal / anchor-restore / clip-delete reset — flagged via
+  // programmaticScrollRef, which is only set when the write actually moves scrollLeft, so it
+  // can't get stuck). Pan (handleMouseDown/onMove) and Ctrl+wheel zoom deliberately do NOT
+  // set the flag, so they correctly re-capture the anchor as genuine user scrolls.
+  function handleTrackScroll() {
+    if (programmaticScrollRef.current) {
+      programmaticScrollRef.current = false;
+      return;
+    }
+    if (!isAutoFitRef.current && trackRef.current) {
+      lastAnchorMsRef.current = pxToFilmMs(trackRef.current.scrollLeft);
+    }
   }
 
   // #9: pixel position of an insertion boundary (0..inFilm.length) among clip tiles only,
@@ -750,6 +878,7 @@ export function StickyFilmStrip({
         style={{ scrollbarWidth: "none" }}
         onMouseDown={handleMouseDown}
         onClick={handleClick}
+        onScroll={handleTrackScroll}
         onDragOver={onDragOverClipRow}
         onDragLeave={onDragLeaveClipRow}
         onDrop={onDropClipRow}
