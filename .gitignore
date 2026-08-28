@@ -47,6 +47,9 @@ cdk.out/
 # Test failure screenshots
 e2e/screenshots/
 
+# Isolated QA E2E runtime lockfile (#170) -- records the QA-spawned PIDs, never committed
+e2e/.qa-lock.json
+
 # Logs
 *.log
 npm-debug.log*

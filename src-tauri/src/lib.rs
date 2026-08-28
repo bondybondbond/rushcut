@@ -2484,11 +2484,24 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     splash::show();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let mut builder = tauri::Builder::default();
+
+    // The isolated QA E2E instance (#170) sets RUSHCUT_DATA_DIR and must run ALONGSIDE the
+    // user's live app. tauri-plugin-single-instance would make that second rushcut.exe exit
+    // on launch and forward its args to the user's instance -- so it never starts, never
+    // opens its CDP debug port. Skip the plugin for the QA instance only; a normal launch
+    // (RUSHCUT_DATA_DIR unset) is unaffected and still single-instance.
+    let is_qa_instance = std::env::var("RUSHCUT_DATA_DIR")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if !is_qa_instance {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Second launch: focus the existing window instead of opening a new one.
             let _ = app.get_webview_window("main").map(|w| w.set_focus());
-        }))
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         // Tracks which project IDs currently have a proxy generation in progress.
         // Prevents two concurrent WSL FFmpeg processes writing to the same proxy file

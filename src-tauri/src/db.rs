@@ -98,6 +98,16 @@ pub struct Job {
 // ---------------------------------------------------------------------------
 
 pub fn db_path() -> std::path::PathBuf {
+    // Opt-in override for the isolated QA E2E instance (#170). Checked FIRST so it wins
+    // over the MSIX-container-redirected data_dir() an in-session binary launch would
+    // otherwise resolve. Unset in every normal launch -> behaviour byte-identical.
+    // This is the SOLE DB-path choke point in src-tauri/src (grep-verified: data_dir()
+    // and "rushcut.db" appear nowhere else), so this one override isolates the whole DB.
+    if let Ok(dir) = std::env::var("RUSHCUT_DATA_DIR") {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir).join("rushcut.db");
+        }
+    }
     data_dir()
         .unwrap()
         .join("rushcut")

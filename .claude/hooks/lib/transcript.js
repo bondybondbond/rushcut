@@ -452,13 +452,21 @@ function findToolResultText(lines, toolUseId, fromIndex) {
 }
 
 // Two read results count as "the same page state" (not a genuine new answer) if they're
-// near-identical in length and share a large common prefix -- a cheap, DOM-agnostic proxy for
-// "this is a stale/cached re-read," since the actual Perplexity markup isn't known here.
+// near-identical in length and match at BOTH ends -- a cheap, DOM-agnostic proxy for
+// "this is a stale/cached re-read."
+//
+// Prefix-only comparison false-positived a real Gate 3 depth read (2026-08-28): successive
+// `read_page` accessibility dumps of ChatGPT are ~30K chars, land within 10% length of each
+// other, and share an identical ~200-char leading nav-chrome block ("Skip to content" /
+// "Sidebar" / "New chat" ...), so two genuinely different answers rendered into the same page
+// shell looked "similar" and the second gate never proved. A true stale re-read of an
+// unchanged page matches at the prefix AND the suffix; two different answers diverge in the
+// body/tail even when the chrome and length are close.
 function textsSimilar(a, b) {
   if (!a || !b) return false;
   if (Math.abs(a.length - b.length) > Math.max(50, a.length * 0.1)) return false;
-  const prefixLen = Math.min(200, a.length, b.length);
-  return a.slice(0, prefixLen) === b.slice(0, prefixLen);
+  const w = Math.min(200, a.length, b.length);
+  return a.slice(0, w) === b.slice(0, w) && a.slice(-w) === b.slice(-w);
 }
 
 // Reads a rushcut-pp-consultant Gate 3 spawn's own transcript and returns which queries

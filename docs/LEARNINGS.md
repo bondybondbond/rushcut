@@ -251,6 +251,38 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## Workflow-CDP — `claude-in-chrome` connects via the Claude extension relay, NOT CDP port 9222
+
+**Problem:** A live `--remote-debugging-port=9222` endpoint (even one that answers `/json/version` as `Chrome/151...`) does **not** mean `claude-in-chrome` / `rushcut-pp-consultant` can attach. That MCP connects through the **Claude Chrome extension relay**: the extension must be loaded in the launched Chrome profile *and* the Claude side panel signed in with the account. CDP :9222 is a completely separate transport (WDIO/msedgedriver's channel). Chasing "get something Chrome-shaped onto :9222" — killing rushcut.exe to free the port, relaunching Chrome to win the bind — does nothing for the extension. Cost on #170: ~2 dead Gate 3 spawns + a rushcut.exe kill/relaunch before the real blocker (extension not signed in) was identified.
+**Solution:** When `list_connected_browsers` / `tabs_context_mcp` returns empty: (1) launch the Profile 4 automation Chrome (`.claude/agents/rushcut-pp-consultant.md` Gate 3 Setup step 1 / the `reference_chrome_debug_launch` memory), (2) if still empty, the fix is the user opening + signing into the Claude side panel in that window — not any port/process manipulation. Only after that genuinely fails does the WebSearch fallback apply.
+**Context:** Any session where `rushcut-pp-consultant` (Gate 3 / Round 2.5) or a direct `mcp__claude-in-chrome__*` call reports no browser connected.
+
+---
+
+## Workflow — a hook that proves a subagent's research by fingerprinting tool calls can reject genuine research on a `read_page`-vs-`get_page_text` / staleness technicality
+
+**Problem:** On #170, `rushcut-pp-consultant` ran both Gate 3 ChatGPT queries correctly (verbatim fingerprints, real submits, `GitHub issue #<N>:` prefixes) but `enforce-pp-plan-gates.js` still blocked the first `Edit` — twice. First: the agent read responses via `read_clipboard` (its sanctioned fallback when page-text is truncated), which `countGateCycles`'s `READ_TOOLS` set doesn't credit. Second (after forcing `read_page`): `textsSimilar()` compared only the first 200 chars, and two successive `read_page` accessibility dumps of ChatGPT (~30K chars each, identical leading nav-chrome — "Skip to content"/"Sidebar"/"New chat" — within 10% length of each other) registered as a stale re-read, so the depth gate never proved.
+**Solution:** (1) `.claude/agents/rushcut-pp-consultant.md` "Reading the response" now mandates a `get_page_text`/`read_page` capture (≥300 chars) after every submit, before/alongside any clipboard use. (2) `textsSimilar()` in `transcript.js` now also requires a **suffix** match — two different answers in the same page shell diverge in the tail even when prefix + length are close. Regression test added to `transcript.test.js`. If a genuinely-complete Gate 3 is hook-rejected, check the subagent transcript's actual `type→submit→read` shape (`transcript.js` `READ_TOOLS` / `GATE_FINGERPRINTS` / `textsSimilar`) before assuming the research didn't happen.
+**Context:** Any `rushcut-dev-plan` Gate 3 where the research demonstrably ran but `enforce-pp-plan-gates.js` still blocks `Edit`/`Write`.
+
+---
+
+## E2E — `tauri-plugin-single-instance` silently kills a 2nd `rushcut.exe`; an isolated QA instance must skip the plugin
+
+**Problem:** On #170's first `wdio.qa.conf.ts` run the QA-spawned `rushcut.exe` vanished within a second of launch — no DB written, no WebView2, CDP :9223 never opened, `waitForPort` timed out. Root cause: `tauri-plugin-single-instance` (`lib.rs`) detects the user's already-running `rushcut.exe`, so the second process exits immediately and forwards its args to the first. This is precisely why the original `wdio.conf.ts` had to `taskkill /IM rushcut.exe` before launching — it needed *no* first instance to exist.
+**Solution:** Gate the plugin registration on the QA env var: `run()` skips `.plugin(tauri_plugin_single_instance::init(...))` when `RUSHCUT_DATA_DIR` is set (only ever the QA instance). Confirmed safe — no `tauri-plugin-deep-link` in this stack (its only hard coupling), the Windows named mutex is released on exit, no lock file leaks.
+**Context:** Any second concurrent launch of a Tauri app that uses `tauri-plugin-single-instance` — E2E harness, a diagnostic instance, a QA build alongside the dev build.
+
+---
+
+## E2E — "user profile dir mtime unchanged" is the wrong isolation assertion when a user instance runs concurrently
+
+**Problem:** `wdio.qa.conf.ts`'s first-cut isolation check asserted the user's real `com.rushcut.app\EBWebView` mtime was unchanged during a QA run. It false-failed on the exact scenario #170 targets — a user `rushcut.exe` running alongside the QA one legitimately writes to its own profile dir (cache, Local State), bumping the mtime, with zero involvement from the isolated QA instance.
+**Solution:** Prove isolation *positively*: assert the QA `rushcut.exe`'s own `msedgewebview2.exe` child references the isolated `WEBVIEW2_USER_DATA_FOLDER` on its command line and never `com.rushcut.app\EBWebView`. Keep the mtime check only as a conditional branch for when no other `rushcut.exe` is running.
+**Context:** Any E2E assertion trying to prove "process A didn't touch resource X" while a legitimate process B also uses X.
+
+---
+
 ## Workflow-CDP — F12/right-click/Ctrl+Shift+I all no-op on the live WebView2 window; DevTools needs an explicit launch arg
 
 **Problem:** Confirmed via computer-use on the real, running debug binary (#149 session, 2026-07-23): pressing F12, right-clicking for "Inspect", and Ctrl+Shift+I on a normally-launched `rushcut.exe` window all produce zero visible effect — no DevTools panel, no context menu. This isn't a bug, it's WebView2's default (DevTools is off unless explicitly enabled), but it means none of the usual browser muscle-memory shortcuts work for checking console errors on a live instance.

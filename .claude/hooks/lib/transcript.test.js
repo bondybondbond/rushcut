@@ -211,6 +211,29 @@ test("textsSimilar edge case: shared boilerplate prefix but substantially longer
   assert.strictEqual(result.provenGates.size, 1, "a substantially longer new answer must prove the gate despite a shared opening prefix");
 });
 
+test("textsSimilar: two large read_page dumps within 10% length + identical nav-chrome prefix but different bodies both prove (real #170 case, 2026-08-28)", () => {
+  // Real regression: successive `read_page` accessibility dumps of ChatGPT are ~30K chars,
+  // land within 10% length of each other, and share an identical leading nav-chrome block, so
+  // prefix-only textsSimilar() falsely flagged the depth read as a stale re-read and the 2nd
+  // gate never proved. Suffix matching distinguishes them: different answers diverge in the tail.
+  const NAV_CHROME = 'link "Skip to content" [ref_1] href="#main"\nnavigation "Sidebar" [ref_2]\n button "Open sidebar" [ref_3]\n link [ref_4] href="/"\n  generic "New chat" [ref_5]\n'.padEnd(400, " ");
+  const BREADTH_ANSWER = NAV_CHROME + "X".repeat(29000) + " breadth answer: prior art on WebView2 isolation, CDP port collisions, taskkill pitfalls.";
+  const DEPTH_ANSWER = NAV_CHROME + "Y".repeat(29800) + " depth answer: the plan accounts for F1/F3/F4 but must prove the actual UDF and CDP target identity.";
+  assert.ok(Math.abs(BREADTH_ANSWER.length - DEPTH_ANSWER.length) < DEPTH_ANSWER.length * 0.1, "fixture must be within 10% length to exercise the real path");
+  const calls = [
+    { name: "mcp__claude-in-chrome__navigate", input: { url: "https://chatgpt.com/g/g-p-6a8dffb542848191a4b5876a6508d521-rushcut/project" } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: BREADTH_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "key", text: "Return" } },
+    { name: "mcp__claude-in-chrome__read_page", input: {}, resultText: BREADTH_ANSWER },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "type", text: DEPTH_TYPE } },
+    { name: "mcp__claude-in-chrome__computer", input: { action: "key", text: "Return" } },
+    { name: "mcp__claude-in-chrome__read_page", input: {}, resultText: DEPTH_ANSWER },
+  ];
+  const dir = writeSpawnFixture("large-dumps-shared-chrome", "agentLargeDumps", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentLargeDumps");
+  assert.strictEqual(result.provenGates.size, 2, `both gates must prove despite shared nav-chrome prefix; got ${[...result.provenGates].join(",") || "none"}`);
+});
+
 // --- Fix 2: cross-chat issue-number correlation (issue #158 follow-up, 2026-08-26) ---
 // Mirrors enforce-pp-plan-gates.js's own gate3Satisfied logic: both gates proven AND their
 // issueNumbers equal and non-null. countGateCycles() only REPORTS issueNumbers; this helper is
