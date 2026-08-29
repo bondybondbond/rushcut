@@ -12,7 +12,16 @@ import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/component
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig, cardDurationFlags, readPlacedCards } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, filmPlayheadAtClip, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
+import {
+  buildSequence,
+  advanceSequenceClock,
+  reconcile,
+  mediaToFilm,
+  itemToFilm,
+  type Sequence,
+  type ClockState,
+} from "@/utils/sequenceClock";
 import { getRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
 
@@ -78,6 +87,29 @@ export default function Trimmer() {
   const filmModeRef = useRef(false);
   const filmPlayIdxRef = useRef(0);
   const inFilmRef = useRef<Clip[]>([]);
+
+  // #165 -- single authoritative sequence clock for the film-mode strip needle.
+  // The clip-playback needle position no longer derives from
+  // `filmPlayheadAtClip(...) + (currentMs - in_ms)` (which stepped BACKWARD ~xfadeMs
+  // at every crossfade cut -- #164, because the within-clip offset ran the clip's
+  // full un-telescoped length while the next clip's telescoped start was xfadeMs
+  // earlier). Instead a `performance.now()`-anchored clock free-runs while a clip
+  // plays and is drift-corrected against the <video>'s real media time; the needle
+  // is a pure projection of it. The CARD-region needle is unchanged -- it still
+  // rides `cardHoldElapsedMs` clamped to the card-region width (see filmPositionMs
+  // below), because a 3s card hold maps onto a ~1.5s telescoped span and that
+  // wall-clock-vs-telescoped remap is card-specific. Sequence rebuilt every render
+  // from the same inputs the strip ruler uses, stashed in a ref for the rAF loop.
+  const filmSeqRef = useRef<Sequence | null>(null);
+  const seqClockRef = useRef<ClockState>({ seqTimeMs: 0, lastSampleMs: 0 });
+  const seqVisibleRef = useRef(true);
+  const seqRafRef = useRef<number | null>(null);
+  const seqNeedleWriteRef = useRef(0);
+  const [seqNeedleMs, setSeqNeedleMs] = useState(0);
+  // Mirrors used by the rAF loop / reconcile without re-subscribing every render.
+  const isPlayingRef = useRef(false);
+  const cardHoldRef = useRef(false);
+  const currentPlaybackRateRef = useRef(1);
 
   // Dual-buffer film playback: two persistent video elements, ping-pong between them
   const filmVideoARef = useRef<HTMLVideoElement>(null);
@@ -1055,6 +1087,14 @@ export default function Trimmer() {
     activeFilmSlotRef.current = nextSlot;
     setSlotVisible(nextSlot);
 
+    // #165: re-anchor the sequence clock to this clip's telescoped start so the
+    // needle picks up cleanly from ground truth (esp. after a card hold, where the
+    // clock was paused). reconcile() then keeps it honest against real playback.
+    if (filmSeqRef.current) {
+      anchorSeqClock(itemToFilm(filmSeqRef.current, "clip", nextIdx, 0));
+    }
+    resetFilmPlaybackRate();
+
     if (nextV) {
       nextV.play().catch(() => {
         // Inactive slot wasn't preloaded/seeked yet — load it fresh.
@@ -1167,6 +1207,9 @@ export default function Trimmer() {
       const filmMs = filmTimeAtClipStart(clips_, nextIdx, xfadeMs, cardsBeforeClip);
       pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end-card
       setCardHold({ filmMs, color: upcomingCard.color, text: upcomingCard.text, subtitle: upcomingCard.subtitle });
+      // #165: park the clock at the card-region start; it stays paused (cardHoldRef)
+      // for the hold and promoteToFilmClip re-anchors it when the hold ends.
+      anchorSeqClock(filmMs);
       startCardHoldTicker(0);
       return;
     }
@@ -1233,6 +1276,33 @@ export default function Trimmer() {
     const outSec = (filmClip.out_ms ?? filmClip.duration_ms) / 1000;
     if (currentTimeSec >= outSec) {
       advanceFilmClip();
+      return;
+    }
+
+    // #165: drift-correct the authoritative sequence clock against what the
+    // <video> is actually presenting. `timeupdate` fires 4-66Hz which is already
+    // the ~10Hz throttle reconcile wants -- no extra gate needed. Skipped while
+    // parked on a card (no media to reconcile against) or mid-seek (the seeked
+    // handler re-anchors). The clip path MUST keep reconciling -- it's what keeps
+    // the float `performance.now()` clock honest against real playback.
+    const seq = filmSeqRef.current;
+    const v = getFilmVideo(slot);
+    if (seq && v && !cardHoldRef.current && !isSeekingRef.current) {
+      const mediaFilmMs = mediaToFilm(seq, filmPlayIdxRef.current, currentTimeSec * 1000);
+      const r = reconcile(seqClockRef.current.seqTimeMs, mediaFilmMs);
+      if (r.seqTimeMs !== undefined) {
+        seqClockRef.current = { seqTimeMs: r.seqTimeMs, lastSampleMs: performance.now() };
+        setSeqNeedleMs(r.seqTimeMs);
+      }
+      // Reconcile RETURNS 1 in the ignore/snap zones, so comparing against the
+      // tracked rate (not against 1) is what resets a stranded 1.06 back to 1
+      // (Round 2.5). `preservesPitch` keeps the +/-6% nudge inaudible (time-stretch,
+      // not resample) -- defaults true on Chromium/WebView2 but set it explicitly.
+      if (currentPlaybackRateRef.current !== r.playbackRate) {
+        (v as HTMLVideoElement & { preservesPitch?: boolean }).preservesPitch = true;
+        v.playbackRate = r.playbackRate;
+        currentPlaybackRateRef.current = r.playbackRate;
+      }
     }
   }
 
@@ -1248,6 +1318,12 @@ export default function Trimmer() {
     // togglePlay) start playback even though isPlaying is currently false — the normal
     // nav/click callers never pass this and keep relying on the current play state.
     const wasPlaying = forcePlay || isPlaying;
+    // #165: `filmMs` is already telescoped render-time (strip domain) -- anchor the
+    // sequence clock straight to it. Covers every branch below (card park, same-clip
+    // seek, cross-slot seek); reconcile() corrects any sub-frame seek-landing error
+    // once the <video> reports its real post-`seeked` position.
+    anchorSeqClock(filmMs);
+    resetFilmPlaybackRate();
     const clips_ = inFilmRef.current;
     const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
 
@@ -1382,6 +1458,97 @@ export default function Trimmer() {
     };
   }, []);
 
+  // #165: mirrors for the sequence-clock rAF loop (no re-subscribe on every render).
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { cardHoldRef.current = cardHold !== null; }, [cardHold]);
+
+  /**
+   * #165: re-anchor the authoritative sequence clock to an exact film-time. Called
+   * on every discrete position change (film-mode enter, clip promote, seek, card
+   * hold -> next clip) so the free-running clock starts from ground truth rather
+   * than drifting from wherever it happened to be.
+   */
+  function anchorSeqClock(filmMs: number) {
+    const total = filmSeqRef.current?.totalMs ?? 0;
+    const clamped = Math.max(0, Math.min(filmMs, total || filmMs));
+    seqClockRef.current = { seqTimeMs: clamped, lastSampleMs: performance.now() };
+    setSeqNeedleMs(clamped);
+  }
+
+  /**
+   * #165 (Round 2.5): a plain `<video>.src` reassignment does NOT reset
+   * `playbackRate` -- only `load()` does. The dual-buffer engine promotes a
+   * pre-loaded slot without a fresh `load()`, so a reconcile-set rate (e.g. 1.02)
+   * would ride into the next clip. Reset the DOM property on BOTH slots (the
+   * inactive one is what becomes active next) plus the tracking ref at every
+   * re-anchor point, not just the ref.
+   */
+  function resetFilmPlaybackRate() {
+    for (const v of [filmVideoARef.current, filmVideoBRef.current]) {
+      if (!v) continue;
+      (v as HTMLVideoElement & { preservesPitch?: boolean }).preservesPitch = true;
+      v.playbackRate = 1;
+    }
+    currentPlaybackRateRef.current = 1;
+  }
+
+  // #165: single rAF sampling loop for the sequence clock while in film mode. The
+  // clock only ACCRUES while playing, visible, and not parked on a card (card
+  // needle math stays in filmPositionMs). rAF is only the sampling tick --
+  // advanceSequenceClock does the wall-clock arithmetic and discards huge deltas
+  // from a hidden tab / OS sleep (see its doc).
+  useEffect(() => {
+    if (viewMode !== "film") {
+      if (seqRafRef.current !== null) cancelAnimationFrame(seqRafRef.current);
+      seqRafRef.current = null;
+      return;
+    }
+    const onVis = () => {
+      const nowVisible = document.visibilityState === "visible";
+      seqVisibleRef.current = nowVisible;
+      // Returning to visible: re-seat lastSampleMs so the hidden gap is never
+      // integrated, AND (Round 2.5: WebView2 throttles rAF on focus loss without
+      // flipping visibilityState, so the clock may have quietly drifted) re-seat
+      // seqTimeMs from the real media position if a clip is currently the active
+      // element -- the picture is ground truth after a background gap.
+      let seatMs = seqClockRef.current.seqTimeMs;
+      const seq = filmSeqRef.current;
+      const v = getFilmVideo(activeFilmSlotRef.current);
+      // readyState >= HAVE_CURRENT_DATA (2): guard against a mid-promotion slot
+      // whose currentTime is still 0/stale for a few frames (Round 2.5) -- that
+      // would snap the clock back to the clip's film-start.
+      if (nowVisible && seq && v && v.readyState >= 2 && !cardHoldRef.current && !isSeekingRef.current) {
+        seatMs = mediaToFilm(seq, filmPlayIdxRef.current, v.currentTime * 1000);
+      }
+      seqClockRef.current = { seqTimeMs: seatMs, lastSampleMs: performance.now() };
+    };
+    document.addEventListener("visibilitychange", onVis);
+    seqVisibleRef.current = document.visibilityState === "visible";
+
+    const tick = () => {
+      const seq = filmSeqRef.current;
+      if (seq) {
+        seqClockRef.current = advanceSequenceClock(seqClockRef.current, performance.now(), {
+          visible: seqVisibleRef.current,
+          isPlaying: isPlayingRef.current && !cardHoldRef.current,
+          totalMs: seq.totalMs,
+        });
+        const now = performance.now();
+        if (now - seqNeedleWriteRef.current >= 50) {
+          seqNeedleWriteRef.current = now;
+          setSeqNeedleMs(seqClockRef.current.seqTimeMs);
+        }
+      }
+      seqRafRef.current = requestAnimationFrame(tick);
+    };
+    seqRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      if (seqRafRef.current !== null) cancelAnimationFrame(seqRafRef.current);
+      seqRafRef.current = null;
+    };
+  }, [viewMode]);
+
   // Enter/exit film mode
   useEffect(() => {
     filmModeRef.current = viewMode === "film";
@@ -1394,6 +1561,8 @@ export default function Trimmer() {
       activeFilmSlotRef.current = "a";
       setFilmPlayIdx(0);
       filmPlayIdxRef.current = 0;
+      anchorSeqClock(0); // #165: start the sequence clock at film-time 0
+      resetFilmPlaybackRate();
       if (inFilmRef.current.length > 0) loadIntoSlot(0, "a", undefined, false);
       else setSlotVisible("a");
     } else {
@@ -1434,14 +1603,22 @@ export default function Trimmer() {
     card: { id: c.id, color: c.color, text: c.text },
     beforeClipId: c.beforeClipId,
   }));
-  const filmCardsBeforeClip = inFilm.map((c) => filmPlacedCards.some((p) => p.beforeClipId === c.id));
+
+  // #165: authoritative sequence for the film-mode clock/needle. Same inputs the
+  // StickyFilmStrip ruler uses (inFilm + transition config + placed cards), so the
+  // needle and the ruler cannot geometrically disagree. Stashed in a ref for the
+  // rAF loop; the loop reads `filmSeqRef.current`, never this local.
+  const filmSeq = buildSequence(inFilm, readTransitionConfig(projectId ?? ""), filmPlacedCards);
+  filmSeqRef.current = filmSeq;
 
   // Film playhead: how far we are in render-time (ms), for the StickyFilmStrip cursor.
-  // Telescoped via the shared filmPlayheadAtClip so the playhead matches the ruler (#71) AND
-  // adds back the lead of the card immediately before the current clip (#163 — the raw
-  // filmTimeAtClipStart omits it by contract). When parked on a card region (paused OR
-  // autoplaying through it), the cardHold position overrides the clip-derived one — #150:
-  // no longer gated on !isPlaying, since an autoplay hold keeps isPlaying true throughout.
+  // #165: the CLIP-playback needle is now a pure projection of the authoritative
+  // sequence clock (`seqNeedleMs`) -- it no longer derives from
+  // `filmPlayheadAtClip(...) + (currentMs - in_ms)`, which stepped backward ~xfadeMs
+  // at every crossfade cut (#164). The CARD-region needle is unchanged: a 3s card
+  // hold still rides `cardHoldElapsedMs` clamped to the telescoped card-region width
+  // (that wall-clock -> telescoped remap is card-specific; the clock is paused while
+  // parked on a card and re-anchored to the next clip's start when the hold ends).
   const filmCardRegionMs = cardRegionMs(filmXfadeOverlapMs);
   const filmPositionMs = viewMode === "film"
     ? (cardHold
@@ -1449,11 +1626,8 @@ export default function Trimmer() {
         // width so it parks at the card's end (== the next clip's start) instead of
         // overshooting into the following clip while the 3s hold runs out.
         ? cardHold.filmMs + Math.min(cardHoldElapsedMs, filmCardRegionMs)
-        : inFilm[filmPlayIdx]
-          ? filmPlayheadAtClip(
-              inFilm, filmPlayIdx, filmXfadeOverlapMs, filmCardsBeforeClip,
-              currentMs - (inFilm[filmPlayIdx].in_ms ?? 0),
-            )
+        : inFilm.length > 0
+          ? seqNeedleMs
           : undefined)
     : undefined;
   const configured = useConfiguredTabs(projectId ?? "");
