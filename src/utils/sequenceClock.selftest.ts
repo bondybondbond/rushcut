@@ -24,10 +24,11 @@
 import type { Clip } from "@/types/project";
 import type { PlacedCard } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
-import { CARD_DUR_MS, effectiveFilmMs } from "./filmDuration";
+import { CARD_DUR_MS, cardRegionMs, clampedXfadeMs, effectiveFilmMs } from "./filmDuration";
 import {
   advanceSequenceClock,
   buildSequence,
+  buildSequenceCore,
   filmToItem,
   filmToMedia,
   filmToNaive,
@@ -35,6 +36,7 @@ import {
   naiveToFilm,
   playbackTotalFromEffective,
   reconcile,
+  SYNC_CONTRACT,
   type Sequence,
 } from "./sequenceClock";
 
@@ -373,6 +375,116 @@ const D = clip("d", 0, 6_000);
     if (r.seqTimeMs !== undefined && r.seqTimeMs < seqT - 1e-6) anyBackstep = true;
   }
   check("reconcile: NO backward seqTimeMs correction for |drift| < hardBack (#164 signature)", !anyBackstep);
+}
+
+// --- #174 Phase D: buildSequenceCore == buildSequence, one resolver ---------
+{
+  const cases: Array<[Clip[], TransitionConfig, PlacedCard[]]> = [
+    [[A, B, C], tcfg({ between: "crossfade" }), [card("k1", "b")]],
+    [[A, B, C, D], tcfg({ between: "crossfade" }), [card("k0", "a"), card("k1", "b"), card("kE", null)]],
+    [[A, B], tcfg(), []],
+    [[A], tcfg({ between: "crossfade" }), [card("kE", null)]],
+  ];
+  for (const [film, tc, cards] of cases) {
+    const viaWrapper = buildSequence(film, tc, cards);
+    const viaCore = buildSequenceCore(film, clampedXfadeMs(film, tc), cards);
+    const label = `n=${film.length} cards=${cards.length} ${tc.between}`;
+    check(
+      `Phase D: buildSequenceCore geometry identical to buildSequence (${label})`,
+      JSON.stringify(viaCore.items.map((i) => [i.filmStartMs, i.filmEndMs, i.naiveStartMs, i.naiveEndMs, i.kind, i.index])) ===
+        JSON.stringify(viaWrapper.items.map((i) => [i.filmStartMs, i.filmEndMs, i.naiveStartMs, i.naiveEndMs, i.kind, i.index])) &&
+        viaCore.totalMs === viaWrapper.totalMs &&
+        viaCore.naiveTotalMs === viaWrapper.naiveTotalMs &&
+        viaCore.xfadeMs === viaWrapper.xfadeMs,
+    );
+  }
+}
+
+// --- #174 / #160: music fade-out anchor counts mid-roll card seconds --------
+// The Sound Master tab anchors the fade at `filmSeq.totalMs - fadeMs`. A film
+// with a mid-roll card must have that anchor sit exactly `cardRegionMs` later
+// than the same film without the card -- i.e. the card's on-screen seconds ARE
+// part of the total the fade is measured back from (the #160 bug was Sound using
+// a naive raw-clip sum that omitted them).
+{
+  const FADE_MS = 2_000;
+  const tc = tcfg({ between: "crossfade" });
+  const xf = clampedXfadeMs([A, B, C], tc);
+  const noCard = buildSequence([A, B, C], tc, []);
+  const withCard = buildSequence([A, B, C], tc, [card("k1", "b")]);
+  const anchorNoCard = noCard.totalMs - FADE_MS;
+  const anchorWithCard = withCard.totalMs - FADE_MS;
+  check(
+    "#160 fade anchor shifts later by exactly cardRegionMs when a mid-roll card is present",
+    Math.abs((anchorWithCard - anchorNoCard) - cardRegionMs(xf)) < 1e-6,
+    `delta=${anchorWithCard - anchorNoCard} cardRegionMs=${cardRegionMs(xf)}`,
+  );
+  check(
+    "#160 fade anchor is inside (0, totalMs) for the carded film",
+    anchorWithCard > 0 && anchorWithCard < withCard.totalMs,
+    `anchor=${anchorWithCard} totalMs=${withCard.totalMs}`,
+  );
+}
+
+// --- #174 Gate 3 finding #10: SYNC_CONTRACT + anti-oscillation -------------
+{
+  // The contract's own shape: a backward snap must be far out of reach of an
+  // ordinary forward correction, and the dead-band must clear currentTime's ~2ms
+  // reduced precision by a wide margin.
+  check(
+    "SYNC_CONTRACT: HARD_BACK_MS > 2x FWD_SNAP_MS (a seam can never trigger a backstep)",
+    SYNC_CONTRACT.HARD_BACK_MS > 2 * SYNC_CONTRACT.FWD_SNAP_MS,
+  );
+  check("SYNC_CONTRACT: DEAD_BAND_MS clears currentTime precision noise", SYNC_CONTRACT.DEAD_BAND_MS >= 20);
+
+  // reconcile() actually uses the contract values as its defaults.
+  check(
+    "SYNC_CONTRACT: reconcile defaults are the contract values",
+    // media ahead by exactly FWD_SNAP -> forward snap; one ms less -> gentle
+    reconcile(0, SYNC_CONTRACT.FWD_SNAP_MS).seqTimeMs === SYNC_CONTRACT.FWD_SNAP_MS &&
+      reconcile(0, SYNC_CONTRACT.FWD_SNAP_MS - 1).seqTimeMs === undefined &&
+      // clock ahead of stalled media by exactly HARD_BACK -> backward snap; one ms less -> gentle
+      reconcile(SYNC_CONTRACT.HARD_BACK_MS, 0).seqTimeMs === 0 &&
+      reconcile(SYNC_CONTRACT.HARD_BACK_MS - 1, 0).seqTimeMs === undefined,
+  );
+
+  // ANTI-OSCILLATION 1: nothing in the entire gentle band [-(FWD_SNAP-1) .. (HARD_BACK-1)]
+  // ever returns a seqTimeMs -- only a playbackRate nudge. So a correction in this
+  // range can never be "undone" by an opposite snap on the next tick.
+  {
+    let snaps = 0;
+    for (let drift = -(SYNC_CONTRACT.FWD_SNAP_MS - 1); drift <= SYNC_CONTRACT.HARD_BACK_MS - 1; drift += 3) {
+      if (reconcile(20_000, 20_000 - drift).seqTimeMs !== undefined) snaps++;
+    }
+    check("anti-oscillation: gentle band never snaps (neither direction)", snaps === 0, `snaps=${snaps}`);
+  }
+
+  // ANTI-OSCILLATION 2: a hard snap always lands the clock exactly on the media,
+  // so drift becomes 0 and the very next reconcile is a no-op. One snap can never
+  // be immediately followed by an opposite-direction snap -> no ping-pong.
+  {
+    const fwd = reconcile(10_000, 10_400); // media ahead 400 -> forward snap
+    const afterFwd = reconcile(fwd.seqTimeMs!, 10_400);
+    check(
+      "anti-oscillation: tick after a forward snap is a no-op",
+      afterFwd.seqTimeMs === undefined && afterFwd.playbackRate === 1,
+    );
+    const back = reconcile(11_000, 10_000); // clock ahead 1000 -> backward snap
+    const afterBack = reconcile(back.seqTimeMs!, 10_000);
+    check(
+      "anti-oscillation: tick after a backward snap is a no-op",
+      afterBack.seqTimeMs === undefined && afterBack.playbackRate === 1,
+    );
+  }
+
+  // ANTI-OSCILLATION 3: a drift series straddling +/-DEAD_BAND_MS (the value most
+  // likely to chatter) never snaps.
+  {
+    const drifts = [39, -39, 40, -40, 41, -41, 38, -42, 42, -38];
+    let anySnap = false;
+    for (const d of drifts) if (reconcile(30_000, 30_000 - d).seqTimeMs !== undefined) anySnap = true;
+    check("anti-oscillation: dead-band-edge drift series never snaps", !anySnap);
+  }
 }
 
 if (failed > 0) {

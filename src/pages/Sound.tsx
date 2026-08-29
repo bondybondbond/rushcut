@@ -11,7 +11,17 @@ import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
 import { readTransitionConfig, readPlacedCards } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, filmPlayheadAtClip, cardRegionMs, trimmedMs, CARD_DUR_MS } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
+import {
+  buildSequence,
+  advanceSequenceClock,
+  reconcile,
+  mediaToFilm,
+  filmToMedia,
+  itemToFilm,
+  type Sequence,
+  type ClockState,
+} from "@/utils/sequenceClock";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
@@ -117,18 +127,52 @@ export default function Sound() {
   const musicAudioRef = useRef<HTMLAudioElement>(null);  // music track during rough mix
   const filmPlayingRef = useRef(false);                  // imperative flag (avoids stale closures)
   const filmPlayIdxRef = useRef(0);                      // current clip index (fast access)
-  const clipStartMsRef = useRef(0);                      // cumulative film-time at current clip start
   const inFilmRef = useRef<typeof inFilm>([]);           // stable ref for event callbacks
   const progressBarFillRef = useRef<HTMLDivElement>(null); // imperative progress bar fill (avoids re-render)
   const elapsedLabelRef = useRef<HTMLSpanElement>(null);   // imperative elapsed-time label
   const hasPlayedRef = useRef(false);                      // true once playback has started; hides "Press play" overlay after film ends
-  const lastPlayheadUpdateRef = useRef(0);                 // timestamp of last filmPlayheadMs state write (throttle to ~10fps)
+
+  // #174 -- single authoritative sequence clock for the Master-tab film needle,
+  // mirroring Trimmer.tsx Phase B. The needle no longer derives from
+  // `filmPlayheadAtClip(...) + offsetInClip` (which stepped BACKWARD ~xfadeMs at
+  // every crossfade cut -- #164) or from a naive raw-clip-sum for the fade/label
+  // math (which omitted mid-roll card seconds -- #160). A `performance.now()`-
+  // anchored clock free-runs while a clip plays and is drift-corrected (snap-only
+  // on this tab -- NO playbackRate nudge, which would pitch-shift clip audio) via
+  // `reconcile` against the <video>'s real media time. The strip needle, progress
+  // bar and fade math are all pure projections of `seqNeedleMs` / `filmSeq.totalMs`.
+  const filmSeqRef = useRef<Sequence | null>(null);
+  const seqClockRef = useRef<ClockState>({ seqTimeMs: 0, lastSampleMs: 0 });
+  const seqVisibleRef = useRef(true);
+  const seqRafRef = useRef<number | null>(null);
+  const seqNeedleWriteRef = useRef(0);
+  const [seqNeedleMs, setSeqNeedleMsRaw] = useState(0);
+  const cardHoldRef = useRef(false);
+  // #174 Gate 3 (finding #2): suppress `reconcile` for a short window after any
+  // discrete position change -- playback start, a <video> src swap (erratic
+  // `timeupdate` cadence for a few hundred ms), a seek, and while music audio is
+  // still buffering. Without this, the first jittery post-swap frames can trigger
+  // a spurious snap right at the card/clip boundary where a bad correction is most
+  // visible.
+  const reconcileGateUntilRef = useRef(0);
+  // #174 Gate 3 (finding #10): DEV-only one-writer guard. Every write to the
+  // needle state goes through `setSeqNeedle(ms, owner)`; a write from any path
+  // outside this allowlist is the #164/#166 "second needle writer" regression and
+  // is surfaced loudly in dev. The union type enforces it at compile time; the
+  // runtime check catches a JS-level bypass a future edit might introduce.
+  const SEQ_NEEDLE_OWNERS = ["raf", "reconcile", "anchor", "cardTicker", "stop"] as const;
+  function setSeqNeedle(ms: number, owner: (typeof SEQ_NEEDLE_OWNERS)[number]) {
+    if (import.meta.env.DEV && !SEQ_NEEDLE_OWNERS.includes(owner)) {
+      // eslint-disable-next-line no-console
+      console.error(`[sound] seqNeedleMs written by unexpected owner: ${owner}`);
+    }
+    setSeqNeedleMsRaw(ms);
+  }
 
   // Rough-mix playback state
   const [isFilmPlaying, setIsFilmPlaying] = useState(false);
   const [isFilmPaused, setIsFilmPaused] = useState(false);
   const [filmPlayIdx, setFilmPlayIdx] = useState(0);    // drives "Clip N / M" label
-  const [filmPlayheadMs, setFilmPlayheadMs] = useState<number | undefined>(undefined); // strip needle position (telescoped)
   // #150 (revised: autoplay, not indefinite hold — a card is a real CARD_DUR_MS clip in
   // the render, so preview mirrors that): natural playback reaching a card pauses the
   // VIDEO ONLY (music keeps playing straight through, matching the render — cards never
@@ -161,23 +205,23 @@ export default function Sound() {
 
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   const clipCount = inFilm.length;
-  // GEOMETRY value: naive sum drives the master-preview scrub bar, seek, fade marker,
-  // and playhead -- the preview plays proxies sequentially, so its timeline is naive (#62).
-  const totalMs = inFilm.reduce((sum, c) => {
-    const start = c.in_ms ?? 0;
-    const end = c.out_ms ?? c.duration_ms;
-    return sum + Math.max(0, end - start);
-  }, 0);
-  // DISPLAY value: effective runtime (transition overlap subtracted + card seconds added)
-  // for the runtime label + music loop/coverage math, which times against the telescoped
-  // render (#62/#63). Read cards once; reuse for both the duration and the strip tiles.
-  // #149: cards can now sit anywhere, not just open/close -- Sound's own seek-snap
-  // approximation below still only special-cases the leading/trailing regions (it has no
-  // card video to play back either way, #76), so only those two flags are derived here.
   const placedCards = readPlacedCards(projectId ?? "");
-  const hasOpenCard = inFilm.length > 0 && placedCards.some((c) => c.beforeClipId === inFilm[0].id);
-  const hasCloseCardFlag = placedCards.some((c) => c.beforeClipId === null);
   const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), placedCards.length);
+
+  // #174: the ONE canonical timeline for the Master tab -- same inputs the
+  // StickyFilmStrip ruler uses, so the needle and ruler cannot geometrically
+  // disagree. Stashed in a ref for the rAF loop. `filmSeq.totalMs` is the
+  // telescoped, card-inclusive playback runtime -- it replaces the old naive
+  // raw-clip sum that drove the scrub bar / fade marker / fade math and silently
+  // omitted mid-roll card seconds (#160). (The EditorShell top-bar label stays on
+  // `effectiveMs`, which additionally nets +100ms/black-fade the preview doesn't
+  // traverse -- see sequenceClock.ts `playbackTotalFromEffective`.)
+  const filmSeq = buildSequence(inFilm, readTransitionConfig(projectId ?? ""), placedCards);
+  filmSeqRef.current = filmSeq;
+  const totalMs = filmSeq.totalMs;
+  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
+  const filmCardRegionMs = cardRegionMs(filmXfadeOverlapMs);
+
   // Keep inFilmRef current so playback callbacks always read the latest clip list
   // without needing to re-subscribe on every render.
   inFilmRef.current = inFilm;
@@ -192,6 +236,131 @@ export default function Sound() {
       };
     } catch { return { transitionVal: null, openingTransitionVal: null, closingTransitionVal: null }; }
   })();
+
+  // #174: film needle position for the StickyFilmStrip cursor. The CLIP-playback
+  // needle is a pure projection of the authoritative sequence clock (`seqNeedleMs`);
+  // the CARD-region needle rides `cardHoldElapsedMs` clamped to the telescoped
+  // card-region width (that wall-clock -> telescoped remap is card-specific; the
+  // clock is paused while parked on a card and re-anchored to the next clip's
+  // start when the hold ends). Identical shape to Trimmer.tsx `filmPositionMs`.
+  const filmPositionMs = musicTab === "mixer"
+    ? (cardHold
+        ? cardHold.filmMs + Math.min(cardHoldElapsedMs, filmCardRegionMs)
+        : inFilm.length > 0
+          ? seqNeedleMs
+          : undefined)
+    : undefined;
+
+  /**
+   * #174: re-anchor the authoritative sequence clock to an exact telescoped
+   * film-time. Called on every discrete position change (playback start, clip
+   * promote, seek, card hold -> next clip) so the free-running clock starts from
+   * ground truth rather than drifting from wherever it happened to be.
+   */
+  function anchorSeqClock(filmMs: number) {
+    const total = filmSeqRef.current?.totalMs ?? 0;
+    const clamped = Math.max(0, Math.min(filmMs, total || filmMs));
+    seqClockRef.current = { seqTimeMs: clamped, lastSampleMs: performance.now() };
+    setSeqNeedle(clamped, "anchor");
+  }
+
+  /**
+   * #174: the Master tab uses SNAP-ONLY reconciliation (see `reconcile`'s own
+   * caller-guidance note) -- a `playbackRate` nudge on the clip <video> would be an
+   * audible pitch shift while the user is judging music timing. This resets any
+   * rate the shared engine might carry on both dual-buffer slots. Kept for parity
+   * with Trimmer.tsx and as a guard if the snap-only decision is ever revisited.
+   */
+  function resetFilmPlaybackRate() {
+    for (const v of [filmVideoARef.current, filmVideoBRef.current]) {
+      if (!v) continue;
+      (v as HTMLVideoElement & { preservesPitch?: boolean }).preservesPitch = true;
+      v.playbackRate = 1;
+    }
+  }
+
+  // #174: mirror for the rAF loop / reconcile without re-subscribing every render.
+  useEffect(() => { cardHoldRef.current = cardHold !== null; }, [cardHold]);
+
+  // #174: single rAF sampling loop for the sequence clock while the Master tab is
+  // active. The clock only ACCRUES while playing, visible, and not parked on a
+  // card. rAF is only the sampling tick -- advanceSequenceClock does the
+  // wall-clock arithmetic and discards huge deltas from a hidden tab / OS sleep.
+  // Ported verbatim from Trimmer.tsx (keyed on musicTab==="mixer" here instead of
+  // viewMode==="film").
+  useEffect(() => {
+    if (musicTab !== "mixer") {
+      if (seqRafRef.current !== null) cancelAnimationFrame(seqRafRef.current);
+      seqRafRef.current = null;
+      return;
+    }
+    const onVis = () => {
+      const nowVisible = document.visibilityState === "visible";
+      seqVisibleRef.current = nowVisible;
+      // Returning to visible: re-seat lastSampleMs so the hidden gap is never
+      // integrated, AND re-seat seqTimeMs from the real media position if a clip
+      // is currently the active element -- the picture is ground truth after a
+      // background gap (WebView2 throttles rAF on focus loss without flipping
+      // visibilityState, so the clock may have quietly drifted).
+      let seatMs = seqClockRef.current.seqTimeMs;
+      const seq = filmSeqRef.current;
+      const v = getFilmVideo(activeFilmSlotRef.current);
+      if (nowVisible && seq && v && v.readyState >= 2 && !cardHoldRef.current
+          && performance.now() >= reconcileGateUntilRef.current) {
+        seatMs = mediaToFilm(seq, filmPlayIdxRef.current, v.currentTime * 1000);
+      }
+      seqClockRef.current = { seqTimeMs: seatMs, lastSampleMs: performance.now() };
+    };
+    document.addEventListener("visibilitychange", onVis);
+    seqVisibleRef.current = document.visibilityState === "visible";
+
+    const tick = () => {
+      const seq = filmSeqRef.current;
+      if (seq) {
+        // #174 fix: a clip plays its FULL media length, but its telescoped
+        // sequence span is one xfade shorter. Ceil the free-running clock at the
+        // ACTIVE item's telescoped end so the needle PARKS at the cut during the
+        // crossfade-overlap tail instead of over-running past it (which reconcile
+        // then hard-snaps backward -- the exact #164 backstep). filmEnd == totalMs
+        // on the final element, so this is a no-op there.
+        const activeItem = seq.items.find(
+          (it) => it.kind === "clip" && it.index === filmPlayIdxRef.current,
+        );
+        const ceilMs = activeItem && !cardHoldRef.current ? activeItem.filmEndMs : seq.totalMs;
+        seqClockRef.current = advanceSequenceClock(seqClockRef.current, performance.now(), {
+          visible: seqVisibleRef.current,
+          isPlaying: filmPlayingRef.current && !cardHoldRef.current,
+          totalMs: Math.min(seq.totalMs, ceilMs),
+        });
+        const now = performance.now();
+        if (now - seqNeedleWriteRef.current >= 50) {
+          seqNeedleWriteRef.current = now;
+          setSeqNeedle(seqClockRef.current.seqTimeMs, "raf");
+          // Imperative progress bar + elapsed label off the same clock (never a
+          // naive raw-clip sum). Skipped while parked on a card -- the ticker owns
+          // those pixels then (it advances across the telescoped card region).
+          if (!cardHoldRef.current) {
+            const nMs = seqClockRef.current.seqTimeMs;
+            const tot = seq.totalMs;
+            if (progressBarFillRef.current && tot > 0) {
+              progressBarFillRef.current.style.width = `${Math.min(100, (nMs / tot) * 100)}%`;
+            }
+            if (elapsedLabelRef.current) {
+              elapsedLabelRef.current.textContent = `${fmtMs(nMs)} / ${fmtMs(tot)}`;
+            }
+          }
+        }
+      }
+      seqRafRef.current = requestAnimationFrame(tick);
+    };
+    seqRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      if (seqRafRef.current !== null) cancelAnimationFrame(seqRafRef.current);
+      seqRafRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [musicTab]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -542,12 +711,13 @@ export default function Sound() {
       nextV.volume = Math.min(1, nextClip.clip_volume ?? 1.0);
       setSlotVisible(nextSlot);
 
-      if (progressBarFillRef.current && totalMs > 0) {
-        progressBarFillRef.current.style.width = `${Math.min(100, (clipStartMsRef.current / totalMs) * 100)}%`;
-      }
-      if (elapsedLabelRef.current) {
-        elapsedLabelRef.current.textContent = `${fmtMs(clipStartMsRef.current)} / ${fmtMs(totalMs)}`;
-      }
+      // #174: re-anchor the sequence clock to this clip's telescoped start and
+      // gate reconcile briefly (erratic post-swap timeupdate cadence). The rAF
+      // loop refreshes the progress bar + label off the clock within ~50ms.
+      const seq = filmSeqRef.current;
+      if (seq) anchorSeqClock(itemToFilm(seq, "clip", nextIdx, 0));
+      reconcileGateUntilRef.current = performance.now() + 350;
+      resetFilmPlaybackRate();
 
       const afterNextIdx = nextIdx + 1;
       if (afterNextIdx < inFilmRef.current.length) {
@@ -564,9 +734,9 @@ export default function Sound() {
     if (!filmPlayingRef.current) return;
 
     // #150 idempotency guard: already parked on a card — a stray re-entrant tick must
-    // be a no-op, not a second transition. filmPlayIdxRef/clipStartMsRef are never
-    // mutated while cardHold is set, so this is also true by construction — the
-    // explicit check just makes it self-evident (mirrors Trimmer.tsx's advanceFilmClip).
+    // be a no-op, not a second transition. filmPlayIdxRef is never mutated while
+    // cardHold is set, so this is also true by construction — the explicit check
+    // just makes it self-evident (mirrors Trimmer.tsx's advanceFilmClip).
     if (cardHold) return;
 
     // Pause the outgoing slot FIRST, synchronously, before anything else. A paused
@@ -575,14 +745,6 @@ export default function Sound() {
     // (#91 fix — activeFilmSlotRef used to flip synchronously here and do that job;
     // now it doesn't flip until the frame is confirmed, so pause must stand alone).
     getFilmVideo(activeFilmSlotRef.current)?.pause();
-
-    const prevClip = inFilmRef.current[filmPlayIdxRef.current];
-    if (prevClip) {
-      clipStartMsRef.current += Math.max(
-        0,
-        (prevClip.out_ms ?? prevClip.duration_ms) - (prevClip.in_ms ?? 0),
-      );
-    }
 
     const nextIdx = filmPlayIdxRef.current + 1;
 
@@ -609,9 +771,16 @@ export default function Sound() {
       // (#91) may already have the inactive slot playing invisibly.
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
-      const xfMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
-      const cardsBeforeClip = clips_.map((c) => cardBefore.has(c.id));
-      const filmMs = filmTimeAtClipStart(clips_, nextIdx, xfMs, cardsBeforeClip);
+      // #174: the card-region telescoped START comes from the sequence itself
+      // (the ONE resolver) rather than a parallel filmTimeAtClipStart walk. The
+      // clock is left frozen while parked -- the ticker drives the needle across
+      // the telescoped card region, and continueFromCardHold re-anchors it to the
+      // next clip's start when the hold ends.
+      const seq = filmSeqRef.current;
+      const cardSeg = seq
+        ? seq.items.find((it) => it.kind === "card" && it.card?.id === upcomingCard.id)
+        : undefined;
+      const filmMs = cardSeg ? cardSeg.filmStartMs : 0;
       pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end-card
       setCardHold({ filmMs, color: upcomingCard.color, text: upcomingCard.text, subtitle: upcomingCard.subtitle });
       startCardHoldTicker(0, filmMs);
@@ -647,40 +816,47 @@ export default function Sound() {
       return;
     }
 
-    const offsetInClip = Math.max(0, currentTimeSec - (clip.in_ms ?? 0) / 1000) * 1000;
-    const elapsedMs = clipStartMsRef.current + offsetInClip;
-
-    // Strip playhead needle — throttled to ~10fps so the state write is cheap.
-    // #163: feed the shared filmPlayheadAtClip so this needle matches the Trimmer needle
-    // AND the strip ruler for EVERY card position (open + mid-roll), not just the open
-    // card. The old `hasOpenCard ? CARD_DUR_MS : 0` term ignored mid-roll cards, so a clip
-    // following a mid-roll card sat one card-width too far left and the needle snapped
-    // backward when the card hold ended.
-    const now = performance.now();
-    if (now - lastPlayheadUpdateRef.current >= 100) {
-      lastPlayheadUpdateRef.current = now;
-      const xfMs = clampedXfadeMs(inFilmRef.current, readTransitionConfig(projectId ?? ""));
-      const placedNow = readPlacedCards(projectId ?? "");
-      const cardsBeforeClip = inFilmRef.current.map((c) => placedNow.some((p) => p.beforeClipId === c.id));
-      setFilmPlayheadMs(
-        filmPlayheadAtClip(inFilmRef.current, filmPlayIdxRef.current, xfMs, cardsBeforeClip, offsetInClip),
-      );
+    // #174: drift-correct the authoritative sequence clock against what the
+    // <video> is actually presenting. SNAP-ONLY on the Master tab -- a
+    // `playbackRate` nudge would be an audible pitch shift on clip audio while the
+    // user judges music timing (see `reconcile`'s caller-guidance note). Suppressed
+    // briefly after any src swap / seek / playback start (Gate 3 finding #2): the
+    // erratic first post-swap `timeupdate` frames must not trigger a spurious snap
+    // at the card/clip boundary where a bad correction is most visible. The strip
+    // needle + progress bar + label are all pure projections of this clock (rAF
+    // loop) -- there is no separate media-derived film position anymore (#164/#166).
+    const seq = filmSeqRef.current;
+    if (seq && !cardHoldRef.current && performance.now() >= reconcileGateUntilRef.current) {
+      const mediaFilmMs = mediaToFilm(seq, filmPlayIdxRef.current, currentTimeSec * 1000);
+      const r = reconcile(seqClockRef.current.seqTimeMs, mediaFilmMs);
+      if (r.seqTimeMs !== undefined) {
+        seqClockRef.current = { seqTimeMs: r.seqTimeMs, lastSampleMs: performance.now() };
+        setSeqNeedle(r.seqTimeMs, "reconcile");
+        // #174 Gate 3 (#10): count hard snaps so the film-mode WDIO spec can assert
+        // reconcile isn't fighting a stuck decoder / a second writer (budget:
+        // SYNC_CONTRACT.MAX_SNAPS_PER_MIN). DEV/test only.
+        if (import.meta.env.DEV) {
+          const w = window as unknown as { __rc_seqSnapCount?: number };
+          w.__rc_seqSnapCount = (w.__rc_seqSnapCount ?? 0) + 1;
+        }
+      }
+      // r.playbackRate is deliberately ignored on the Master tab (audio pitch).
     }
 
-    // Imperative DOM updates — avoid React re-render at 4-66Hz timeupdate rate
-    if (progressBarFillRef.current && totalMs > 0) {
-      progressBarFillRef.current.style.width = `${Math.min(100, (elapsedMs / totalMs) * 100)}%`;
-    }
-    if (elapsedLabelRef.current) {
-      elapsedLabelRef.current.textContent = `${fmtMs(elapsedMs)} / ${fmtMs(totalMs)}`;
-    }
-
-    // Music fade-out — applies to the END OF THE ENTIRE FILM (by design)
+    // Music fade-out — anchored to the END OF THE ENTIRE FILM, measured from the
+    // telescoped card-inclusive sequence total (not a naive raw-clip sum that
+    // omitted mid-roll card seconds — #160), and clamped to the music track's own
+    // length: loop ON -> the track always covers the film so `totalMs` governs;
+    // loop OFF + shorter track -> the audible fade rides the earlier of the two,
+    // matching the "plays once, then silence" loop note (Gate 3 finding #2b).
     const ma = musicAudioRef.current;
     if (!ma) return;
     const fadeMs = ({ none: 0, "2s": 2000, "5s": 5000 } as Record<string, number>)[sound.musicFadeOut] ?? 0;
-    if (fadeMs > 0 && totalMs > 0) {
-      const remainingMs = totalMs - elapsedMs;
+    const seqTot = seq?.totalMs ?? 0;
+    if (fadeMs > 0 && seqTot > 0) {
+      const trackMs = !sound.musicLoop && ma.duration ? ma.duration * 1000 : Infinity;
+      const fadeTotalMs = Math.min(seqTot, trackMs);
+      const remainingMs = fadeTotalMs - seqClockRef.current.seqTimeMs;
       if (remainingMs <= fadeMs) {
         ma.volume = MUSIC_VOLUME[sound.volume] * Math.max(0, remainingMs / fadeMs);
       }
@@ -696,12 +872,21 @@ export default function Sound() {
     stopCardHoldTicker();
     setCardHoldElapsedMs(0);
     filmPlayIdxRef.current = 0;
-    clipStartMsRef.current = 0;
     activeFilmSlotRef.current = "a";
     slotGenRef.current = { a: 0, b: 0 };
     pendingGateSlotRef.current = null;
     setFilmPlayIdx(0);
     setIsFilmPlaying(true);
+
+    // #174: start the authoritative clock at film-time 0 and gate reconcile while
+    // slot A loads/seeks and music buffers (Gate 3 finding #2).
+    anchorSeqClock(0);
+    reconcileGateUntilRef.current = performance.now() + 350;
+    resetFilmPlaybackRate();
+    seqVisibleRef.current = document.visibilityState === "visible";
+    if (import.meta.env.DEV) {
+      (window as unknown as { __rc_seqSnapCount?: number }).__rc_seqSnapCount = 0;
+    }
 
     const ma = musicAudioRef.current;
     if (ma && sound.mood !== "none") {
@@ -762,12 +947,13 @@ export default function Sound() {
    */
   function startCardHoldTicker(fromMs: number, baseFilmMs: number) {
     cardHoldStartAtRef.current = performance.now() - fromMs;
-    // #163: baseFilmMs is the telescoped card-region START; clamp the needle to the
-    // card-region WIDTH so at the hold's end it sits exactly at the next clip's start
-    // (filmPlayheadAtClip for that clip == base + cardRegionMs) — no overshoot into the
-    // following clip during the last ~xfade of the 3s hold, no discontinuity on resume.
-    const holdXfadeMs = clampedXfadeMs(inFilmRef.current, readTransitionConfig(projectId ?? ""));
-    const holdRegionMs = cardRegionMs(holdXfadeMs);
+    // #163/#174: baseFilmMs is the telescoped card-region START (from the sequence).
+    // The strip needle is derived elsewhere (`filmPositionMs` = cardHold.filmMs +
+    // clamped cardHoldElapsedMs); this ticker owns only the imperative progress bar
+    // + label while parked (the rAF loop skips those pixels during a hold). Clamp to
+    // the card-region WIDTH so at the hold's end it sits exactly at the next clip's
+    // telescoped start -- no overshoot during the last ~xfade of the 3s hold.
+    const holdRegionMs = filmCardRegionMs;
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
@@ -779,7 +965,14 @@ export default function Sound() {
         continueFromCardHold();
       } else {
         setCardHoldElapsedMs(elapsed);
-        setFilmPlayheadMs(baseFilmMs + Math.min(elapsed, holdRegionMs));
+        const nMs = baseFilmMs + Math.min(elapsed, holdRegionMs);
+        const tot = filmSeqRef.current?.totalMs ?? 0;
+        if (progressBarFillRef.current && tot > 0) {
+          progressBarFillRef.current.style.width = `${Math.min(100, (nMs / tot) * 100)}%`;
+        }
+        if (elapsedLabelRef.current) {
+          elapsedLabelRef.current.textContent = `${fmtMs(nMs)} / ${fmtMs(tot)}`;
+        }
       }
     }, 100);
   }
@@ -810,6 +1003,14 @@ export default function Sound() {
       stopFilmPlayback();
       return;
     }
+    // #174: anchor the clock to the next clip's telescoped start NOW -- the derived
+    // needle flips from the cardHold branch to `seqNeedleMs` the instant
+    // setCardHold(null) commits, so the clock must already be there or the needle
+    // snaps back to the card-region start for a frame before promoteToFilmClipRough
+    // re-anchors it (that re-anchor is then idempotent).
+    const seq = filmSeqRef.current;
+    if (seq) anchorSeqClock(itemToFilm(seq, "clip", pendingIdx, 0));
+    reconcileGateUntilRef.current = performance.now() + 350;
     filmPlayingRef.current = true;
     setIsFilmPlaying(true);
     setIsFilmPaused(false);
@@ -855,52 +1056,72 @@ export default function Sound() {
     setIsFilmPlaying(false);
     setIsFilmPaused(false);
     filmPlayIdxRef.current = 0;
-    clipStartMsRef.current = 0;
     // Do NOT call setSlotVisible("none") here — leave the last frame visible in the active slot.
     // startFilmPlayback resets activeFilmSlotRef and slotGenRef when restarting.
     setFilmPlayIdx(0);
-    setFilmPlayheadMs(undefined);
-    if (progressBarFillRef.current) progressBarFillRef.current.style.width = "0%";
-    if (elapsedLabelRef.current) elapsedLabelRef.current.textContent = `${fmtMs(0)} / ${fmtMs(totalMs)}`;
+    // #174: leave the sequence clock where playback stopped (≈ totalMs on a
+    // natural end) so the strip needle + progress bar stay at the end frame,
+    // matching Trimmer. startFilmPlayback re-anchors to 0 on replay.
   }
 
-  // Seek to any position in the film. Works from idle, playing, or paused.
-  // Music is kept in sync — its currentTime is set to match the film position.
+  // Seek the film to a telescoped sequence-time ms — the StickyFilmStrip ruler
+  // domain AND the scrub-bar domain (both now card-inclusive). Works from idle,
+  // playing, or paused. Music is kept in sync. #174: routes through the ONE
+  // sequence resolver (`filmToMedia`) — no naive raw-clip walk, no open-card
+  // special-case, no telescoped->naive conversion.
   function seekToFilmMs(targetMs: number) {
     const clips = inFilmRef.current;
-    if (clips.length === 0 || totalMs <= 0) return;
+    const seq = filmSeqRef.current;
+    if (clips.length === 0 || !seq || seq.totalMs <= 0) return;
 
-    // #150: a strip/scrub seek away from a held card is a legitimate exit — clear the
-    // hold so the overlay doesn't linger stuck over whatever clip this lands on. Sound's
-    // own mid-roll card seek-snap accuracy is a separate, already-tracked gap (#76) —
-    // this only prevents a stale overlay, it doesn't fix seek precision through a card.
+    // A seek is a legitimate exit from a card hold.
     setCardHold(null);
     pendingCardAdvanceIdxRef.current = null;
     stopCardHoldTicker();
     setCardHoldElapsedMs(0);
 
-    const clamped = Math.max(0, Math.min(targetMs, totalMs));
+    const clamped = Math.max(0, Math.min(targetMs, seq.totalMs));
+    anchorSeqClock(clamped);
+    reconcileGateUntilRef.current = performance.now() + 350;
 
-    // Find which clip contains this position
-    let acc = 0;
-    let idx = clips.length - 1;
-    for (let i = 0; i < clips.length; i++) {
-      const dur = (clips[i].out_ms ?? clips[i].duration_ms) - (clips[i].in_ms ?? 0);
-      if (acc + dur > clamped || i === clips.length - 1) { idx = i; break; }
-      acc += dur;
-    }
-
-    const clip = clips[idx];
-    const seekMs = (clip.in_ms ?? 0) + (clamped - acc);
-
-    // Update tracking refs + visual indicators immediately
-    clipStartMsRef.current = acc;
-    if (progressBarFillRef.current && totalMs > 0) {
-      progressBarFillRef.current.style.width = `${(clamped / totalMs) * 100}%`;
+    // Visual indicators jump immediately; the rAF loop keeps them live after.
+    if (progressBarFillRef.current && seq.totalMs > 0) {
+      progressBarFillRef.current.style.width = `${(clamped / seq.totalMs) * 100}%`;
     }
     if (elapsedLabelRef.current) {
-      elapsedLabelRef.current.textContent = `${fmtMs(clamped)} / ${fmtMs(totalMs)}`;
+      elapsedLabelRef.current.textContent = `${fmtMs(clamped)} / ${fmtMs(seq.totalMs)}`;
     }
+
+    const media = filmToMedia(seq, clamped);
+
+    // --- Landed on a card region: park the overlay (parity with Trimmer's
+    // seekFilmTo B-lite park — press play then promotes into the next clip).
+    if (media.kind === "card") {
+      filmVideoARef.current?.pause();
+      filmVideoBRef.current?.pause();
+      musicAudioRef.current?.pause();
+      filmPlayingRef.current = false;
+      setIsFilmPlaying(false);
+      setIsFilmPaused(true);
+      let nextClipIdx = clips.length; // trailing end-card sentinel
+      const seg = seq.items.findIndex((it) => it.kind === "card" && it.index === media.cardIndex);
+      for (let i = seg + 1; i < seq.items.length; i++) {
+        if (seq.items[i].kind === "clip") { nextClipIdx = seq.items[i].index; break; }
+      }
+      pendingCardAdvanceIdxRef.current = nextClipIdx;
+      const pc = seg >= 0 ? seq.items[seg]?.card : undefined;
+      setCardHold({
+        filmMs: clamped,
+        color: pc?.color ?? "#000000",
+        text: pc?.text ?? "",
+        subtitle: pc?.subtitle ?? "",
+      });
+      return;
+    }
+
+    // --- Landed in a clip.
+    const idx = media.clipIndex;
+    const seekMs = media.mediaMs;
 
     const wasIdle = !filmPlayingRef.current && !isFilmPaused;
     const ma = musicAudioRef.current;
@@ -986,44 +1207,14 @@ export default function Sound() {
       // Different clip — use crossSeekToClip (outgoing frame stays visible until new frame ready)
       crossSeekToClip(idx, seekMs);
     }
-    clipStartMsRef.current = acc;
   }
 
-  // Strip click-to-seek: converts telescoped strip position to Sound's naive internal time.
-  // Card regions snap to the adjacent clip boundary (Sound has no card video yet — #76).
+  // #174: the StickyFilmStrip ruler already speaks telescoped, card-inclusive
+  // sequence time — the exact domain seekToFilmMs now consumes — so a strip click
+  // is a straight passthrough. (Was: a `hasOpenCard` special-case plus a
+  // telescoped->naive conversion walk, both removed with the naive timeline.)
   function handleStripSeek(telescopedMs: number) {
-    const clips = inFilmRef.current;
-    if (clips.length === 0) return;
-    const xfMs = clampedXfadeMs(clips, readTransitionConfig(projectId ?? ""));
-    const cardLead = hasOpenCard ? CARD_DUR_MS : 0;
-
-    // Open card region → seek to start of footage
-    if (hasOpenCard && telescopedMs < cardLead) {
-      setFilmPlayheadMs(cardLead);
-      seekToFilmMs(0);
-      return;
-    }
-
-    // Close card region → snap to last clip boundary
-    if (hasCloseCardFlag && telescopedMs >= effectiveMs - CARD_DUR_MS) {
-      setFilmPlayheadMs(effectiveMs - CARD_DUR_MS);
-      seekToFilmMs(totalMs);
-      return;
-    }
-
-    // Footage region: convert telescoped → naive via filmTimeAtClipStart
-    const relMs = telescopedMs - cardLead;
-    for (let i = 0; i < clips.length; i++) {
-      const clipTStart = filmTimeAtClipStart(clips, i, xfMs, false);
-      const nextTStart = i < clips.length - 1 ? filmTimeAtClipStart(clips, i + 1, xfMs, false) : Infinity;
-      if (relMs < nextTStart || i === clips.length - 1) {
-        const offsetInClip = Math.max(0, relMs - clipTStart);
-        const naiveStart = clips.slice(0, i).reduce((sum, c) => sum + trimmedMs(c), 0);
-        setFilmPlayheadMs(telescopedMs);
-        seekToFilmMs(naiveStart + Math.min(offsetInClip, trimmedMs(clips[i])));
-        return;
-      }
-    }
+    seekToFilmMs(telescopedMs);
   }
 
   function startCustomPreview() {
@@ -1213,7 +1404,7 @@ export default function Sound() {
             card: { id: c.id, color: c.color, text: c.text },
             beforeClipId: c.beforeClipId,
           }))}
-          playheadMs={filmPlayheadMs}
+          playheadMs={filmPositionMs}
           onSeek={handleStripSeek}
         />
       }
@@ -1558,6 +1749,7 @@ export default function Sound() {
             <div className="relative z-20 flex items-center gap-3 px-4 py-3 border-t border-white/10 flex-shrink-0">
               {/* Play / Pause button — canonical media button per DESIGN.md */}
               <button
+                data-testid="master-playpause"
                 disabled={inFilm.length === 0}
                 onClick={
                   cardHold ? toggleCardHoldPause

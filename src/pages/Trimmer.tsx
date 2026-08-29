@@ -105,7 +105,19 @@ export default function Trimmer() {
   const seqVisibleRef = useRef(true);
   const seqRafRef = useRef<number | null>(null);
   const seqNeedleWriteRef = useRef(0);
-  const [seqNeedleMs, setSeqNeedleMs] = useState(0);
+  const [seqNeedleMs, setSeqNeedleMsRaw] = useState(0);
+  // #174 Gate 3 (#10): DEV one-writer guard, mirrored from Sound.tsx. Every needle
+  // write goes through this with an owner tag; a write from outside the allowlist
+  // is the #164/#166 "second writer" regression. The union type enforces it at
+  // compile time; the runtime check catches a JS-level bypass.
+  const SEQ_NEEDLE_OWNERS = ["raf", "reconcile", "anchor", "cardTicker", "stop"] as const;
+  function setSeqNeedle(ms: number, owner: (typeof SEQ_NEEDLE_OWNERS)[number]) {
+    if (import.meta.env.DEV && !SEQ_NEEDLE_OWNERS.includes(owner)) {
+      // eslint-disable-next-line no-console
+      console.error(`[trimmer] seqNeedleMs written by unexpected owner: ${owner}`);
+    }
+    setSeqNeedleMsRaw(ms);
+  }
   // Mirrors used by the rAF loop / reconcile without re-subscribing every render.
   const isPlayingRef = useRef(false);
   const cardHoldRef = useRef(false);
@@ -1292,7 +1304,11 @@ export default function Trimmer() {
       const r = reconcile(seqClockRef.current.seqTimeMs, mediaFilmMs);
       if (r.seqTimeMs !== undefined) {
         seqClockRef.current = { seqTimeMs: r.seqTimeMs, lastSampleMs: performance.now() };
-        setSeqNeedleMs(r.seqTimeMs);
+        setSeqNeedle(r.seqTimeMs, "reconcile");
+        if (import.meta.env.DEV) {
+          const w = window as unknown as { __rc_seqSnapCount?: number };
+          w.__rc_seqSnapCount = (w.__rc_seqSnapCount ?? 0) + 1;
+        }
       }
       // Reconcile RETURNS 1 in the ignore/snap zones, so comparing against the
       // tracked rate (not against 1) is what resets a stranded 1.06 back to 1
@@ -1472,7 +1488,7 @@ export default function Trimmer() {
     const total = filmSeqRef.current?.totalMs ?? 0;
     const clamped = Math.max(0, Math.min(filmMs, total || filmMs));
     seqClockRef.current = { seqTimeMs: clamped, lastSampleMs: performance.now() };
-    setSeqNeedleMs(clamped);
+    setSeqNeedle(clamped, "anchor");
   }
 
   /**
@@ -1528,15 +1544,25 @@ export default function Trimmer() {
     const tick = () => {
       const seq = filmSeqRef.current;
       if (seq) {
+        // #174 fix: a clip plays its FULL media length, but its telescoped
+        // sequence span is one xfade shorter. Ceil the free-running clock at the
+        // ACTIVE item's telescoped end so the needle PARKS at the cut during the
+        // crossfade-overlap tail instead of over-running past it (which reconcile
+        // then hard-snaps backward -- the exact #164 backstep). filmEnd == totalMs
+        // on the final element, so this is a no-op there.
+        const activeItem = seq.items.find(
+          (it) => it.kind === "clip" && it.index === filmPlayIdxRef.current,
+        );
+        const ceilMs = activeItem && !cardHoldRef.current ? activeItem.filmEndMs : seq.totalMs;
         seqClockRef.current = advanceSequenceClock(seqClockRef.current, performance.now(), {
           visible: seqVisibleRef.current,
           isPlaying: isPlayingRef.current && !cardHoldRef.current,
-          totalMs: seq.totalMs,
+          totalMs: Math.min(seq.totalMs, ceilMs),
         });
         const now = performance.now();
         if (now - seqNeedleWriteRef.current >= 50) {
           seqNeedleWriteRef.current = now;
-          setSeqNeedleMs(seqClockRef.current.seqTimeMs);
+          setSeqNeedle(seqClockRef.current.seqTimeMs, "raf");
         }
       }
       seqRafRef.current = requestAnimationFrame(tick);
@@ -1563,6 +1589,9 @@ export default function Trimmer() {
       filmPlayIdxRef.current = 0;
       anchorSeqClock(0); // #165: start the sequence clock at film-time 0
       resetFilmPlaybackRate();
+      if (import.meta.env.DEV) {
+        (window as unknown as { __rc_seqSnapCount?: number }).__rc_seqSnapCount = 0;
+      }
       if (inFilmRef.current.length > 0) loadIntoSlot(0, "a", undefined, false);
       else setSlotVisible("a");
     } else {
@@ -1803,6 +1832,7 @@ export default function Trimmer() {
                 Clip
               </button>
               <button
+                data-testid="trim-viewmode-film"
                 onClick={() => { setFilmPlayIdx(0); setViewMode("film"); }}
                 className={`px-4 py-1 text-xs rounded-r-md border-t border-r border-b transition-colors ${
                   viewMode === "film"
@@ -2005,6 +2035,7 @@ export default function Trimmer() {
 
           <div className="flex items-center gap-3 w-full">
             <button
+              data-testid="trim-playpause"
               onClick={togglePlay}
               disabled={viewMode === "clip" && !videoCanPlay}
               title={viewMode === "clip" && !videoCanPlay ? "Generating video preview, please wait..." : undefined}

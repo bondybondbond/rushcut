@@ -262,7 +262,7 @@ export const config: WebdriverIO.Config = {
   // qa-isolation.spec.ts must run FIRST -- it hard-asserts isolation before any real spec.
   // (WDIO runs specs in listed order at maxInstances:1.) A --spec override from package.json
   // should always keep qa-isolation.spec.ts as the first entry.
-  specs: ["./e2e/qa-isolation.spec.ts", "./e2e/fast.spec.ts"],
+  specs: ["./e2e/qa-isolation.spec.ts", "./e2e/fast.spec.ts", "./e2e/film-mode.spec.ts"],
 
   // --- Global acquire / recover / validate boundary (#170 F7: onPrepare, not beforeSession) ---
   onPrepare: () => {

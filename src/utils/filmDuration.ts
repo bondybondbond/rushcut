@@ -107,15 +107,18 @@ export function clampedXfadeMs(inFilm: Clip[], tc: TransitionConfig): number {
  * only index 0 mattered) -- callers that don't care about card-precise timing (e.g. Sound's
  * approximate playhead sync) can keep passing `false`.
  *
- * KNOWN-INCOMPLETE CONTRACT (#163): the loop runs `i < index`, so the lead of the card
+ * CARD-REGION-START CONTRACT (#163): the loop runs `i < index`, so the lead of the card
  * sitting *immediately before* clip[index] (`cardsBeforeClip[index]`) is deliberately NOT
  * counted -- this function returns the CARD-REGION START for a card-preceded clip, not the
- * clip's own visual start. That is load-bearing for the card-park callers (seekFilmTo,
- * gotoFilmClip) which want the card-region coordinate. Any film-mode PLAYHEAD caller that
- * needs the clip's true start must add `cardRegionMs(xfadeMs)` back for a card-preceded
- * clip -- use `filmPlayheadAtClip()` below rather than open-coding it. The real fix (one
- * authoritative sequence-time clock, cards as pure projections) is tracked as a follow-up
- * issue; do NOT "fix" this loop bound in place without migrating every card-park caller.
+ * clip's own visual start. That is exactly what its remaining callers want: the card-park
+ * paths in Trimmer's `seekFilmTo`/`gotoFilmClip` (which park the overlay on the card
+ * region) and Arrange's static selected-clip playhead.
+ *
+ * The film-mode PLAYBACK needle no longer uses this at all (#174): it is a pure projection
+ * of the authoritative sequence clock (`sequenceClock.ts` `buildSequence` +
+ * `advanceSequenceClock`/`reconcile`), where a card is a first-class item with its own
+ * telescoped span -- so the "add `cardRegionMs` back" workaround this note used to describe
+ * (via the deleted `filmPlayheadAtClip`) is gone.
  */
 export function filmTimeAtClipStart(
   inFilm: Clip[],
@@ -145,34 +148,4 @@ export function filmTimeAtClipStart(
  */
 export function cardRegionMs(xfadeMs: number): number {
   return Math.max(0, CARD_DUR_MS - xfadeMs);
-}
-
-/**
- * Film-mode strip playhead in telescoped film-time ms (#163) -- the ONE pure function the
- * Trimmer film-mode needle and the Sound Master-tab needle both feed, so the two screens
- * cannot drift. Adds back the lead of the card immediately before clip[index] that
- * filmTimeAtClipStart deliberately omits (see its contract note), then the within-clip
- * offset. Monotonic non-decreasing in `index` (for a fixed film) and in
- * `withinClipOffsetMs` -- covered by filmDuration.selftest.ts.
- *
- *   inFilm             - the in-film clip list
- *   index              - active film-clip index
- *   xfadeMs            - clampedXfadeMs(inFilm, tc)
- *   cardsBeforeClip[i] - true when a card sits immediately before clip[i]
- *   withinClipOffsetMs - playback ms elapsed inside clip[index] (currentMs - in_ms); clamped >= 0
- */
-export function filmPlayheadAtClip(
-  inFilm: Clip[],
-  index: number,
-  xfadeMs: number,
-  cardsBeforeClip: boolean[] | false,
-  withinClipOffsetMs: number,
-): number {
-  const arr = cardsBeforeClip || [];
-  const cardLead = arr[index] ? cardRegionMs(xfadeMs) : 0;
-  return (
-    filmTimeAtClipStart(inFilm, index, xfadeMs, cardsBeforeClip) +
-    cardLead +
-    Math.max(0, withinClipOffsetMs)
-  );
 }

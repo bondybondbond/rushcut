@@ -16,9 +16,11 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
+import type { PlacedCard } from "@/utils/buildJobConfig";
 import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
 import { CARD_DUR_MS, trimmedMs } from "@/utils/filmDuration";
+import { buildSequenceCore } from "@/utils/sequenceClock";
 
 /** Resolved card data for a strip card tile (#74, generalized to any position in #149). */
 export interface StripCard {
@@ -401,6 +403,19 @@ export function StickyFilmStrip({
   );
   const endCard = cardsActive.find((p) => p.beforeClipId === null)?.card ?? null;
 
+  // #174 Phase D: adapt the strip's PositionedCard[] to the shape buildSequenceCore
+  // wants. Only `id` + `beforeClipId` drive geometry; `color`/`text` are carried
+  // through, `subtitle`/`animation` are filled with inert defaults (never read for
+  // ruler/px math).
+  const cardsForSeq: PlacedCard[] = cardsActive.map((p) => ({
+    id: p.card.id,
+    text: p.card.text,
+    subtitle: "",
+    color: p.card.color,
+    animation: "none",
+    beforeClipId: p.beforeClipId,
+  }));
+
   // #159: targeted change signal for card add / remove / reposition ONLY. Container resize
   // stays owned by the ResizeObserver effects; card duration is the fixed CARD_DUR_MS
   // constant; tile widths carry no font/text-content dependence — so this key never needs
@@ -426,16 +441,21 @@ export function StickyFilmStrip({
   }
   if (endCard) segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: endCard });
 
-  // Render-time (telescoped) width per SEGMENT in ms (#71/#74). Every element but the last has
-  // its tail consumed by the crossfade into the next element, so it contributes one xfade less.
-  // This makes totalMs == the telescoped + card-inclusive runtime shown in the top bar.
-  // xfadeOverlapMs is 0 when no crossfade is active -> identical to the pre-card behaviour.
-  const renderMsArr = segments.map((s, i) =>
-    Math.max(0, s.nativeMs - (i < segments.length - 1 ? xfadeOverlapMs : 0)),
-  );
+  // #174 Phase D: the telescoped (render-time) geometry is NO LONGER computed here.
+  // `buildSequenceCore` is the ONE resolver -- it produces the identical flat
+  // clip+card item list (same interleave order this component builds `segments`
+  // in) with each item's half-open telescoped `[filmStartMs, filmEndMs)` span, so
+  // the strip ruler and the film-mode playback needle can never geometrically
+  // disagree (they now literally share the resolver). This component keeps only
+  // the px mapping on top of those spans.
+  const filmSeq = buildSequenceCore(inFilm, xfadeOverlapMs, cardsForSeq);
+  const seqItems = filmSeq.items; // 1:1 with `segments` by construction (same order)
+
+  // Per-SEGMENT telescoped width in ms, straight off the resolver's spans.
+  const renderMsArr = seqItems.map((it) => it.filmEndMs - it.filmStartMs);
 
   // Total film time in render (telescoped, card-inclusive) ms — drives the ruler + auto-fit.
-  const totalMs = renderMsArr.reduce((sum, m) => sum + m, 0);
+  const totalMs = filmSeq.totalMs;
 
   // Per-segment widths: proportional to telescoped (render-time) duration, min-clamped.
   const segWidths = renderMsArr.map((m) => Math.max(MIN_CLIP_WIDTH, Math.round(m * pxPerMs)));
@@ -456,32 +476,32 @@ export function StickyFilmStrip({
     }
   }
 
-  // Map render-time (ms) -> pixel position using telescoped per-segment widths
+  // Map render-time (ms) -> pixel position, reading the resolver's telescoped
+  // per-item spans directly (no local prefix-sum walk).
   function filmTimeToPx(ms: number): number {
-    let filmMs = 0;
-    for (let i = 0; i < segments.length; i++) {
-      const segMs = renderMsArr[i];
-      if (ms <= filmMs + segMs) {
-        const t = segMs > 0 ? (ms - filmMs) / segMs : 0;
+    for (let i = 0; i < seqItems.length; i++) {
+      const it = seqItems[i];
+      const segMs = it.filmEndMs - it.filmStartMs;
+      if (ms <= it.filmEndMs) {
+        const t = segMs > 0 ? (ms - it.filmStartMs) / segMs : 0;
         return segOffsets[i] + t * segWidths[i];
       }
-      filmMs += segMs;
     }
     return totalTrackPx;
   }
 
-  // Inverse: pixel offset in the track → render-time ms. The SAME mapping backs both the
-  // ruler paint and the click-seek hitbox (handleClick), so visuals and seek cannot drift.
+  // Inverse: pixel offset in the track → render-time ms. The SAME resolver spans back
+  // both the ruler paint and the click-seek hitbox (handleClick), so visuals and seek
+  // cannot drift.
   function pxToFilmMs(px: number): number {
     let cur = 0;
-    for (let i = 0; i < segments.length; i++) {
+    for (let i = 0; i < seqItems.length; i++) {
       const w = segWidths[i];
-      const segMs = renderMsArr[i];
+      const it = seqItems[i];
+      const segMs = it.filmEndMs - it.filmStartMs;
       if (px <= cur + w) {
         const t = w > 0 ? (px - cur) / w : 0;
-        let filmMs = 0;
-        for (let j = 0; j < i; j++) filmMs += renderMsArr[j];
-        return Math.round(filmMs + t * segMs);
+        return Math.round(it.filmStartMs + t * segMs);
       }
       cur += w + GAP_PX;
     }
@@ -928,6 +948,8 @@ export function StickyFilmStrip({
           {playheadMs !== undefined && (
             <div
               aria-hidden
+              data-testid="filmstrip-playhead"
+              data-film-ms={Math.round(playheadMs)}
               style={{
                 position: "absolute",
                 top: 0,

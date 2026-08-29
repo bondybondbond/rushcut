@@ -89,8 +89,27 @@ export function buildSequence(
   tc: TransitionConfig,
   placedCards: PlacedCard[],
 ): Sequence {
-  const xfadeMs = clampedXfadeMs(inFilm, tc);
+  return buildSequenceCore(inFilm, clampedXfadeMs(inFilm, tc), placedCards);
+}
 
+/**
+ * The single canonical film-timeline resolver (#174 Phase D). `buildSequence`
+ * above is the convenience entry that derives `xfadeMs` from a `TransitionConfig`;
+ * `StickyFilmStrip` already holds the clamped overlap as a prop, so it calls this
+ * core directly. Both entry points share the one telescoping / prefix-sum
+ * implementation here -- given the same `xfadeMs` they produce byte-identical
+ * geometry, so the strip ruler and the playback needle cannot geometrically
+ * disagree. (Callers must pass `clampedXfadeMs(inFilm, tc)` for that `xfadeMs` --
+ * `buildSequence` does; `StickyFilmStrip`'s parent passes it as `xfadeOverlapMs`.)
+ *
+ * `cards` need only carry `id` + `beforeClipId`; `color`/`text`/`subtitle` are
+ * copied onto `SeqItem.card` when present but are never read for geometry.
+ */
+export function buildSequenceCore(
+  inFilm: Clip[],
+  xfadeMs: number,
+  placedCards: PlacedCard[],
+): Sequence {
   const cardBefore = new Map<string, PlacedCard>(
     placedCards.filter((c) => c.beforeClipId !== null).map((c) => [c.beforeClipId as string, c]),
   );
@@ -361,6 +380,42 @@ export function advanceSequenceClock(
 // Clock <-> media reconciliation (pure)
 // ---------------------------------------------------------------------------
 
+/**
+ * SYNC CONTRACT (#174 Gate 3, finding #10) -- the quantitative sync guarantee the
+ * film-mode needle upholds, made explicit so it is testable rather than implicit
+ * in `reconcile`'s default args. These are the values `reconcile` has shipped with
+ * since #165 Phase A+B; naming them here freezes them as a contract and lets both
+ * `sequenceClock.selftest.ts` and the film-mode WDIO spec assert against them.
+ *
+ *  DEAD_BAND_MS   below this |drift| the needle is left alone (must stay well
+ *                 above HTMLMediaElement.currentTime's ~2ms reduced precision so
+ *                 precision noise alone never triggers a correction).
+ *  FWD_SNAP_MS    media is AHEAD of the clock by at least this -> hard-snap the
+ *                 clock FORWARD to the media (always monotonic, always safe).
+ *  HARD_BACK_MS   clock is AHEAD of a badly-stalled media by at least this -> the
+ *                 only condition under which a BACKWARD clock correction is
+ *                 accepted. Deliberately >2x FWD_SNAP so an ordinary crossfade
+ *                 seam or a slow decode can never yank the needle backward -- the
+ *                 exact #164 signature this whole migration exists to kill.
+ *  MAX_RATE       max deviation of the gentle-zone playbackRate nudge from 1.0.
+ *  MAX_SNAPS_PER_MIN  budget for hard snaps (either direction) over a minute of
+ *                 continuous playback. The 3-zone design structurally cannot
+ *                 ping-pong at a boundary -- a forward snap needs drift <= -250ms,
+ *                 a backward snap needs drift >= +600ms, and the 40..600ms band
+ *                 in between only ever nudges playbackRate, never snaps -- so a
+ *                 healthy playthrough sits far under this. A run that exceeds it
+ *                 means reconcile is fighting something (a stuck decoder, a second
+ *                 needle writer) and the WDIO spec fails loudly rather than
+ *                 shipping a visibly juddering needle.
+ */
+export const SYNC_CONTRACT = {
+  DEAD_BAND_MS: 40,
+  FWD_SNAP_MS: 250,
+  HARD_BACK_MS: 600,
+  MAX_RATE: 0.06,
+  MAX_SNAPS_PER_MIN: 20,
+} as const;
+
 export interface ReconcileResult {
   /** When set, hard-snap the clock to this value. */
   seqTimeMs?: number;
@@ -414,10 +469,10 @@ export function reconcile(
   mediaFilmMs: number,
   opts: ReconcileOpts = {},
 ): ReconcileResult {
-  const IGNORE = opts.ignoreMs ?? 40;
-  const SNAP = opts.snapMs ?? 250;
-  const HARD_BACK = opts.hardBackMs ?? 600;
-  const MAX_RATE = opts.maxRate ?? 0.06;
+  const IGNORE = opts.ignoreMs ?? SYNC_CONTRACT.DEAD_BAND_MS;
+  const SNAP = opts.snapMs ?? SYNC_CONTRACT.FWD_SNAP_MS;
+  const HARD_BACK = opts.hardBackMs ?? SYNC_CONTRACT.HARD_BACK_MS;
+  const MAX_RATE = opts.maxRate ?? SYNC_CONTRACT.MAX_RATE;
 
   const drift = seqTimeMs - mediaFilmMs; // > 0 : clock ahead of picture
   const abs = Math.abs(drift);
