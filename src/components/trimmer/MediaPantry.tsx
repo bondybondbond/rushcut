@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, memo } from "react";
 import type { Clip } from "@/types/project";
 
 interface MediaPantryProps {
@@ -17,8 +17,106 @@ interface ContextMenuState {
   clip: Clip;
 }
 
+interface PantryTileProps {
+  clip: Clip;
+  isSelected: boolean;
+  inFilm: boolean;
+  onSelect: (clip: Clip) => void;
+  onContextMenu: (e: React.MouseEvent, clip: Clip) => void;
+}
+
+/**
+ * One source-clip tile. `React.memo` so that when the parent re-renders at
+ * playback frequency (film mode drives a per-frame re-render of Trimmer, and
+ * MediaPantry with it) only the tiles whose own props actually change re-render
+ * -- at a cut boundary that is exactly 2 tiles (old active + new active), not
+ * the whole grid. The base64 thumbnail <img> is the expensive vdom node this
+ * protects. Callbacks are ref-stabilized by the parent so identity never breaks
+ * the memo. #36.
+ */
+const PantryTile = memo(function PantryTile({ clip, isSelected, inFilm, onSelect, onContextMenu }: PantryTileProps) {
+  return (
+    <button
+      data-testid="pantry-tile"
+      data-clip-id={clip.id}
+      data-active={isSelected ? "true" : "false"}
+      draggable
+      onDragStart={(e) => e.dataTransfer.setData("clipId", clip.id)}
+      onClick={() => onSelect(clip)}
+      onContextMenu={(e) => onContextMenu(e, clip)}
+      className={`relative rounded-md overflow-hidden border-2 transition-all duration-150 text-left ${
+        isSelected
+          ? "border-[#FF8A65]"
+          : "border-white/10 hover:border-white/30"
+      }`}
+      style={{ aspectRatio: "16/9" }}
+    >
+      {/* Thumbnail */}
+      {clip.thumbnail_data ? (
+        <img
+          src={clip.thumbnail_data}
+          alt={clip.filename}
+          className="w-full h-full object-cover"
+          draggable={false}
+        />
+      ) : (
+        <div className="w-full h-full bg-white/5 flex items-center justify-center">
+          <svg
+            className="w-5 h-5 text-[#e5e5e5]/30"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path d="M15 10l4.553-2.069A1 1 0 0121 8.94V15.06a1 1 0 01-1.447.908L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
+          </svg>
+        </div>
+      )}
+
+      {/* In-film green badge */}
+      {inFilm && (
+        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-[#22c55e] flex items-center justify-center shadow">
+          <svg
+            className="w-2.5 h-2.5 text-white"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={3}
+          >
+            <path d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+      )}
+
+      {/* Filename tooltip on hover */}
+      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent px-1 py-0.5 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
+        <p className="text-[10px] text-white truncate">{clip.filename}</p>
+      </div>
+    </button>
+  );
+});
+
 export function MediaPantry({ clips, selectedId, onSelect, inFilmPaths, onAddClips, onRemoveClip, pendingAddCount = 0 }: MediaPantryProps) {
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
+
+  // Ref-indirection so PantryTile's memo is never broken by a fresh onSelect /
+  // onRemoveClip identity from the parent (Trimmer passes new function instances
+  // every render). The tile gets stable callbacks; they always call through to
+  // the latest prop. #36.
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const onRemoveClipRef = useRef(onRemoveClip);
+  onRemoveClipRef.current = onRemoveClip;
+
+  const handleTileSelect = useCallback((clip: Clip) => {
+    onSelectRef.current(clip);
+  }, []);
+
+  const handleTileContextMenu = useCallback((e: React.MouseEvent, clip: Clip) => {
+    if (!onRemoveClipRef.current) return;
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, clip });
+  }, []);
 
   useEffect(() => {
     if (!menu) return;
@@ -54,72 +152,16 @@ export function MediaPantry({ clips, selectedId, onSelect, inFilmPaths, onAddCli
         )}
       </div>
       <div className="grid grid-cols-2 gap-2">
-        {clips.map((clip) => {
-          const isSelected = clip.id === selectedId;
-          const inFilm = inFilmPaths.has(clip.local_path);
-          return (
-            <button
-              key={clip.id}
-              data-testid="pantry-tile"
-              draggable
-              onDragStart={(e) => e.dataTransfer.setData("clipId", clip.id)}
-              onClick={() => onSelect(clip)}
-              onContextMenu={(e) => {
-                if (!onRemoveClip) return;
-                e.preventDefault();
-                setMenu({ x: e.clientX, y: e.clientY, clip });
-              }}
-              className={`relative rounded-md overflow-hidden border-2 transition-all duration-150 text-left ${
-                isSelected
-                  ? "border-[#FF8A65]"
-                  : "border-white/10 hover:border-white/30"
-              }`}
-              style={{ aspectRatio: "16/9" }}
-            >
-              {/* Thumbnail */}
-              {clip.thumbnail_data ? (
-                <img
-                  src={clip.thumbnail_data}
-                  alt={clip.filename}
-                  className="w-full h-full object-cover"
-                  draggable={false}
-                />
-              ) : (
-                <div className="w-full h-full bg-white/5 flex items-center justify-center">
-                  <svg
-                    className="w-5 h-5 text-[#e5e5e5]/30"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                  >
-                    <path d="M15 10l4.553-2.069A1 1 0 0121 8.94V15.06a1 1 0 01-1.447.908L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
-                  </svg>
-                </div>
-              )}
-
-              {/* In-film green badge */}
-              {inFilm && (
-                <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-[#22c55e] flex items-center justify-center shadow">
-                  <svg
-                    className="w-2.5 h-2.5 text-white"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={3}
-                  >
-                    <path d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-              )}
-
-              {/* Filename tooltip on hover */}
-              <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent px-1 py-0.5 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
-                <p className="text-[10px] text-white truncate">{clip.filename}</p>
-              </div>
-            </button>
-          );
-        })}
+        {clips.map((clip) => (
+          <PantryTile
+            key={clip.id}
+            clip={clip}
+            isSelected={clip.id === selectedId}
+            inFilm={inFilmPaths.has(clip.local_path)}
+            onSelect={handleTileSelect}
+            onContextMenu={handleTileContextMenu}
+          />
+        ))}
         {/* #133: pending skeleton tiles for files just picked via "+ Add clips" — cleared
             once probe_files/add_clips_cmd resolve (or fail) via Trimmer's pendingAddCount. */}
         {Array.from({ length: pendingAddCount }).map((_, i) => (

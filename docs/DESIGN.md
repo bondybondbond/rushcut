@@ -139,7 +139,11 @@ Filled peach circle, **white** filled icon. Used in Trimmer scrubber bar and Arr
 
 ### Vertical clip rail (Arrange screen left panel)
 
-Stack of 16:9 thumbnail buttons, `w-40`, `overflow-y-auto bg-[#0a0a0a] border-r border-white/10`. Each tile: `border-2 rounded-md overflow-hidden aspect-ratio:16/9`. Active tile: `border-[#FF8A65]`. Inactive: `border-[#99B3FF]/25 hover:border-[#99B3FF]/50`.
+Stack of 16:9 thumbnail buttons, `w-40`, `overflow-y-auto bg-[#0a0a0a] border-r border-white/10`. Each tile: `border-2 rounded-md overflow-hidden aspect-ratio:16/9`. Active tile: `border-[#FF8A65]`. Inactive: `border-white/10 hover:border-white/30` (matches the live `MediaPantry` tile — an earlier `border-[#99B3FF]/25` note here was stale).
+
+### MediaPantry active tile — follows playback in film mode (#36)
+
+The Trimmer MediaPantry tile uses the same active border as everywhere else: `border-[#FF8A65]` active, `border-white/10 hover:border-white/30` inactive. In **Clip mode** the active tile is the user's manual selection (unchanged). In **Film mode** the active border instead tracks the source clip of the cut currently under the playback needle — a read-only decoration derived from the telescoped sequence clock (`filmToItem`), never the real selection. It clears entirely (no tile active) while the needle is parked on an open/mid-roll/close card. The pantry does **not** auto-scroll to keep the active tile visible (scrolljacking anti-pattern — deferred to #178). Tiles carry `data-clip-id` + `data-active` for E2E.
 
 ### Inline clip play + scrubber
 

@@ -19,6 +19,7 @@ import {
   reconcile,
   mediaToFilm,
   itemToFilm,
+  filmToItem,
   type Sequence,
   type ClockState,
 } from "@/utils/sequenceClock";
@@ -1659,6 +1660,26 @@ export default function Trimmer() {
           ? seqNeedleMs
           : undefined)
     : undefined;
+
+  // #36: in film mode, the MediaPantry highlight follows the source clip of the
+  // cut under the needle -- a pure render-derived decoration, never the real
+  // `selectedClip` selection state. `filmToItem` is the same authoritative
+  // telescoped-clock resolver the strip ruler uses, so the highlight switches at
+  // the exact crossfade boundary and is null while the needle sits inside a card
+  // region (nothing in the source list is "playing" over a card). Computed in the
+  // render body (not a playback callback), so `filmSeq`/`inFilm` are always fresh.
+  const filmHighlightSourceId = (() => {
+    if (viewMode !== "film" || filmPositionMs == null || inFilm.length === 0) return null;
+    // Parked on a card (open/mid-roll/close) -- nothing in the source list is
+    // "playing". Tie this to `cardHold` directly, not just the resolved item, so
+    // the highlight clears on the exact render the card overlay appears.
+    if (cardHold) return null;
+    const it = filmToItem(filmSeq, filmPositionMs);
+    if (it.kind !== "clip") return null;
+    const cut = inFilm[it.index];
+    if (!cut) return null;
+    return sourceClips.find((sc) => sc.local_path === cut.local_path)?.id ?? null;
+  })();
   const configured = useConfiguredTabs(projectId ?? "");
   const transitionVal = (() => { try { const tc = readTransitionConfig(projectId ?? ""); return tc.shuffleBetween ? "shuffle" : (tc.between !== "none" ? tc.between : null); } catch { return null; } })();
   const soundMoodVal = (() => { try { const raw = getRenderPref(`rc_sound_${projectId}`); return raw ? (JSON.parse(raw) as { mood?: string }).mood ?? null : null; } catch { return null; } })();
@@ -1746,7 +1767,11 @@ export default function Trimmer() {
       leftPanel={
         <MediaPantry
           clips={sourceClips}
-          selectedId={clip.include === 0 ? clip.id : sourceClips.find(sc => sc.local_path === clip.local_path)?.id ?? null}
+          selectedId={
+            viewMode === "film"
+              ? filmHighlightSourceId
+              : (clip.include === 0 ? clip.id : sourceClips.find(sc => sc.local_path === clip.local_path)?.id ?? null)
+          }
           onSelect={handlePantrySelect}
           inFilmPaths={cutPaths}
           onAddClips={handleAddClips}
@@ -1822,6 +1847,7 @@ export default function Trimmer() {
           {inFilmCount > 0 && (
             <div className="flex self-center flex-shrink-0">
               <button
+                data-testid="trim-viewmode-clip"
                 onClick={() => setViewMode("clip")}
                 className={`px-4 py-1 text-xs rounded-l-md border transition-colors ${
                   viewMode === "clip"
@@ -1979,6 +2005,7 @@ export default function Trimmer() {
             {/* #150: shown throughout the autoplay hold too, not just while paused. */}
             {viewMode === "film" && cardHold && (
               <div
+                data-testid="trim-card-hold"
                 className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center"
                 style={{ background: cardHold.color }}
               >

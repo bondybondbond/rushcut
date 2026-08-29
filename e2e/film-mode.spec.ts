@@ -20,6 +20,9 @@
  *      is not fighting a stuck decoder / a second needle writer (Gate 3 #10).
  *   5. The card region is entered exactly once.
  *   6. Restart after end resumes at film-time 0, never a stale large value.
+ *   7. (#36) The MediaPantry highlight follows the source clip of the cut under
+ *      the needle, clears while parked on the card, and never moves the real
+ *      clip-mode selection.
  *
  * Tolerances are bands, not exactness — there is no web API for frame-accurate
  * seeking, and 15-20Hz DOM sampling can miss a sub-sample transient (accepted).
@@ -249,6 +252,124 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
 
     const s = await sampleNeedle(10_000);
     assertMonotonic("Trimmer", s);
+  });
+
+  it("Trimmer film mode: pantry highlight follows the playing source clip and clears over the card (#36)", async () => {
+    // Force a genuine Trimmer remount (the previous test left film mode playing;
+    // pushState to the same /trimmer/:id URL is a no-op that would inherit its
+    // ended/paused clock). Bounce through /sound and back.
+    await gotoRoute(projectId!, "sound");
+    await gotoRoute(projectId!, "trimmer");
+
+    const filmBtn = await $('[data-testid="trim-viewmode-film"]');
+    await filmBtn.waitForExist({ timeout: 15_000 });
+
+    // Capture what the user last picked (clip mode) BEFORE entering film mode --
+    // the film-mode highlight is a decoration only, so playback must never move it.
+    const pickedBefore = await browser.execute(() => {
+      const el = document.querySelector('[data-testid="pantry-tile"][data-active="true"]');
+      return el?.getAttribute("data-clip-id") ?? null;
+    });
+
+    await filmBtn.click();
+    await browser.pause(1200); // slot A loads
+
+    const playBtn = await $('[data-testid="trim-playpause"]');
+    await playBtn.click();
+
+    // Confirm playback actually started (the needle is advancing) before sampling;
+    // click once more if the first toggle landed on pause.
+    await browser.waitUntil(
+      async () => {
+        const a = await browser.execute(() => {
+          const el = document.querySelector('[data-testid="filmstrip-playhead"]');
+          return Number(el?.getAttribute("data-film-ms") ?? "NaN");
+        });
+        await browser.pause(400);
+        const b = await browser.execute(() => {
+          const el = document.querySelector('[data-testid="filmstrip-playhead"]');
+          return Number(el?.getAttribute("data-film-ms") ?? "NaN");
+        });
+        if (Number.isFinite(a) && Number.isFinite(b) && b > a) return true;
+        await playBtn.click();
+        return false;
+      },
+      { timeout: 12_000, interval: 500, timeoutMsg: "film needle never started advancing" },
+    );
+
+    // Sample the active pantry tile + card-overlay state alongside the needle for
+    // long enough to cross A->xfade->B->card->C (cold source-file playback is
+    // ~0.6x realtime here, plus a ~3s card hold).
+    const samples: Array<{ filmMs: number; activeId: string | null; card: boolean }> = [];
+    const end = Date.now() + 20_000;
+    while (Date.now() < end) {
+      const s2 = await browser.execute(() => {
+        const head = document.querySelector('[data-testid="filmstrip-playhead"]');
+        const raw = head?.getAttribute("data-film-ms");
+        const active = document.querySelector('[data-testid="pantry-tile"][data-active="true"]');
+        return {
+          filmMs: raw == null ? NaN : Number(raw),
+          activeId: active?.getAttribute("data-clip-id") ?? null,
+          card: !!document.querySelector('[data-testid="trim-card-hold"]'),
+        };
+      });
+      samples.push(s2);
+      await browser.pause(150);
+    }
+
+    const nonNull = samples.filter((s2) => s2.activeId !== null);
+    const distinct = [...new Set(nonNull.map((s2) => s2.activeId))];
+    const cardSamples = samples.filter((s2) => s2.card);
+    console.log(
+      `[film-mode] #36 pantry-highlight: samples=${samples.length} withHighlight=${nonNull.length} ` +
+        `distinctTiles=${distinct.length} cardSamples=${cardSamples.length}`,
+    );
+
+    // (1) the highlight tracked playback across cuts -- >=2 different source tiles
+    // lit over the run (A -> B -> ...), never stuck on the manual pick.
+    expect(distinct.length).toBeGreaterThanOrEqual(2);
+    // (2) first-lit tile differs from last-lit tile -> forward progress, not flicker.
+    expect(nonNull[0].activeId).not.toBe(nonNull[nonNull.length - 1].activeId);
+    // (3) the run reached the mid-roll card...
+    expect(cardSamples.length).toBeGreaterThan(0);
+    // (4) ...and while the needle sat on the card, no pantry tile was highlighted.
+    expect(cardSamples.every((s2) => s2.activeId === null)).toBe(true);
+
+    // (5) seek path: clicking the strip near its far left jumps the needle back
+    // near film-time 0 and the highlight follows to clip A's source tile (== the
+    // first source, i.e. what clip mode also selects by default).
+    await browser.execute(() => {
+      const track = document.querySelector('[data-testid="sticky-filmstrip"] > div') as HTMLElement | null;
+      if (!track) return;
+      const r = track.getBoundingClientRect();
+      track.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, clientX: Math.round(r.left + 4), clientY: Math.round(r.top + r.height / 2) }),
+      );
+    });
+    await browser.pause(800);
+    const afterSeek = await browser.execute(() => {
+      const head = document.querySelector('[data-testid="filmstrip-playhead"]');
+      const active = document.querySelector('[data-testid="pantry-tile"][data-active="true"]');
+      return {
+        filmMs: Number(head?.getAttribute("data-film-ms") ?? "NaN"),
+        activeId: active?.getAttribute("data-clip-id") ?? null,
+      };
+    });
+    console.log(`[film-mode] #36 after seek-to-start: filmMs=${afterSeek.filmMs} activeId=${afterSeek.activeId}`);
+    expect(afterSeek.filmMs).toBeLessThan(2000);
+    expect(afterSeek.activeId).toBe(pickedBefore);
+
+    // (6) selection integrity: back in clip mode the active tile is exactly what
+    // the user last picked -- playback never touched the real selection.
+    const clipBtn = await $('[data-testid="trim-viewmode-clip"]');
+    await clipBtn.click();
+    await browser.pause(600);
+    const pickedAfter = await browser.execute(() => {
+      const el = document.querySelector('[data-testid="pantry-tile"][data-active="true"]');
+      return el?.getAttribute("data-clip-id") ?? null;
+    });
+    console.log(`[film-mode] #36 selection integrity: before=${pickedBefore} after=${pickedAfter}`);
+    expect(pickedAfter).toBe(pickedBefore);
   });
 
   it("Sound Master: needle is monotonic and reconcile stays within the snap budget", async () => {
