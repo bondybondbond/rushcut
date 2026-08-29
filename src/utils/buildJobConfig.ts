@@ -123,6 +123,57 @@ export function resolveCardPositions(cards: PlacedCard[], inFilmClipIds: string[
 }
 
 /**
+ * Ordered card runs by anchor -- THE single resolver for "which cards sit at
+ * which anchor, in what order" (#184). Every consumer that interleaves cards with
+ * clips (buildSequenceCore, StickyFilmStrip segments, Trimmer advanceFilmClip /
+ * seekFilmTo, Sound Master playback) MUST derive its card iteration from this, so
+ * the strip ruler, the playback needle and the render can never disagree on card
+ * order or count (the #164/#174 ruler-vs-needle failure class).
+ *
+ * CONTRACT / invariants:
+ *  - `before.get(clipId)` and `end` are subsequences of `cards` in the SAME order
+ *    the array is persisted in (`rc_cards_v2_<id>`). The run is NEVER sorted --
+ *    persisted array order IS the user-visible order (new card appended last ->
+ *    plays last in its run).
+ *  - A card whose `beforeClipId` is `null` OR points to a clip not in
+ *    `inFilmClipIds` (its anchor clip was deleted) falls into `end` -- matches
+ *    `resolveCardPositions` / `cardGapsForClips`.
+ *  - Multiple cards may share one anchor (#184 lifted the old "<=1 card per gap"
+ *    assumption). Pre-existing `rc_cards_v2` data may already hold silently-hidden
+ *    same-anchor duplicates from before the fix; they are rendered faithfully
+ *    here, NOT deduped -- cleanup is deliberately out of scope for #184.
+ *  - Pure: no I/O, no `Date.now`, deterministic in `cards` + `inFilmClipIds`.
+ */
+export interface CardRuns<T> {
+  /** clipId -> cards anchored immediately before that clip, persisted order. */
+  before: Map<string, T[]>;
+  /** cards at end-of-film (null anchor or orphaned anchor), persisted order. */
+  end: T[];
+}
+// Generic over anything carrying a `beforeClipId` -- so the render-side
+// `PlacedCard[]` and the strip's `PositionedCard[]` both resolve card order
+// through this ONE function (Gate 3 #2: every consumer derives an identical
+// flattened order).
+export function orderedCardRuns<T extends { beforeClipId: string | null }>(
+  cards: readonly T[],
+  inFilmClipIds: string[],
+): CardRuns<T> {
+  const inFilm = new Set(inFilmClipIds);
+  const before = new Map<string, T[]>();
+  const end: T[] = [];
+  for (const c of cards) {
+    if (c.beforeClipId !== null && inFilm.has(c.beforeClipId)) {
+      const run = before.get(c.beforeClipId);
+      if (run) run.push(c);
+      else before.set(c.beforeClipId, [c]);
+    } else {
+      end.push(c);
+    }
+  }
+  return { before, end };
+}
+
+/**
  * Card count for the duration model (#149 generalizes #74's two-flag {open, close}
  * shape to a plain count -- every placed card adds CARD_DUR_MS + one xfade overlap
  * regardless of where it sits). Consumers that need live in-memory state instead

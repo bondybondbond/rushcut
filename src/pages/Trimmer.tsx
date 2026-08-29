@@ -11,7 +11,8 @@ import { TrimBar } from "@/components/trimmer/TrimBar";
 import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
-import { readTransitionConfig, cardDurationFlags, readPlacedCards } from "@/utils/buildJobConfig";
+import { readTransitionConfig, cardDurationFlags, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
+import type { PlacedCard } from "@/utils/buildJobConfig";
 import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
 import {
   buildSequence,
@@ -73,6 +74,10 @@ export default function Trimmer() {
   // fires, or the user manually skips ahead). null when nothing is pending (idle, or the
   // hold was set by a manual seek instead, which has no pending promotion).
   const pendingCardAdvanceIdxRef = useRef<number | null>(null);
+  // #184: cards still to auto-hold in the CURRENT run before the pending promotion.
+  // advanceFilmClip fills this with run.slice(1) (card[0] is held immediately);
+  // continueFromCardHold shifts one per hold and only promotes once it is empty.
+  const pendingCardRunRef = useRef<PlacedCard[]>([]);
   // The autoplay-through-card countdown, as a ~100ms ticker (not a single setTimeout) so the
   // playhead/needle can visibly move across the hold instead of sitting frozen (#150 live
   // feedback: "the seeker keeps stopping" — a static freeze looked indistinguishable from
@@ -1160,14 +1165,36 @@ export default function Trimmer() {
   }
 
   /**
-   * #150: end a card hold — fired by the autoplay ticker when it elapses, or by
+   * #184: arm a single card's hold — anchors the sequence clock to that card's
+   * telescoped filmStartMs (read from the authoritative sequence, not re-derived),
+   * shows the colour overlay, and starts the CARD_DUR_MS autoplay ticker.
+   */
+  function holdCard(card: PlacedCard) {
+    const seq = filmSeqRef.current;
+    const item = seq?.items.find((it) => it.kind === "card" && it.card?.id === card.id);
+    const filmMs = item ? item.filmStartMs : (seq?.totalMs ?? 0);
+    setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle });
+    anchorSeqClock(filmMs);
+    startCardHoldTicker(0);
+  }
+
+  /**
+   * #150/#184: end a card hold — fired by the autoplay ticker when it elapses, or by
    * togglePlay when the user manually skips ahead from a B-lite manual-seek park.
-   * Stops the ticker defensively (harmless if already stopped/never armed) and either
-   * promotes into the pending clip or cleanly ends film mode for a trailing end-card.
+   * If more cards remain in the current run (#184), hold the next one instead of
+   * promoting. Otherwise promote into the pending clip or cleanly end film mode.
    */
   function continueFromCardHold() {
     stopCardHoldTicker();
     setCardHoldElapsedMs(0);
+    // #184: still cards queued in this run — hold the next, don't promote yet.
+    const run = pendingCardRunRef.current;
+    if (run.length > 0 && cardHoldAutoplayRef.current) {
+      pendingCardRunRef.current = run.slice(1);
+      holdCard(run[0]);
+      return;
+    }
+    pendingCardRunRef.current = [];
     const pendingIdx = pendingCardAdvanceIdxRef.current;
     setCardHold(null);
     pendingCardAdvanceIdxRef.current = null;
@@ -1192,20 +1219,16 @@ export default function Trimmer() {
     const nextIdx = filmPlayIdxRef.current + 1;
     diagLog(`film-advance next=${nextIdx}`);
 
-    // #150: card-aware boundary check — mirrors seekFilmTo's cardBefore/endCard lookup
-    // (same source: readPlacedCards). A card immediately before clips_[nextIdx], or a
-    // trailing end-card once nextIdx runs past the last clip, must pause and hold rather
-    // than silently advancing/stopping. This sits downstream of handleFilmTimeUpdate's
-    // existing `currentTimeSec >= outSec` (crossing, not equality) check.
+    // #150/#184: card-aware boundary check. The RUN of cards immediately before
+    // clips_[nextIdx] (or the trailing end run once nextIdx passes the last clip)
+    // must each pause and hold CARD_DUR_MS in order before advancing. This sits
+    // downstream of handleFilmTimeUpdate's existing `currentTimeSec >= outSec` check.
     const clips_ = inFilmRef.current;
     const placedCards = clips_.length > 0 ? readPlacedCards(projectId ?? "") : [];
-    const cardBefore = new Map(
-      placedCards.filter((c) => c.beforeClipId !== null).map((c) => [c.beforeClipId as string, c]),
-    );
-    const endCard = placedCards.find((c) => c.beforeClipId === null) ?? null;
-    const upcomingCard = nextIdx < clips_.length ? cardBefore.get(clips_[nextIdx].id) : endCard;
+    const runs = orderedCardRuns(placedCards, clips_.map((c) => c.id));
+    const upcomingRun = nextIdx < clips_.length ? (runs.before.get(clips_[nextIdx].id) ?? []) : runs.end;
 
-    if (upcomingCard) {
+    if (upcomingRun.length > 0) {
       // #150 revision (live feedback): a card is a real CARD_DUR_MS clip in the render —
       // autoplay through it like any other clip instead of requiring a manual click.
       // isPlaying stays true; the countdown timer is what actually advances things.
@@ -1215,15 +1238,9 @@ export default function Trimmer() {
       // read is the only thing guaranteed current at that exact synchronous instant.
       cardHoldAutoplayRef.current = true;
       getFilmVideo(activeFilmSlotRef.current)?.pause();
-      const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
-      const cardsBeforeClip = clips_.map((c) => cardBefore.has(c.id));
-      const filmMs = filmTimeAtClipStart(clips_, nextIdx, xfadeMs, cardsBeforeClip);
-      pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end-card
-      setCardHold({ filmMs, color: upcomingCard.color, text: upcomingCard.text, subtitle: upcomingCard.subtitle });
-      // #165: park the clock at the card-region start; it stays paused (cardHoldRef)
-      // for the hold and promoteToFilmClip re-anchors it when the hold ends.
-      anchorSeqClock(filmMs);
-      startCardHoldTicker(0);
+      pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end run
+      pendingCardRunRef.current = upcomingRun.slice(1); // #184: card[0] held now, rest queued
+      holdCard(upcomingRun[0]);
       return;
     }
 
@@ -1353,27 +1370,27 @@ export default function Trimmer() {
     // region parks the playhead + shows the colour overlay; it must NOT mis-seek a video
     // (B-lite — no autoplay-through-card here).
     const placedCards = clips_.length > 0 ? readPlacedCards(projectId ?? "") : [];
-    const cardBefore = new Map(
-      placedCards.filter((c) => c.beforeClipId !== null).map((c) => [c.beforeClipId as string, c]),
-    );
-    const endCard = placedCards.find((c) => c.beforeClipId === null) ?? null;
+    const runs = orderedCardRuns(placedCards, clips_.map((c) => c.id));
 
     let elapsed = 0;
     for (let i = 0; i < clips_.length; i++) {
-      const cardHere = cardBefore.get(clips_[i].id);
-      if (cardHere) {
-        const cardMs = Math.max(0, CARD_DUR_MS - xfadeMs); // never the last element — a clip always follows
+      // #184: a run of >=0 cards precedes this clip; each telescopes (a clip always
+      // follows), so park on whichever the seek time lands in.
+      const run = runs.before.get(clips_[i].id) ?? [];
+      for (let k = 0; k < run.length; k++) {
+        const cardMs = Math.max(0, CARD_DUR_MS - xfadeMs);
         if (filmMs < elapsed + cardMs) {
           activeFilmVideo()?.pause();
           setIsPlaying(false);
           // #150: a manual seek that lands on a card must resume the SAME way an
-          // auto-advance-triggered hold does — pressing play promotes into clip[i],
-          // not a blind resume of whatever raw footage happened to be loaded.
+          // auto-advance-triggered hold does — pressing play promotes into clip[i]
+          // (B-lite: a manual park does NOT auto-walk the rest of the run).
           pendingCardAdvanceIdxRef.current = i;
+          pendingCardRunRef.current = [];
           stopCardHoldTicker();
           setCardHoldElapsedMs(0);
           cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
-          setCardHold({ filmMs, color: cardHere.color, text: cardHere.text, subtitle: cardHere.subtitle });
+          setCardHold({ filmMs, color: run[k].color, text: run[k].text, subtitle: run[k].subtitle });
           return;
         }
         elapsed += cardMs;
@@ -1383,12 +1400,13 @@ export default function Trimmer() {
         0,
         (clips_[i].out_ms ?? clips_[i].duration_ms) - (clips_[i].in_ms ?? 0)
       );
-      // A clip telescopes unless it is the very last film element (i.e. last clip AND no end card).
-      const isLastElement = i === clips_.length - 1 && !endCard;
+      // A clip telescopes unless it is the very last film element (last clip AND no end run).
+      const isLastElement = i === clips_.length - 1 && runs.end.length === 0;
       const clipMs = Math.max(0, trimmed - (!isLastElement ? xfadeMs : 0));
-      if (filmMs < elapsed + clipMs || (i === clips_.length - 1 && !endCard)) {
+      if (filmMs < elapsed + clipMs || (i === clips_.length - 1 && runs.end.length === 0)) {
         setCardHold(null); // leaving any card region
         pendingCardAdvanceIdxRef.current = null; // #150: any pending hold/promotion is now moot
+        pendingCardRunRef.current = [];
         stopCardHoldTicker();
         setCardHoldElapsedMs(0);
         cardHoldAutoplayRef.current = false;
@@ -1420,17 +1438,24 @@ export default function Trimmer() {
       elapsed += clipMs;
     }
 
-    // Past the last clip with an end card present — end-card region. Park on its colour.
-    if (endCard) {
-      activeFilmVideo()?.pause();
-      setIsPlaying(false);
-      // #150: trailing end-card sentinel — matches advanceFilmClip's own use of
-      // clips_.length to mean "nothing more to promote to, just end film mode."
-      pendingCardAdvanceIdxRef.current = clips_.length;
-      stopCardHoldTicker();
-      setCardHoldElapsedMs(0);
-      cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
-      setCardHold({ filmMs, color: endCard.color, text: endCard.text, subtitle: endCard.subtitle });
+    // Past the last clip — the trailing end run (#184: >=0 cards). Park on whichever
+    // card the seek lands in; the last end card is the film's final element (no telescope).
+    for (let k = 0; k < runs.end.length; k++) {
+      const isLast = k === runs.end.length - 1;
+      const cardMs = Math.max(0, CARD_DUR_MS - (isLast ? 0 : xfadeMs));
+      if (filmMs < elapsed + cardMs || isLast) {
+        activeFilmVideo()?.pause();
+        setIsPlaying(false);
+        // #150: trailing end-card sentinel — clips_.length means "nothing to promote to."
+        pendingCardAdvanceIdxRef.current = clips_.length;
+        pendingCardRunRef.current = [];
+        stopCardHoldTicker();
+        setCardHoldElapsedMs(0);
+        cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
+        setCardHold({ filmMs, color: runs.end[k].color, text: runs.end[k].text, subtitle: runs.end[k].subtitle });
+        return;
+      }
+      elapsed += cardMs;
     }
   }
 
@@ -1462,6 +1487,7 @@ export default function Trimmer() {
     if (viewMode !== "film") {
       setCardHold(null);
       pendingCardAdvanceIdxRef.current = null;
+      pendingCardRunRef.current = []; // #184
       stopCardHoldTicker();
       setCardHoldElapsedMs(0);
       cardHoldAutoplayRef.current = false;

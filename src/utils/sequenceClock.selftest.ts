@@ -400,6 +400,49 @@ const D = clip("d", 0, 6_000);
   }
 }
 
+// --- #184: multiple cards per anchor -- ordered runs, count invariant ------
+// buildSequenceCore emits EVERY card in a run as its own SeqItem, in persisted
+// array order, and the strip's independent segment walk agrees exactly (Gate 3
+// #2: all consumers derive one identical flattened card order).
+{
+  // The strip builds `segments` by: for each clip, push its before-run cards in
+  // order, then the clip; after all clips, push the end-run cards in order. This
+  // recomputes that flattened CARD id order independently of buildSequenceCore.
+  function stripCardOrder(film: Clip[], cards: PlacedCard[]): string[] {
+    const inFilmIds = new Set(film.map((c) => c.id));
+    const before = new Map<string, PlacedCard[]>();
+    const end: PlacedCard[] = [];
+    for (const c of cards) {
+      if (c.beforeClipId !== null && inFilmIds.has(c.beforeClipId)) {
+        (before.get(c.beforeClipId) ?? before.set(c.beforeClipId, []).get(c.beforeClipId)!).push(c);
+      } else end.push(c);
+    }
+    const out: string[] = [];
+    for (const c of film) for (const p of before.get(c.id) ?? []) out.push(p.id);
+    for (const p of end) out.push(p.id);
+    return out;
+  }
+  const cases: Array<[string, Clip[], TransitionConfig, PlacedCard[]]> = [
+    ["2 at end", [A, B], tcfg({ between: "crossfade" }), [card("e1", null), card("e2", null)]],
+    ["2 before clip b", [A, B, C], tcfg({ between: "crossfade" }), [card("b1", "b"), card("b2", "b")]],
+    ["interleaved runs", [A, B, C], tcfg({ between: "crossfade" }),
+      [card("a1", "a"), card("a2", "a"), card("b1", "b"), card("e1", null), card("e2", null)]],
+    ["3 stacked at end", [A], tcfg(), [card("e1", null), card("e2", null), card("e3", null)]],
+  ];
+  for (const [label, film, tc, cards] of cases) {
+    const seq = buildSequenceCore(film, clampedXfadeMs(film, tc), cards);
+    const seqCardIds = seq.items.filter((i) => i.kind === "card").map((i) => i.card!.id);
+    check(`#184 ${label}: buildSequenceCore card order == strip card order`,
+      JSON.stringify(seqCardIds) === JSON.stringify(stripCardOrder(film, cards)),
+      `seq=${seqCardIds} strip=${stripCardOrder(film, cards)}`);
+    check(`#184 ${label}: every placed card emits exactly one card SeqItem`,
+      seqCardIds.length === cards.length, `${seqCardIds.length} != ${cards.length}`);
+    check(`#184 ${label}: card ordinals are 0..n-1 in emission order`,
+      JSON.stringify(seq.items.filter((i) => i.kind === "card").map((i) => i.index)) ===
+        JSON.stringify(cards.map((_, k) => k)));
+  }
+}
+
 // --- #174 / #160: music fade-out anchor counts mid-roll card seconds --------
 // The Sound Master tab anchors the fade at `filmSeq.totalMs - fadeMs`. A film
 // with a mid-roll card must have that anchor sit exactly `cardRegionMs` later

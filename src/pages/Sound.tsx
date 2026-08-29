@@ -10,7 +10,8 @@ import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/component
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
-import { readTransitionConfig, readPlacedCards } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
+import type { PlacedCard } from "@/utils/buildJobConfig";
 import { effectiveFilmMs, clampedXfadeMs, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
 import {
   buildSequence,
@@ -185,6 +186,8 @@ export default function Sound() {
   // The in-film index to promote to once the card hold ends. clips_.length sentinel means
   // "trailing end-card, nothing after it."
   const pendingCardAdvanceIdxRef = useRef<number | null>(null);
+  // #184: cards still to auto-hold in the current run before the pending promotion.
+  const pendingCardRunRef = useRef<PlacedCard[]>([]);
   // The autoplay-through-card countdown, as a ~100ms ticker (not a single setTimeout) so the
   // strip needle visibly moves across the hold instead of sitting frozen (#150 live feedback:
   // "the seeker just stops" looked indistinguishable from the old silent-stop bug). Stopping
@@ -756,13 +759,10 @@ export default function Sound() {
     // advancing/stopping.
     const clips_ = inFilmRef.current;
     const cardsNow = clips_.length > 0 ? readPlacedCards(projectId ?? "") : [];
-    const cardBefore = new Map(
-      cardsNow.filter((c) => c.beforeClipId !== null).map((c) => [c.beforeClipId as string, c]),
-    );
-    const endCard = cardsNow.find((c) => c.beforeClipId === null) ?? null;
-    const upcomingCard = nextIdx < clips_.length ? cardBefore.get(clips_[nextIdx].id) : endCard;
+    const runs = orderedCardRuns(cardsNow, clips_.map((c) => c.id));
+    const upcomingRun = nextIdx < clips_.length ? (runs.before.get(clips_[nextIdx].id) ?? []) : runs.end;
 
-    if (upcomingCard) {
+    if (upcomingRun.length > 0) {
       // #150 revision (live feedback): a card is a real CARD_DUR_MS clip in the render —
       // autoplay through it instead of holding indefinitely for a click. Music is
       // deliberately NOT paused here — it plays straight through the card, matching the
@@ -771,19 +771,9 @@ export default function Sound() {
       // (#91) may already have the inactive slot playing invisibly.
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
-      // #174: the card-region telescoped START comes from the sequence itself
-      // (the ONE resolver) rather than a parallel filmTimeAtClipStart walk. The
-      // clock is left frozen while parked -- the ticker drives the needle across
-      // the telescoped card region, and continueFromCardHold re-anchors it to the
-      // next clip's start when the hold ends.
-      const seq = filmSeqRef.current;
-      const cardSeg = seq
-        ? seq.items.find((it) => it.kind === "card" && it.card?.id === upcomingCard.id)
-        : undefined;
-      const filmMs = cardSeg ? cardSeg.filmStartMs : 0;
-      pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end-card
-      setCardHold({ filmMs, color: upcomingCard.color, text: upcomingCard.text, subtitle: upcomingCard.subtitle });
-      startCardHoldTicker(0, filmMs);
+      pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end run
+      pendingCardRunRef.current = upcomingRun.slice(1); // #184: card[0] held now, rest queued
+      holdCard(upcomingRun[0]);
       return;
     }
 
@@ -869,6 +859,7 @@ export default function Sound() {
     filmPlayingRef.current = true;
     setCardHold(null); // #150: any stale hold from a prior playback session is moot
     pendingCardAdvanceIdxRef.current = null;
+    pendingCardRunRef.current = []; // #184
     stopCardHoldTicker();
     setCardHoldElapsedMs(0);
     filmPlayIdxRef.current = 0;
@@ -987,18 +978,37 @@ export default function Sound() {
   }
 
   /**
-   * #150: end a card hold — fired by the autoplay ticker when it elapses, or by the click
-   * handlers when the user manually skips ahead. Stops the ticker defensively (harmless
-   * if already stopped) and either promotes into the pending clip (music resumes from
-   * where it already is — it was never paused) or cleanly ends playback via
-   * stopFilmPlayback for a trailing end-card.
+   * #184: arm a single card's hold — anchors the needle to that card's telescoped
+   * filmStartMs (from the authoritative sequence), shows the overlay, starts the ticker.
+   */
+  function holdCard(card: PlacedCard) {
+    const seq = filmSeqRef.current;
+    const cardSeg = seq?.items.find((it) => it.kind === "card" && it.card?.id === card.id);
+    const filmMs = cardSeg ? cardSeg.filmStartMs : (seq?.totalMs ?? 0);
+    setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle });
+    startCardHoldTicker(0, filmMs);
+  }
+
+  /**
+   * #150/#184: end a card hold — fired by the autoplay ticker when it elapses, or by the
+   * click handlers when the user manually skips ahead. If more cards remain in the run
+   * (#184), hold the next one. Otherwise promote into the pending clip (music resumes
+   * from where it already is — it was never paused) or cleanly end playback.
    */
   function continueFromCardHold() {
     stopCardHoldTicker();
     setCardHoldElapsedMs(0);
+    // #184: still cards queued in this run — hold the next, don't promote yet.
+    const run = pendingCardRunRef.current;
+    if (run.length > 0) {
+      pendingCardRunRef.current = run.slice(1);
+      holdCard(run[0]);
+      return;
+    }
     const pendingIdx = pendingCardAdvanceIdxRef.current;
     setCardHold(null);
     pendingCardAdvanceIdxRef.current = null;
+    pendingCardRunRef.current = []; // #184
     if (pendingIdx === null || pendingIdx >= inFilmRef.current.length) {
       stopFilmPlayback();
       return;
@@ -1048,6 +1058,7 @@ export default function Sound() {
     pendingGateSlotRef.current = null;
     setCardHold(null); // #150: stopping mid-hold must not leave a stale overlay/pending index
     pendingCardAdvanceIdxRef.current = null;
+    pendingCardRunRef.current = []; // #184
     stopCardHoldTicker();
     setCardHoldElapsedMs(0);
     filmVideoARef.current?.pause();
@@ -1077,6 +1088,7 @@ export default function Sound() {
     // A seek is a legitimate exit from a card hold.
     setCardHold(null);
     pendingCardAdvanceIdxRef.current = null;
+    pendingCardRunRef.current = []; // #184
     stopCardHoldTicker();
     setCardHoldElapsedMs(0);
 
@@ -1109,6 +1121,7 @@ export default function Sound() {
         if (seq.items[i].kind === "clip") { nextClipIdx = seq.items[i].index; break; }
       }
       pendingCardAdvanceIdxRef.current = nextClipIdx;
+      pendingCardRunRef.current = []; // #184: manual card park is B-lite — play promotes to the next clip
       const pc = seg >= 0 ? seq.items[seg]?.card : undefined;
       setCardHold({
         filmMs: clamped,

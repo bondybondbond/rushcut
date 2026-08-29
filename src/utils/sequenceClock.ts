@@ -28,7 +28,7 @@
  * (`pnpm dlx tsx src/utils/sequenceClock.selftest.ts`).
  */
 import type { Clip } from "@/types/project";
-import type { PlacedCard } from "@/utils/buildJobConfig";
+import { orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
 import { CARD_DUR_MS, clampedXfadeMs, effectiveFilmMs, trimmedMs } from "@/utils/filmDuration";
 
@@ -72,9 +72,11 @@ export interface Sequence {
 
 /**
  * Build the flat ordered item list for a film. Card placement matches the
- * StickyFilmStrip / seekFilmTo model exactly: a card with `beforeClipId === c.id`
- * sits immediately before clip `c`; a card with `beforeClipId === null` is the
- * trailing end card. At most one card per anchor (mirrors the strip's Map).
+ * StickyFilmStrip / seekFilmTo model exactly: cards with `beforeClipId === c.id`
+ * sit immediately before clip `c`; cards with `beforeClipId === null` (or an
+ * orphaned anchor) are the trailing end run. Multiple cards may share one anchor
+ * (#184); order + count come from `orderedCardRuns` -- the one resolver every
+ * interleaving consumer shares.
  *
  * Telescoping rule (identical to `StickyFilmStrip.tsx` `renderMsArr`): every
  * element but the LAST loses one `xfadeMs` off its tail to the crossfade into
@@ -110,10 +112,13 @@ export function buildSequenceCore(
   xfadeMs: number,
   placedCards: PlacedCard[],
 ): Sequence {
-  const cardBefore = new Map<string, PlacedCard>(
-    placedCards.filter((c) => c.beforeClipId !== null).map((c) => [c.beforeClipId as string, c]),
+  // #184: multiple cards may share one anchor. `orderedCardRuns` is the single
+  // resolver for card order/count -- every interleaving consumer derives from it
+  // so the ruler, the needle and the render can't disagree.
+  const runs = orderedCardRuns(
+    placedCards,
+    inFilm.map((c) => c.id),
   );
-  const endCard = placedCards.find((c) => c.beforeClipId === null) ?? null;
 
   // 1. Flat native-width segment list (clips + cards interleaved).
   type Raw =
@@ -122,18 +127,17 @@ export function buildSequenceCore(
   const raw: Raw[] = [];
   let cardOrdinal = 0;
   const cardOrdinalOf = new Map<PlacedCard, number>();
-  inFilm.forEach((c, i) => {
-    const here = cardBefore.get(c.id);
-    if (here) {
-      cardOrdinalOf.set(here, cardOrdinal++);
-      raw.push({ kind: "card", nativeMs: CARD_DUR_MS, card: here });
+  const pushCardRun = (run: PlacedCard[] | undefined) => {
+    for (const card of run ?? []) {
+      cardOrdinalOf.set(card, cardOrdinal++);
+      raw.push({ kind: "card", nativeMs: CARD_DUR_MS, card });
     }
+  };
+  inFilm.forEach((c, i) => {
+    pushCardRun(runs.before.get(c.id));
     raw.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c, index: i });
   });
-  if (endCard) {
-    cardOrdinalOf.set(endCard, cardOrdinal++);
-    raw.push({ kind: "card", nativeMs: CARD_DUR_MS, card: endCard });
-  }
+  pushCardRun(runs.end);
 
   // 2. Telescoped + naive prefix sums.
   const items: SeqItem[] = [];
@@ -162,6 +166,22 @@ export function buildSequenceCore(
     filmCur += telescopedMs;
     naiveCur += r.nativeMs;
   });
+
+  // #184 DEV invariant: buildSequenceCore emits ONLY clip + card items (no
+  // transition/gap items), so the count is exact -- one item per in-film clip
+  // plus one per placed card (valid or orphaned anchor, all counted by
+  // orderedCardRuns). A mismatch means a card was silently dropped or doubled,
+  // the exact regression #184 fixed. Cheap; DEV-only.
+  if (import.meta.env?.DEV) {
+    const cardItems = items.filter((it) => it.kind === "card").length;
+    const clipItems = items.filter((it) => it.kind === "clip").length;
+    if (clipItems !== inFilm.length || cardItems !== placedCards.length || items.length !== inFilm.length + placedCards.length) {
+      console.error(
+        `[sequenceClock] #184 invariant broken: items=${items.length} clips=${clipItems}/${inFilm.length} ` +
+          `cards=${cardItems}/${placedCards.length}`,
+      );
+    }
+  }
 
   return { items, totalMs: filmCur, naiveTotalMs: naiveCur, xfadeMs };
 }

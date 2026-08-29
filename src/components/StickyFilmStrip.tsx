@@ -16,7 +16,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
-import type { PlacedCard } from "@/utils/buildJobConfig";
+import { orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
 import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
 import { CARD_DUR_MS, trimmedMs } from "@/utils/filmDuration";
@@ -393,15 +393,17 @@ export function StickyFilmStrip({
     .sort((a, b) => a.sort_order - b.sort_order);
 
   // Card tiles join the film as first-class 3s elements (#74, generalized to any position
-  // in #149) — only when there is footage to bracket/interleave with. Each card is anchored
-  // by clip id (`beforeClipId`); at most one card per gap is guaranteed by the caller (the
-  // Cards tab rejects a drop onto an already-occupied gap), so a plain Map lookup is safe —
-  // this component never has to resolve a same-anchor collision itself.
+  // in #149). Each card is anchored by clip id (`beforeClipId`); #184 lifted the old
+  // "<=1 card per gap" assumption — multiple cards can share an anchor and render as a
+  // run of adjacent tiles. `orderedCardRuns` is the ONE resolver for card order/count,
+  // shared with buildSequenceCore / Trimmer / Sound so ruler and needle can't disagree.
   const cardsActive = inFilm.length > 0 ? cards : [];
-  const cardBeforeClip = new Map(
-    cardsActive.filter((p) => p.beforeClipId !== null).map((p) => [p.beforeClipId as string, p.card]),
+  const cardRuns = orderedCardRuns(
+    cardsActive,
+    inFilm.map((c) => c.id),
   );
-  const endCard = cardsActive.find((p) => p.beforeClipId === null)?.card ?? null;
+  const cardsBeforeClip = (clipId: string): PositionedCard[] => cardRuns.before.get(clipId) ?? [];
+  const endCards: PositionedCard[] = cardRuns.end;
 
   // #174 Phase D: adapt the strip's PositionedCard[] to the shape buildSequenceCore
   // wants. Only `id` + `beforeClipId` drive geometry; `color`/`text` are carried
@@ -434,12 +436,15 @@ export function StickyFilmStrip({
   // precede ANY clip, not just clip 0, so this is a running index, not a fixed offset).
   const clipSegIndex: number[] = [];
   for (const c of inFilm) {
-    const cardHere = cardBeforeClip.get(c.id);
-    if (cardHere) segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: cardHere });
+    for (const p of cardsBeforeClip(c.id)) {
+      segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: p.card });
+    }
     clipSegIndex.push(segments.length);
     segments.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c });
   }
-  if (endCard) segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: endCard });
+  for (const p of endCards) {
+    segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: p.card });
+  }
 
   // #174 Phase D: the telescoped (render-time) geometry is NO LONGER computed here.
   // `buildSequenceCore` is the ONE resolver -- it produces the identical flat
@@ -586,10 +591,15 @@ export function StickyFilmStrip({
           // ADD: find the newly-placed card and mark its segment for reveal.
           const prevIds = prevCardIdsRef.current;
           const addedId = cardsActive.map((p) => p.card.id).find((id) => !prevIds.has(id)) ?? null;
-          let seg = segments.length - 1; // default / end card / fallback
-          if (addedId && !(endCard && endCard.id === addedId)) {
-            const ci = inFilm.findIndex((c) => cardBeforeClip.get(c.id)?.id === addedId);
-            if (ci >= 0) seg = clipSegIndex[ci] - 1;
+          let seg = segments.length - 1; // default / end run / fallback
+          if (addedId && !endCards.some((p) => p.card.id === addedId)) {
+            // #184: card runs can hold >1 — reveal the exact tile that was added.
+            const ci = inFilm.findIndex((c) => cardsBeforeClip(c.id).some((p) => p.card.id === addedId));
+            if (ci >= 0) {
+              const run = cardsBeforeClip(inFilm[ci].id);
+              const k = run.findIndex((p) => p.card.id === addedId);
+              seg = clipSegIndex[ci] - run.length + Math.max(0, k);
+            }
           }
           pendingRevealSegRef.current = seg;
         } else if (el.scrollLeft !== 0) {
@@ -769,18 +779,13 @@ export function StickyFilmStrip({
     return segOffsets[lastSeg] + segWidths[lastSeg];
   }
 
-  // Gap index (0..inFilm.length) already has a card placed at it — used to reject a card
-  // drop onto an occupied gap (#149 design decision: prevent stacking rather than build a
-  // tie-break UI for it). idx === inFilm.length means the end-of-film gap.
-  function gapOccupied(idx: number): boolean {
-    // #151: when a placed card is being dragged, its own current gap doesn't count as
-    // occupied — so dropping onto/adjacent to it isn't falsely rejected.
-    const dragId = draggingCardIdRef.current;
-    if (idx < inFilm.length) {
-      const occ = cardBeforeClip.get(inFilm[idx].id);
-      return occ != null && occ.id !== dragId;
-    }
-    return endCard !== null && endCard.id !== dragId;
+  // #184: stacking is allowed now — a drop onto a gap that already has a card APPENDS
+  // to that gap's run (consistent with "+ Add to film"); it is never rejected. No gap
+  // is "blocked", so this always reports false. Kept as a function (not deleted) so the
+  // drag-over / drop call sites and their `dragOverBlocked` plumbing stay intact for a
+  // future real block condition.
+  function gapOccupied(_idx: number): boolean {
+    return false;
   }
 
   // #151: native-DnD drag source lives on each CardStripTile; these fire from there.
@@ -988,10 +993,10 @@ export function StickyFilmStrip({
 
           {/* #9/#149: drag-in insertion-line indicator — shows exactly where a dragged
               TrimBar cut or composed card will land. Blue (#99B3FF) matches the existing
-              filmstrip accent/tile border color; switches to red when a card drop would
-              land on an already-occupied gap (rejected, not stacked — see gapOccupied).
-              Spans the clip row only (top: RULER_HEIGHT), unlike the playhead which spans
-              ruler+clips. */}
+              filmstrip accent/tile border color. #184: card drops onto an occupied gap
+              now stack (append to that gap's run), so the red "blocked" state no longer
+              triggers for cards — `gapOccupied` always returns false. Spans the clip row
+              only (top: RULER_HEIGHT), unlike the playhead which spans ruler+clips. */}
           {dragOverIndex !== null && (
             <div
               aria-hidden
@@ -1039,22 +1044,25 @@ export function StickyFilmStrip({
                 <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                   <SortableContext items={inFilm.map((c) => c.id)} strategy={horizontalListSortingStrategy}>
                     {inFilm.map((clip, idx) => {
-                      const cardHere = cardBeforeClip.get(clip.id);
+                      // #184: a run of >=0 cards renders immediately before this clip.
+                      // Each card's segment index counts back from the clip's own.
+                      const run = cardsBeforeClip(clip.id);
+                      const runBaseSeg = clipSegIndex[idx] - run.length;
                       return (
                         <Fragment key={clip.id}>
-                          {cardHere && (
+                          {run.map((p, k) => (
                             <CardStripTile
-                              key={cardHere.id}
-                              card={cardHere}
-                              width={segWidths[clipSegIndex[idx] - 1]}
-                              isActive={cardHere.id === activeCardId}
+                              key={p.card.id}
+                              card={p.card}
+                              width={segWidths[runBaseSeg + k]}
+                              isActive={p.card.id === activeCardId}
                               onSelectCard={onSelectCard}
                               draggable={!!onRepositionCard}
-                              isDragging={draggingCardId === cardHere.id}
+                              isDragging={draggingCardId === p.card.id}
                               onCardDragStart={handleCardDragStart}
                               onCardDragEnd={handleCardDragEnd}
                             />
-                          )}
+                          ))}
                           <SortableFilmTile
                             clip={clip}
                             index={idx}
@@ -1069,19 +1077,19 @@ export function StickyFilmStrip({
                     })}
                   </SortableContext>
                 </DndContext>
-                {endCard && (
+                {endCards.map((p, k) => (
                   <CardStripTile
-                    key={endCard.id}
-                    card={endCard}
-                    width={segWidths[segWidths.length - 1]}
-                    isActive={endCard.id === activeCardId}
+                    key={p.card.id}
+                    card={p.card}
+                    width={segWidths[segWidths.length - endCards.length + k]}
+                    isActive={p.card.id === activeCardId}
                     onSelectCard={onSelectCard}
                     draggable={!!onRepositionCard}
-                    isDragging={draggingCardId === endCard.id}
+                    isDragging={draggingCardId === p.card.id}
                     onCardDragStart={handleCardDragStart}
                     onCardDragEnd={handleCardDragEnd}
                   />
-                )}
+                ))}
               </>
             )}
           </div>

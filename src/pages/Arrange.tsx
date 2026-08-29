@@ -913,6 +913,7 @@ export default function Arrange() {
             <button
               type="button"
               onClick={() => handleDeleteCard(selectedCardId)}
+              data-testid="btn-delete-card"
               className="w-10 h-10 rounded-full flex items-center justify-center border border-red-400/60 text-red-400 hover:bg-red-400/10 hover:border-red-400 transition-all duration-200"
               title="Delete this card"
               aria-label="Delete this card"
@@ -1578,6 +1579,7 @@ export default function Arrange() {
                           value={composed.text}
                           onChange={(e) => updateComposedField({ text: e.target.value }, true)}
                           placeholder="e.g. Day Two: The Coast"
+                          data-testid="input-card-title"
                           className="w-full border border-white/15 rounded-md px-3 py-2 text-sm text-[#e5e5e5] bg-white/5 focus:border-white/40 focus:outline-none"
                         />
                         <p className="text-xs text-[#a3a3a3] text-right">{composed.text.length}/60</p>
