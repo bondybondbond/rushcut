@@ -1309,6 +1309,22 @@ When adding an entry, reuse one of these tags so category-grep stays reliable. N
 
 ---
 
+## UI — a film that opens with a card: hold it from film-time 0, don't let a paused reconcile or an unprimed promote skip it (#185)
+
+**Problem:** Trimmer film mode had no path to hold a card run anchored before clip 0. `togglePlay` played clip 0 directly (the `advanceFilmClip` clip→card boundary check only fires at a clip out-point, never at film-time 0), AND `handleFilmTimeUpdate`'s `reconcile()` ran while paused — the entry `loadIntoSlot(0)` post-seek `timeupdate` mapped clip 0's `in_ms` to its telescoped `filmStartMs` (== the leading card's width, not 0) and forward-snapped the needle off 0 before play was pressed (live + WDIO: seqMs 0 → 1579).
+**Solution:** Three coupled changes, one root ("the sequence clock owns the timeline, synthetic segments included"): (1) gate the `reconcile()` block on `isPlayingRef.current && !v.paused` — the clock is authoritative while paused, `advanceSequenceClock` already no-ops then, and a synthetic leading segment has no valid `<video>` to reconcile against (snapping toward `currentTime≈0` is wrong: 0 is *correct* at t=0). (2) `startFilmFromTop()` in `togglePlay`'s fresh-play path, guarded by `filmToItem(seq, seqTimeMs)` still resolving to the FIRST sequence item (tolerates the ~80ms residual entry drift without a magic ms threshold), arms the existing autoplay card-hold. (3) set `activeFilmSlotRef.current = "b"` before the hold so the hold-end `promoteToFilmClip(0)` targets slot A (see next entry).
+**Context:** `src/pages/Trimmer.tsx` `togglePlay` / `handleFilmTimeUpdate` / `startFilmFromTop`. Live coverage: `e2e/film-mode.spec.ts` "#185 … leading card holds from film-time 0". `src/pages/Sound.tsx` `startFilmPlayback` has the identical gap, unfixed (deferred follow-up).
+
+---
+
+## UI — `promoteToFilmClip(nextIdx)` assumes the lookahead primed `nextIdx` into the opposite slot — no clip-id check (#185)
+
+**Problem:** `promoteToFilmClip` calls `.play()` on the opposite dual-buffer slot's `<video>` with no check that it holds `nextIdx`'s clip. For the natural advance (`nextIdx = current + 1`) the lookahead preload guarantees the match. It is FALSE for a leading-card promote: pending index is 0, but on fresh entry `loadIntoSlot(0,"a")`'s lookahead primed clip 1 into slot B — so `promoteToFilmClip(0)` from the default active slot "a" plays clip 1, silently skipping clip 0 (needle anchored to clip 0's start, picture is clip 1, no error). Symptom in the trace: `film-advance next=1` fires right after `hold-card pendIdx=0` instead of a promote.
+**Solution:** For the leading-card case, `startFilmFromTop` pre-sets `activeFilmSlotRef.current = "b"` so the promote targets slot A (clip 0, already loaded+seeked from entry). The general fix — `promoteToFilmClip` checking `nextV.dataset.clipId` and `loadIntoSlot`-ing on mismatch — is deferred to the media-ownership follow-up issue. Any future caller promoting to an index other than `filmPlayIdx + 1` hits this.
+**Context:** `src/pages/Trimmer.tsx` `promoteToFilmClip`.
+
+---
+
 ## React — Tauri/WebView2 `visibilitychange` does NOT reliably fire on alt-tab / window occlusion
 
 **Problem:** `document.addEventListener("visibilitychange", ...)` is unreliable inside a Tauri webview — it does not fire on alt-tab or when the window is occluded by another window, and even minimize has had regressions (tauri #9524, #6864, #10592). Code that re-seats state on `visibilitychange` (e.g. the #165/#174 sequence-clock `onVis` re-seat from `mediaToFilm`) will frequently NOT run when the user leaves the window mid-playback.

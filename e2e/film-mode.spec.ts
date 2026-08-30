@@ -32,6 +32,7 @@
 import { trackTestProject } from "./helpers/testProjects";
 
 const CARD_ANCHOR_TEXT = "MID ROLL";
+const LEAD_CARD_TEXT = "OPENING";
 // Must match sequenceClock.ts SYNC_CONTRACT.
 const FWD_SNAP_MS = 250;
 const SEAM_TOL_MS = 40;
@@ -445,5 +446,167 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     // Restarted near the beginning — must be far below where it ended.
     expect(Number.isNaN(filmMs)).toBe(false);
     expect(filmMs).toBeLessThan(3000);
+  });
+
+  /**
+   * #185 — LEADING CARD. A film whose FIRST sequence element is a card run (a
+   * card anchored before clip 0) must, in Trimmer film mode: (a) sit at film-time
+   * 0 on fresh entry (no paused reconcile forward-snap past the card); (b) on
+   * play, hold that card ~CARD_DUR_MS with NO <video> playing underneath; (c)
+   * then hand off into clip 0 monotonically, with clip 0's own slot being the one
+   * that actually plays.
+   *
+   * This case is EXPECTED RED on main until the fix lands — main's togglePlay has
+   * no leading-card branch and its reconcile() runs while paused. Kept last in the
+   * file: it rewrites rc_cards_v2 for the shared project, and nothing runs after.
+   */
+  it("#185 Trimmer film mode: a leading card holds from film-time 0 before clip 0", async () => {
+    // In-film cut ids in a DETERMINISTIC order. add_clip_cut_cmd (in seedProject)
+    // can leave the 3 cuts with tied sort_order, so `get_project` + `ORDER BY
+    // sort_order` returns them in an order that varies call-to-call -- both the
+    // card anchor and Trimmer's own `inFilm` sort would then disagree at random.
+    // Fix it once here: sort by (sort_order, id) for a stable pick, then
+    // `reorder_clips_cmd` to write sort_order = 0,1,2 so every later read agrees.
+    const inFilmIds = (await browser.execute(async (id: string) => {
+      const { invoke } = (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
+      const data = (await invoke("get_project", { projectId: id })) as { clips: Array<{ id: string; include: number; sort_order: number }> };
+      const ordered = data.clips
+        .filter((c) => c.include === 1)
+        .sort((a, b) => a.sort_order - b.sort_order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .map((c) => c.id);
+      await invoke("reorder_clips_cmd", { clipIds: ordered });
+      return ordered;
+    }, projectId!)) as string[];
+
+    // Rewrite the shared project's cards: a leading card before clip 0, plus the
+    // existing mid-roll card. Then force a genuine Trimmer remount so the entry
+    // effect re-reads readPlacedCards (bounce through /sound — a pushState to the
+    // same /trimmer/:id is a no-op that would inherit the prior test's state).
+    await browser.execute(
+      (id: string, ids: string[], leadText: string, midText: string) => {
+        localStorage.setItem(
+          `rc_cards_v2_${id}`,
+          JSON.stringify([
+            { id: "e2e-lead-card", text: leadText, subtitle: "", color: "#0e1a0e", animation: "none", beforeClipId: ids[0] ?? null },
+            { id: "e2e-mid-card", text: midText, subtitle: "", color: "#1a1a2e", animation: "none", beforeClipId: ids[2] ?? null },
+          ]),
+        );
+      },
+      projectId!,
+      inFilmIds,
+      LEAD_CARD_TEXT,
+      CARD_ANCHOR_TEXT,
+    );
+
+    await gotoRoute(projectId!, "sound");
+    await gotoRoute(projectId!, "trimmer");
+
+    const filmBtn = await $('[data-testid="trim-viewmode-film"]');
+    await filmBtn.waitForExist({ timeout: 15_000 });
+    await filmBtn.click();
+    await browser.pause(1500); // entry effect: anchorSeqClock(0) + loadIntoSlot(0) + its post-seek timeupdate
+
+    // Read both film <video> slots + the needle in one shot.
+    const probe = () =>
+      browser.execute(() => {
+        const head = document.querySelector('[data-testid="filmstrip-playhead"]');
+        const raw = head?.getAttribute("data-film-ms");
+        const a = document.querySelector('[data-testid="trim-film-video-a"]') as HTMLVideoElement | null;
+        const b = document.querySelector('[data-testid="trim-film-video-b"]') as HTMLVideoElement | null;
+        return {
+          filmMs: raw == null ? NaN : Number(raw),
+          card: !!document.querySelector('[data-testid="trim-card-hold"]'),
+          aPaused: a?.paused ?? true,
+          aT: a?.currentTime ?? 0,
+          aClip: a?.getAttribute("data-clip-id") ?? null,
+          bPaused: b?.paused ?? true,
+          bT: b?.currentTime ?? 0,
+          bClip: b?.getAttribute("data-clip-id") ?? null,
+        };
+      });
+
+    // (1) FRESH-ENTRY PRECONDITION — needle sits at true film-time 0, not snapped
+    // forward past the leading card by a paused reconcile(). Sample for ~1.2s
+    // before play; every reading must stay well under the leading card width.
+    let worstPreMs = 0;
+    for (let i = 0; i < 10; i++) {
+      const p = await probe();
+      if (Number.isFinite(p.filmMs) && p.filmMs > worstPreMs) worstPreMs = p.filmMs;
+      await browser.pause(120);
+    }
+    console.log(`[film-mode] #185 pre-play worst data-film-ms = ${worstPreMs}ms`);
+    expect(worstPreMs).toBeLessThan(250);
+
+    // (2) Press play -> the leading card overlay appears promptly.
+    const playBtn = await $('[data-testid="trim-playpause"]');
+    await playBtn.click();
+    await browser.waitUntil(async () => (await probe()).card, {
+      timeout: 2000,
+      interval: 100,
+      timeoutMsg: "#185: leading card-hold overlay never appeared after play",
+    });
+    const holdStartMs = Date.now();
+
+    // (3) NO MEDIA OP DURING THE HOLD — while the overlay is up, neither film
+    // <video> may be playing, and neither may materially advance currentTime.
+    const holdSamples: Array<{ card: boolean; aPaused: boolean; bPaused: boolean; aT: number; bT: number }> = [];
+    while (Date.now() - holdStartMs < 4200) {
+      const p = await probe();
+      holdSamples.push({ card: p.card, aPaused: p.aPaused, bPaused: p.bPaused, aT: p.aT, bT: p.bT });
+      if (!p.card) break; // hold ended
+      await browser.pause(120);
+    }
+    const during = holdSamples.filter((s) => s.card);
+    console.log(`[film-mode] #185 hold samples=${holdSamples.length} during-card=${during.length}`);
+    expect(during.length).toBeGreaterThan(5);
+    // both slots paused for every in-card sample
+    expect(during.every((s) => s.aPaused && s.bPaused)).toBe(true);
+    // no material currentTime advance on either slot across the hold
+    const maxAdv = (key: "aT" | "bT") =>
+      Math.max(0, ...during.map((s) => s[key])) - Math.min(...during.map((s) => s[key]));
+    console.log(`[film-mode] #185 hold currentTime drift: a=${maxAdv("aT").toFixed(3)}s b=${maxAdv("bT").toFixed(3)}s`);
+    expect(maxAdv("aT")).toBeLessThan(0.3);
+    expect(maxAdv("bT")).toBeLessThan(0.3);
+
+    // (4) The hold lasts ~CARD_DUR_MS then clears.
+    await browser.waitUntil(async () => !(await probe()).card, {
+      timeout: 5000,
+      interval: 100,
+      timeoutMsg: "#185: leading card-hold overlay never cleared",
+    });
+    const heldMs = Date.now() - holdStartMs;
+    console.log(`[film-mode] #185 leading card held for ~${heldMs}ms`);
+    expect(heldMs).toBeGreaterThan(2500);
+    expect(heldMs).toBeLessThan(3800);
+
+    // (5) LEADING SEAM — after the card->clip0 seam settles, the needle advances
+    // monotonically into clip 0, and clip 0's own <video> slot is the one playing.
+    await browser.pause(700); // let the seam / first-frame gate settle (#174 seam-freeze tolerance)
+    const seam: Array<{ filmMs: number; aPaused: boolean; bPaused: boolean; aT: number; bT: number; aClip: string | null; bClip: string | null }> = [];
+    for (let i = 0; i < 18; i++) {
+      const p = await probe();
+      seam.push({ filmMs: p.filmMs, aPaused: p.aPaused, bPaused: p.bPaused, aT: p.aT, bT: p.bT, aClip: p.aClip, bClip: p.bClip });
+      await browser.pause(140);
+    }
+    let worstBack = 0;
+    for (let i = 1; i < seam.length; i++) {
+      const d = seam[i].filmMs - seam[i - 1].filmMs;
+      if (d < -worstBack) worstBack = -d;
+    }
+    const advanced = seam[seam.length - 1].filmMs - seam[0].filmMs;
+    console.log(`[film-mode] #185 post-seam: advanced=${advanced.toFixed(0)}ms worstBack=${worstBack.toFixed(1)}ms`);
+    expect(worstBack).toBeLessThanOrEqual(SEAM_TOL_MS);
+    expect(advanced).toBeGreaterThan(300);
+    // exactly one film slot is playing (not paused, currentTime advancing) ...
+    const lastThird = seam.slice(-6);
+    const aPlaying = lastThird.every((s) => !s.aPaused) && lastThird[lastThird.length - 1].aT - lastThird[0].aT > 0.1;
+    const bPlaying = lastThird.every((s) => !s.bPaused) && lastThird[lastThird.length - 1].bT - lastThird[0].bT > 0.1;
+    console.log(`[film-mode] #185 post-seam slots: aPlaying=${aPlaying} bPlaying=${bPlaying} aClip=${lastThird[0].aClip} bClip=${lastThird[0].bClip}`);
+    expect(aPlaying !== bPlaying).toBe(true); // exactly one
+    // ... and it is the slot holding clip 0 -- the exact cut id the leading card
+    // was anchored before (captured once above; the trace's `start-from-top
+    // leadingRun=1` confirms that id is inFilmRef[0] at play time).
+    const playingClip = aPlaying ? lastThird[lastThird.length - 1].aClip : lastThird[lastThird.length - 1].bClip;
+    expect(playingClip).toBe(inFilmIds[0]);
   });
 });

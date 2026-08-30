@@ -762,6 +762,32 @@ export default function Trimmer() {
         seekFilmTo(0, true);
         return;
       }
+      // #185: fresh play from the very top of a film that opens with a card run --
+      // hold the leading card instead of playing straight into clip 0. "At the very
+      // top" = the clock still resolves to the FIRST sequence item (a leading card,
+      // or clip 0 itself within its first frames) -- tolerant of the small residual
+      // drift a fresh film-mode entry leaves on the clock (~80ms observed) without a
+      // magic ms threshold. The #185 reconcile-while-paused gate above is what keeps
+      // the clock near 0 here (pre-fix a paused reconcile had already snapped it to
+      // clip 0's telescoped start, defeating any "near the top" check). If there is
+      // no leading card run, startFilmFromTop() returns false and play falls through.
+      {
+        const seqTop = filmSeqRef.current;
+        const pos = seqTop ? filmToItem(seqTop, seqClockRef.current.seqTimeMs) : null;
+        const atFilmTop =
+          pos != null && (pos.segIndex === 0 || (pos.kind === "clip" && pos.index === 0 && pos.localMs < 200));
+        if (viewMode === "film"
+          && filmModeRef.current
+          && !cardHold
+          && filmPlayIdxRef.current === 0
+          && atFilmTop
+          && startFilmFromTop()) {
+          return;
+        }
+      }
+      if (viewMode === "film") {
+        diagLog(`185 toggle-play-fresh filmIdx=${filmPlayIdxRef.current} seqMs=${Math.round(seqClockRef.current.seqTimeMs)} cardHold=${cardHold ? 1 : 0} activeSlot=${activeFilmSlotRef.current} vCurrentT=${(v.currentTime * 1000).toFixed(0)} -> plain clip play (no leading card, or not at top)`);
+      }
       v.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
       v.pause();
@@ -1165,6 +1191,44 @@ export default function Trimmer() {
   }
 
   /**
+   * #185: when the film's FIRST sequence element is a card run (one or more cards
+   * anchored before clip 0), pressing play from a fresh film-mode entry must HOLD
+   * that run. The clip->card boundary check in `advanceFilmClip` only fires at a
+   * CLIP out-point, never at film-time 0, so without this the leading card is
+   * skipped straight into clip 0. Mirrors `advanceFilmClip`'s card-arming block:
+   * `cardHoldAutoplayRef` set BEFORE anything that could fire a synchronous pause
+   * event (#150) -- though nothing is playing yet on a fresh entry, so no <video>
+   * is touched here (Gate 2: don't issue transport commands to clip 0 during the
+   * leading hold). `holdCard` anchors the clock to the card's telescoped
+   * `filmStartMs` (0 for a leading card) and starts the CARD_DUR_MS ticker;
+   * `continueFromCardHold` then promotes into clip 0 via the same path mid-roll
+   * cards already use. Returns true if it armed a hold, false if no leading run.
+   */
+  function startFilmFromTop(): boolean {
+    const clips_ = inFilmRef.current;
+    if (clips_.length === 0) return false;
+    const leadingRun =
+      orderedCardRuns(readPlacedCards(projectId ?? ""), clips_.map((c) => c.id)).before.get(clips_[0].id) ?? [];
+    if (leadingRun.length === 0) return false;
+    diagLog(`185 start-from-top leadingRun=${leadingRun.length} seqMs=${Math.round(seqClockRef.current.seqTimeMs)} activeSlot=${activeFilmSlotRef.current} t=${performance.now().toFixed(0)}`);
+    cardHoldAutoplayRef.current = true;
+    pendingCardAdvanceIdxRef.current = 0;
+    pendingCardRunRef.current = leadingRun.slice(1); // #184: card[0] held now, rest queued
+    // On fresh film-mode entry `loadIntoSlot(0,"a")` put clip 0 in slot A and its
+    // lookahead preloaded clip 1 into slot B. `promoteToFilmClip(0)` at hold-end
+    // swaps into the OPPOSITE slot and has NO clip-id match check -- so from the
+    // default active slot "a" it would `.play()` slot B (clip 1) and clip 0 would
+    // be silently skipped. Mark "b" active now so the promote targets slot A,
+    // where clip 0 already sits loaded + seeked. (The mid-roll card path avoids
+    // this because its pending clip IS the one the lookahead put in the opposite
+    // slot; the leading card's pending clip is 0, which the lookahead never primes.)
+    activeFilmSlotRef.current = "b";
+    setIsPlaying(true); // the film IS playing -- the card ticker is what advances it
+    holdCard(leadingRun[0]);
+    return true;
+  }
+
+  /**
    * #184: arm a single card's hold — anchors the sequence clock to that card's
    * telescoped filmStartMs (read from the authoritative sequence, not re-derived),
    * shows the colour overlay, and starts the CARD_DUR_MS autoplay ticker.
@@ -1173,6 +1237,7 @@ export default function Trimmer() {
     const seq = filmSeqRef.current;
     const item = seq?.items.find((it) => it.kind === "card" && it.card?.id === card.id);
     const filmMs = item ? item.filmStartMs : (seq?.totalMs ?? 0);
+    diagLog(`185 hold-card id=${card.id} filmMs=${Math.round(filmMs)} segIdx=${item?.segIndex ?? -1} segWidth=${item ? Math.round(item.filmEndMs - item.filmStartMs) : -1} autoplay=${cardHoldAutoplayRef.current ? 1 : 0} pendIdx=${pendingCardAdvanceIdxRef.current} runLen=${pendingCardRunRef.current.length} seqMs=${Math.round(seqClockRef.current.seqTimeMs)} t=${performance.now().toFixed(0)}`);
     setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle });
     anchorSeqClock(filmMs);
     startCardHoldTicker(0);
@@ -1315,12 +1380,29 @@ export default function Trimmer() {
     // parked on a card (no media to reconcile against) or mid-seek (the seeked
     // handler re-anchors). The clip path MUST keep reconciling -- it's what keeps
     // the float `performance.now()` clock honest against real playback.
+    //
+    // #185: also skipped while PAUSED. A fresh film-mode entry seeks clip 0's
+    // <video> to its in_ms and fires a timeupdate; `mediaToFilm` maps that to clip
+    // 0's telescoped `filmStartMs` -- which, when a card run precedes clip 0, is the
+    // leading card's width, NOT 0. A paused reconcile then forward-snaps the needle
+    // off film-time 0 before the user even presses play (confirmed live + WDIO,
+    // seqMs 0 -> 1579). The clock is authoritative while paused -- there is nothing
+    // to correct against, and `advanceSequenceClock` already no-ops while
+    // `!isPlaying`, so this keeps the two clock writers consistent. Seeks
+    // (`seekFilmTo` -> `anchorSeqClock`) and visibility returns (`onVis`) re-seat
+    // the clock themselves; neither relies on this paused path.
     const seq = filmSeqRef.current;
     const v = getFilmVideo(slot);
-    if (seq && v && !cardHoldRef.current && !isSeekingRef.current) {
+    // `isPlayingRef` is a React-state mirror and can lag the element by a tick after
+    // a `.pause()` (#150); also gate on the element's own synchronously-correct
+    // `.paused` so a trailing paused-element `timeupdate` can never snap the clock
+    // (Round 2.5 hardening). Both must say "playing" for reconcile to run.
+    if (seq && v && isPlayingRef.current && !v.paused && !cardHoldRef.current && !isSeekingRef.current) {
       const mediaFilmMs = mediaToFilm(seq, filmPlayIdxRef.current, currentTimeSec * 1000);
       const r = reconcile(seqClockRef.current.seqTimeMs, mediaFilmMs);
       if (r.seqTimeMs !== undefined) {
+        const drift185 = seqClockRef.current.seqTimeMs - mediaFilmMs;
+        diagLog(`185 reconcile-snap clipIdx=${filmPlayIdxRef.current} seqMs=${Math.round(seqClockRef.current.seqTimeMs)} mediaFilmMs=${Math.round(mediaFilmMs)} drift=${Math.round(drift185)} snapTo=${Math.round(r.seqTimeMs)} cardHoldState=${cardHold ? 1 : 0} t=${performance.now().toFixed(0)}`);
         seqClockRef.current = { seqTimeMs: r.seqTimeMs, lastSampleMs: performance.now() };
         setSeqNeedle(r.seqTimeMs, "reconcile");
         if (import.meta.env.DEV) {
@@ -1618,6 +1700,11 @@ export default function Trimmer() {
       resetFilmPlaybackRate();
       if (import.meta.env.DEV) {
         (window as unknown as { __rc_seqSnapCount?: number }).__rc_seqSnapCount = 0;
+      }
+      {
+        const seq0 = filmSeqRef.current;
+        const firstItem = seq0?.items[0];
+        diagLog(`185 film-enter items=${seq0?.items.length ?? 0} firstKind=${firstItem?.kind ?? "?"} firstSegWidth=${firstItem ? Math.round(firstItem.filmEndMs - firstItem.filmStartMs) : -1} clip0FilmStart=${Math.round(seq0?.items.find((it) => it.kind === "clip" && it.index === 0)?.filmStartMs ?? -1)} t=${performance.now().toFixed(0)}`);
       }
       if (inFilmRef.current.length > 0) loadIntoSlot(0, "a", undefined, false);
       else setSlotVisible("a");
@@ -1964,6 +2051,7 @@ export default function Trimmer() {
             {/* ── Film video A (dual-buffer) ── */}
             <video
               ref={filmVideoARef}
+              data-testid="trim-film-video-a"
               preload="auto"
               playsInline
               className="absolute inset-0 w-full h-full object-contain cursor-pointer"
@@ -1988,6 +2076,7 @@ export default function Trimmer() {
             {/* ── Film video B (dual-buffer) ── */}
             <video
               ref={filmVideoBRef}
+              data-testid="trim-film-video-b"
               preload="auto"
               playsInline
               className="absolute inset-0 w-full h-full object-contain cursor-pointer"
