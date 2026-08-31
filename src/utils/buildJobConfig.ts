@@ -116,6 +116,9 @@ export function resolveCardPositions(cards: PlacedCard[], inFilmClipIds: string[
       text: c.text,
       subtitle: c.subtitle || undefined,
       color: c.color,
+      // #152 reverted: dormant no-op field (always "none"). The pipeline no longer
+      // reads card `animation`; kept in the manifest shape to avoid an rc_cards_v2
+      // migration. Cards enter/leave via the global transition.
       animation: c.animation,
       position: idx,
     };

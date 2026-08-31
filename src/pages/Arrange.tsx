@@ -34,22 +34,11 @@ type ArrangeTab = "zoom" | "transitions" | "cards" | "sound";
 // local duplicate — see DESIGN.md "CSS preview card" note).
 const CARD_PRESET_COLORS = ["#0a0a0a", "#ffffff"];
 const CARD_LAST_COLOR_KEY = (projectId: string) => `rc_cards_last_color_${projectId}`;
-// "None" is first and the standard default -- matches the same convention already used
-// for opening/closing transitions (OPEN_CLOSE_OPTIONS above).
-const CARD_ANIMATIONS: { value: CardAnimation; label: string }[] = [
-  { value: "none", label: "None" },
-  { value: "appear", label: "Appear" },
-  { value: "fade", label: "Fade" },
-  { value: "fly_in", label: "Fly in" },
-];
-// CSS animation shorthand per choice, applied to the preview card's text wrapper only
-// (#149 polish round) -- mirrors the Transitions tab's animated card-chip preview.
-// "none" has no entry -- the preview renders statically, no animation style applied.
-const CARD_ANIM_CSS: Partial<Record<CardAnimation, string>> = {
-  appear: "rc-card-appear-in 3s infinite steps(1, end)",
-  fade: "rc-card-fade-in 3s infinite ease-in-out",
-  fly_in: "rc-card-fly-in 3s infinite ease-in-out",
-};
+// #152 (reverted): the per-card entrance-animation picker was removed after a real
+// render showed a card's own entrance competing with the global transition rather
+// than adding value -- cards now enter/leave via the global Transition setting like
+// every other item. `ComposedCard.animation` / `PlacedCard.animation` are kept as a
+// dormant no-op field (always "none") to avoid an rc_cards_v2 localStorage migration.
 interface ComposedCard {
   text: string;
   subtitle: string;
@@ -1671,39 +1660,15 @@ export default function Arrange() {
                     </div>
                   </div>
 
-                  {/* Animation -- horizontally scrollable chip row (#149 design
-                      choice: extends cleanly when more animation types are added,
-                      unlike stacked radio buttons). Also drives the live preview
-                      animation below. Stored for forward-compat only -- no FFmpeg-
-                      level card animation exists yet, see follow-up issue. */}
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-[#e5e5e5]">Animation</p>
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                      {CARD_ANIMATIONS.map(({ value, label }) => (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => updateComposedField({ animation: value }, false)}
-                          data-testid={`chip-card-anim-${value}`}
-                          className={`flex-shrink-0 text-sm rounded-md px-4 py-2 border transition-all duration-200 font-medium ${
-                            composed.animation === value
-                              ? "border-[#99B3FF] text-[#99B3FF] bg-[#99B3FF]/10"
-                              : "border-white/35 text-[#e5e5e5] hover:border-white/60 hover:bg-white/5"
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  {/* #152 reverted: the per-card entrance-animation chip row lived
+                      here. Removed -- cards enter/leave via the global Transition
+                      setting, not a separate per-card animation. */}
                 </div>
 
                 {/* Large centred preview -- also the drag handle for placing the card
                     (#149 design choice). Only draggable while composing a brand-new
                     card: dragging an already-placed card is disabled, since
-                    repositioning an existing card is out of scope for this issue.
-                    Plays the chosen entrance animation on loop, mirroring the
-                    Transitions tab's animated card-chip preview. */}
+                    repositioning an existing card is out of scope for this issue. */}
                 <div className="flex flex-col items-center gap-2">
                   <p className="text-sm font-medium text-[#e5e5e5] self-start">Preview</p>
                   {(() => {
@@ -1722,11 +1687,7 @@ export default function Arrange() {
                         title={draggableNow ? "Drag onto the timeline below to place this card" : undefined}
                       >
                         {composed.text ? (
-                          <div
-                            key={composed.animation}
-                            className="flex flex-col items-center gap-2 px-6"
-                            style={{ animation: CARD_ANIM_CSS[composed.animation] }}
-                          >
+                          <div className="flex flex-col items-center gap-2 px-6">
                             <span className="font-semibold text-center" style={{ color: textCol, fontSize: "clamp(1rem, 3vw, 1.75rem)" }}>
                               {composed.text}
                             </span>
