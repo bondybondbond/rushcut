@@ -820,11 +820,67 @@ pub fn get_setting(key: &str) -> Result<Option<String>, rusqlite::Error> {
 /// Generic key/value upsert into the `settings` table.
 pub fn set_setting(key: &str, value: &str) -> Result<(), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
+    // #188: this is now the hot write path for every rc_* render pref. Two
+    // rushcut.exe share the file -- wait out a transient lock, don't error.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
     )?;
+    Ok(())
+}
+
+/// Read the entire `settings` KV table (#188). Used once at renderer startup to
+/// hydrate the render-pref write-through cache. Tiny table (a handful of rows per
+/// project), so a full scan is fine.
+pub fn get_all_settings() -> Result<Vec<(String, String)>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    // Two rushcut.exe share this file (#89); a pipeline/proxy write can hold the
+    // lock briefly. Wait it out rather than surfacing SQLITE_BUSY as a hard error
+    // (which would strand the renderer session on the localStorage fallback).
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Delete a single `settings` key (#188: `removeRenderPref` -> `delete_setting_cmd`).
+/// No error if the key is absent.
+pub fn delete_setting(key: &str) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
+/// One-time localStorage -> `settings` migration (#188). Atomic: every entry AND
+/// the completion marker commit together in one transaction, or nothing does --
+/// an interrupted migration rolls back cleanly and re-runs next launch.
+/// `INSERT OR IGNORE` so a pre-existing DB row ALWAYS wins over a (possibly stale)
+/// localStorage value -- after migration, SQLite is the source of truth. The
+/// caller skips this entirely once `marker_key` is present in the hydrated cache,
+/// so re-entry is both guarded and harmless.
+pub fn migrate_render_prefs(
+    entries: &[(String, String)],
+    marker_key: &str,
+) -> Result<(), rusqlite::Error> {
+    let mut conn = Connection::open(db_path())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let tx = conn.transaction()?;
+    for (k, v) in entries {
+        tx.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+            params![k, v],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, 'done')",
+        params![marker_key],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

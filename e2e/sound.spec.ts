@@ -10,6 +10,7 @@
 import path from "path";
 import fs from "fs";
 import { trackTestProject } from "./helpers/testProjects";
+import { readRenderPref } from "./helpers/renderPrefs";
 
 const SCREENSHOTS = path.resolve(__dirname, "screenshots");
 
@@ -190,12 +191,10 @@ describe("Sound screen", () => {
     expect(text.toLowerCase()).toContain("cinematic");
   });
 
-  it("localStorage persists the selected mood", async () => {
+  it("SQLite persists the selected mood", async () => {
     if (!projectId) return;
-    // Batch U1b migrated all rc_* render-setting keys from sessionStorage to localStorage.
-    const stored = await browser.execute((id: string) => {
-      return localStorage.getItem(`rc_sound_${id}`);
-    }, projectId);
+    // #188: rc_* render-setting keys now persist in the SQLite `settings` table.
+    const stored = await readRenderPref(projectId, "sound");
     expect(stored).not.toBeNull();
     const parsed = JSON.parse(stored as string);
     expect(parsed.mood).toBe("cinematic");

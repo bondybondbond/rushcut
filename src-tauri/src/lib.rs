@@ -7,6 +7,7 @@ use db::{
     add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
     get_setting, get_stuck_processing_jobs, set_setting,
+    delete_setting, get_all_settings, migrate_render_prefs,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_all_encoding_claims, reset_done_with_missing_proxy, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
     set_proxy_for_all_clips_with_path, update_clip_review,
@@ -1043,6 +1044,41 @@ fn is_writable_dir(path: &str) -> Result<(), String> {
 #[tauri::command]
 fn get_output_folder_cmd() -> Result<Option<String>, String> {
     get_setting(OUTPUT_FOLDER_SETTING_KEY).map_err(|e| format!("DB error: {}", e))
+}
+
+/// #188: whole `settings` table as a map. Called once at renderer startup to
+/// hydrate the render-pref write-through cache (renderStore.ts) from the DB,
+/// which is the source of truth for all `rc_*` editor prefs (cards, transitions,
+/// music, resolution) -- WebView2 localStorage is not durable across app
+/// restarts and was silently losing card placements (3 confirmed occurrences).
+#[tauri::command]
+fn get_all_settings_cmd() -> Result<std::collections::HashMap<String, String>, String> {
+    get_all_settings()
+        .map(|rows| rows.into_iter().collect())
+        .map_err(|e| format!("DB error: {}", e))
+}
+
+/// #188: upsert one render-pref key. Fire-and-forget from the renderer's
+/// `setRenderPref` -- the command commits before it resolves, so a hard kill of
+/// rushcut.exe moments later cannot lose the write (unlike localStorage's lazy
+/// flush).
+#[tauri::command]
+fn set_setting_cmd(key: String, value: String) -> Result<(), String> {
+    set_setting(&key, &value).map_err(|e| format!("DB error: {}", e))
+}
+
+/// #188: delete one render-pref key (renderer's `removeRenderPref`).
+#[tauri::command]
+fn delete_setting_cmd(key: String) -> Result<(), String> {
+    delete_setting(&key).map_err(|e| format!("DB error: {}", e))
+}
+
+/// #188: one-time localStorage -> `settings` migration, run from inside the
+/// webview (only the renderer can read the current origin's localStorage).
+/// Atomic + idempotent; existing DB rows win over stale localStorage values.
+#[tauri::command]
+fn migrate_render_prefs_cmd(entries: Vec<(String, String)>, marker_key: String) -> Result<(), String> {
+    migrate_render_prefs(&entries, &marker_key).map_err(|e| format!("DB error: {}", e))
 }
 
 /// #13: re-check a previously-saved folder is still writable, without persisting
@@ -2655,6 +2691,10 @@ pub fn run() {
             get_output_folder_cmd,
             validate_output_folder_cmd,
             set_output_folder_cmd,
+            get_all_settings_cmd,
+            set_setting_cmd,
+            delete_setting_cmd,
+            migrate_render_prefs_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

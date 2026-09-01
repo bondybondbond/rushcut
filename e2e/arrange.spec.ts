@@ -10,6 +10,7 @@
 import path from "path";
 import fs from "fs";
 import { trackTestProject } from "./helpers/testProjects";
+import { readRenderPref } from "./helpers/renderPrefs";
 
 const SCREENSHOTS = path.resolve(__dirname, "screenshots");
 
@@ -341,13 +342,12 @@ describe("Arrange screen", () => {
     expect(text.toLowerCase()).toContain("crossfade");
   });
 
-  it("localStorage persists transition config as JSON with between=crossfade", async () => {
+  it("SQLite persists transition config as JSON with between=crossfade", async () => {
     if (!projectId) return;
-    // Batch U1b migrated all rc_* render-setting keys from sessionStorage to localStorage
-    // (renderStore.ts) so they survive a binary relaunch.
-    const stored = await browser.execute((id: string) => {
-      return localStorage.getItem(`rc_transition_${id}`);
-    }, projectId);
+    // #188: rc_* render-setting keys now persist in the SQLite `settings` table
+    // (renderStore.ts write-through cache) so they survive a binary relaunch and
+    // an unclean kill -- WebView2 localStorage did neither reliably.
+    const stored = await readRenderPref(projectId, "transition");
     // M2: stored as JSON {between, opening, closing, shuffleBetween}
     expect(stored).not.toBeNull();
     const parsed = JSON.parse(stored!);

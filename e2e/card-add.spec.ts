@@ -12,6 +12,7 @@
  *   pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/card-add.spec.ts
  */
 import { trackTestProject } from "./helpers/testProjects";
+import { readRenderPref } from "./helpers/renderPrefs";
 
 const CARD_TILE = '[data-testid^="filmstrip-card-"]';
 
@@ -75,11 +76,9 @@ async function addCardViaUi(title: string) {
 }
 
 async function storedCards(projectId: string): Promise<Array<{ id: string; text: string; beforeClipId: string | null }>> {
-  const raw = await browser.execute(
-    (id: string) => localStorage.getItem(`rc_cards_v2_${id}`),
-    projectId,
-  );
-  return JSON.parse((raw as string) ?? "[]");
+  // #188: placed cards persist in the SQLite settings table, not localStorage.
+  const raw = await readRenderPref(projectId, "cards");
+  return JSON.parse(raw ?? "[]");
 }
 
 describe("#184 -- multiple cards per anchor via + Add to film", () => {

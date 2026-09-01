@@ -30,6 +30,7 @@
  * Run:  pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/film-mode.spec.ts
  */
 import { trackTestProject } from "./helpers/testProjects";
+import { seedRenderPrefs, readRenderPref } from "./helpers/renderPrefs";
 
 const CARD_ANCHOR_TEXT = "MID ROLL";
 const LEAD_CARD_TEXT = "OPENING";
@@ -101,37 +102,24 @@ async function seedProject(): Promise<string | null> {
     return cutIds;
   }, projectId);
 
-  await browser.execute(
-    (id: string, ids: string[], anchorText: string) => {
-      localStorage.setItem(
-        `rc_transition_${id}`,
-        JSON.stringify({ between: "crossfade", opening: "none", closing: "none", shuffleBetween: false }),
-      );
-      localStorage.setItem(
-        `rc_cards_v2_${id}`,
-        JSON.stringify([
-          {
-            id: "e2e-mid-card",
-            text: anchorText,
-            subtitle: "",
-            color: "#1a1a2e",
-            animation: "none",
-            beforeClipId: ids[2] ?? null,
-          },
-        ]),
-      );
-      // Seed a library music mood + a fade so the Sound drift/fade path is
-      // exercised when the QA env has a music library configured. If it doesn't,
-      // the Sound spec's drift assertion self-skips (no audible track).
-      localStorage.setItem(
-        `rc_sound_${id}`,
-        JSON.stringify({ mood: "cinematic", volume: "balanced", musicFadeOut: "2s", musicLoop: true }),
-      );
-    },
-    projectId,
-    clipIds,
-    CARD_ANCHOR_TEXT,
-  );
+  // #188: seed via the SQLite settings store (was localStorage.setItem).
+  await seedRenderPrefs(projectId, {
+    transition: { between: "crossfade", opening: "none", closing: "none", shuffleBetween: false },
+    cards: [
+      {
+        id: "e2e-mid-card",
+        text: CARD_ANCHOR_TEXT,
+        subtitle: "",
+        color: "#1a1a2e",
+        animation: "none",
+        beforeClipId: clipIds[2] ?? null,
+      },
+    ],
+    // A library music mood + fade so the Sound drift/fade path is exercised when
+    // the QA env has a music library. If it doesn't, the Sound spec's drift
+    // assertion self-skips (no audible track).
+    sound: { mood: "cinematic", volume: "balanced", musicFadeOut: "2s", musicLoop: true },
+  });
 
   // Best-effort proxy warm-up — not required (the needle is clock-driven, so
   // source-file fallback playback is fine), just steadier if it lands in time.
@@ -232,11 +220,13 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
         pantry: data.clips.filter((c) => c.include === 0).length,
         visibility: document.visibilityState,
         hasFocus: document.hasFocus(),
-        transition: localStorage.getItem(`rc_transition_${id}`),
-        cards: localStorage.getItem(`rc_cards_v2_${id}`),
       };
     }, projectId);
-    console.log(`[film-mode] seed diag: ${JSON.stringify(diag)}`);
+    const seededTransition = await readRenderPref(projectId, "transition");
+    const seededCards = await readRenderPref(projectId, "cards");
+    console.log(
+      `[film-mode] seed diag: ${JSON.stringify({ ...diag, transition: seededTransition, cards: seededCards })}`,
+    );
   });
 
   it("Trimmer film mode: needle is monotonic through A->xfade->B->card->C", async () => {
@@ -482,21 +472,12 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     // existing mid-roll card. Then force a genuine Trimmer remount so the entry
     // effect re-reads readPlacedCards (bounce through /sound — a pushState to the
     // same /trimmer/:id is a no-op that would inherit the prior test's state).
-    await browser.execute(
-      (id: string, ids: string[], leadText: string, midText: string) => {
-        localStorage.setItem(
-          `rc_cards_v2_${id}`,
-          JSON.stringify([
-            { id: "e2e-lead-card", text: leadText, subtitle: "", color: "#0e1a0e", animation: "none", beforeClipId: ids[0] ?? null },
-            { id: "e2e-mid-card", text: midText, subtitle: "", color: "#1a1a2e", animation: "none", beforeClipId: ids[2] ?? null },
-          ]),
-        );
-      },
-      projectId!,
-      inFilmIds,
-      LEAD_CARD_TEXT,
-      CARD_ANCHOR_TEXT,
-    );
+    await seedRenderPrefs(projectId!, {
+      cards: [
+        { id: "e2e-lead-card", text: LEAD_CARD_TEXT, subtitle: "", color: "#0e1a0e", animation: "none", beforeClipId: inFilmIds[0] ?? null },
+        { id: "e2e-mid-card", text: CARD_ANCHOR_TEXT, subtitle: "", color: "#1a1a2e", animation: "none", beforeClipId: inFilmIds[2] ?? null },
+      ],
+    });
 
     await gotoRoute(projectId!, "sound");
     await gotoRoute(projectId!, "trimmer");
