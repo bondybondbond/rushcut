@@ -388,4 +388,88 @@ describe("Arrange screen", () => {
     ensureScreenshotsDir();
     await browser.saveScreenshot(path.join(SCREENSHOTS, "arrange-C-restored.png"));
   });
+
+  // ── #192: transition preview animates AND completes (not just "is running") ──
+  it("centre transition preview starts, reaches its completed state, and keeps progressing after a real→real swap", async () => {
+    if (!projectId) return;
+
+    const transitionsTab = await $('[data-testid="arrange-tab-transitions"]');
+    await transitionsTab.waitForExist({ timeout: 5_000 });
+    await transitionsTab.click();
+    await browser.pause(300);
+
+    // Select a real (non-"none") transition — the centre preview must now animate.
+    await (await $('[data-testid="chip-transition-wipe"]')).click();
+    await browser.pause(300);
+
+    // Sample the centre preview's B layer by seeking its WAAPI animation deterministically
+    // (matched by animationName, never getAnimations()[0]) to the end-hold window and to t=0.
+    const wipe = await browser.execute(() => {
+      const el = document.querySelector(".rc-trans-centre-preview .rc-trans-preview-b") as HTMLElement | null;
+      if (!el) return { found: false };
+      const cs = getComputedStyle(el);
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const anim = el.getAnimations().find(
+        (a) => (a as any).animationName === "rc-trans-wipe-b",
+      ) as Animation | undefined;
+      if (!anim) return { found: true, reducedMotion, animationName: cs.animationName, hasAnim: false };
+      const durMs = parseFloat(cs.animationDuration) * 1000 || 2000;
+      anim.pause();
+      anim.currentTime = durMs * 0.75; // inside the 60–90% B-arrived hold
+      const holdClip = getComputedStyle(el).clipPath;
+      anim.currentTime = 0; // start of the loop (clip A shown, B hidden)
+      const startClip = getComputedStyle(el).clipPath;
+      return {
+        found: true,
+        reducedMotion,
+        hasAnim: true,
+        animationName: cs.animationName,
+        playState: cs.animationPlayState,
+        holdClip,
+        startClip,
+      };
+    });
+
+    expect(wipe.found).toBe(true);
+    if (wipe.reducedMotion) return; // static-frame fallback is correct under reduced motion
+    expect(wipe.hasAnim).toBe(true);
+    expect(wipe.animationName).toContain("rc-trans-wipe-b");
+    expect(wipe.playState).toBe("running");
+    // Completed state: B fully revealed in the end-hold window → clip-path collapsed to inset(0…).
+    expect(wipe.holdClip.replace(/\s/g, "")).toMatch(/^inset\(0px\)$|^inset\(0px0px0px0(px|%)?\)$/);
+    // Not frozen at frame 0: the start frame is a different clip-path than the arrived hold.
+    expect(wipe.startClip).not.toBe(wipe.holdClip);
+
+    // Real→real swap: the exact case that used to leave the preview stuck because the inline
+    // `animation` shorthand reset animation-play-state. New preview must run AND progress.
+    await (await $('[data-testid="chip-transition-zoom"]')).click();
+    await browser.pause(300);
+
+    const zoom = await browser.execute(() => {
+      const el = document.querySelector(".rc-trans-centre-preview .rc-trans-preview-b") as HTMLElement | null;
+      if (!el) return { found: false };
+      const cs = getComputedStyle(el);
+      const anim = el.getAnimations().find(
+        (a) => (a as any).animationName === "rc-trans-zoom-b",
+      ) as Animation | undefined;
+      if (!anim) return { found: true, hasAnim: false, animationName: cs.animationName };
+      const durMs = parseFloat(cs.animationDuration) * 1000 || 2000;
+      anim.pause();
+      anim.currentTime = durMs * 0.2;
+      const early = getComputedStyle(el).transform;
+      anim.currentTime = durMs * 0.7;
+      const late = getComputedStyle(el).transform;
+      return { found: true, hasAnim: true, animationName: cs.animationName, playState: cs.animationPlayState, early, late };
+    });
+
+    expect(zoom.found).toBe(true);
+    expect(zoom.hasAnim).toBe(true);
+    expect(zoom.animationName).toContain("rc-trans-zoom-b");
+    expect(zoom.playState).toBe("running");
+    expect(zoom.early).not.toBe(zoom.late); // progressing after the swap, not stuck
+
+    // Leave state as the surrounding suite expects it.
+    await (await $('[data-testid="chip-transition-crossfade"]')).click();
+    await browser.pause(200);
+  });
 });

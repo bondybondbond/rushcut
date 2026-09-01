@@ -387,27 +387,31 @@ When a secondary chip group only applies in certain states (e.g. volume only whe
 
 ### Transition preview card-chip
 
-Vertical card button with an animated thumbnail on top and a label below. Used on the Transitions tab of the Arrange screen. The animation plays on hover and while the chip is selected; other chips are static.
+Vertical card button with an animated thumbnail on top and a label below. Used on the Transitions tab of the Arrange screen. The animation plays on hover and while the chip is selected; other chips sit paused on their static clip-A frame (zero cost).
 
 - **Card:** `flex flex-col rounded-lg overflow-hidden border-2 min-w-[100px] focus:outline-none`
 - **Selected:** `rc-trans-card--selected border-[#99B3FF]` — add `rc-trans-card--selected` class alongside Tailwind classes
 - **Inactive:** `border-white/20 hover:border-white/50`
-- **Card must also carry the `rc-trans-card` class** — the CSS selectors in `globals.css` key off this to control `animation-play-state`
+- **Card must also carry the `rc-trans-card` class** — the CSS selectors in `globals.css` key off this to control `animation-play-state` on hover / when selected
 - **Preview area:** `relative h-12 bg-black overflow-hidden` — `bg-black` is required so the mid-dip frame shows pure black for the Dip to Black transition
   - Two `absolute inset-0` divs with classes `rc-trans-preview-a` (clip A, `bg-[#1e3a4c]`) and `rc-trans-preview-b` (clip B, `bg-[#2d1a2f]`)
-  - Each gets `style={{ animation: ANIM_KEYS[value].a/b }}` — the inline animation shorthand includes name, duration, iteration count, and timing function
-  - Default `animation-play-state: paused` set via `.rc-trans-preview-a/b` rule in `globals.css`
-  - Running state triggered via `.rc-trans-card:hover` and `.rc-trans-card--selected` CSS selectors (no JS needed)
+  - Each gets `style={{ animationName: ANIM_KEYS[value].a/b }}` — **the keyframe NAME only, never the `animation` shorthand.** Duration / iteration-count / timing-function / `animation-play-state: paused` are CSS longhands on `.rc-trans-preview-a/-b` in `globals.css`. Setting the shorthand from JS resets `animation-play-state` back to `running` and defeats the play-state gate (#192).
+  - Running state gated purely by CSS: `.rc-trans-card:hover`, `.rc-trans-card--selected`, and (for the large centre preview, which is not inside a `.rc-trans-card`) `.rc-trans-centre-preview--running` on the preview wrapper. No JS toggles the animation.
+  - `@media (prefers-reduced-motion: reduce)` freezes both layers (`animation: none !important`) — the preview shows the static clip-A frame.
+- **Centre preview wrapper:** carries `rc-trans-centre-preview`, plus `rc-trans-centre-preview--running` when a real (non-`none`) transition or Shuffle is selected.
 - **Label row:** `px-3 py-2 text-sm font-medium text-center text-[#e5e5e5] bg-white/5`
 - **`data-testid="chip-transition-{value}"`** preserved on the `<button>` for E2E
 
-**Keyframe naming convention** (`src/globals.css`):
+**Keyframe timing model** (`src/globals.css`, redesigned #192):
 
-- `rc-trans-{type}-a` / `rc-trans-{type}-b` — type is `none`, `cf` (crossfade), `dip`, `wipe`, `zoom`
-- None: `steps(1, end)` timing; Crossfade + Dip: `ease-in-out`; Wipe: `clip-path: inset()` animation; Zoom: `transform: scale()` + opacity — all 3s duration
+- `rc-trans-{type}-a` / `rc-trans-{type}-b` — type is `none`, `cf`, `dip`, `wipe`, `wipd` (wipe-down), `zoom`, `dis` (dissolve), `barn` (barn door), `band` (band wipe)
+- One shared skeleton for all 8 animated pairs, **`2s infinite`**:
+  - `0%..15%` hold clip A · `15%..60%` transition A→B · `60%..90%` hold clip B fully arrived · `90%..100%` instant B→A hard reset
+  - Per-effect easing is set **inside each `@keyframes`** on the `15%` stop (governs the `15→60` segment): fades → `ease-in-out`; wipe / wipe-down / zoom / barn → `ease-out`; band → `steps(3, end)`. `none` uses `steps(1, end)` throughout.
+  - The `90%` stop carries `animation-timing-function: steps(1, end)` → the `90→100` reset is a hard cut, **not** a visible reverse of the transition. Every keyframe's `100%` value is byte-identical to its `0%` value so the infinite loop seam never flashes.
+- **Direction matches the real FFmpeg xfade** in `pipeline/transitions.py` `_TRANSITION_MAP`: `wipe`→`wipeleft` (boundary sweeps right→left, B revealed from the right edge), `wipe_down`→`wipedown` (top→bottom), `barn_door`→`squeezev` (scaleY squeeze/expand), `band_wipe`→`hrslice` (stepped left→right).
 - Clip colours: A = `#1e3a4c` (dark teal), B = `#2d1a2f` (dark purple), container bg = `#000000`
-- Wipe: A clips out left (`clip-path: inset(0 0 0 0)` → `inset(0 100% 0 0)`), B wipes in from right (`inset(0 100% 0 0)` → `inset(0 0 0 0)`)
-- Zoom: A scales+fades out (`scale(1) opacity:1` → `scale(1.35) opacity:0`), B scales+fades in (`scale(1.35) opacity:0` → `scale(1) opacity:1`)
+- Zoom scale delta: `1` ↔ `1.6` (bumped from `1.35` in #192 so the punch-in reads at ~40px).
 
 ### Zoom controls (Arrange Zoom tab)
 

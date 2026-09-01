@@ -61,16 +61,20 @@ const TRANSITIONS: { value: TransitionValue; label: string }[] = [
   { value: "band_wipe",    label: "Band wipe" },
 ];
 
+// #192: keyframe NAMES only. Duration / iteration / timing / play-state live in
+// src/globals.css on .rc-trans-preview-a/-b — the component sets `animationName`
+// (a longhand), never the `animation` shorthand, so the CSS :hover / --selected /
+// --running play-state gate is not reset out from under it.
 const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
-  none:         { a: "rc-trans-none-a 3s infinite steps(1, end)",  b: "rc-trans-none-b 3s infinite steps(1, end)" },
-  crossfade:    { a: "rc-trans-cf-a 3s infinite ease-in-out",      b: "rc-trans-cf-b 3s infinite ease-in-out" },
-  dip_to_black: { a: "rc-trans-dip-a 3s infinite ease-in-out",     b: "rc-trans-dip-b 3s infinite ease-in-out" },
-  wipe:         { a: "rc-trans-wipe-a 3s infinite ease-in-out",    b: "rc-trans-wipe-b 3s infinite ease-in-out" },
-  wipe_down:    { a: "rc-trans-wipd-a 3s infinite ease-in-out",    b: "rc-trans-wipd-b 3s infinite ease-in-out" },
-  zoom:         { a: "rc-trans-zoom-a 3s infinite ease-in-out",    b: "rc-trans-zoom-b 3s infinite ease-in-out" },
-  dissolve:     { a: "rc-trans-dis-a 3s infinite ease-in-out",     b: "rc-trans-dis-b 3s infinite ease-in-out" },
-  barn_door:    { a: "rc-trans-barn-a 3s infinite ease-in-out",    b: "rc-trans-barn-b 3s infinite ease-in-out" },
-  band_wipe:    { a: "rc-trans-band-a 3s infinite ease-in-out",    b: "rc-trans-band-b 3s infinite ease-in-out" },
+  none:         { a: "rc-trans-none-a", b: "rc-trans-none-b" },
+  crossfade:    { a: "rc-trans-cf-a",   b: "rc-trans-cf-b" },
+  dip_to_black: { a: "rc-trans-dip-a",  b: "rc-trans-dip-b" },
+  wipe:         { a: "rc-trans-wipe-a", b: "rc-trans-wipe-b" },
+  wipe_down:    { a: "rc-trans-wipd-a", b: "rc-trans-wipd-b" },
+  zoom:         { a: "rc-trans-zoom-a", b: "rc-trans-zoom-b" },
+  dissolve:     { a: "rc-trans-dis-a",  b: "rc-trans-dis-b" },
+  barn_door:    { a: "rc-trans-barn-a", b: "rc-trans-barn-b" },
+  band_wipe:    { a: "rc-trans-band-a", b: "rc-trans-band-b" },
 };
 
 // Random pool for the "Surprise me" opening/closing picker — excludes "none" and "dissolve".
@@ -1391,15 +1395,16 @@ export default function Arrange() {
                                   : "border-white/20 hover:border-white/50"
                               }`}
                             >
-                              {/* Mini preview thumbnail — only animates when this card is selected */}
+                              {/* Mini preview thumbnail — animates on hover and while selected;
+                                  play-state gated by the .rc-trans-card :hover / --selected CSS rule (#192). */}
                               <div className="relative w-16 h-10 bg-black flex-shrink-0 overflow-hidden">
                                 <div
                                   className="rc-trans-preview-a absolute inset-0"
-                                  style={{ animation: isActive ? ANIM_KEYS[value].a : "none", ...bgStyle(tA, "#1e3a4c") }}
+                                  style={{ animationName: ANIM_KEYS[value].a, ...bgStyle(tA, "#1e3a4c") }}
                                 />
                                 <div
                                   className="rc-trans-preview-b absolute inset-0"
-                                  style={{ animation: isActive ? ANIM_KEYS[value].b : "none", ...bgStyle(tB, "#2d1a2f") }}
+                                  style={{ animationName: ANIM_KEYS[value].b, ...bgStyle(tB, "#2d1a2f") }}
                                 />
                               </div>
                               <span className="text-sm font-medium text-[#e5e5e5] py-2 pr-2">{label}</span>
@@ -1427,14 +1432,18 @@ export default function Arrange() {
                         const shouldAnimate = transConfig.shuffleBetween || transConfig.between !== "none";
                         return (
                       <div className="flex-1 flex flex-col gap-3">
-                        <div className="relative h-56 rounded-lg overflow-hidden border border-white/15 bg-black">
+                        <div
+                          className={`rc-trans-centre-preview relative h-56 rounded-lg overflow-hidden border border-white/15 bg-black${
+                            shouldAnimate ? " rc-trans-centre-preview--running" : ""
+                          }`}
+                        >
                           <div
                             className="rc-trans-preview-a absolute inset-0"
-                            style={{ animation: shouldAnimate ? ANIM_KEYS[previewVal].a : "none", ...bgStyle(tA, "#1e3a4c") }}
+                            style={{ animationName: ANIM_KEYS[previewVal].a, ...bgStyle(tA, "#1e3a4c") }}
                           />
                           <div
                             className="rc-trans-preview-b absolute inset-0"
-                            style={{ animation: shouldAnimate ? ANIM_KEYS[previewVal].b : "none", ...bgStyle(tB, "#2d1a2f") }}
+                            style={{ animationName: ANIM_KEYS[previewVal].b, ...bgStyle(tB, "#2d1a2f") }}
                           />
                         </div>
                         <div>

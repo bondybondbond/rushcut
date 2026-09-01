@@ -25,75 +25,118 @@
   100% { transform: scale(var(--zoom-scale, 1.2));     opacity: 0; }
 }
 
-/* Transition preview card-chips — play-state control */
+/* ── Transition preview card-chips (#192) ─────────────────────────────────────
+   Shared timing model for every animated `rc-trans-*` keyframe pair:
+     0%..15%   hold clip A            (a short beat so the viewer registers "A")
+     15%..60%  transition A -> B      (per-effect easing set INSIDE each keyframe
+                                       at the 15% stop — governs the 15->60 segment;
+                                       clip-path/scale reach their true end value
+                                       here, not a sub-range)
+     60%..90%  hold clip B fully arrived
+     90%..100% instant B -> A snap    (steps(1,end) set on the 90% keyframe governs
+                                       the 90->100 segment — a hard cut, NOT a
+                                       visible reverse tween. Each keyframe's 100%
+                                       value is byte-identical to its 0% value, so
+                                       the infinite loop seam never flashes.)
+   Direction matches the real FFmpeg xfade each maps to in pipeline/transitions.py
+   `_TRANSITION_MAP`: wipe=wipeleft (boundary sweeps right->left), wipe_down=wipedown
+   (sweeps top->bottom), barn_door=squeezev, band_wipe=hrslice (stepped).
+   Duration / iteration / play-state are CSS longhands here; the component sets
+   only `animation-name`. Do NOT set the `animation` shorthand on these divs from
+   JS — the shorthand resets `animation-play-state` to `running`, defeating the
+   opt-in gate below (see docs/LEARNINGS.md, CSS tag). */
 .rc-trans-preview-a,
 .rc-trans-preview-b {
-  animation-play-state: paused;
+  animation-duration: 2s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear; /* real per-segment easing lives in each @keyframes */
+  animation-play-state: paused;      /* opt-in: only a hovered/selected rail card and the live centre preview run */
 }
+.rc-trans-card:hover .rc-trans-preview-a,
+.rc-trans-card:hover .rc-trans-preview-b,
 .rc-trans-card--selected .rc-trans-preview-a,
-.rc-trans-card--selected .rc-trans-preview-b {
+.rc-trans-card--selected .rc-trans-preview-b,
+.rc-trans-centre-preview--running .rc-trans-preview-a,
+.rc-trans-centre-preview--running .rc-trans-preview-b {
   animation-play-state: running;
+  will-change: clip-path, transform, opacity; /* scoped to the <=2 previews actually running, never the paused rail */
 }
 
-/* None — hard cut. steps(1, end) on the animation shorthand handles the snap;
-   keyframes declare A / B / back-to-A values at 0 / 50 / 100%. */
+/* Respect prefers-reduced-motion: freeze the preview on its static clip-A frame. */
+@media (prefers-reduced-motion: reduce) {
+  .rc-trans-preview-a,
+  .rc-trans-preview-b {
+    animation: none !important;
+  }
+}
+
+/* None — hard cut. steps(1,end) makes every segment a discrete jump. */
 @keyframes rc-trans-none-a {
-  0%   { opacity: 1; }
+  0%   { opacity: 1; animation-timing-function: steps(1, end); }
   50%  { opacity: 0; }
   100% { opacity: 1; }
 }
 @keyframes rc-trans-none-b {
-  0%   { opacity: 0; }
+  0%   { opacity: 0; animation-timing-function: steps(1, end); }
   50%  { opacity: 1; }
   100% { opacity: 0; }
 }
 
-/* Crossfade — smooth dissolve A→B→A */
+/* Crossfade — smooth dissolve A -> B, hold, hard reset. */
 @keyframes rc-trans-cf-a {
-  0%, 15%  { opacity: 1; }
-  45%, 75% { opacity: 0; }
+  0%, 15%  { opacity: 1; animation-timing-function: ease-in-out; }
+  60%, 90% { opacity: 0; }
+  90%      { opacity: 0; animation-timing-function: steps(1, end); }
   100%     { opacity: 1; }
 }
 @keyframes rc-trans-cf-b {
-  0%, 15%  { opacity: 0; }
-  45%, 75% { opacity: 1; }
+  0%, 15%  { opacity: 0; animation-timing-function: ease-in-out; }
+  60%, 90% { opacity: 1; }
+  90%      { opacity: 1; animation-timing-function: steps(1, end); }
   100%     { opacity: 0; }
 }
 
-/* Dip to Black — A fades out → black gap → B fades in → back to A */
+/* Dip to Black — A fades out, brief black gap, B fades in, hold, hard reset. */
 @keyframes rc-trans-dip-a {
-  0%, 15%   { opacity: 1; }
-  30%, 85%  { opacity: 0; }
-  100%      { opacity: 1; }
+  0%, 15%  { opacity: 1; animation-timing-function: ease-in-out; }
+  38%, 90% { opacity: 0; }
+  90%      { opacity: 0; animation-timing-function: steps(1, end); }
+  100%     { opacity: 1; }
 }
 @keyframes rc-trans-dip-b {
-  0%, 30%   { opacity: 0; }
-  50%, 70%  { opacity: 1; }
-  85%, 100% { opacity: 0; }
+  0%, 42%  { opacity: 0; animation-timing-function: ease-in-out; }
+  60%, 90% { opacity: 1; }
+  90%      { opacity: 1; animation-timing-function: steps(1, end); }
+  100%     { opacity: 0; }
 }
 
-/* Wipe — A slides out left, B slides in from right */
+/* Wipe — boundary sweeps right -> left (FFmpeg wipeleft). B revealed from the
+   right edge; A consumed from the right. Both edges move leftward. Hold, hard reset. */
 @keyframes rc-trans-wipe-a {
-  0%, 15%  { clip-path: inset(0 0 0 0); }
-  50%, 75% { clip-path: inset(0 100% 0 0); }
+  0%, 15%  { clip-path: inset(0 0 0 0); animation-timing-function: ease-out; }
+  60%, 90% { clip-path: inset(0 100% 0 0); }
+  90%      { clip-path: inset(0 100% 0 0); animation-timing-function: steps(1, end); }
   100%     { clip-path: inset(0 0 0 0); }
 }
 @keyframes rc-trans-wipe-b {
-  0%, 15%  { clip-path: inset(0 100% 0 0); }
-  50%, 75% { clip-path: inset(0 0 0 0); }
-  100%     { clip-path: inset(0 100% 0 0); }
+  0%, 15%  { clip-path: inset(0 0 0 100%); animation-timing-function: ease-out; }
+  60%, 90% { clip-path: inset(0 0 0 0); }
+  90%      { clip-path: inset(0 0 0 0); animation-timing-function: steps(1, end); }
+  100%     { clip-path: inset(0 0 0 100%); }
 }
 
-/* Zoom — A scales up and fades out, B scales down in from large */
+/* Zoom — B punches in from 1.6x, A pushes out to 1.6x + fades, hold, hard reset. */
 @keyframes rc-trans-zoom-a {
-  0%, 15%  { transform: scale(1);    opacity: 1; }
-  50%, 75% { transform: scale(1.35); opacity: 0; }
-  100%     { transform: scale(1);    opacity: 1; }
+  0%, 15%  { transform: scale(1);   opacity: 1; animation-timing-function: ease-out; }
+  60%, 90% { transform: scale(1.6); opacity: 0; }
+  90%      { transform: scale(1.6); opacity: 0; animation-timing-function: steps(1, end); }
+  100%     { transform: scale(1);   opacity: 1; }
 }
 @keyframes rc-trans-zoom-b {
-  0%, 15%  { transform: scale(1.35); opacity: 0; }
-  50%, 75% { transform: scale(1);    opacity: 1; }
-  100%     { transform: scale(1.35); opacity: 0; }
+  0%, 15%  { transform: scale(1.6); opacity: 0; animation-timing-function: ease-out; }
+  60%, 90% { transform: scale(1);   opacity: 1; }
+  90%      { transform: scale(1);   opacity: 1; animation-timing-function: steps(1, end); }
+  100%     { transform: scale(1.6); opacity: 0; }
 }
 
 /* Ken Burns preview gradual zoom is driven by the Web Animations API in
@@ -101,52 +144,62 @@
    @keyframes rc-kenburns (which read var(--kb-*) and could not be composited in
    WebView2) was removed. */
 
-/* Wipe down — B enters from top, A exits downward */
+/* Wipe down — boundary sweeps top -> bottom (FFmpeg wipedown). B revealed from
+   the top edge; A consumed from the top. Both edges move downward. Hold, hard reset. */
 @keyframes rc-trans-wipd-a {
-  0%, 15%  { clip-path: inset(0 0 0 0); }
-  50%, 75% { clip-path: inset(0 0 100% 0); }
+  0%, 15%  { clip-path: inset(0 0 0 0); animation-timing-function: ease-out; }
+  60%, 90% { clip-path: inset(100% 0 0 0); }
+  90%      { clip-path: inset(100% 0 0 0); animation-timing-function: steps(1, end); }
   100%     { clip-path: inset(0 0 0 0); }
 }
 @keyframes rc-trans-wipd-b {
-  0%, 15%  { clip-path: inset(100% 0 0 0); }
-  50%, 75% { clip-path: inset(0 0 0 0); }
-  100%     { clip-path: inset(100% 0 0 0); }
+  0%, 15%  { clip-path: inset(0 0 100% 0); animation-timing-function: ease-out; }
+  60%, 90% { clip-path: inset(0 0 0 0); }
+  90%      { clip-path: inset(0 0 0 0); animation-timing-function: steps(1, end); }
+  100%     { clip-path: inset(0 0 100% 0); }
 }
 
-/* Dissolve — soft fade (like crossfade; pixel dissolve approximated) */
+/* Dissolve — soft fade (mimics crossfade; real FFmpeg pixel-dissolve is #60). */
 @keyframes rc-trans-dis-a {
-  0%, 15%  { opacity: 1; }
-  45%, 75% { opacity: 0; }
+  0%, 15%  { opacity: 1; animation-timing-function: ease-in-out; }
+  60%, 90% { opacity: 0; }
+  90%      { opacity: 0; animation-timing-function: steps(1, end); }
   100%     { opacity: 1; }
 }
 @keyframes rc-trans-dis-b {
-  0%, 15%  { opacity: 0; }
-  45%, 75% { opacity: 1; }
+  0%, 15%  { opacity: 0; animation-timing-function: ease-in-out; }
+  60%, 90% { opacity: 1; }
+  90%      { opacity: 1; animation-timing-function: steps(1, end); }
   100%     { opacity: 0; }
 }
 
-/* Barn door — A squeezes vertically, B expands from centre */
+/* Barn door — B expands vertically from centre, A squeezes shut (FFmpeg squeezev),
+   hold, hard reset. */
 @keyframes rc-trans-barn-a {
-  0%, 15%  { transform: scaleY(1); opacity: 1; }
-  50%, 75% { transform: scaleY(0); opacity: 0; }
+  0%, 15%  { transform: scaleY(1); opacity: 1; animation-timing-function: ease-out; }
+  60%, 90% { transform: scaleY(0); opacity: 0; }
+  90%      { transform: scaleY(0); opacity: 0; animation-timing-function: steps(1, end); }
   100%     { transform: scaleY(1); opacity: 1; }
 }
 @keyframes rc-trans-barn-b {
-  0%, 15%  { transform: scaleY(0); opacity: 0; }
-  50%, 75% { transform: scaleY(1); opacity: 1; }
+  0%, 15%  { transform: scaleY(0); opacity: 0; animation-timing-function: ease-out; }
+  60%, 90% { transform: scaleY(1); opacity: 1; }
+  90%      { transform: scaleY(1); opacity: 1; animation-timing-function: steps(1, end); }
   100%     { transform: scaleY(0); opacity: 0; }
 }
 
-/* Band wipe — horizontal slice bands (hrslice approximation) */
+/* Band wipe — B revealed left -> right in stepped slices (FFmpeg hrslice), A
+   consumed left -> right. steps(3,end) gives the sliced read. Hold, hard reset. */
 @keyframes rc-trans-band-a {
-  0%, 15%  { clip-path: inset(0 0 0 0); }
-  30%      { clip-path: inset(0 0 0 60%); }
-  50%, 75% { clip-path: inset(0 0 0 100%); }
+  0%, 15%  { clip-path: inset(0 0 0 0); animation-timing-function: steps(3, end); }
+  60%, 90% { clip-path: inset(0 0 0 100%); }
+  90%      { clip-path: inset(0 0 0 100%); animation-timing-function: steps(1, end); }
   100%     { clip-path: inset(0 0 0 0); }
 }
 @keyframes rc-trans-band-b {
-  0%, 30%  { clip-path: inset(0 100% 0 0); }
-  50%, 75% { clip-path: inset(0 0 0 0); }
+  0%, 15%  { clip-path: inset(0 100% 0 0); animation-timing-function: steps(3, end); }
+  60%, 90% { clip-path: inset(0 0 0 0); }
+  90%      { clip-path: inset(0 0 0 0); animation-timing-function: steps(1, end); }
   100%     { clip-path: inset(0 100% 0 0); }
 }
 
