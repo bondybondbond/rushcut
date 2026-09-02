@@ -45,28 +45,60 @@
    only `animation-name`. Do NOT set the `animation` shorthand on these divs from
    JS — the shorthand resets `animation-play-state` to `running`, defeating the
    opt-in gate below (see docs/LEARNINGS.md, CSS tag). */
+/* Two representations (#192 follow-up, user call — mirrors DaVinci Resolve):
+   - Rail card miniatures: STATIC. Frozen at 40% of the timeline (a mid-transition
+     illustration) via a negative animation-delay while play-state stays paused.
+   - Centre preview: the only thing that ANIMATES, and only when a real (non-"none")
+     transition or Shuffle is selected (`.rc-trans-centre-preview--running`).
+   Both use abstract high-contrast A/B panels with a big letter (never the user's
+   real thumbnails — two similar dark frames made every wipe/fade read as a
+   hairline or a pulse). */
+:root {
+  --rc-trans-dur: 2.4s;
+}
 .rc-trans-preview-a,
 .rc-trans-preview-b {
-  animation-duration: 2s;
+  animation-duration: var(--rc-trans-dur);
   animation-iteration-count: infinite;
   animation-timing-function: linear; /* real per-segment easing lives in each @keyframes */
-  animation-play-state: paused;      /* opt-in: only a hovered/selected rail card and the live centre preview run */
+  animation-play-state: paused;      /* opt-in — see the --running rule below */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.rc-trans-card:hover .rc-trans-preview-a,
-.rc-trans-card:hover .rc-trans-preview-b,
-.rc-trans-card--selected .rc-trans-preview-a,
-.rc-trans-card--selected .rc-trans-preview-b,
+.rc-trans-preview-a { background: #1f4a63; } /* deep teal-blue */
+.rc-trans-preview-b { background: #63304a; } /* deep plum */
+.rc-trans-preview-a > .rc-trans-panel-label,
+.rc-trans-preview-b > .rc-trans-panel-label {
+  font-weight: 700;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.92);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Rail miniature: frozen mid-transition still, never runs. */
+.rc-trans-card .rc-trans-preview-a,
+.rc-trans-card .rc-trans-preview-b {
+  animation-delay: calc(var(--rc-trans-dur) * -0.4);
+}
+.rc-trans-card .rc-trans-panel-label { font-size: 13px; }
+
+/* Centre preview: the sole animated representation. */
+.rc-trans-centre-preview .rc-trans-panel-label { font-size: clamp(2.5rem, 11vw, 5rem); }
 .rc-trans-centre-preview--running .rc-trans-preview-a,
 .rc-trans-centre-preview--running .rc-trans-preview-b {
   animation-play-state: running;
-  will-change: clip-path, transform, opacity; /* scoped to the <=2 previews actually running, never the paused rail */
+  will-change: clip-path, transform, opacity; /* only ever 2 layers, only while a real transition is selected */
 }
 
-/* Respect prefers-reduced-motion: freeze the preview on its static clip-A frame. */
+/* prefers-reduced-motion: the centre preview also becomes a frozen 40% still
+   (the rail is already static, so it is untouched). */
 @media (prefers-reduced-motion: reduce) {
-  .rc-trans-preview-a,
-  .rc-trans-preview-b {
-    animation: none !important;
+  .rc-trans-centre-preview--running .rc-trans-preview-a,
+  .rc-trans-centre-preview--running .rc-trans-preview-b {
+    animation-play-state: paused;
+    animation-delay: calc(var(--rc-trans-dur) * -0.4);
   }
 }
 

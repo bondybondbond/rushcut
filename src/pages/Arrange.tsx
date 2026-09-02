@@ -1364,12 +1364,6 @@ export default function Arrange() {
 
               {/* ── Between clips — left rail + centre preview ─────── */}
               {(() => {
-                const fc = clips.filter(c => c.include === 1 && c.thumbnail_data);
-                const tA = fc[0]?.thumbnail_data ?? null;
-                const tB = (fc.length > 1 ? fc[fc.length - 1] : fc[0])?.thumbnail_data ?? null;
-                const bgStyle = (t: string | null, fallback: string) =>
-                  t ? { backgroundImage: `url(${t})`, backgroundSize: "cover", backgroundPosition: "center" }
-                    : { backgroundColor: fallback };
                 // The value shown in the centre preview:
                 // when shuffle is on, preview the last-selected between value (or crossfade as default)
                 const previewVal = transConfig.shuffleBetween
@@ -1395,17 +1389,15 @@ export default function Arrange() {
                                   : "border-white/20 hover:border-white/50"
                               }`}
                             >
-                              {/* Mini preview thumbnail — animates on hover and while selected;
-                                  play-state gated by the .rc-trans-card :hover / --selected CSS rule (#192). */}
+                              {/* Static mini illustration — frozen at 40% of the transition
+                                  via CSS (.rc-trans-card animation-delay), never animates (#192). */}
                               <div className="relative w-16 h-10 bg-black flex-shrink-0 overflow-hidden">
-                                <div
-                                  className="rc-trans-preview-a absolute inset-0"
-                                  style={{ animationName: ANIM_KEYS[value].a, ...bgStyle(tA, "#1e3a4c") }}
-                                />
-                                <div
-                                  className="rc-trans-preview-b absolute inset-0"
-                                  style={{ animationName: ANIM_KEYS[value].b, ...bgStyle(tB, "#2d1a2f") }}
-                                />
+                                <div className="rc-trans-preview-a absolute inset-0" style={{ animationName: ANIM_KEYS[value].a }}>
+                                  <span className="rc-trans-panel-label">A</span>
+                                </div>
+                                <div className="rc-trans-preview-b absolute inset-0" style={{ animationName: ANIM_KEYS[value].b }}>
+                                  <span className="rc-trans-panel-label">B</span>
+                                </div>
                               </div>
                               <span className="text-sm font-medium text-[#e5e5e5] py-2 pr-2">{label}</span>
                             </button>
@@ -1427,7 +1419,8 @@ export default function Arrange() {
                         </button>
                       </aside>
 
-                      {/* Centre preview — only animates when a real transition is selected */}
+                      {/* Centre preview — the only animated representation; runs only
+                          when a real transition or Shuffle is selected (#192). */}
                       {(() => {
                         const shouldAnimate = transConfig.shuffleBetween || transConfig.between !== "none";
                         return (
@@ -1437,14 +1430,12 @@ export default function Arrange() {
                             shouldAnimate ? " rc-trans-centre-preview--running" : ""
                           }`}
                         >
-                          <div
-                            className="rc-trans-preview-a absolute inset-0"
-                            style={{ animationName: ANIM_KEYS[previewVal].a, ...bgStyle(tA, "#1e3a4c") }}
-                          />
-                          <div
-                            className="rc-trans-preview-b absolute inset-0"
-                            style={{ animationName: ANIM_KEYS[previewVal].b, ...bgStyle(tB, "#2d1a2f") }}
-                          />
+                          <div className="rc-trans-preview-a absolute inset-0" style={{ animationName: ANIM_KEYS[previewVal].a }}>
+                            <span className="rc-trans-panel-label">A</span>
+                          </div>
+                          <div className="rc-trans-preview-b absolute inset-0" style={{ animationName: ANIM_KEYS[previewVal].b }}>
+                            <span className="rc-trans-panel-label">B</span>
+                          </div>
                         </div>
                         <div>
                           <p className="text-base font-medium text-[#e5e5e5]">
