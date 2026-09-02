@@ -215,6 +215,19 @@ export default function Arrange() {
     () => readTransitionConfig(projectId ?? "")
   );
 
+  // #192: while Shuffle is selected, the centre preview cycles through the pool
+  // (one member per --rc-trans-dur loop) so it reads as "a variety", not one fixed effect.
+  const [shuffleCycleIdx, setShuffleCycleIdx] = useState(0);
+  useEffect(() => {
+    if (!transConfig.shuffleBetween) return;
+    setShuffleCycleIdx(0);
+    const id = setInterval(
+      () => setShuffleCycleIdx((i) => (i + 1) % SHUFFLE_POOL.length),
+      2400, // keep in sync with --rc-trans-dur in src/globals.css
+    );
+    return () => clearInterval(id);
+  }, [transConfig.shuffleBetween]);
+
   // #149: cards can be placed anywhere -- replaces the old fixed start/end-only CardsState.
   const [placedCards, setPlacedCards] = useState<PlacedCard[]>(() => readPlacedCards(projectId ?? ""));
   // Which existing placed card (if any) is selected in the filmstrip -- drives "Edit card"
@@ -1364,10 +1377,11 @@ export default function Arrange() {
 
               {/* ── Between clips — left rail + centre preview ─────── */}
               {(() => {
-                // The value shown in the centre preview:
-                // when shuffle is on, preview the last-selected between value (or crossfade as default)
-                const previewVal = transConfig.shuffleBetween
-                  ? (transConfig.between !== "none" ? transConfig.between : "crossfade")
+                // The value shown in the centre preview: when shuffle is on, cycle
+                // through the pool (shuffleCycleIdx, advanced by the effect above);
+                // otherwise preview the selected between value.
+                const previewVal: TransitionValue = transConfig.shuffleBetween
+                  ? (SHUFFLE_POOL[shuffleCycleIdx % SHUFFLE_POOL.length] ?? "crossfade")
                   : transConfig.between;
                 return (
                   <div className="border border-white/15 rounded-lg p-6 space-y-4">

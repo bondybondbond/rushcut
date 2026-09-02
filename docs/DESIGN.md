@@ -390,7 +390,7 @@ When a secondary chip group only applies in certain states (e.g. volume only whe
 Left-rail card button (`rc-trans-card`) with a small **static** illustration on the left and a label. Used on the Transitions tab of the Arrange screen. Two representations, mirroring DaVinci Resolve (user call, #192 follow-up):
 
 - **Rail miniature — STATIC.** Never animates. Frozen at 40% of the transition timeline (a mid-transition still) via `animation-delay: calc(var(--rc-trans-dur) * -0.4)` on `.rc-trans-card .rc-trans-preview-a/-b` while `animation-play-state` stays `paused`. Gives an at-a-glance hint of the mechanic (wipe → a two-tone split; dip → a pure-black frame; zoom → an enlarged B; etc.).
-- **Centre preview — the ONLY animated representation.** Runs a `var(--rc-trans-dur)` (`2.4s`) loop, and only when a real (non-`none`) transition or Shuffle is selected (`.rc-trans-centre-preview--running` on the wrapper).
+- **Centre preview — the ONLY animated representation.** Runs a `var(--rc-trans-dur)` (`2.4s`) loop, and only when a real (non-`none`) transition or Shuffle is selected (`.rc-trans-centre-preview--running` on the wrapper). Under **Shuffle** it cycles the centre preview through `SHUFFLE_POOL` one member per loop (a `setInterval` at `2400ms`, kept in sync with `--rc-trans-dur`) so it reads as "a variety", not one fixed effect.
 
 Both use **abstract high-contrast A/B panels, never the user's real thumbnails** — two similar dark clip frames made every wipe/fade read as a hairline seam or an opacity pulse. Each `absolute inset-0` layer:
 
