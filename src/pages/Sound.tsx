@@ -66,6 +66,20 @@ const FADE_OUT_OPTIONS: { value: MusicFadeOut; label: string }[] = [
 const DEFAULT_SOUND: SoundState = { mood: "none", volume: "balanced", musicFadeOut: "2s", musicLoop: true };
 const PREVIEW_DURATION_MS = 30_000;
 
+// #189 logs-first: minimal music-lifecycle trace. Fire-and-forget append to
+// %TEMP%\rushcut\playback-trace.log (same file/command Trimmer.tsx uses). Every
+// line is prefixed `sound ` so a combined trace is disambiguable from the
+// Trimmer film-mode lines. Low-frequency user-driven boundaries only -- never
+// per-rVFC-frame / per-timeupdate.
+function diagLog(line: string) {
+  invoke("diag_log_cmd", { line: `sound ${line}` }).catch(() => {});
+}
+function maTail(src: string | null | undefined): string {
+  if (!src) return "<none>";
+  const i = src.lastIndexOf("/");
+  return i >= 0 ? src.slice(i + 1) : src;
+}
+
 function deriveSource(mood: MusicMood): MusicSource {
   if (mood === "none") return "none";
   if (mood === "custom") return "custom";
@@ -126,6 +140,11 @@ export default function Sound() {
   const pendingGateSlotRef = useRef<"a" | "b" | null>(null); // slot mid-frame-reveal-gate (playing but not yet active/visible) — #91
   const slotGenRef = useRef<{ a: number; b: number }>({ a: 0, b: 0 }); // invalidates stale rVFC callbacks
   const musicAudioRef = useRef<HTMLAudioElement>(null);  // music track during rough mix
+  // #189: monotonic generation for the music element -- bumped on every src swap.
+  // Stale async callbacks (canplay / seeked / play().then/.catch) captured a gen
+  // and must no-op if it no longer matches. Instrumented now; consumed by the
+  // syncMusic() controller in the follow-up step.
+  const musicGenRef = useRef(0);
   const filmPlayingRef = useRef(false);                  // imperative flag (avoids stale closures)
   const filmPlayIdxRef = useRef(0);                      // current clip index (fast access)
   const inFilmRef = useRef<typeof inFilm>([]);           // stable ref for event callbacks
@@ -427,7 +446,15 @@ export default function Sound() {
       // Stop rough-mix playback on route leave
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
-      musicAudioRef.current?.pause();
+      // #189: pause AND drop the src -- pausing alone leaves the element holding
+      // a live decoded buffer; clearing src (then load() to release it, MDN-
+      // recommended pattern) guarantees no orphan audio survives the unmount.
+      if (musicAudioRef.current) {
+        musicAudioRef.current.pause();
+        musicAudioRef.current.removeAttribute("src");
+        musicAudioRef.current.load();
+      }
+      musicGenRef.current++; // invalidate any in-flight syncMusic callback
       filmPlayingRef.current = false;
       // #150: don't let an armed autoplay-through-card ticker fire against an unmounted component.
       if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
@@ -853,6 +880,135 @@ export default function Sound() {
     }
   }
 
+  // #189: single-owner music controller. Every place that used to poke
+  // `musicAudioRef` directly (assign `.src`, call `.load()`/`.play()`, seek
+  // `.currentTime`) now routes through here. Commands:
+  //   "new-source"            -- mood/track changed (or first play): resolve src,
+  //                              load(), seek to positionMs, play iff opts.play.
+  //   "same-source-reanchor"  -- same track, re-seek to positionMs (e.g. a scrub
+  //                              seek, or landing on a card), play iff opts.play.
+  //   "pause" / "resume"      -- no src/position change, just toggle playback.
+  // `musicGenRef` is bumped on every "new-source" call; every async callback
+  // (canplay/loadedmetadata/seeked/play().then/.catch) captures that gen and is
+  // a no-op if a later swap has since superseded it -- the fix for "stale
+  // callback resumes the old track". Idempotent under React 18 Strict Mode:
+  // each call is self-contained (resolves src from current `sound` state fresh,
+  // no external mutable setup step), so a duplicate invocation just repeats the
+  // same swap and only the last gen wins -- no inconsistent end state.
+  function syncMusic(cmd: "new-source" | "same-source-reanchor" | "pause" | "resume", opts: { play: boolean; positionMs: number }) {
+    const ma = musicAudioRef.current;
+    if (!ma) return;
+
+    if (cmd === "pause") {
+      diagLog(`syncMusic pause maCurTime=${ma.currentTime.toFixed(2)}`);
+      ma.pause();
+      return;
+    }
+
+    const firePlay = (gen: number) => {
+      if (musicGenRef.current !== gen) return; // superseded
+      ma.play().then(
+        () => diagLog(`syncMusic play ok gen=${gen} curTime=${ma.currentTime.toFixed(2)}`),
+        (e) => {
+          const name = (e as Error)?.name;
+          if (name === "AbortError") return; // expected: superseded by a newer load/seek
+          diagLog(`syncMusic play rej gen=${gen} name=${name}`);
+        },
+      );
+    };
+
+    if (cmd === "resume") {
+      const gen = musicGenRef.current;
+      diagLog(`syncMusic resume gen=${gen} maCurTime=${ma.currentTime.toFixed(2)} readyState=${ma.readyState}`);
+      firePlay(gen);
+      return;
+    }
+
+    if (sound.mood === "none") {
+      ma.pause();
+      return;
+    }
+    const src =
+      sound.mood === "custom" && sound.customPath
+        ? convertFileSrc(sound.customPath)
+        : musicDir
+        ? convertFileSrc(musicDir + "\\" + sound.mood + ".mp3")
+        : null;
+    if (!src) return;
+
+    const gen = cmd === "new-source" ? ++musicGenRef.current : musicGenRef.current;
+    const targetSec = opts.positionMs / 1000;
+
+    const seekAndMaybePlay = () => {
+      if (musicGenRef.current !== gen) return; // superseded
+      // Guard against NaN duration (unloaded element) collapsing target -> 0
+      // (the #189 bug-3 root cause) -- defer instead of computing x % x.
+      const trackDur = Number.isFinite(ma.duration) && ma.duration > 0 ? ma.duration : null;
+      if (trackDur === null) {
+        ma.addEventListener("durationchange", seekAndMaybePlay, { once: true });
+        return;
+      }
+      const target = sound.musicLoop ? targetSec % trackDur : Math.min(targetSec, trackDur - 0.05);
+      diagLog(
+        `syncMusic ${cmd} gen=${gen} target=${target.toFixed(2)} trackDur=${trackDur.toFixed(2)} maCurTime=${ma.currentTime.toFixed(2)} play=${opts.play}`,
+      );
+      if (Math.abs(target - ma.currentTime) < 0.1) {
+        if (opts.play) firePlay(gen);
+        return;
+      }
+      // Mute-bridge the reseek (WebView2 audio dropout on currentTime write);
+      // play() must fire inside the seeked handler, never right after the
+      // currentTime assignment (LEARNINGS: play()-after-seek race).
+      ma.muted = true;
+      ma.addEventListener(
+        "seeked",
+        () => {
+          if (musicGenRef.current !== gen) return;
+          ma.muted = false;
+          if (opts.play) firePlay(gen);
+        },
+        { once: true },
+      );
+      ma.currentTime = target;
+    };
+
+    if (cmd === "new-source") {
+      diagLog(
+        `syncMusic new-source gen=${gen} mood=${sound.mood} reqSrc=${maTail(src)} curSrc=${maTail(ma.currentSrc)} readyState=${ma.readyState}`,
+      );
+      ma.src = src;
+      ma.loop = sound.musicLoop;
+      ma.volume = MUSIC_VOLUME[sound.volume];
+      ma.load(); // resets currentTime to 0 -- seekAndMaybePlay re-seeks once ready
+      if (ma.readyState >= 2) seekAndMaybePlay();
+      else ma.addEventListener("canplay", seekAndMaybePlay, { once: true });
+      return;
+    }
+
+    // same-source-reanchor
+    ma.loop = sound.musicLoop;
+    ma.volume = MUSIC_VOLUME[sound.volume];
+    if (ma.readyState >= 1) seekAndMaybePlay();
+    else ma.addEventListener("loadedmetadata", seekAndMaybePlay, { once: true });
+  }
+
+  // #189: mood/custom-track/musicDir changed. If the film is active (playing or
+  // paused), swap the loaded track immediately per the user-confirmed decision:
+  // playing -> swap + reanchor to the current needle + keep playing; paused ->
+  // swap + reanchor, stay paused (correct track sounds on next play). Idle (no
+  // playback started yet) is a no-op -- the next startFilmPlayback resolves the
+  // current mood fresh anyway. Effect fires on mount too (musicDir hydrates
+  // async) but is a no-op then since nothing is playing/paused yet.
+  useEffect(() => {
+    if (!filmPlayingRef.current && !isFilmPaused) return;
+    if (sound.mood === "none") {
+      syncMusic("pause", { play: false, positionMs: 0 });
+      return;
+    }
+    syncMusic("new-source", { play: filmPlayingRef.current, positionMs: seqClockRef.current.seqTimeMs });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sound.mood, sound.customPath, musicDir]);
+
   function startFilmPlayback() {
     stopPreview(); // stop any mood chip preview
     hasPlayedRef.current = true;
@@ -879,27 +1035,35 @@ export default function Sound() {
       (window as unknown as { __rc_seqSnapCount?: number }).__rc_seqSnapCount = 0;
     }
 
-    const ma = musicAudioRef.current;
-    if (ma && sound.mood !== "none") {
-      const src =
-        sound.mood === "custom" && sound.customPath
-          ? convertFileSrc(sound.customPath)
-          : musicDir
-          ? convertFileSrc(musicDir + "\\" + sound.mood + ".mp3")
-          : null;
-      if (src) {
-        ma.src = src;
-        ma.loop = sound.musicLoop; // U6: loop track to fill film when enabled
-        ma.volume = MUSIC_VOLUME[sound.volume];
-        ma.currentTime = 0;
-        ma.play().catch(() => {});
+    syncMusic("new-source", { play: true, positionMs: 0 });
+
+    // #187: if the film opens with a card, hold it from film-time 0 instead of
+    // jumping straight into clip 0 -- mirrors the card-seek / natural-advance
+    // card paths (video parked on the overlay, music keeps playing straight
+    // through, per the same #189 decision).
+    const seq = filmSeqRef.current;
+    const firstItem = seq?.items[0];
+    if (firstItem && firstItem.kind === "card" && firstItem.card) {
+      const runFromHere: PlacedCard[] = [];
+      let nextClipIdx = inFilmRef.current.length;
+      for (const it of seq.items) {
+        if (it.kind === "card" && it.card) runFromHere.push(it.card);
+        else if (it.kind === "clip") { nextClipIdx = it.index; break; }
       }
+      pendingCardAdvanceIdxRef.current = nextClipIdx;
+      pendingCardRunRef.current = runFromHere.slice(1);
+      holdCard(runFromHere[0]);
+      return;
     }
+
     // Dual-buffer: load clip 0 into slot A; preload of clip 1 into slot B happens inside loadIntoSlot's onReady
     loadIntoSlot(0, "a");
   }
 
   function pauseFilmPlayback() {
+    diagLog(
+      `pause maCurTime=${musicAudioRef.current?.currentTime.toFixed(2)} maPaused=${musicAudioRef.current?.paused} needle=${seqClockRef.current.seqTimeMs.toFixed(0)}`,
+    );
     filmPlayingRef.current = false;
     // Pause BOTH slots, not just the active one — a pending advance/load gate (#91)
     // may already have the inactive slot playing (still invisible) while it waits
@@ -922,7 +1086,28 @@ export default function Sound() {
     if (pendingGateSlotRef.current && pendingGateSlotRef.current !== activeFilmSlotRef.current) {
       getFilmVideo(pendingGateSlotRef.current)?.play().catch(() => {});
     }
-    musicAudioRef.current?.play().catch(() => {});
+    // #189 bug-2: the loaded track can be stale here -- e.g. the mood was changed
+    // via the Music tab while the film sat paused and the [mood] effect above was
+    // a no-op back then (paused already handled it, but guard anyway for any path
+    // that could leave a mismatch, e.g. custom-path edge cases). Re-resolve
+    // expected src and reconcile via syncMusic instead of a bare play().
+    {
+      const ma = musicAudioRef.current;
+      if (ma && sound.mood !== "none") {
+        const expectedSrc =
+          sound.mood === "custom" && sound.customPath
+            ? convertFileSrc(sound.customPath)
+            : musicDir
+            ? convertFileSrc(musicDir + "\\" + sound.mood + ".mp3")
+            : null;
+        if (expectedSrc && ma.currentSrc !== expectedSrc) {
+          diagLog(`resume stale-src expected=${maTail(expectedSrc)} actual=${maTail(ma.currentSrc)}`);
+          syncMusic("new-source", { play: true, positionMs: seqClockRef.current.seqTimeMs });
+        } else {
+          syncMusic("resume", { play: true, positionMs: 0 });
+        }
+      }
+    }
     setIsFilmPlaying(true);
     setIsFilmPaused(false);
   }
@@ -1109,26 +1294,44 @@ export default function Sound() {
     // --- Landed on a card region: park the overlay (parity with Trimmer's
     // seekFilmTo B-lite park — press play then promotes into the next clip).
     if (media.kind === "card") {
+      diagLog(
+        `card-seek film=${clamped} cardIndex=${media.cardIndex} maPausedBefore=${musicAudioRef.current?.paused} maCurTime=${musicAudioRef.current?.currentTime.toFixed(2)}`,
+      );
+      const seg = seq.items.findIndex((it) => it.kind === "card" && it.index === media.cardIndex);
+      if (seg < 0) return; // defensive: card index not found in sequence (shouldn't happen)
+
+      // #189 bug-4: seeking onto a card now plays STRAIGHT THROUGH it (mirrors
+      // advanceFilmClipRough's natural-advance card path) instead of pausing
+      // music and parking indefinitely -- cards never silence music in the
+      // render, and the old pause-without-reseeking left ma.currentTime stuck
+      // at whatever position playback was at before the click (confirmed via
+      // the #189 trace: clicking card 0 after 10s of playback left music
+      // resuming from 10s in, not from the card's own position).
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
-      musicAudioRef.current?.pause();
-      filmPlayingRef.current = false;
-      setIsFilmPlaying(false);
-      setIsFilmPaused(true);
+
+      const runFromHere: PlacedCard[] = [];
       let nextClipIdx = clips.length; // trailing end-card sentinel
-      const seg = seq.items.findIndex((it) => it.kind === "card" && it.index === media.cardIndex);
-      for (let i = seg + 1; i < seq.items.length; i++) {
-        if (seq.items[i].kind === "clip") { nextClipIdx = seq.items[i].index; break; }
+      for (let i = seg; i < seq.items.length; i++) {
+        const it = seq.items[i];
+        if (it.kind === "card" && it.card) runFromHere.push(it.card);
+        else if (it.kind === "clip") { nextClipIdx = it.index; break; }
       }
       pendingCardAdvanceIdxRef.current = nextClipIdx;
-      pendingCardRunRef.current = []; // #184: manual card park is B-lite — play promotes to the next clip
-      const pc = seg >= 0 ? seq.items[seg]?.card : undefined;
-      setCardHold({
-        filmMs: clamped,
-        color: pc?.color ?? "#000000",
-        text: pc?.text ?? "",
-        subtitle: pc?.subtitle ?? "",
-      });
+      pendingCardRunRef.current = runFromHere.slice(1);
+
+      filmPlayingRef.current = true;
+      setIsFilmPlaying(true);
+      setIsFilmPaused(false);
+
+      syncMusic("same-source-reanchor", { play: true, positionMs: clamped });
+
+      const card = runFromHere[0];
+      const cardStartMs = seq.items[seg].filmStartMs;
+      // Resume the hold from wherever inside the card the user actually clicked,
+      // not always from the card's start.
+      setCardHold({ filmMs: cardStartMs, color: card.color, text: card.text, subtitle: card.subtitle });
+      startCardHoldTicker(Math.max(0, clamped - cardStartMs), cardStartMs);
       return;
     }
 
@@ -1137,61 +1340,12 @@ export default function Sound() {
     const seekMs = media.mediaMs;
 
     const wasIdle = !filmPlayingRef.current && !isFilmPaused;
-    const ma = musicAudioRef.current;
 
-    if (wasIdle && ma && sound.mood !== "none") {
-      const src =
-        sound.mood === "custom" && sound.customPath
-          ? convertFileSrc(sound.customPath)
-          : musicDir
-          ? convertFileSrc(musicDir + "\\" + sound.mood + ".mp3")
-          : null;
-      if (src) {
-        ma.src = src;
-        ma.loop = sound.musicLoop;
-        ma.load();
-      }
-    }
-
-    // Sync music position — reset volume first so fade re-applies from handleFilmTimeUpdate
-    if (ma) {
-      ma.loop = sound.musicLoop; // U6: keep loop state current (volume chip / mood may have changed)
-      ma.volume = MUSIC_VOLUME[sound.volume];
-      // wasIdle: play() must fire inside the seeked handler — WebView2 resolves play() immediately
-      // but never starts playback if called while a seek is still in flight (LEARNINGS: mute-bridge pattern).
-      const shouldPlayAfterSeek = wasIdle && sound.mood !== "none";
-      const trySync = () => {
-        try {
-          const trackDur = ma.duration || clamped / 1000;
-          // U6: loop ON -> map film time into the looped track via modulo; OFF -> clamp to track end (plays once)
-          const target = sound.musicLoop
-            ? (clamped / 1000) % trackDur
-            : Math.min(clamped / 1000, trackDur);
-          // U6b: film still rolling but music already ran out (loop OFF) and user scrubbed BACK into the track.
-          // ma.ended is the primary signal; ma.paused arm is narrowed to "paused because it reached the end"
-          // so it won't leak when manual-pause / mid-seek pause states are added later.
-          const musicEndedButFilmRolling =
-            filmPlayingRef.current && !isFilmPaused &&
-            (ma.ended || (ma.paused && ma.currentTime >= trackDur - 0.1));
-          // Only resume if the film position is genuinely WITHIN the track (loop OFF) — not at/after its end.
-          const withinTrack = !sound.musicLoop && clamped / 1000 < trackDur - 0.05;
-          const shouldPlay = shouldPlayAfterSeek || (musicEndedButFilmRolling && withinTrack);
-          // Skip redundant reseeks within 100ms (matches scrub-debounce tolerance) — avoids glitch during a continuous drag
-          if (Math.abs(target - ma.currentTime) < 0.1) {
-            if (shouldPlay) ma.play().catch(() => {});
-            return;
-          }
-          // Mute-bridge the reseek (LEARNINGS: WebView2 audio dropout on currentTime write); unmute + play once seek lands
-          ma.muted = true;
-          ma.addEventListener("seeked", () => {
-            ma.muted = false;
-            if (shouldPlay) ma.play().catch(() => {});
-          }, { once: true });
-          ma.currentTime = target;
-        } catch (e) { /* music may not be loaded yet */ }
-      };
-      if (ma.readyState >= 1) trySync();
-      else ma.addEventListener("loadedmetadata", trySync, { once: true });
+    if (wasIdle) {
+      syncMusic("new-source", { play: sound.mood !== "none", positionMs: clamped });
+    } else {
+      const stillPlaying = filmPlayingRef.current && !isFilmPaused;
+      syncMusic("same-source-reanchor", { play: stillPlaying, positionMs: clamped });
     }
 
     if (wasIdle) {
@@ -1201,7 +1355,7 @@ export default function Sound() {
       slotGenRef.current = { a: 0, b: 0 };
       setIsFilmPlaying(true);
       setIsFilmPaused(false);
-      // Load into slot A with seek target; music play is handled by trySync's seeked handler above
+      // Load into slot A with seek target; music play/position is handled by syncMusic above
       loadIntoSlot(idx, "a", seekMs);
       return;
     }
@@ -1263,6 +1417,11 @@ export default function Sound() {
   }
 
   function persist(next: SoundState) {
+    if (next.mood !== sound.mood || next.customPath !== sound.customPath) {
+      diagLog(
+        `mood-change ${sound.mood}->${next.mood} filmPlaying=${filmPlayingRef.current} isFilmPaused=${isFilmPaused} needle=${seqClockRef.current.seqTimeMs.toFixed(0)} maCurSrc=${maTail(musicAudioRef.current?.currentSrc)}`,
+      );
+    }
     setSound(next);
     setRenderPref(storageKey, JSON.stringify(next));
   }
