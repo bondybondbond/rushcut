@@ -12,7 +12,6 @@ const TRANSITION_LABELS: Record<string, string> = {
   wipe: "Wipe",
   wipe_down: "Wipe down",
   zoom: "Zoom",
-  dissolve: "Dissolve",
   barn_door: "Barn door",
   band_wipe: "Band wipe",
   shuffle: "Shuffle",

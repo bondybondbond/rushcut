@@ -59,7 +59,7 @@ export interface Job {
   current_stage_total: number | null;
 }
 
-export type TransitionValue = "none" | "crossfade" | "dip_to_black" | "wipe" | "wipe_down" | "zoom" | "dissolve" | "barn_door" | "band_wipe";
+export type TransitionValue = "none" | "crossfade" | "dip_to_black" | "wipe" | "wipe_down" | "zoom" | "barn_door" | "band_wipe";
 
 // #148: one card = one entry in an ordered list, position is plain list-order
 // (index-based, matching DaVinci/Premiere/FCP/CapCut/OTIO convention) — not

@@ -56,7 +56,6 @@ const TRANSITIONS: { value: TransitionValue; label: string }[] = [
   { value: "wipe",         label: "Wipe" },
   { value: "wipe_down",    label: "Wipe down" },
   { value: "zoom",         label: "Zoom" },
-  { value: "dissolve",     label: "Dissolve" },
   { value: "barn_door",    label: "Barn door" },
   { value: "band_wipe",    label: "Band wipe" },
 ];
@@ -72,13 +71,11 @@ const ANIM_KEYS: Record<TransitionValue, { a: string; b: string }> = {
   wipe:         { a: "rc-trans-wipe-a", b: "rc-trans-wipe-b" },
   wipe_down:    { a: "rc-trans-wipd-a", b: "rc-trans-wipd-b" },
   zoom:         { a: "rc-trans-zoom-a", b: "rc-trans-zoom-b" },
-  dissolve:     { a: "rc-trans-dis-a",  b: "rc-trans-dis-b" },
   barn_door:    { a: "rc-trans-barn-a", b: "rc-trans-barn-b" },
   band_wipe:    { a: "rc-trans-band-a", b: "rc-trans-band-b" },
 };
 
-// Random pool for the "Surprise me" opening/closing picker — excludes "none" and "dissolve".
-// "dissolve" removed: FFmpeg noise-dither xfade renders as literal static/snow (V1.4 #60).
+// Random pool for the "Surprise me" opening/closing picker — excludes "none".
 // SYNC: keep in sync with _SHUFFLE_POOL in pipeline/transitions.py (same members, different names).
 const SHUFFLE_POOL: TransitionValue[] = ["crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "barn_door", "band_wipe"];
 

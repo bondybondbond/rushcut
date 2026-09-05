@@ -41,7 +41,6 @@ _TRANSITION_MAP = {
     # TODO: FFmpeg "zoomin" xfade zooms all the way into a narrow pixel band — unusable.
     # Fallback to "fade" until a proper gentle zoom is implemented via zoompan filter chain.
     "zoom":       "fade",
-    "dissolve":   "dissolve",
     "barn_door":  "squeezev",
     "band_wipe":  "hrslice",
 }
@@ -56,9 +55,12 @@ _TRANSITION_MAP = {
 #   squeezev    CLEAN  -- clean barn-door squeeze
 #   hrslice     CLEAN  -- segment renders correctly; any green-screen is the #64 mixed-encoder-concat
 #                         artifact (libx264/AMF boundary), not hrslice itself
-#   dissolve    REMOVED -- FFmpeg noise-dither xfade; renders as literal static/snow by design.
-#                          Still in _TRANSITION_MAP for explicit single-transition use.
 # Do NOT add: hblur -- heavy horizontal blur on fast-motion 4K looks like corruption.
+# "dissolve" REMOVED ENTIRELY (#195, 2026-09-05) -- FFmpeg's dissolve xfade is a per-pixel
+# noise-dither hard-select (never a blend), renders as literal static/snow by design, not a
+# bug. A throwaway additive/screen-blend custom-xfade prototype was built and judged against
+# real footage; user preferred plain Crossfade. No longer in _TRANSITION_MAP -- do not re-add
+# without a new product decision.
 # Note: "zoomin" excluded -- FFmpeg zoomin zooms to a pixel band; too extreme. Re-add when fixed.
 # SYNC: keep in sync with SHUFFLE_POOL in src/pages/Arrange.tsx (same members, different names).
 _SHUFFLE_POOL = ["fade", "fadeblack", "wipeleft", "wipedown", "squeezev", "hrslice"]

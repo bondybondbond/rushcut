@@ -191,20 +191,6 @@
   100%     { clip-path: inset(0 0 100% 0); }
 }
 
-/* Dissolve — soft fade (mimics crossfade; real FFmpeg pixel-dissolve is #60). */
-@keyframes rc-trans-dis-a {
-  0%, 15%  { opacity: 1; animation-timing-function: ease-in-out; }
-  60%, 90% { opacity: 0; }
-  90%      { opacity: 0; animation-timing-function: steps(1, end); }
-  100%     { opacity: 1; }
-}
-@keyframes rc-trans-dis-b {
-  0%, 15%  { opacity: 0; animation-timing-function: ease-in-out; }
-  60%, 90% { opacity: 1; }
-  90%      { opacity: 1; animation-timing-function: steps(1, end); }
-  100%     { opacity: 0; }
-}
-
 /* Barn door — B expands vertically from centre, A squeezes shut (FFmpeg squeezev),
    hold, hard reset. */
 @keyframes rc-trans-barn-a {

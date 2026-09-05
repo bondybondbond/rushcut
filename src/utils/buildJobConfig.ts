@@ -4,7 +4,7 @@ import { projectCache } from "@/utils/projectCache";
 
 export const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 export const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
-export const VALID_TRANSITIONS = ["none", "crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "dissolve", "barn_door", "band_wipe"] as const;
+export const VALID_TRANSITIONS = ["none", "crossfade", "dip_to_black", "wipe", "wipe_down", "zoom", "barn_door", "band_wipe"] as const;
 export const VALID_FADE_OUTS = ["none", "2s", "5s"] as const;
 
 /** Shape stored in rc_transition_${projectId} since M2. Pre-M2 stored a plain string. */

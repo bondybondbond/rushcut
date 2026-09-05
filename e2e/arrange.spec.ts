@@ -296,7 +296,7 @@ describe("Arrange screen", () => {
 
   // ── Transitions tab ───────────────────────────────────────────────────────
 
-  it("clicking Transitions tab shows all 10 between-clips cards (9 types + Shuffle)", async () => {
+  it("clicking Transitions tab shows all 9 between-clips cards (8 types + Shuffle)", async () => {
     if (!projectId) return;
     const transitionsTab = await $('[data-testid="arrange-tab-transitions"]');
     await transitionsTab.waitForExist({ timeout: 5_000 });
@@ -305,7 +305,7 @@ describe("Arrange screen", () => {
 
     for (const val of [
       "none", "crossfade", "dip_to_black", "wipe", "wipe_down",
-      "zoom", "dissolve", "barn_door", "band_wipe", "shuffle",
+      "zoom", "barn_door", "band_wipe", "shuffle",
     ]) {
       const chip = await $(`[data-testid="chip-transition-${val}"]`);
       await chip.waitForExist({ timeout: 5_000 });
