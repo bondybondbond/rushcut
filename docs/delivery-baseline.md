@@ -5,7 +5,7 @@ reliably and with less supervision over time. It informs a later,
 owner-approved proposal for autonomy thresholds (#199). It is **not** a KPI
 and sets **no targets**.
 
-Status: **definitions v1.1 - FROZEN.** Committed before any data row. Any change
+Status: **definitions v1.2 - FROZEN.** Committed before any data row. Any change
 to a definition bumps the version below and requires re-coding every row.
 
 Version log:
@@ -14,6 +14,7 @@ Version log:
 |---|---|---|
 | v1 | 2026-11-06 | Initial definitions |
 | v1.1 | 2026-11-06 | (c) human turns stop at completion time. Made after reading the real transcripts, before any row existed, so no row needed re-coding. |
+| v1.2 | 2026-11-06 | Human turn also includes messages typed while Claude was working (stored as a different record type). Found while testing the parser on real transcripts; before any row existed. |
 
 ## Rules that apply to every row
 
@@ -81,7 +82,8 @@ Claude to continue.
   delivery, **up to the completion time** (turns after completion are
   post-delivery chat and are excluded). A human turn is, positively defined: a non-sidechain `user`
   record whose content is text (pasted content included) with no tool result,
-  and that is not hook output, system-reminder text, a task-notification, a
+  or a message typed while Claude was working (stored as a `queued_command`
+  attachment with a human origin), and that is not hook output, system-reminder text, a task-notification, a
   command wrapper, an interrupt marker, a context-compaction summary, or a
   duplicate message id. Any record shape not recognised makes the cell
   `unknown` (fail closed).
