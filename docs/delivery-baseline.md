@@ -152,6 +152,124 @@ CC-improvement review counter is not treated as an additional measurement and
 is left untouched here; #212 handles its eventual retirement. There is one
 measure of delivery quality, not two.
 
+## Backfill summary (2026-11-06, definitions v1.2)
+
+Directional only. `source=backfill`. Judged by Claude (tag `judged`); the owner
+spot-check below is **pending**, so these figures are not final.
+
+Population: 19 deliveries, every closed issue group that shipped or reverted
+work between 2026-07-26 and 2026-09-05 (15 product, 4 tooling). All 19 have a
+complete 14-day window; 0 excluded for an incomplete window. One delivery
+(D156) is `not-assessed` for (a)-(c) because its work sessions predate the
+window; its (d) is still derived.
+
+| Measure | Count |
+|---|---|
+| (d) `d1` reopened | 0 of 19 |
+| (d) `d2` linked defect or corrective fix | 5 of 19 (2 clear, 3 borderline) |
+| (d) `failed` (deduplicated) | **5 of 19**; verified **14 of 19** (lower bound on failures) |
+| Product validation | validated 11, technical only 7, unknown 1 |
+| (a) deliveries with at least one correction | 10 of 18 assessed (17 corrections: defect 12, process-miss 4, misunderstood 1) |
+| (b) deliveries with at least one interruption | 7 of 18 assessed (8 interruptions) |
+| (c) human turns | 89 across 18 assessed deliveries (median 4 per delivery) |
+| (c) active minutes | 17 deliveries with evidence (median 82); 1 unknown (completion outside session span) |
+
+Reading notes:
+
+- The #200 issue text calls the check "reopened / total". Reopened alone is 0
+  of 19, which would hide the 5 deliveries that needed a follow-up fix. The
+  deduplicated `failed` count is the figure to use.
+- Technically verified is not the same as solving the user's problem: 7 of 19
+  have no owner confirmation. See the `Level` column.
+- Zero reopens with 5 follow-up failures supports the Gate 2 finding that
+  reopen-only detection undercounts. Failures never filed are invisible, so
+  every `failed` count here is a lower bound.
+- No autonomy threshold follows from these numbers. None is proposed here.
+
+## Selection and exclusions
+
+Included: closed issue groups from 2026-07-26 to 2026-09-05 that shipped or
+reverted code or tooling, grouped by closing commit. Reverted work (D152) is
+included.
+
+Excluded, with reason:
+
+| Item | Reason |
+|---|---|
+| #76, #176, #197 | Planned or assessed only, no code shipped |
+| #153, #155 | Closed before the window |
+| #125 | Closed without a code change |
+| Docs-only commits | Not a delivery |
+| Deliveries closed before 2026-07-26 | Outside the chosen window (older sessions exist and could extend the baseline) |
+
+No delivery closed between 2026-09-05 and 2026-11-06.
+
+## Owner spot-check (pending)
+
+Turn numbers are the position of the owner message within that delivery's
+turns, counted from 1. No message text is reproduced here.
+
+Borderline corrections (counted in column a):
+
+| Delivery | Turn | Counted as | Could instead be |
+|---|---|---|---|
+| D141 | 2 | defect | agent-behaviour instruction, not a correction |
+| D150 | 3 | misunderstood | design preference on correct work |
+| D150 | 4 | defect | a testing limitation, not a defect |
+| D170 | 2-3 | process-miss (one episode) | new requirement, not a correction |
+| D184 | 2 | process-miss | not a correction |
+
+Interruptions judged `b` (restart or nudge): D142 turn 2, D157 turn 4, D158
+turns 2 and 5, D159 turn 2, D165 turn 2, D185 turn 7. Borderline: D142 turn 2
+and D159 turn 2 (resume after the machine slept or a session ended).
+
+Sampled "not a correction" calls: D192 turn 2 (treated as taste), D184 turn 5
+(treated as new scope), D152 turn 2 (treated as a pre-existing adjacent bug).
+
+Failure linkage in column d2:
+
+| Delivery | Linked item | Called |
+|---|---|---|
+| D156 | #157 | counted (defect in what #156 shipped) |
+| D152 | revert commit 19bc66b | counted (reverted) |
+| D150 | #163 | counted, borderline |
+| D159 | #168 | counted, borderline |
+| D185 | #187 | counted, borderline (scope split) |
+| D163 | #167 | not counted (no demonstrated link) |
+| D184 | #185 | not counted (pre-existing playback behaviour newly visible) |
+| D192 | #195 | not counted (pre-existing render defect) |
+| D036 | #181 | not counted (pre-existing model behaviour) |
+| D165 | #194 | not counted (pre-existing) |
+
+Product validation judgements to confirm: D185 (core behaviour confirmed, one
+residual accepted), D036 (confirmed after the issue closed), D195 (owner
+decision to remove the feature), D165 (technical only).
+
 ## Rows
 
-(none yet - definitions are frozen first)
+Columns: `a` corrections, `b` interruptions, `d1` reopened, `d2` linked defect
+or fix, `Failed` deduplicated. Evidence tags: d = derived, j = judged,
+u = unknown.
+
+| Delivery | Issues | Type | Closed | Src | a corr | b intr | Turns | Active min | d1 | d2 | Failed | Level | Evidence | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| D141 | #141 | product | 2026-07-26 | backfill | 1 | 0 | 3 | 27 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | a: defect |
+| D156 | #156 | tooling | 2026-07-26 | backfill | unknown | unknown | unknown | unknown | 0 | 1 | 1 | unknown | a:u b:u c:u d:d lvl:u | not-assessed; d2 #157 |
+| D157 | #157 | tooling | 2026-07-26 | backfill | 0 | 1 | 6 | 46 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | |
+| D158 | #158 | tooling | 2026-08-26 | backfill | 1 | 2 | 9 | 135 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | a: defect |
+| D142 | #142 | product | 2026-08-26 | backfill | 0 | 1 | 3 | 36 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | |
+| D150 | #150 | product | 2026-08-26 | backfill | 3 | 0 | 8 | 96 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | a: misunderstood 1, defect 2; d2 #163 |
+| D151 | #151 | product | 2026-08-27 | backfill | 0 | 0 | 2 | 59 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | |
+| D163 | #163 | product | 2026-08-27 | backfill | 1 | 0 | 3 | 77 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: defect |
+| D159 | #159 | product | 2026-08-28 | backfill | 0 | 1 | 3 | 90 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | d2 #168 |
+| D165 | #165 #160 #164 #166 #174 | product | 2026-08-29 | backfill | 0 | 1 | 4 | 175 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | bundle |
+| D036 | #36 | product | 2026-08-29 | backfill | 0 | 0 | 1 | 57 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | confirmed after close |
+| D184 | #184 | product | 2026-08-29 | backfill | 2 | 0 | 6 | 139 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: process-miss 1, defect 1 |
+| D185 | #185 | product | 2026-08-30 | backfill | 3 | 1 | 11 | 205 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | a: defect 3; d2 #187; two attempts |
+| D152 | #152 #183 #182 | product | 2026-08-31 | backfill | 3 | 0 | 9 | 163 | 0 | 1 | 1 | technical | a:j b:j c:d d:d lvl:j | a: defect 2, process-miss 1; built then reverted |
+| D188 | #188 | product | 2026-09-01 | backfill | 1 | 0 | 3 | 82 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: process-miss |
+| D192 | #192 | product | 2026-09-02 | backfill | 0 | 0 | 5 | 97 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | |
+| D170 | #170 | tooling | 2026-09-03 | backfill | 1 | 1 | 5 | unknown | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | active unknown: close outside session span |
+| D189 | #189 #187 | product | 2026-09-04 | backfill | 1 | 0 | 4 | 77 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: defect |
+| D195 | #195 | product | 2026-09-05 | backfill | 0 | 0 | 4 | 48 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | |
+
