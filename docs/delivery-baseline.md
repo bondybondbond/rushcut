@@ -236,7 +236,7 @@ preserved in commit 126a8d5. Decisions below were applied and every `a` and
 | D142 turn 2 | Excluded as an interruption (environmental) | D142 `b` 1 to 0 |
 | D159 turn 2 | Excluded as an interruption (environmental) | D159 `b` 1 to 0 |
 | D157 turn 4, D158 turns 2 and 5, D165 turn 2, D185 turn 7 | Interruptions retained provisionally | none |
-| D170 turn 4 | Resolved by Claude from the transcript and the frozen definitions: Claude stopped after a tool-connection failure and the owner had to act (sign-in state, then a retry instruction), so recovery needed more than a plain resume. Interruption retained. | none |
+| D170 turn 4 | Resolved by Claude from transcript evidence under the frozen definitions: recovery needed owner action, not a plain resume. Interruption retained. | none |
 | D152 to revert | Retained as a failure | none |
 | D163, D184, D192, D036, D165 links | Exclusions retained | none |
 | D185, D036 validated; D165 technical | Retained | none |
@@ -249,10 +249,10 @@ conversation is given in the review chat, not here.
 
 | # | Question | Decision | Effect |
 |---|---|---|---|
-| O1 | D141 turn 2 | Exclude (a relayed instruction, not a correction) | D141 `a` 1 to 0 |
-| O2 | D184 turn 2 | Keep (work Claude could have done was handed to the owner) | none |
+| O1 | D141 turn 2 | Exclude (relayed instruction) | D141 `a` 1 to 0 |
+| O2 | D184 turn 2 | Keep (process-miss) | none |
 | O3 | Defect tracked before the delivery closed | Excluded under the frozen post-close rule; supersedes the earlier provisional retention of D156 | D156, D159, D185 `d2` 1 to 0; failed 5 to 2 of 19 |
-| O4 | D195 level | Keep `validated`, through a negative product decision (removal was the owner's stated acceptable outcome) | none |
+| O4 | D195 level | Keep `validated`, through a negative product decision (feature removal) | none |
 
 Evidence for O3 (public issue timestamps, UTC). The first three rows are
 excluded because the item was tracked before close:
@@ -319,10 +319,10 @@ u = unknown.
 | D036 | #36 | product | 2026-08-29 | backfill | 0 | 0 | 1 | 57 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | confirmed after close |
 | D184 | #184 | product | 2026-08-29 | backfill | 2 | 0 | 6 | 139 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: process-miss 1, defect 1 |
 | D185 | #185 | product | 2026-08-30 | backfill | 3 | 1 | 11 | 205 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: defect 3; #187 tracked before close, not counted; two attempts |
-| D152 | #152 #183 #182 | product | 2026-08-31 | backfill | 3 | 0 | 9 | 163 | 0 | 1 | 1 | rejected | a:j b:j c:d d:d lvl:j | a: defect 2, process-miss 1; built then reverted; owner rejected the model |
+| D152 | #152 #183 #182 | product | 2026-08-31 | backfill | 3 | 0 | 9 | 163 | 0 | 1 | 1 | rejected | a:j b:j c:d d:d lvl:j | a: defect 2, process-miss 1; built then reverted |
 | D188 | #188 | product | 2026-09-01 | backfill | 1 | 0 | 3 | 82 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: process-miss |
 | D192 | #192 | product | 2026-09-02 | backfill | 0 | 0 | 5 | 97 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | |
-| D170 | #170 | tooling | 2026-09-03 | backfill | 0 | 1 | 5 | unknown | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | turn 4 interruption retained (owner action needed); active unknown: close outside session span |
+| D170 | #170 | tooling | 2026-09-03 | backfill | 0 | 1 | 5 | unknown | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | turn 4 interruption retained; active unknown: close outside session span |
 | D189 | #189 #187 | product | 2026-09-04 | backfill | 1 | 0 | 4 | 77 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: defect |
 | D195 | #195 | product | 2026-09-05 | backfill | 0 | 0 | 4 | 48 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | validated via negative product decision: feature removed; built candidate rejected |
 
