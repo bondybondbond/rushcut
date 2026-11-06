@@ -5,7 +5,7 @@ reliably and with less supervision over time. It informs a later,
 owner-approved proposal for autonomy thresholds (#199). It is **not** a KPI
 and sets **no targets**.
 
-Status: **definitions v1.2 - FROZEN.** Committed before any data row. Any change
+Status: **definitions v1.3 - FROZEN.** Committed before any data row. Any change
 to a definition bumps the version below and requires re-coding every row.
 
 Version log:
@@ -15,6 +15,7 @@ Version log:
 | v1 | 2026-11-06 | Initial definitions |
 | v1.1 | 2026-11-06 | (c) human turns stop at completion time. Made after reading the real transcripts, before any row existed, so no row needed re-coding. |
 | v1.2 | 2026-11-06 | Human turn also includes messages typed while Claude was working (stored as a different record type). Found while testing the parser on real transcripts; before any row existed. |
+| v1.3 | 2026-11-06 | After owner review of the backfill: (a) excludes a design preference on correct work and a limitation of how the owner can test; (b) excludes environmental resumes (machine sleep, API error, usage limit, session end); new product level `rejected`. Every row re-coded; changes listed in the audit trail below. |
 
 ## Rules that apply to every row
 
@@ -57,14 +58,19 @@ reverses Claude's interpretation of the task. Each carries one type tag:
 | `unverified-claim` | Claimed verified, was not | "you said it was tested" |
 | `process-miss` | Claude ignored a stated owner decision or constraint | "I told you not to do that" |
 
-Not a correction: new scope, a taste or design change on correct work, an
-answer to Claude's question, an approval, a reprioritisation.
+Not a correction: new scope, a taste or design change on correct work, a
+design preference stated on otherwise correct work, a limitation of how the
+owner can test, an answer to Claude's question, an approval, a
+reprioritisation. The test is whether Claude got something wrong, not whether
+the owner changed their mind or added an instruction.
 
 ### (b) Process interruptions
 
 A user turn whose purpose is pacing the workflow, not judging its output: stop,
 redirect, unblock a stalled step, restart a blocked or hung process, or nudge
-Claude to continue.
+Claude to continue. Not counted: a resume whose cause is environmental
+(machine sleep, API error, usage limit, session end) unless recovering needed
+more than resuming. Those measure the environment, not agent performance.
 
 ### Precedence rules for (a) and (b)
 
@@ -129,6 +135,7 @@ the failure side. This doc reports both, always as counts:
 |---|---|
 | `technical` | Build, tests, render or log evidence says it works. |
 | `validated` | Also confirmed solving the user's problem by the owner's observation or a measurable signal. |
+| `rejected` | The owner assessed the delivered outcome and judged it wrong or unwanted for the user (not merely incomplete). A feature the owner decides should not exist is not validated success. |
 | `unknown` | No evidence either way. |
 
 A high verified-delivery rate must not be read as proof the user's problem was
@@ -152,10 +159,11 @@ CC-improvement review counter is not treated as an additional measurement and
 is left untouched here; #212 handles its eventual retirement. There is one
 measure of delivery quality, not two.
 
-## Backfill summary (2026-11-06, definitions v1.2)
+## Backfill summary (2026-11-06, definitions v1.3, after owner review)
 
-Directional only. `source=backfill`. Judged by Claude (tag `judged`); the owner
-spot-check below is **pending**, so these figures are not final.
+Directional only. `source=backfill`. Corrections and interruptions are judged by
+Claude (tag `judged`). Four owner decisions are still open (section "Open
+decisions"); figures marked with a range depend on them.
 
 Population: 19 deliveries, every closed issue group that shipped or reverted
 work between 2026-07-26 and 2026-09-05 (15 product, 4 tooling). All 19 have a
@@ -166,22 +174,22 @@ window; its (d) is still derived.
 | Measure | Count |
 |---|---|
 | (d) `d1` reopened | 0 of 19 |
-| (d) `d2` linked defect or corrective fix | 5 of 19 (2 clear, 3 borderline) |
-| (d) `failed` (deduplicated) | **5 of 19**; verified **14 of 19** (lower bound on failures) |
-| Product validation | validated 11, technical only 7, unknown 1 |
-| (a) deliveries with at least one correction | 10 of 18 assessed (17 corrections: defect 12, process-miss 4, misunderstood 1) |
-| (b) deliveries with at least one interruption | 7 of 18 assessed (8 interruptions) |
+| (d) `d2` linked defect or corrective fix | 5 of 19 as coded; **2 of 19 if "later" means created after the close time** (open decision O3) |
+| (d) `failed` (deduplicated) | **5 of 19** as coded (verified 14 of 19); **2 of 19** (verified 17 of 19) under the stricter reading. Lower bound either way. |
+| Product validation | validated 11, technical only 6, rejected 1, unknown 1 (open decision O4 could move one to rejected) |
+| (a) deliveries with at least one correction | **9 of 18** assessed (14 corrections: defect 11, process-miss 3); 8 of 18 if O1 resolves to exclude |
+| (b) deliveries with at least one interruption | **5 of 18** assessed (6 interruptions) |
 | (c) human turns | 89 across 18 assessed deliveries (median 4 per delivery) |
 | (c) active minutes | 17 deliveries with evidence (median 82); 1 unknown (completion outside session span) |
 
 Reading notes:
 
 - The #200 issue text calls the check "reopened / total". Reopened alone is 0
-  of 19, which would hide the 5 deliveries that needed a follow-up fix. The
-  deduplicated `failed` count is the figure to use.
-- Technically verified is not the same as solving the user's problem: 7 of 19
-  have no owner confirmation. See the `Level` column.
-- Zero reopens with 5 follow-up failures supports the Gate 2 finding that
+  of 19, which would hide follow-up failures. The deduplicated `failed` count
+  is the figure to use.
+- Technically verified is not the same as solving the user's problem: 6 of 19
+  are technical only and 1 was rejected by the owner. See the `Level` column.
+- Zero reopens with follow-up failures supports the Gate 2 finding that
   reopen-only detection undercounts. Failures never filed are invisible, so
   every `failed` count here is a lower bound.
 - No autonomy threshold follows from these numbers. None is proposed here.
@@ -204,46 +212,67 @@ Excluded, with reason:
 
 No delivery closed between 2026-09-05 and 2026-11-06.
 
-## Owner spot-check (pending)
+## Owner review log (2026-11-06)
 
-Turn numbers are the position of the owner message within that delivery's
-turns, counted from 1. No message text is reproduced here.
+The first version of this section (borderline list, author-picked samples) is
+preserved in commit 126a8d5. Decisions below were applied and every `a` and
+`b` cell was re-checked against v1.3; only the listed cells changed.
 
-Borderline corrections (counted in column a):
-
-| Delivery | Turn | Counted as | Could instead be |
-|---|---|---|---|
-| D141 | 2 | defect | agent-behaviour instruction, not a correction |
-| D150 | 3 | misunderstood | design preference on correct work |
-| D150 | 4 | defect | a testing limitation, not a defect |
-| D170 | 2-3 | process-miss (one episode) | new requirement, not a correction |
-| D184 | 2 | process-miss | not a correction |
-
-Interruptions judged `b` (restart or nudge): D142 turn 2, D157 turn 4, D158
-turns 2 and 5, D159 turn 2, D165 turn 2, D185 turn 7. Borderline: D142 turn 2
-and D159 turn 2 (resume after the machine slept or a session ended).
-
-Sampled "not a correction" calls: D192 turn 2 (treated as taste), D184 turn 5
-(treated as new scope), D152 turn 2 (treated as a pre-existing adjacent bug).
-
-Failure linkage in column d2:
-
-| Delivery | Linked item | Called |
+| Item | Decision | Effect |
 |---|---|---|
-| D156 | #157 | counted (defect in what #156 shipped) |
-| D152 | revert commit 19bc66b | counted (reverted) |
-| D150 | #163 | counted, borderline |
-| D159 | #168 | counted, borderline |
-| D185 | #187 | counted, borderline (scope split) |
-| D163 | #167 | not counted (no demonstrated link) |
-| D184 | #185 | not counted (pre-existing playback behaviour newly visible) |
-| D192 | #195 | not counted (pre-existing render defect) |
-| D036 | #181 | not counted (pre-existing model behaviour) |
-| D165 | #194 | not counted (pre-existing) |
+| D150 turns 3 and 4 | Excluded as corrections | D150 `a` 3 to 1 |
+| D170 turns 2-3 | Excluded as a correction | D170 `a` 1 to 0 |
+| D142 turn 2 | Excluded as an interruption (environmental) | D142 `b` 1 to 0 |
+| D159 turn 2 | Excluded as an interruption (environmental) | D159 `b` 1 to 0 |
+| D157 turn 4, D158 turns 2 and 5, D165 turn 2, D185 turn 7 | Interruptions retained provisionally | none |
+| D170 turn 4 | Interruption retained; it was coded earlier but missing from the first spot-check list, so it is flagged here as not yet reviewed (a retry after a tool-connection failure; could be read as environmental) | none |
+| D156 to #157, D152 to revert | Retained as failures | none (see O3 for D156) |
+| D163, D184, D192, D036, D165 links | Exclusions retained | none |
+| D185, D036 validated; D165 technical | Retained | none |
+| D152 level | Re-coded `technical` to `rejected` (new level, v1.3) | validated 11, technical 6, rejected 1 |
 
-Product validation judgements to confirm: D185 (core behaviour confirmed, one
-residual accepted), D036 (confirmed after the issue closed), D195 (owner
-decision to remove the feature), D165 (technical only).
+## Open decisions
+
+Turn numbers are positions within the delivery. Rationale that draws on the
+conversation is given in the review chat, not here.
+
+| # | Question | Effect if resolved |
+|---|---|---|
+| O1 | D141 turn 2: correction, or a relayed instruction? | Exclude: D141 `a` 1 to 0; deliveries with a correction 9 to 8 of 18 |
+| O2 | D184 turn 2: process-miss or not? | Exclude: total corrections 14 to 13; D184 still has turn 3 so the delivery count is unchanged |
+| O3 | Does a defect already tracked before the delivery closed count as a failure? | Strict "created after close" reading: D156, D159, D185 links drop out; failed 5 to 2 of 19 |
+| O4 | D195: `validated` or `rejected`? | Rejected: validated 11 to 10, rejected 1 to 2 |
+
+Evidence for O3 (public issue timestamps, UTC):
+
+| Delivery (closed) | Linked item | Item created | Relative to close |
+|---|---|---|---|
+| D156 (2026-07-26 21:54:16) | #157 | 2026-07-26 21:03:07 | 51 min before; #157 itself closed 12 s before |
+| D159 (2026-08-28 20:55:45) | #168 | 2026-08-28 20:54:53 | 52 s before |
+| D185 (2026-08-30 23:50:57) | #187 | 2026-08-30 23:04:40 | 46 min before |
+| D150 (2026-08-26 22:31:58) | #163 | 2026-08-27 21:27:49 | about 23 h after |
+| D152 (2026-08-31 22:35:06) | revert commit 19bc66b | 2026-08-31 23:39 local | about 4 min after |
+
+## Bias check: random sample of non-corrections
+
+Population: every human turn I coded as neither a correction nor an
+interruption, excluding each delivery's opening turn (45 turns). Draw: seeded
+generator (mulberry32, seed 200), three turns without replacement: D150 turn 6,
+D185 turn 9, D184 turn 6.
+
+Result: no missed correction. One coding inconsistency: in D150 the defect
+episode I counted at turn 7 actually begins at turn 6 (consecutive messages
+about the same defect). It is still one episode, so no count changes.
+
+## Audit trail of row changes since commit 126a8d5
+
+| Row | Cell | Before | After |
+|---|---|---|---|
+| D150 | a corr | 3 | 1 |
+| D170 | a corr | 1 | 0 |
+| D142 | b intr | 1 | 0 |
+| D159 | b intr | 1 | 0 |
+| D152 | Level | technical | rejected |
 
 ## Rows
 
@@ -253,23 +282,23 @@ u = unknown.
 
 | Delivery | Issues | Type | Closed | Src | a corr | b intr | Turns | Active min | d1 | d2 | Failed | Level | Evidence | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| D141 | #141 | product | 2026-07-26 | backfill | 1 | 0 | 3 | 27 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | a: defect |
-| D156 | #156 | tooling | 2026-07-26 | backfill | unknown | unknown | unknown | unknown | 0 | 1 | 1 | unknown | a:u b:u c:u d:d lvl:u | not-assessed; d2 #157 |
+| D141 | #141 | product | 2026-07-26 | backfill | 1 | 0 | 3 | 27 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | a: defect (O1 open) |
+| D156 | #156 | tooling | 2026-07-26 | backfill | unknown | unknown | unknown | unknown | 0 | 1 | 1 | unknown | a:u b:u c:u d:d lvl:u | not-assessed; d2 #157 (O3: created before close) |
 | D157 | #157 | tooling | 2026-07-26 | backfill | 0 | 1 | 6 | 46 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | |
 | D158 | #158 | tooling | 2026-08-26 | backfill | 1 | 2 | 9 | 135 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | a: defect |
-| D142 | #142 | product | 2026-08-26 | backfill | 0 | 1 | 3 | 36 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | |
-| D150 | #150 | product | 2026-08-26 | backfill | 3 | 0 | 8 | 96 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | a: misunderstood 1, defect 2; d2 #163 |
+| D142 | #142 | product | 2026-08-26 | backfill | 0 | 0 | 3 | 36 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j |  |
+| D150 | #150 | product | 2026-08-26 | backfill | 1 | 0 | 8 | 96 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | a: defect 1; d2 #163 (O3: created after close) |
 | D151 | #151 | product | 2026-08-27 | backfill | 0 | 0 | 2 | 59 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | |
 | D163 | #163 | product | 2026-08-27 | backfill | 1 | 0 | 3 | 77 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: defect |
-| D159 | #159 | product | 2026-08-28 | backfill | 0 | 1 | 3 | 90 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | d2 #168 |
+| D159 | #159 | product | 2026-08-28 | backfill | 0 | 0 | 3 | 90 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | d2 #168 (O3: created before close) |
 | D165 | #165 #160 #164 #166 #174 | product | 2026-08-29 | backfill | 0 | 1 | 4 | 175 | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | bundle |
 | D036 | #36 | product | 2026-08-29 | backfill | 0 | 0 | 1 | 57 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | confirmed after close |
-| D184 | #184 | product | 2026-08-29 | backfill | 2 | 0 | 6 | 139 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: process-miss 1, defect 1 |
-| D185 | #185 | product | 2026-08-30 | backfill | 3 | 1 | 11 | 205 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | a: defect 3; d2 #187; two attempts |
-| D152 | #152 #183 #182 | product | 2026-08-31 | backfill | 3 | 0 | 9 | 163 | 0 | 1 | 1 | technical | a:j b:j c:d d:d lvl:j | a: defect 2, process-miss 1; built then reverted |
+| D184 | #184 | product | 2026-08-29 | backfill | 2 | 0 | 6 | 139 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: process-miss 1 (O2 open), defect 1 |
+| D185 | #185 | product | 2026-08-30 | backfill | 3 | 1 | 11 | 205 | 0 | 1 | 1 | validated | a:j b:j c:d d:d lvl:j | a: defect 3; d2 #187 (O3: created before close); two attempts |
+| D152 | #152 #183 #182 | product | 2026-08-31 | backfill | 3 | 0 | 9 | 163 | 0 | 1 | 1 | rejected | a:j b:j c:d d:d lvl:j | a: defect 2, process-miss 1; built then reverted; owner rejected the model |
 | D188 | #188 | product | 2026-09-01 | backfill | 1 | 0 | 3 | 82 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: process-miss |
 | D192 | #192 | product | 2026-09-02 | backfill | 0 | 0 | 5 | 97 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | |
-| D170 | #170 | tooling | 2026-09-03 | backfill | 1 | 1 | 5 | unknown | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | active unknown: close outside session span |
+| D170 | #170 | tooling | 2026-09-03 | backfill | 0 | 1 | 5 | unknown | 0 | 0 | 0 | technical | a:j b:j c:d d:d lvl:j | active unknown: close outside session span |
 | D189 | #189 #187 | product | 2026-09-04 | backfill | 1 | 0 | 4 | 77 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | a: defect |
-| D195 | #195 | product | 2026-09-05 | backfill | 0 | 0 | 4 | 48 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | |
+| D195 | #195 | product | 2026-09-05 | backfill | 0 | 0 | 4 | 48 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | level: O4 open |
 
