@@ -36,6 +36,10 @@ function readLines(transcriptPath) {
 // every check above it. This is the actual root cause of #153 ("enforce-skill-gate.js
 // false-triggers wrapup on background-notification/subagent text"). Reject it explicitly by
 // content, not just structure.
+// #202: lib/trigger-match.js keeps its OWN copy of this list. It is deliberately duplicated: this
+// file is git-tracked and trigger-match.js is local-only (.claude/ is gitignored except 6 files),
+// so a tracked file must not require a local-only one. test-gate-hooks.js asserts the two lists
+// stay identical and classify text identically -- if you edit one, edit the other.
 const NOTIFICATION_MARKERS = ["<task-notification>", "[SYSTEM NOTIFICATION - NOT USER INPUT]"];
 function looksLikeNotificationContent(text) {
   return NOTIFICATION_MARKERS.some((marker) => text.startsWith(marker) || text.includes(marker));
@@ -44,6 +48,12 @@ function looksLikeNotificationContent(text) {
 function isGenuineHumanMessage(entry) {
   if (!entry || entry.type !== "user" || entry.isSidechain) return false;
   if (entry.isMeta) return false; // Skill bodies and other injected content are isMeta:true
+  // #202: transcript records carry origin.kind ("human" vs "task-notification"). Reject any
+  // record that explicitly says it is not human; a record with NO origin (older transcripts,
+  // synthetic test fixtures) still counts as human. NOTE: origin is transcript-only -- the
+  // UserPromptSubmit payload documents no such field -- so this is a belt-and-braces check,
+  // not a safeguard to rely on alone.
+  if (entry.origin && typeof entry.origin === "object" && entry.origin.kind && entry.origin.kind !== "human") return false;
   const content = entry.message && entry.message.content;
   if (typeof content === "string") return !looksLikeNotificationContent(content);
   if (Array.isArray(content)) {
@@ -80,8 +90,31 @@ function findLastHumanMessage(transcriptPath) {
   return null;
 }
 
-// Scans forward from `fromIndex` (exclusive) looking for an assistant tool_use entry that
-// calls the Skill tool with the given skill name.
+// #202: "skill loaded" is recognised two ways, because a typed /skill-name is expanded by Claude
+// Code itself and produces NO assistant Skill tool_use:
+//   (1) an assistant tool_use calling Skill with that name (model-invoked), or
+//   (2) the harness-injected skill-body record: type:"user", isMeta:true, non-sidechain, whose
+//       text starts "Base directory for this skill: <...>\skills\<name>". isMeta records are
+//       written by the harness, never by pasted or notification text, so this cannot be forged
+//       by a string inside a paste; and a failed/blocked expansion writes no body record.
+// (The exact record shape for a TYPED slash command is confirmed by the #202 probe fixture.)
+function skillBodyText(entry) {
+  const content = entry && entry.message && entry.message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((b) => (b && b.text) || "").join("\n");
+  return "";
+}
+function isSkillBodyRecord(entry, skillName) {
+  if (!entry || entry.type !== "user" || entry.isSidechain || !entry.isMeta) return false;
+  const text = skillBodyText(entry);
+  if (!text.startsWith("Base directory for this skill:")) return false;
+  const firstLine = text.split("\n", 1)[0];
+  const name = String(skillName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`[\\\\/]skills[\\\\/]${name}\\s*$`).test(firstLine.trim());
+}
+
+// Scans forward from `fromIndex` (exclusive) looking for evidence the skill was loaded: an
+// assistant tool_use calling the Skill tool with the given name, or its skill-body record.
 function hasMatchingSkillCallSince(lines, fromIndex, skillName) {
   for (let i = fromIndex + 1; i < lines.length; i++) {
     let entry;
@@ -90,6 +123,7 @@ function hasMatchingSkillCallSince(lines, fromIndex, skillName) {
     } catch {
       continue;
     }
+    if (isSkillBodyRecord(entry, skillName)) return true;
     if (entry.type !== "assistant") continue;
     const content = entry.message && entry.message.content;
     if (!Array.isArray(content)) continue;
@@ -118,6 +152,7 @@ function findLastMatchingSkillCall(lines, skillName) {
     } catch {
       continue;
     }
+    if (isSkillBodyRecord(entry, skillName)) return i; // #202: slash-loaded skill anchor
     if (entry.type !== "assistant") continue;
     const content = entry.message && entry.message.content;
     if (!Array.isArray(content)) continue;
@@ -665,6 +700,10 @@ module.exports = {
   findLastHumanMessage,
   hasMatchingSkillCallSince,
   findLastMatchingSkillCall,
+  isSkillBodyRecord,
+  isGenuineHumanMessage,
+  NOTIFICATION_MARKERS,
+  looksLikeNotificationContent,
   hasAgentSpawnSince,
   findAgentSpawnsSince,
   resolveAgentSpawn,
