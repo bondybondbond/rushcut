@@ -27,13 +27,33 @@
 // AND a final-line VERDICT. Background spawns are complete only on STRUCTURED evidence (lib/transcript.js).
 //
 // Enforcement limits of the plan-gate hook (#216): (1) HOOK CANNOT RUN OR CANNOT FINISH - enforcement is impossible
-// and this is an infrastructure failure, not a policy. The hooks are registered as `node .claude/hooks/<file>.js`,
-// a path relative to the session's working directory, so when the cwd is not the repo root node cannot find the file
-// and Claude Code treats the exit as non-blocking (27 of 125 local transcripts show this; tracked in #218).
-// The same holds when the hook file itself fails before its try/catch (a syntax error, node absent), when the hook
-// hangs synchronously (including inside a module load), because the self-deadline only runs at decision points and
-// cannot interrupt it, and when the harness cancels it at its 5 s registered timeout (a timed-out PreToolUse hook
-// does not block); the hook's own 3.5 s self-deadline exists to deny BEFORE that point where it can. (2) A hook that
+// and this is an infrastructure failure, not a policy. Fixed in #218 for the cwd case: the hooks used to be registered
+// as `node .claude/hooks/<file>.js`, relative to the session's working directory, so from a non-root cwd node could not
+// find the file and Claude Code treated the exit as non-blocking (27 of 125 local transcripts showed this). They are
+// now registered in the local-only `.claude/settings.json` in exec form (`command: "node"`, `args` holding an absolute
+// forward-slash path to the hook file), so they start from any cwd; moving or renaming the repo breaks every
+// registration and the paths must then be updated by hand. Only `enforce-pp-plan-gates.js` is fail-closed at startup:
+// it is registered with matcher `Edit|Write` and `onFailure: "block"`, so if it cannot start, exits with a code other
+// than 0 or 2, or hits its 5 s registered timeout, the Edit/Write is blocked (`blocking because onFailure is "block"`)
+// in any session that loads this local settings file, for every path including its own five repair files. The 5 s
+// timeout blocking Edit/Write under load is an accepted behaviour change. Repair then goes through a shell write
+// (PowerShell or Bash), which this hook has never covered: shell writes are an existing, documented gap of this hook,
+// unchanged by #218; the harness may ask you to approve a write to a settings file, and the lock gates block all tools,
+// PowerShell included, only while a dev-plan gate is locked, so during a locked gate the way out is to complete the
+// gate or edit `settings.json` by hand. For this hook a syntax error before its try/catch, node absent, or a
+// synchronous hang (including inside a module load, which the self-deadline cannot interrupt because it only runs at
+// decision points) now blocks the Edit/Write instead of passing it; the hook's own 3.5 s self-deadline exists to deny
+// BEFORE the 5 s timeout where it can. Every other hook stays fail-open on purpose, and a failure to start there is
+// silent: the lock gates (`enforce-skill-gate.js`, `enforce-cpo-gate1-spawn.js`), so a launch failure can never block
+// the recovery tools; the advisory `enforce-skill-trigger.js`; and the commit hooks (`enforce-pp-wrapup-signoff.js`,
+// `guard-secret-commit.js`). The Gate 4 rule that every `git commit` needs the CPO's `VERDICT: APPROVE` is therefore a
+// project rule whose mechanical backstop works only while that hook starts: if a commit hook cannot start (a broken
+// hook file, node absent, or its 5 s registered timeout; a timed-out hook not registered with `onFailure: "block"` does
+// not block), a commit can proceed without the CPO sign-off or the secret scan. Those hooks also recognise a commit only
+// by matching `git commit` in the command text, so a commit made through an alias, `git -c`, `git -C`, or a script is
+// not covered, and the secret scan runs `git diff --cached` in the folder the hook is launched from, so it evaluates
+// that folder's repository and passes silently outside a git repo. Stronger commit protection is deliberately out of
+// scope for #218. (2) A hook that
 // STARTS but cannot load a module or throws FAILS CLOSED for protected Edit/Write, except exactly five repair files
 // (`enforce-pp-plan-gates.js`, `lib/paths.js`, `lib/paths.test.js`, `lib/transcript.js`, `lib/transcript.test.js`) and
 // paths that are LEXICALLY outside the repo (no filesystem resolution). That lexical allow is a narrowly scoped
@@ -42,7 +62,8 @@
 // path protection. (3) A classification timeout (1.5 s) or an unclassifiable path is treated as a protected repo
 // path: only the five repair files stay exempt, so `docs/**` is NOT exempt for that call. When the transcript is
 // readable, it is denied only while a dev-plan session is active, wrapup has not passed and its gates are unproven,
-// and allowed otherwise. An unreadable or missing transcript denies a protected edit in every session, and so does
+// and allowed otherwise. An unreadable or missing transcript denies a protected edit in every session where this hook
+// runs (any session that loads this local settings file), and so does
 // the 3.5 s self-deadline. Exempt and outside paths still pass.
 //
 // Flow: not Edit/Write -> allow; inline repair-file fallback (string equality, before any module load) -> allow;
