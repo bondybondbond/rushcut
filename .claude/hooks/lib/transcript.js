@@ -386,11 +386,41 @@ function classifySubagentEvidence(transcriptPath, agentId, { reachedNames, tried
 // checks are deliberately independent -- see docs/LEARNINGS.md Workflow-GateMiss for why a
 // confident-sounding summary alone (no structural commitment) is not sufficient evidence of
 // approval.
-const VERDICT_RE = /VERDICT:\s*([A-Z][A-Z-]*)/;
+//
+// #216 Step 1 (2026-11-07): the verdict is the FINAL non-empty line of the result, and only that
+// line. The old "first VERDICT: marker anywhere" rule let a CPO that quoted "VERDICT: OBJECTION"
+// in prose and then ended "VERDICT: APPROVE" read as OBJECTION (reproduced live on this very
+// session's Gate 1), and let a consultant's prose mention read as a verdict. Accepted final line:
+//   [wrapper] [N. ] VERDICT: <APPROVE|OBJECTION|DECLINE-OUT-OF-SCOPE> [same wrapper]
+// where the wrapper is one of ** __ * _ ` and must be IDENTICAL at both ends (so `**4. VERDICT:
+// APPROVE**`, a real CPO result shape, is read, but `**VERDICT: APPROVE` and `*VERDICT: APPROVE**`
+// are not), exactly one space follows the colon, and nothing else may share the line. Anything
+// else returns null (fails closed). Surrounding whitespace and CRLF are tolerated.
+const VERDICT_LINE_RE = /^(\*\*|__|\*|_|`)?(?:\d+\.\s+)?VERDICT: (APPROVE|OBJECTION|DECLINE-OUT-OF-SCOPE)\1$/;
 function extractVerdict(resultText) {
   if (!resultText) return null;
-  const m = String(resultText).match(VERDICT_RE);
-  return m ? m[1] : null;
+  const lines = String(resultText)
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const m = lines[lines.length - 1].match(VERDICT_LINE_RE);
+  return m ? m[2] : null;
+}
+
+// True when the FINAL non-empty line is a verdict LABEL: after optional markdown/list decoration
+// (`#` headings, `>` quotes, `*` `_` backtick emphasis, `-` bullets, "N." numbering, spaces) it
+// begins with the word VERDICT and a colon. Prose that merely contains the word ("My VERDICT: ...",
+// "The verdict is ...") is not a marker. Used only to tell "no verdict rendered" (skip) from
+// "a verdict was attempted but is malformed" (block) in latestVerdict; it never yields a verdict.
+const VERDICT_MARKER_LINE_RE = /^[\s#>*_`~\-]*(?:\d+\.\s+)?[\s#>*_`~\-]*VERDICT[*_`]*\s*:/i;
+function finalLineIsVerdictMarker(resultText) {
+  if (!resultText) return false;
+  const lines = String(resultText)
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return lines.length > 0 && VERDICT_MARKER_LINE_RE.test(lines[lines.length - 1]);
 }
 
 // --- Gate-cycle proof (enforce-pp-plan-gates.js's rushcut-real-pp-auditor check) ---
@@ -504,6 +534,222 @@ function textsSimilar(a, b) {
   return a.slice(0, w) === b.slice(0, w) && a.slice(-w) === b.slice(-w);
 }
 
+// --- Chrome-unavailable fallback proof (#216 Step 1, 2026-11-07) -----------------------------
+//
+// Why this exists: rushcut-pp-consultant.md's Setup, when Chrome is not connected, requires the
+// agent to (1) launch the automation Chrome via PowerShell, (2) probe CDP port 9222, (3) re-check
+// list_connected_browsers, and only then fall back to WebSearch. The old rule ("exactly ONE
+// tool_use in the whole spawn") could never match that, so a genuine blocked run failed Gate 3.
+//
+// The rule is an ORDERED sequence over the spawn's tool calls (tool_use order), all of:
+//   1. a Chrome LAUNCH call (the documented Start-Process form, see CHROME_SETUP_SHAPES);
+//   2. a port-9222 PROBE at or after the LAST launch, whose result is a recognised no-listener
+//      message OR Chrome JSON (Browser starts "Chrome/"). Chrome JSON only shows Chrome STARTED;
+//      it never by itself shows automation was unavailable. A WebView2 ("Edg/") answer means the
+//      port is squatted (the agent must return to CC instead), and any other JSON or an
+//      unrecognised/empty result is rejected -- the LAST probe decides;
+//   3. a list_connected_browsers call AFTER that probe, and the spawn's LAST list result is
+//      exactly `[]` -- this final check, not the probe, is what shows automation was unavailable;
+//   4. NO ChatGPT interaction of any kind. Enforced as a CLOSED ALLOW-LIST of tools for the whole
+//      spawn (FALLBACK_ALLOWED_TOOLS): any other tool name -- every other Chrome-extension tool
+//      (navigate, computer with ANY action, read_page, find, get_page_text, javascript_tool,
+//      form_input, uploads, tab/console/network tools, select/switch_browser ...), every
+//      computer-use and clipboard tool, Bash/Edit/Write, and any tool that does not exist yet --
+//      disqualifies. New tools therefore fail closed by default.
+//
+// PowerShell is the one allowed tool that can do arbitrary things, so each PowerShell call must be
+// EITHER one of the nine CHROME_SETUP_SHAPES below (the sequence evidence) OR pass the separate
+// scratch-file screen isScratchPowerShell (permitted, but it carries NO weight: it is never part
+// of the evidence that the fallback was attempted, and a missing/failed scratch write never
+// breaks a valid sequence). Any other PowerShell call disqualifies. Anything outside the grammar
+// fails closed -- a deliberate trade: a diagnosable false negative beats a silently widened gate.
+const POWERSHELL_TOOL = "PowerShell";
+const TABS_CONTEXT_TOOL = "mcp__claude-in-chrome__tabs_context_mcp";
+const FALLBACK_ALLOWED_TOOLS = new Set([
+  "Read",
+  "Grep",
+  "Glob",
+  "WebSearch",
+  "WebFetch",
+  POWERSHELL_TOOL,
+  LIST_BROWSERS_TOOL,
+  TABS_CONTEXT_TOOL,
+]);
+
+const _CHROME_EXE = String.raw`"C:\\Program Files\\Google\\Chrome\\Application\\chrome\.exe"`;
+const _LAUNCH = String.raw`Start-Process ${_CHROME_EXE} -ArgumentList '--remote-debugging-port=9222','--user-data-dir=C:\\Users\\[^\\'"\r\n;]+\\AppData\\Local\\Google\\Chrome\\User Data\\Profile \d+','--no-first-run','--no-default-browser-check'`;
+const _SLEEP = String.raw`Start-Sleep -Seconds (?:[1-9]|[1-9]\d|1[01]\d|120)`;
+const _STR = String.raw`"[A-Za-z0-9 :._-]+"`;
+const _URL = String.raw`http://127\.0\.0\.1:9222/json/version`;
+const _TIMEOUT = String.raw`(?: -TimeoutSec (?:[1-9]|[12]\d|30))?`;
+const _IWR = String.raw`\(Invoke-WebRequest(?: -UseBasicParsing)?(?: -Uri)? "?${_URL}"?(?: -UseBasicParsing)?${_TIMEOUT}\)\.Content`;
+const _CATCH_BODY = String.raw`(?:"[A-Za-z0-9 :._-]*"(?: \+ \$_\.Exception\.Message)?|"[A-Za-z0-9 :._-]*\$\(\$_\.Exception\.Message\)")`;
+const _PROBE = String.raw`(?:${_IWR}|try \{ ${_IWR} \} catch \{ ${_CATCH_BODY} \})`;
+
+// The ONE authoritative grammar: exactly nine permitted single-line command shapes, joined by
+// "; " (semicolon, optional single space). The tests carry their own independent literal
+// fixtures for all nine and for malformed variants -- they do not read this table.
+const CHROME_SETUP_SHAPES = [
+  { name: "launch", hasLaunch: true, hasProbe: false, parts: [_LAUNCH] },
+  { name: "launch;sleep", hasLaunch: true, hasProbe: false, parts: [_LAUNCH, _SLEEP] },
+  { name: "launch;sleep;probe", hasLaunch: true, hasProbe: true, parts: [_LAUNCH, _SLEEP, _PROBE] },
+  { name: "launch;sleep;string", hasLaunch: true, hasProbe: false, parts: [_LAUNCH, _SLEEP, _STR] },
+  { name: "launch;probe", hasLaunch: true, hasProbe: true, parts: [_LAUNCH, _PROBE] },
+  { name: "launch;string", hasLaunch: true, hasProbe: false, parts: [_LAUNCH, _STR] },
+  { name: "sleep", hasLaunch: false, hasProbe: false, parts: [_SLEEP] },
+  { name: "sleep;string", hasLaunch: false, hasProbe: false, parts: [_SLEEP, _STR] },
+  { name: "probe", hasLaunch: false, hasProbe: true, parts: [_PROBE] },
+].map((s) => ({ name: s.name, hasLaunch: s.hasLaunch, hasProbe: s.hasProbe, re: new RegExp("^" + s.parts.join("; ?") + "$") }));
+
+// Returns the matching shape object, or null. Whitespace around the whole command is trimmed;
+// embedded newlines never match.
+function isChromeSetupCommand(cmd) {
+  if (typeof cmd !== "string") return null;
+  const t = cmd.trim();
+  if (!t || t.length > 2000) return null;
+  return CHROME_SETUP_SHAPES.find((s) => s.re.test(t)) || null;
+}
+
+// Replaces each single-quoted here-string (`@'` newline ... newline `'@`) with an empty one so its
+// body is ignored. This is deliberately a plain regex, NOT a PowerShell tokeniser: the closed
+// grammar below fully matches what is left, so a fake opener (`# @'`, `"@'`) that strips live code
+// out of view leaves a stray `#`, `"`, `'` or `@''@` in a statement that no shape accepts, and the
+// whole call is rejected. An unterminated here-string is left in place and is likewise rejected.
+// PRECONDITIONS (guaranteed by isScratchPowerShell, which is its only caller): line endings are
+// already normalised to LF, and the command contains none of U+2018..U+201B, so PowerShell and this
+// regex end a body at the same place.
+function stripHereStrings(cmd) {
+  return cmd.replace(/@'\n(?:[\s\S]*?\n)?'@/g, "@''@");
+}
+
+// --- Scratch-write grammar (pre-commit review, 2026-11-07) ------------------------------------
+//
+// A genuine Chrome-unavailable run also writes its Gate 3 findings table to
+// %TEMP%\rushcut\pp-consultant-gate3-<n>.md with a few PowerShell calls. Those calls are allowed
+// but are NOT evidence of anything. The first version of this screen was a cmdlet/word filter, and
+// the review showed aliases (`saps`, `start`), `iex` and .NET static calls walk straight through it.
+// It is now a CLOSED POSITIVE GRAMMAR, in the same spirit as CHROME_SETUP_SHAPES: after single-
+// quoted here-string bodies are stripped (stripHereStrings), the command is split into statements
+// on newlines and semicolons, and EVERY statement must fully match one of the shapes below
+// (canonical casing, fixed cmdlets, fixed parameters). Anything else -- another cmdlet, an alias,
+// a pipe other than the listed ones, `&`, `iex`, `::`, `$(...)`, a URL, a drive path, a different
+// filename or env var -- fails the whole call, and so disqualifies the fallback. The shapes were
+// generalised from the 13 distinct scratch-write commands found in real consultant runs; an
+// unusual-but-harmless variant failing is the accepted trade (a diagnosable false negative).
+// Variables are split by ROLE so a variable filled from a here-string can never be used as a path,
+// and a path variable can only ever hold a value built from $env:TEMP (CPO Gate 4 review:
+// `$p = @'C:\evil'@; Set-Content -Path $p ...` wrote anywhere when any variable name was allowed).
+const _PV = String.raw`\$(?:p|path|f|file|d|dir|folder|out)(?![A-Za-z0-9])`; // path variables
+const _CV = String.raw`\$(?:c|content|body|text)(?![A-Za-z0-9])`; // content variables
+const _AV = String.raw`(?:${_PV}|${_CV})`; // either, for echoes only
+const _SN = String.raw`pp-consultant-gate3-\d+\.md`;
+const _TEMPDIR = String.raw`\$env:TEMP\\rushcut`;
+const _TEMPFILE = String.raw`\$env:TEMP\\rushcut\\${_SN}`;
+const _PATHARG = String.raw`(?:${_PV}|"(?:${_TEMPDIR}|${_TEMPFILE})")`;
+const _MSG = String.raw`"(?:[A-Za-z0-9 :._-]|${_TEMPFILE}|${_AV})*"`;
+const SCRATCH_STATEMENT_SHAPES = [
+  // $d = Join-Path $env:TEMP 'rushcut'   /   $p = Join-Path $env:TEMP 'rushcut\pp-consultant-gate3-N.md'
+  String.raw`${_PV} = Join-Path \$env:TEMP '(?:rushcut|rushcut\\${_SN})'`,
+  // $f = Join-Path $d 'pp-consultant-gate3-N.md'
+  String.raw`${_PV} = Join-Path ${_PV} '${_SN}'`,
+  // $c = @'...'@   (body already stripped to @''@) -- content variables only, never a path variable
+  String.raw`${_CV} = @''@`,
+  // if (-not (Test-Path $d)) { New-Item -ItemType Directory -Force $d | Out-Null }
+  String.raw`if \(-not \(Test-Path ${_PV}\)\) \{ New-Item -ItemType Directory (?:-Force |-Path |-Force -Path )${_PV} \| Out-Null \}`,
+  // New-Item -ItemType Directory -Force "$env:TEMP\rushcut" | Out-Null
+  String.raw`New-Item -ItemType Directory -Force "${_TEMPDIR}" \| Out-Null`,
+  String.raw`Test-Path ${_PV}`,
+  // Set-Content -Path $f -Value $c -Encoding utf8
+  String.raw`Set-Content -(?:Path|LiteralPath) ${_PATHARG} -Value ${_CV} -Encoding utf8`,
+  // $content | Out-File -FilePath $path -Encoding utf8
+  String.raw`${_CV} \| Out-File -FilePath ${_PATHARG} -Encoding utf8`,
+  // result echoes: bare $var, "msg", Write-Output "msg", Write-Host "msg", Write-Output ("bytes: " + ...)
+  _AV,
+  _MSG,
+  String.raw`Write-(?:Output|Host) ${_MSG}`,
+  String.raw`Write-Output \("bytes: " \+ \(Get-Item ${_PATHARG}\)\.Length\)`,
+  // (Get-Item $p).Length   /   Get-Item $p | Select-Object FullName, Length
+  String.raw`\(Get-Item ${_PATHARG}\)\.(?:Length|FullName)`,
+  String.raw`Get-Item ${_PATHARG} \| Select-Object FullName, Length(?:, LastWriteTime)?`,
+].map((s) => new RegExp("^" + s + "$"));
+
+function isScratchPowerShell(cmd) {
+  if (typeof cmd !== "string" || !cmd.trim() || cmd.length > 200000) return false;
+  // The stripper below must end a here-string body exactly where PowerShell does. Two verified
+  // disagreements (Windows PowerShell 5.1, CPO Gate 4 review + CC re-test) are closed here:
+  //  - PowerShell treats the Unicode single quotes U+2018..U+201B as quote characters, including as
+  //    a here-string TERMINATOR, so a smart-quote terminator followed by `; <live code>` hid a
+  //    statement from the grammar. Those four characters are rejected anywhere in the command.
+  //  - A lone CR (not CRLF) before `'@` also terminates the body in PowerShell. Line endings are
+  //    therefore normalised to LF before stripping and splitting.
+  // Control characters other than tab/CR/LF are rejected. Other non-ASCII text (an em dash in the
+  // findings table body, say) is harmless inside a stripped body and can never match a shape
+  // outside one, so it is not rejected wholesale. JS trim() is not used on statements because it
+  // would also strip NBSP / BOM / U+2028 that the shapes must see.
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u2018-\u201b]/.test(cmd)) return false;
+  const t = stripHereStrings(cmd.replace(/\r\n?/g, "\n"));
+  const statements = t
+    .split(/\n|;/)
+    .map((s) => s.replace(/^[ \t]+|[ \t]+$/g, ""))
+    .filter(Boolean);
+  if (statements.length === 0) return false;
+  return statements.every((s) => SCRATCH_STATEMENT_SHAPES.some((re) => re.test(s)));
+}
+
+// Classifies a port-9222 probe's tool_result text.
+function classifyProbeResult(text) {
+  const t = String(text || "");
+  if (/"Browser"\s*:\s*"Edg\//.test(t)) return "squatted";
+  if (/"Browser"\s*:\s*"Chrome\//.test(t)) return "chrome-json";
+  if (/"Browser"\s*:/.test(t)) return "other-json";
+  if (/Unable to connect to the remote server|actively refused|No connection could be made/i.test(t)) return "no-listener";
+  return "unrecognised";
+}
+const PROBE_RESULTS_OK = new Set(["no-listener", "chrome-json"]);
+
+// Returns { ok, reason }: `reason` is null when ok, otherwise the FIRST thing that broke the
+// documented sequence, worded so a human (or a later hook message) can see exactly what to fix.
+function evaluateChromeFallback(events, lines) {
+  let lastLaunch = -1;
+  let lastProbe = -1;
+  let lastProbeOk = false;
+  let lastList = -1;
+  let lastListEmpty = false;
+  for (let k = 0; k < events.length; k++) {
+    const ev = events[k];
+    if (!FALLBACK_ALLOWED_TOOLS.has(ev.name)) {
+      return { ok: false, reason: `tool call #${k + 1} is not on the fallback allow-list: ${ev.name}` };
+    }
+    if (ev.name === POWERSHELL_TOOL) {
+      const cmd = ev.input && ev.input.command;
+      const shape = isChromeSetupCommand(cmd);
+      if (shape) {
+        if (shape.hasLaunch) lastLaunch = k;
+        if (shape.hasProbe) {
+          lastProbe = k;
+          lastProbeOk = PROBE_RESULTS_OK.has(classifyProbeResult(findToolResultText(lines, ev.toolUseId, ev.index + 1)));
+        }
+      } else if (!isScratchPowerShell(cmd)) {
+        return {
+          ok: false,
+          reason: `PowerShell call #${k + 1} is outside the allowed Chrome-setup / scratch-write grammar: ${String(cmd).replace(/\s+/g, " ").slice(0, 300)}`,
+        };
+      }
+      continue;
+    }
+    if (ev.name === LIST_BROWSERS_TOOL) {
+      lastList = k;
+      lastListEmpty = findToolResultText(lines, ev.toolUseId, ev.index + 1).trim() === "[]";
+    }
+  }
+  if (lastLaunch < 0) return { ok: false, reason: "no documented Chrome launch call (Start-Process chrome.exe ...) was made" };
+  if (lastProbe < lastLaunch) return { ok: false, reason: "no port-9222 probe at or after the last Chrome launch" };
+  if (!lastProbeOk) return { ok: false, reason: "the last port-9222 probe result was not a recognised no-listener message or Chrome JSON (WebView2 'Edg/', other JSON and unrecognised text are rejected)" };
+  if (lastList <= lastProbe) return { ok: false, reason: "no list_connected_browsers call after the last probe" };
+  if (!lastListEmpty) return { ok: false, reason: "the final list_connected_browsers result is not [] (a browser is connected, so the fallback does not apply)" };
+  return { ok: true, reason: null };
+}
+
 // Reads a rushcut-pp-consultant Gate 3 spawn's own transcript and returns which queries
 // ("breadth"/"depth", by GATE_FINGERPRINTS) it actually proved via a full
 // type(fingerprint)->submit->new-read cycle, plus whether it hit the documented
@@ -557,7 +803,6 @@ function countGateCycles(transcriptPath, agentId) {
     }
   }
 
-  let sawListBrowsers = false;
   let currentDomain = null;
   const priorReadTexts = [];
   const provenGates = new Set();
@@ -565,8 +810,6 @@ function countGateCycles(transcriptPath, agentId) {
   let pendingGate = null; // { gate, submitted, issueNumber }
 
   for (const ev of events) {
-    if (ev.name === LIST_BROWSERS_TOOL) sawListBrowsers = true;
-
     if (ev.name === NAVIGATE_TOOL && typeof ev.input.url === "string") {
       currentDomain = ev.input.url.includes("chatgpt.com") ? "chatgpt" : "other";
       if (pendingGate && !pendingGate.submitted) pendingGate.submitted = true;
@@ -605,42 +848,117 @@ function countGateCycles(transcriptPath, agentId) {
     }
   }
 
-  // triedBlocked means the DOCUMENTED fail-fast case specifically (Chrome confirmed
-  // unavailable, agent returns immediately per its own Setup protocol -- confirmed against the
-  // real #149 case: EXACTLY ONE tool_use total, list_connected_browsers, nothing after).
-  // list_connected_browsers is called by every auditor spawn as step 1 regardless of outcome,
-  // so its presence alone is not distinguishing -- a spawn that genuinely tried (navigated,
-  // typed, read) and got interrupted mid-task by an unrelated bug is NOT the same case, and must
-  // not silently pass via this fallback (confirmed 2026-07-24: an earlier version conflated the
-  // two). Tightened to exactly match the one documented real case (===1, not <=2 or looser) --
-  // rushcut-pp-consultant's own Round 2 review flagged that a looser bound wasn't independently
-  // justified against any real 2-event failure shape.
-  const triedBlocked = sawListBrowsers && provenGates.size === 0 && events.length === 1;
-  return { provenGates, issueNumbers, triedBlocked, unreadable: false };
+  // triedBlocked = the DOCUMENTED Chrome-unavailable fallback genuinely happened (#216 Step 1,
+  // 2026-11-07; replaces the old "exactly one tool_use, list_connected_browsers" shape, which the
+  // consultant's current Setup -- launch Chrome, probe port 9222, re-check -- can never produce).
+  // See evaluateChromeFallback below for the exact ordered rule. A spawn that proved a gate by
+  // real ChatGPT cycles never needs the fallback, so provenGates must be empty.
+  const fallback =
+    provenGates.size === 0
+      ? evaluateChromeFallback(events, lines)
+      : { ok: false, reason: "not applicable: this spawn completed at least one real ChatGPT query cycle" };
+  // `triedBlockedReason` (null when triedBlocked) is informational only -- no hook reads it yet;
+  // surfacing it in the plan-gates denial message is a hook edit and is deliberately left out of
+  // Step 1 (see the #216 plan).
+  return { provenGates, issueNumbers, triedBlocked: fallback.ok, triedBlockedReason: fallback.reason, unreadable: false };
 }
 
 // --- Gate 2 proof (enforce-pp-plan-gates.js's rushcut-pp-consultant WebSearch check, #156) ---
 //
-// Gate 2 requires >=3 distinct WebSearch queries spanning >=2 different source types, per
-// rushcut-pp-consultant.md's "Search Engine Guidance" section. Source type is inferred from a
-// `site:` operator in the query text (or a changelog-style query with no site: at all, bucketed
-// separately) -- a proxy for "did this actually diversify sources," not a guarantee the query was
-// well-constructed. Distinctness is by exact query string, not semantic similarity -- a documented
-// limitation (two near-identical rephrasings of the same query would count as 2 distinct queries),
-// acceptable because Consultant is a cooperative, instructed agent, not adversarial.
-const SOURCE_TYPE_PATTERNS = {
-  "official-docs": /site:(?!github\.com|stackoverflow\.com|reddit\.com|news\.ycombinator\.com)[\w.-]+\.(dev|app|com\/docs|org)/i,
-  "github-issues": /site:github\.com/i,
-  stackoverflow: /site:stackoverflow\.com/i,
-  reddit: /site:reddit\.com/i,
-  hn: /site:news\.ycombinator\.com/i,
-  changelog: /\b(changelog|breaking changes|migration)\b/i,
+// Gate 2 requires >=3 distinct PRODUCTIVE WebSearch queries spanning >=2 evidence types, per
+// rushcut-pp-consultant.md's "Search Engine Guidance" section.
+//
+// #216 Step 1 (2026-11-07) -- evidence, not intent. The old rule typed a query from a `site:`
+// operator in its TEXT (and a changelog keyword), which (a) mis-typed real official-docs hosts
+// (`site:code.claude.com` matched no pattern, so the consultant could not pass Gate 2), and (b)
+// credited what was REQUESTED rather than what came back (a `site:code.claude.com` search really
+// returned platform.claude.com and hex.pm links). Now:
+//   - A WebSearch counts only if it is not an error AND its result's `Links:` array holds at least
+//     one parseable http(s) URL ("productive"). Empty, missing/unparseable-Links and error results
+//     earn nothing. Distinctness is by exact query string, so a repeated query counts once.
+//   - A source type comes from the HOST of an actually-returned URL (and of a successful
+//     WebFetch's url: not an error, >= WEBFETCH_MIN_CHARS of result). `site:` text and the
+//     `allowed_domains` argument are requests, never evidence. WebFetch adds evidence TYPES only;
+//     it never raises the query count.
+//   - Host typing is exact-host-or-dot-suffix on the lower-cased, trailing-dot-stripped hostname
+//     from `new URL()` (so github.com.evil.com, evilgithub.com and github.com@evil.com are NOT
+//     github.com). Named hosts get their own type; a named list of official-documentation hosts is
+//     `official-docs`; EVERY other host collapses into the single type `web-other`, however many
+//     different unknown hosts appear. Changelog/releases URL paths no longer create a type.
+// Documented limits: the 2-type threshold is deliberately lenient (web-other plus any one named
+// type passes; replayed on 11 real consultant runs the old rule passed 3, this passes 10); the
+// `Links:` line format is the harness's WebSearch output -- if it ever changes, queries become
+// unproductive and Gate 2 fails loudly (closed), never silently open.
+const GATE2_MIN_FETCH_CHARS = 200;
+const GATE2_NAMED_HOSTS = {
+  "github.com": "github-issues",
+  "stackoverflow.com": "stackoverflow",
+  "reddit.com": "reddit",
+  "news.ycombinator.com": "hn",
 };
+const GATE2_OFFICIAL_DOCS_HOSTS = [
+  "code.claude.com",
+  "docs.claude.com",
+  "platform.claude.com",
+  "docs.anthropic.com",
+  "developer.mozilla.org",
+  "ffmpeg.org",
+  "trac.ffmpeg.org",
+  "tauri.app",
+  "docs.rs",
+  "doc.rust-lang.org",
+  "learn.microsoft.com",
+  "nodejs.org",
+  "w3.org",
+  "whatwg.org",
+];
 
-// Reads a rushcut-pp-consultant spawn's own transcript and classifies its WebSearch calls by
-// source type. Returns { count: number, sourceTypes: Set<string> } -- count is DISTINCT query
-// strings (case-sensitive exact match), not total tool_use calls (a retried identical query
-// should not inflate the count).
+function hostIsOrUnder(host, domain) {
+  return host === domain || host.endsWith("." + domain);
+}
+
+// Returns the evidence type for a URL, or null if it is not a usable http(s) URL.
+function evidenceTypeForUrl(rawUrl) {
+  let u;
+  try {
+    u = new URL(String(rawUrl));
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (!host) return null;
+  for (const [domain, type] of Object.entries(GATE2_NAMED_HOSTS)) {
+    if (hostIsOrUnder(host, domain)) return type;
+  }
+  for (const domain of GATE2_OFFICIAL_DOCS_HOSTS) {
+    if (hostIsOrUnder(host, domain)) return "official-docs";
+  }
+  return "web-other";
+}
+
+// Extracts the URLs from a WebSearch result's one-line `Links: [{"title":..,"url":..},...]`.
+function parseSearchResultUrls(resultText) {
+  const m = String(resultText || "").match(/^Links:\s*(\[.*\])\s*$/m);
+  if (!m) return [];
+  try {
+    const arr = JSON.parse(m[1]);
+    return Array.isArray(arr) ? arr.map((x) => x && x.url).filter((u) => typeof u === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function blockResultText(block) {
+  const c = block && block.content;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.map((b) => (b && b.text) || "").join("\n");
+  return "";
+}
+
+// Reads a rushcut-pp-consultant spawn's own transcript and scores its WebSearch/WebFetch
+// EVIDENCE. Returns { count, sourceTypes, unreadable } -- count is the number of DISTINCT
+// productive query strings; sourceTypes is the set of evidence types from returned hosts.
 function countWebSearchDiversity(transcriptPath, agentId) {
   const subPath = subagentTranscriptPath(transcriptPath, agentId);
   let lines;
@@ -651,7 +969,8 @@ function countWebSearchDiversity(transcriptPath, agentId) {
     return { count: 0, sourceTypes: new Set(), unreadable: true };
   }
 
-  const seenQueries = new Set();
+  const pending = new Map(); // tool_use id -> { name, input }
+  const productiveQueries = new Set();
   const sourceTypes = new Set();
   for (const l of lines) {
     let entry;
@@ -660,20 +979,34 @@ function countWebSearchDiversity(transcriptPath, agentId) {
     } catch {
       continue;
     }
-    if (entry.type !== "assistant") continue;
     const content = entry.message && entry.message.content;
     if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block.type !== "tool_use" || block.name !== "WebSearch") continue;
-      const query = String((block.input && block.input.query) || "");
-      if (!query) continue;
-      seenQueries.add(query);
-      for (const [type, pattern] of Object.entries(SOURCE_TYPE_PATTERNS)) {
-        if (pattern.test(query)) sourceTypes.add(type);
+    if (entry.type === "assistant") {
+      for (const block of content) {
+        if (block.type === "tool_use" && (block.name === "WebSearch" || block.name === "WebFetch")) {
+          pending.set(block.id, { name: block.name, input: block.input || {} });
+        }
+      }
+    } else if (entry.type === "user") {
+      for (const block of content) {
+        if (!block || block.type !== "tool_result" || !pending.has(block.tool_use_id)) continue;
+        const call = pending.get(block.tool_use_id);
+        if (block.is_error) continue;
+        const text = blockResultText(block);
+        if (call.name === "WebSearch") {
+          const query = String(call.input.query || "");
+          const types = parseSearchResultUrls(text).map(evidenceTypeForUrl).filter(Boolean);
+          if (!query || types.length === 0) continue;
+          productiveQueries.add(query);
+          for (const t of types) sourceTypes.add(t);
+        } else if (text.trim().length >= GATE2_MIN_FETCH_CHARS) {
+          const t = evidenceTypeForUrl(call.input.url);
+          if (t) sourceTypes.add(t);
+        }
       }
     }
   }
-  return { count: seenQueries.size, sourceTypes, unreadable: false };
+  return { count: productiveQueries.size, sourceTypes, unreadable: false };
 }
 
 // Returns the VERDICT of the MOST RECENT completed spawn among `spawns` (each { spawnIndex,
@@ -684,13 +1017,22 @@ function countWebSearchDiversity(transcriptPath, agentId) {
 // gate even when the LATEST relevant round was actually OBJECTION. "Most recent" also correctly
 // handles the intended fix-and-reverify flow (Round 2 objects -> orchestrator fixes -> Round 2
 // re-run approves -> the later spawn's APPROVE is what counts, not the earlier OBJECTION).
+//
+// #216 Step 1 (pre-commit review, 2026-11-07): a spawn that has NO verdict marker at all (e.g. the
+// lightweight acceptance-checkpoint sign-off) is skipped, so an earlier verdict stands. But a spawn
+// whose FINAL line is a recognisable verdict marker that the strict parser rejects (for example
+// `## VERDICT: OBJECTION`) is an attempted verdict, not silence: if it is the newest, the result is
+// null and no earlier APPROVE may authorise anything. The parser itself stays strict.
 function latestVerdict(lines, spawns) {
-  let best = null; // { spawnIndex, verdict }
+  let best = null; // { spawnIndex, verdict } -- verdict is null for a newest malformed marker
   for (const spawn of spawns) {
     const resolved = resolveAgentSpawn(lines, spawn);
     if (!resolved || !resolved.complete) continue;
-    const verdict = extractVerdict(resolved.resultText);
-    if (verdict === null) continue;
+    let verdict = extractVerdict(resolved.resultText);
+    if (verdict === null) {
+      if (!finalLineIsVerdictMarker(resolved.resultText)) continue;
+      verdict = null; // malformed marker: counts as the newest (invalid) verdict
+    }
     if (!best || spawn.spawnIndex > best.spawnIndex) best = { spawnIndex: spawn.spawnIndex, verdict };
   }
   return best ? best.verdict : null;
@@ -713,4 +1055,7 @@ module.exports = {
   countWebSearchDiversity,
   extractVerdict,
   latestVerdict,
+  CHROME_SETUP_SHAPES,
+  isChromeSetupCommand,
+  isScratchPowerShell,
 };
