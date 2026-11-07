@@ -66,7 +66,7 @@ spike/tmp/
 spike/output*
 
 # Claude Code dev tooling — not part of the product; settings.local.json must never be public.
-# Exception (2026-07-24, documented in CLAUDE.md's ".claude/ is gitignored" rule): 6 exact files
+# Exception (2026-07-24, documented in CLAUDE.md's ".claude/ is gitignored" rule): 8 exact files
 # implementing the search-verification governance hooks are version-controlled — reviewable and
 # recoverable, not local-only. Everything else under .claude/ (skills, other agents,
 # settings.json/settings.local.json, local config) stays fully ignored, exactly as before.
@@ -81,6 +81,8 @@ spike/output*
 .claude/hooks/lib/*
 !.claude/hooks/lib/transcript.js
 !.claude/hooks/lib/transcript.test.js
+!.claude/hooks/lib/paths.js
+!.claude/hooks/lib/paths.test.js
 !.claude/agents/
 .claude/agents/*
 !.claude/agents/rushcut-cpo.md

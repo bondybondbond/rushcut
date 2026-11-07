@@ -37,7 +37,7 @@ function readLines(transcriptPath) {
 // false-triggers wrapup on background-notification/subagent text"). Reject it explicitly by
 // content, not just structure.
 // #202: lib/trigger-match.js keeps its OWN copy of this list. It is deliberately duplicated: this
-// file is git-tracked and trigger-match.js is local-only (.claude/ is gitignored except 6 files),
+// file is git-tracked and trigger-match.js is local-only (.claude/ is gitignored except 8 files),
 // so a tracked file must not require a local-only one. test-gate-hooks.js asserts the two lists
 // stay identical and classify text identically -- if you edit one, edit the other.
 const NOTIFICATION_MARKERS = ["<task-notification>", "[SYSTEM NOTIFICATION - NOT USER INPUT]"];
@@ -274,10 +274,142 @@ function resolveSpawnResult(lines, spawnIndex, toolUseId) {
   return null;
 }
 
-// For an async spawn, scans forward from `fromIndex` for the queue-operation completion
-// notification carrying this agentId. Returns { resultText } or null if not found yet
-// (background task still running, or genuinely never completed this session).
-function resolveAsyncCompletion(lines, fromIndex, agentId) {
+// --- Spawn completion (#216 Step 2) -------------------------------------------------------------
+//
+// A SYNC spawn is complete the moment its structured toolUseResult arrives (harness-written, not
+// text a user can type). An ASYNC spawn, or a sync spawn that was later RESUMED with SendMessage,
+// is complete only on STRUCTURED evidence: the subagent's own transcript (agent-<agentId>.jsonl,
+// found through the structured toolUseResult.agentId). Notification text is NOT trusted: the
+// queue-operation/enqueue and attachment/queued_command records are the channel typed or pasted
+// text arrives through, so a message containing the same XML-like tags could forge a completion
+// (reproduced against the previous matcher: a typed message completed a pending CPO spawn with
+// "VERDICT: APPROVE"). Only a user record whose harness-set origin.kind is "task-notification" is
+// accepted, and only as a fallback when the agent file is missing or ends on a legacy null
+// stop_reason. "Complete" never means "succeeded": the gates stay safe because they also need tool
+// evidence and a final-line VERDICT (see extractVerdict).
+const AGENT_ID_RE = /^[A-Za-z0-9]+$/;
+
+// A hook that fires inside a subagent can, depending on the Claude Code version, hand us the
+// SUBAGENT'S own file as transcript_path. Gate state belongs to the PARENT session, so map
+// <dir>/<sessionId>/subagents/agent-<id>.jsonl back to <dir>/<sessionId>.jsonl by path shape alone
+// (never by agent_id: an agent file with no agent_id would otherwise find no dev-plan call and allow).
+const AGENT_FILE_SHAPE_RE = /^(.*)[\\/]subagents[\\/]agent-[A-Za-z0-9]+\.jsonl$/;
+function parentTranscriptPath(p) {
+  if (typeof p !== "string") return p;
+  const m = p.match(AGENT_FILE_SHAPE_RE);
+  return m ? m[1] + ".jsonl" : p;
+}
+
+// Reads a file once per (path, mtime, size): completion and Gate 2/3 evidence share one read per
+// hook run, while tests that rewrite a fixture in place still see the new content.
+const _fileCache = new Map();
+function readFileCached(p) {
+  const st = fs.statSync(p);
+  const key = String(st.mtimeMs) + ":" + st.size;
+  const hit = _fileCache.get(p);
+  if (hit && hit.key === key) return hit.raw;
+  const raw = fs.readFileSync(p, "utf8");
+  _fileCache.set(p, { key, raw });
+  return raw;
+}
+
+// Classifies a subagent transcript. Returns:
+//   { state: "complete", text, lastTs }
+//   { state: "legacy-null", text, lastTs }   final stop_reason is null (older Claude Code); only the origin fallback may complete it
+//   { state: "missing" }                     ENOENT: the origin fallback may apply
+//   { state: "incomplete", why }             never complete, no fallback (torn tail, tool_use pending, last record is a user message,
+//                                            API-error final, max_tokens/pause_turn/refusal, empty text, unreadable)
+function agentFileCompletion(transcriptPath, agentId) {
+  if (typeof transcriptPath !== "string" || !transcriptPath) return { state: "incomplete", why: "no transcript path" };
+  if (typeof agentId !== "string" || !AGENT_ID_RE.test(agentId)) return { state: "incomplete", why: "invalid agentId" };
+  const agentPath = subagentTranscriptPath(parentTranscriptPath(transcriptPath), agentId);
+  let raw;
+  try {
+    raw = readFileCached(agentPath);
+  } catch (e) {
+    return e && e.code === "ENOENT" ? { state: "missing" } : { state: "incomplete", why: "unreadable (" + (e && e.code) + ")" };
+  }
+  if (!raw.endsWith("\n")) return { state: "incomplete", why: "torn tail (no trailing newline)" };
+  const rawLines = raw.split("\n").filter(Boolean);
+  if (!rawLines.length) return { state: "incomplete", why: "empty file" };
+  try {
+    JSON.parse(rawLines[rawLines.length - 1]);
+  } catch {
+    return { state: "incomplete", why: "torn tail (last line does not parse)" };
+  }
+  const recs = [];
+  for (const l of rawLines) {
+    try {
+      recs.push(JSON.parse(l));
+    } catch {
+      /* a damaged middle line cannot be the final record, which was parsed above */
+    }
+  }
+  let last = null;
+  for (let i = recs.length - 1; i >= 0; i--) {
+    if (recs[i] && (recs[i].type === "user" || recs[i].type === "assistant")) {
+      last = recs[i];
+      break;
+    }
+  }
+  if (!last) return { state: "incomplete", why: "no conversational record" };
+  if (last.type !== "assistant") return { state: "incomplete", why: "last conversational record is a user message (running or resumed)" };
+  const msg = last.message || {};
+  // Claude Code writes one record per content block of a message; they share message.id.
+  const group = msg.id ? recs.filter((r) => r && r.type === "assistant" && r.message && r.message.id === msg.id) : [last];
+  const blocks = group.flatMap((r) => (Array.isArray(r.message && r.message.content) ? r.message.content : []));
+  if (blocks.some((b) => b && b.type === "tool_use")) return { state: "incomplete", why: "tool_use pending" };
+  if (last.isApiErrorMessage || last.error || msg.model === "<synthetic>") return { state: "incomplete", why: "API-error final message" };
+  const text = blocks
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("\n");
+  if (!text.trim()) return { state: "incomplete", why: "no text in the final message" };
+  const lastTs = typeof last.timestamp === "string" ? last.timestamp : null;
+  const sr = msg.stop_reason;
+  if (sr === "end_turn") return { state: "complete", text, lastTs };
+  if (sr === null || sr === undefined) return { state: "legacy-null", text, lastTs };
+  return { state: "incomplete", why: "stop_reason " + sr };
+}
+
+// --- Resume (SendMessage) state model (#216 Step 2, owner-approved 2026-11-07) -------------------------------
+//
+// A completed agent that is RESUMED must not keep its earlier verdict, and that earlier verdict must not be
+// restored by a timeout either. Everything below is derived from STRUCTURED records only (no clock is read):
+//   - A resume is a SendMessage tool_use block (assistant record, a string tool_use id, input.to === this agentId)
+//     after the spawn's result. Its OUTCOME is the structured tool_result with that id:
+//       is_error, or JSON {"success": false}  -> "rejected": the message never reached the agent (a hook block, a
+//                                                validation error); it is ignored and an earlier completion stands.
+//       no tool_result yet                      -> "in-flight": treated as accepted (we cannot rule it out).
+//       anything else                           -> "accepted".
+//   - Only the LATEST accepted/in-flight resume counts. Its run is COMPLETE only when the agent file's final
+//     conversational record is a clean end_turn assistant message that is DEMONSTRABLY AFTER that resume: its
+//     timestamp must exceed the resume's by more than RESUME_SKEW_MS. A notification is NEVER evidence for a resumed
+//     run (it does not say which run it describes). A record before the resume, a record inside
+//     the +/- 1 s ambiguity window, and a record with a missing or unparseable timestamp are all NOT evidence:
+//     the spawn stays resumePending (incomplete) until demonstrably newer evidence appears or a newer spawn exists.
+//   - A resume that never produces that evidence leaves the verdict UNKNOWN, never APPROVE (see latestVerdict).
+const RESUME_SKEW_MS = 1000;
+
+function classifySendMessageResult(block) {
+  if (block.is_error === true) return "rejected";
+  const c = block.content;
+  const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => (b && b.text) || "").join("\n") : "";
+  for (const candidate of [text.trim(), text.trim().split("\n")[0]]) {
+    try {
+      const j = JSON.parse(candidate);
+      if (j && typeof j === "object" && j.success === false) return "rejected";
+      break;
+    } catch {
+      /* not JSON: keep looking, then treat as accepted */
+    }
+  }
+  return "accepted";
+}
+
+// Returns [{ id, index, ts, status: "accepted"|"in-flight"|"rejected" }] for every SendMessage addressed to agentId.
+function sendMessageResumes(lines, agentId, fromIndex) {
+  const calls = [];
   for (let i = fromIndex + 1; i < lines.length; i++) {
     let entry;
     try {
@@ -285,46 +417,111 @@ function resolveAsyncCompletion(lines, fromIndex, agentId) {
     } catch {
       continue;
     }
-    if (entry.type !== "queue-operation" || entry.operation !== "enqueue") continue;
-    const content = entry.content;
-    if (typeof content !== "string") continue;
-    if (!content.includes(`<task-id>${agentId}</task-id>`)) continue;
-    if (!content.includes("<status>completed</status>")) continue;
-    const m = content.match(/<result>([\s\S]*?)<\/result>/);
-    return { index: i, resultText: m ? m[1] : "" };
+    if (!entry || entry.type !== "assistant") continue;
+    const content = entry.message && entry.message.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content) {
+      if (b && b.type === "tool_use" && b.name === "SendMessage" && typeof b.id === "string" && b.id && b.input && b.input.to === agentId) {
+        calls.push({ id: b.id, index: i, ts: typeof entry.timestamp === "string" ? entry.timestamp : null, status: "in-flight" });
+      }
+    }
   }
-  return null;
+  if (!calls.length) return calls;
+  const byId = new Map(calls.map((c) => [c.id, c]));
+  const decided = new Set();
+  for (let i = calls[0].index + 1; i < lines.length; i++) {
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    if (!entry || entry.type !== "user") continue;
+    const content = entry.message && entry.message.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content) {
+      if (b && b.type === "tool_result" && byId.has(b.tool_use_id) && !decided.has(b.tool_use_id)) {
+        byId.get(b.tool_use_id).status = classifySendMessageResult(b);
+        decided.add(b.tool_use_id);
+      }
+    }
+  }
+  return calls;
 }
 
-// Full resolution: spawn -> result -> (if async) completion -> (if resumed) LATEST completion.
-// Returns { agentId, complete, resultText } or null if the spawn itself couldn't be resolved.
-//
-// An agent can be continued after its first resolution via SendMessage (a common recovery path
-// -- an API-error interruption, or a fix-and-reverify round after an OBJECTION) -- this produces
-// FURTHER queue-operation completions under the SAME agentId, well after the original tool_result
-// (sync or async). Confirmed necessary empirically (2026-07-23): this exact session resumed two
-// spawns this way, and checking only the first resolution silently returned each one's STALE
-// initial answer (in one live case, an OBJECTION that had since been resolved to APPROVE by a
-// later resume) -- exactly the "presence not recency" failure class this file's latestVerdict
-// helper exists to prevent, just one level deeper (per-spawn, not just across-spawns). Always
-// scan forward for every later completion of this agentId and keep the LAST one found.
-function resolveAgentSpawn(lines, spawn) {
+// True only when BOTH timestamps parse and recordTs is later than resumeTs by MORE than RESUME_SKEW_MS.
+function demonstrablyAfter(recordTs, resumeTs) {
+  const a = Date.parse(recordTs);
+  const b = Date.parse(resumeTs);
+  return Number.isFinite(a) && Number.isFinite(b) && a > b + RESUME_SKEW_MS;
+}
+
+// Fallback completion for an agent whose file is missing / legacy-null: a USER record with the
+// harness-set origin.kind "task-notification", after the spawn's result, whose HEADER (everything
+// before the first <result>) names this agent and status "completed". Header-parsed, never substring
+// matched, so tags quoted inside another agent's <result> cannot complete this spawn. The latest wins.
+function originNotificationCompletion(lines, agentId, fromIndex) {
+  let best = null;
+  for (let i = fromIndex + 1; i < lines.length; i++) {
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    if (entry.type !== "user" || !entry.origin || entry.origin.kind !== "task-notification") continue;
+    const c = entry.message && entry.message.content;
+    if (typeof c !== "string" || !c.startsWith("<task-notification>")) continue;
+    const cut = c.indexOf("<result>");
+    const head = cut === -1 ? c : c.slice(0, cut);
+    const tid = (head.match(/<task-id>([^<]*)<\/task-id>/) || [])[1];
+    const st = (head.match(/<status>([^<]*)<\/status>/) || [])[1];
+    if (tid !== agentId || st !== "completed") continue;
+    const m = c.match(/<result>([\s\S]*?)<\/result>/);
+    best = { index: i, resultText: m ? m[1] : "" };
+  }
+  return best;
+}
+
+// Full resolution: spawn -> (sync? structured result) / (async or resumed? the agent's own transcript,
+// then the origin-verified fallback). Returns { agentId, complete, resultText, why? } or null if the
+// spawn itself could not be resolved. `transcriptPath` is the PARENT session transcript; without it an
+// async or resumed spawn is INCOMPLETE (there is deliberately no fallback to the old notification rule).
+function resolveAgentSpawn(lines, spawn, transcriptPath) {
   const resolved = resolveSpawnResult(lines, spawn.spawnIndex, spawn.toolUseId);
   if (!resolved) return null;
   const agentId = resolved.agentId;
-  let latestText = resolved.complete ? resolved.resultText : null;
-  let cursor = resolved.resultIndex;
-  // Keep walking forward -- a spawn can be resumed more than once (confirmed: this session did
-  // it twice on two different agents), so don't stop at the first later completion found.
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const completion = resolveAsyncCompletion(lines, cursor, agentId);
-    if (!completion) break;
-    latestText = completion.resultText;
-    cursor = completion.index;
+  if (typeof agentId !== "string" || !AGENT_ID_RE.test(agentId)) return null;
+  const resumes = sendMessageResumes(lines, agentId, resolved.resultIndex).filter((r) => r.status !== "rejected");
+  const latest = resumes.length ? resumes[resumes.length - 1] : null;
+  if (!resolved.isAsync && !latest) {
+    return { agentId, complete: true, resultText: resolved.resultText };
   }
-  if (latestText === null) return { agentId, complete: false, resultText: "" };
-  return { agentId, complete: true, resultText: latestText };
+  const fc = agentFileCompletion(transcriptPath, agentId);
+  const incomplete = (why, extra) => ({ agentId, complete: false, resultText: "", why, ...(extra || {}) });
+  if (latest) {
+    // A resume was accepted: the earlier completion (sync result or earlier end_turn) is SUPERSEDED. Only a final
+    // end_turn record demonstrably after the latest resume completes the resumed run; no timeout, no fallback.
+    if (fc.state === "complete" && demonstrablyAfter(fc.lastTs, latest.ts)) return { agentId, complete: true, resultText: fc.text };
+    // NO notification fallback here. A completion notification carries no identifier of WHICH run it describes, so a
+    // delayed notification of the EARLIER run (delivered after the SendMessage) would otherwise complete the resumed
+    // run with the earlier run's verdict (reproduced by the Gate 4 review: a stale APPROVE). When the agent file is
+    // missing or ends on a legacy null stop_reason, a resumed run therefore stays resumePending (fails closed).
+    const why =
+      fc.state === "complete"
+        ? "resume accepted; the agent file's final record is not demonstrably after it (before it, inside the 1 s ambiguity window, or a timestamp is missing)"
+        : "resume accepted; the resumed run has not completed (" + (fc.why || fc.state) + ")";
+    return incomplete(why, { resumePending: true });
+  }
+  if (fc.state === "complete") {
+    return { agentId, complete: true, resultText: fc.text };
+  }
+  if (fc.state === "missing" || fc.state === "legacy-null") {
+    const n = originNotificationCompletion(lines, agentId, resolved.resultIndex);
+    if (n) return { agentId, complete: true, resultText: n.resultText };
+    return incomplete(fc.state === "missing" ? "agent file missing and no origin-verified notification" : "legacy null stop_reason and no origin-verified notification");
+  }
+  return incomplete(fc.why);
 }
 
 // Builds the on-disk path to a subagent's own transcript. ALWAYS derive from agentId -- never
@@ -352,7 +549,7 @@ function classifySubagentEvidence(transcriptPath, agentId, { reachedNames, tried
   const subPath = subagentTranscriptPath(transcriptPath, agentId);
   let lines;
   try {
-    const raw = fs.readFileSync(subPath, "utf8");
+    const raw = readFileCached(subPath);
     lines = raw.length ? raw.split("\n").filter(Boolean) : [];
   } catch {
     return "unreadable";
@@ -781,7 +978,7 @@ function countGateCycles(transcriptPath, agentId) {
   const subPath = subagentTranscriptPath(transcriptPath, agentId);
   let lines;
   try {
-    const raw = fs.readFileSync(subPath, "utf8");
+    const raw = readFileCached(subPath);
     lines = raw.length ? raw.split("\n").filter(Boolean) : [];
   } catch {
     return { provenGates: new Set(), issueNumbers: { breadth: null, depth: null }, triedBlocked: false, unreadable: true };
@@ -963,7 +1160,7 @@ function countWebSearchDiversity(transcriptPath, agentId) {
   const subPath = subagentTranscriptPath(transcriptPath, agentId);
   let lines;
   try {
-    const raw = fs.readFileSync(subPath, "utf8");
+    const raw = readFileCached(subPath);
     lines = raw.length ? raw.split("\n").filter(Boolean) : [];
   } catch {
     return { count: 0, sourceTypes: new Set(), unreadable: true };
@@ -1023,11 +1220,18 @@ function countWebSearchDiversity(transcriptPath, agentId) {
 // whose FINAL line is a recognisable verdict marker that the strict parser rejects (for example
 // `## VERDICT: OBJECTION`) is an attempted verdict, not silence: if it is the newest, the result is
 // null and no earlier APPROVE may authorise anything. The parser itself stays strict.
-function latestVerdict(lines, spawns) {
+function latestVerdict(lines, spawns, transcriptPath) {
   let best = null; // { spawnIndex, verdict } -- verdict is null for a newest malformed marker
   for (const spawn of spawns) {
-    const resolved = resolveAgentSpawn(lines, spawn);
-    if (!resolved || !resolved.complete) continue;
+    const resolved = resolveAgentSpawn(lines, spawn, transcriptPath);
+    if (!resolved) continue;
+    if (!resolved.complete) {
+      // A spawn whose accepted resume has not completed has an UNKNOWN verdict: it is the newest word, so it
+      // yields null (blocks) instead of being skipped -- skipping would let an OLDER spawn's APPROVE become
+      // authoritative while the re-review is pending. A first run that never completed is still skipped, as before.
+      if (resolved.resumePending && (!best || spawn.spawnIndex > best.spawnIndex)) best = { spawnIndex: spawn.spawnIndex, verdict: null };
+      continue;
+    }
     let verdict = extractVerdict(resolved.resultText);
     if (verdict === null) {
       if (!finalLineIsVerdictMarker(resolved.resultText)) continue;
@@ -1038,8 +1242,50 @@ function latestVerdict(lines, spawns) {
   return best ? best.verdict : null;
 }
 
+// --- Transcript reading with a bounded retry (#216 Step 2) ---------------------------------------
+//
+// The hooks documentation says the transcript "is written asynchronously and may lag the in-memory
+// conversation", which is also the likely cause of the #201 false "Gate 2 missing". `readTranscriptLines`
+// is a single read; `readTranscriptWithRetry` retries a FAILED read only (attempts x delayMs, injectable
+// readFile/sleep so tests never depend on the wall clock). Returns { ok:true, lines, attempts } or
+// { ok:false, code, attempts }.
+function readTranscriptLines(p, readFile = fs.readFileSync) {
+  if (typeof p !== "string" || !p) return { ok: false, code: "NO_PATH" };
+  try {
+    const raw = readFile(p, "utf8");
+    return { ok: true, lines: raw.length ? raw.split("\n").filter(Boolean) : [] };
+  } catch (e) {
+    return { ok: false, code: (e && e.code) || "ERR" };
+  }
+}
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      /* spin: only reached where Atomics.wait is unavailable */
+    }
+  }
+}
+function readTranscriptWithRetry({ path: p, attempts = 3, delayMs = 150, readFile = fs.readFileSync, sleep = sleepSync } = {}) {
+  let last = { ok: false, code: "NO_ATTEMPT" };
+  for (let i = 1; i <= attempts; i++) {
+    last = readTranscriptLines(p, readFile);
+    if (last.ok) return { ...last, attempts: i };
+    if (last.code === "NO_PATH") return { ...last, attempts: i }; // retrying a missing path cannot help
+    if (i < attempts) sleep(delayMs);
+  }
+  return { ...last, attempts };
+}
+
 module.exports = {
   findLastHumanMessage,
+  parentTranscriptPath,
+  agentFileCompletion,
+  readTranscriptLines,
+  readTranscriptWithRetry,
+  AGENT_ID_RE,
   hasMatchingSkillCallSince,
   findLastMatchingSkillCall,
   isSkillBodyRecord,

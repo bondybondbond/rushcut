@@ -89,7 +89,9 @@ const cpoSpawns = findAgentSpawnsSince(lines, -1, CPO);
 // Value AND recency matter, not just marker presence: a stale early-round marker, or an
 // unrelated round's OBJECTION/APPROVE, must not satisfy "sign-off" -- only the LATEST completed
 // round's verdict counts, and it must actually be APPROVE.
-const hasSignoff = latestVerdict(lines, cpoSpawns) === "APPROVE";
+// #216 Step 2: the transcript path is passed so a BACKGROUND spawn is judged on structured evidence (its own
+// transcript); without it an async spawn would be invisible here.
+const hasSignoff = latestVerdict(lines, cpoSpawns, transcriptPath) === "APPROVE";
 
 if (hasSignoff) {
   process.exit(0);
