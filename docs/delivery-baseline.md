@@ -328,3 +328,4 @@ u = unknown.
 | D201 | #201 | tooling | 2026-11-07 | forward | 4 | 0 | unknown | unknown | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) | a: defect 3 (replay control flaw, reserved control file, agent-file contradiction), process-miss 1 (Gate 2 sequencing); replay 1 run advisory |
 | D218 | #218 | tooling | 2026-11-07 | forward | 2 | 0 | unknown | unknown | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
 | D215 | #215 | tooling | 2026-11-10 | forward | 3 | 0 | unknown | unknown | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
+| D222 | #222 | tooling | 2026-11-10 | forward | 0 | 0 | unknown | unknown | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
