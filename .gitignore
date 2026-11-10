@@ -88,6 +88,10 @@ spike/output*
 !.claude/agents/rushcut-cpo.md
 !.claude/agents/rushcut-pp-consultant.md
 
+# Local-only project contract (#222): board IDs, project config, tier text. Same practice as the
+# sibling kit project. CLAUDE.md imports it and says so if it is missing (fresh clone, worktree).
+/AGENTS.md
+
 # Next.js build info
 tsconfig.tsbuildinfo
 __pycache__/

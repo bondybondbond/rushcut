@@ -1,3 +1,7 @@
+@AGENTS.md
+
+If AGENTS.md is unavailable in your context, say so in your first reply and work from this file. Follow the established order-of-authority rules below when instructions conflict.
+
 ## Architecture
 
 **Tauri 2.x local desktop app. NOT Next.js, Vercel, Lambda, or any cloud service.**
