@@ -327,3 +327,4 @@ u = unknown.
 | D195 | #195 | product | 2026-09-05 | backfill | 0 | 0 | 4 | 48 | 0 | 0 | 0 | validated | a:j b:j c:d d:d lvl:j | validated via negative product decision: feature removed; built candidate rejected |
 | D201 | #201 | tooling | 2026-11-07 | forward | 4 | 0 | unknown | unknown | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) | a: defect 3 (replay control flaw, reserved control file, agent-file contradiction), process-miss 1 (Gate 2 sequencing); replay 1 run advisory |
 | D218 | #218 | tooling | 2026-11-07 | forward | 2 | 0 | unknown | unknown | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
+| D215 | #215 | tooling | 2026-11-10 | forward | 3 | 0 | unknown | unknown | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
