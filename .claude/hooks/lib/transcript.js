@@ -678,6 +678,8 @@ const GATE_FINGERPRINTS = {
 // docs/agent_plan.md's Gate 3 section. `rushcut-pp-consultant.md`'s protocol requires every Gate 3
 // message to open with "GitHub issue #<N>: " -- this regex reads that back out as evidence.
 const ISSUE_NUMBER_RE = /GitHub issue #(\d+)/i;
+// #226 C(ii): minimum length of a typed query that counts without a template fingerprint (see the type-event branch below).
+const TYPED_QUERY_FLOOR = 150;
 
 // Documented, accepted gap (flagged by rushcut-pp-consultant's Round 2 review, 2026-07-24): this
 // only proves SOME key/click happened after the fingerprinted type, on the ChatGPT domain --
@@ -1005,6 +1007,7 @@ function countGateCycles(transcriptPath, agentId) {
   const provenGates = new Set();
   const issueNumbers = { breadth: null, depth: null };
   let pendingGate = null; // { gate, submitted, issueNumber }
+  const typedStructural = new Set(); // #226 C(ii): texts already counted as a structural (non-fingerprint) query
 
   for (const ev of events) {
     if (ev.name === NAVIGATE_TOOL && typeof ev.input.url === "string") {
@@ -1015,10 +1018,26 @@ function countGateCycles(transcriptPath, agentId) {
 
     if (ev.name === COMPUTER_TOOL && ev.input.action === "type" && typeof ev.input.text === "string") {
       if (currentDomain !== "chatgpt") continue;
+      let matchedByFingerprint = false;
       for (const [gateKey, fp] of Object.entries(GATE_FINGERPRINTS)) {
         if (fp.test(ev.input.text)) {
+          matchedByFingerprint = true;
           const issueMatch = ev.input.text.match(ISSUE_NUMBER_RE);
           pendingGate = { gate: gateKey, submitted: false, issueNumber: issueMatch ? issueMatch[1] : null };
+        }
+      }
+      // #226 decision C(ii) (owner-approved 2026-11-10): a reworded query is not "no research". Evidence, not wording:
+      // a SUBSTANTIAL typed query that opens with the issue prefix ("GitHub issue #N:", the Consultant's own protocol
+      // and the issue-number correlation above) still counts. The gate is assigned by ORDER: the first proven cycle is
+      // breadth, the next is depth. Purely additive: whatever matched a fingerprint before still matches the same way.
+      // Still required below for every cycle: submit, then a new substantial ChatGPT read. Floor chosen so a stub like
+      // "GitHub issue #226: hi" cannot count.
+      // The issue prefix must OPEN the query, and an identical text typed twice cannot prove two gates.
+      if (!matchedByFingerprint && ev.input.text.length >= TYPED_QUERY_FLOOR && !typedStructural.has(ev.input.text)) {
+        const issueMatch = ev.input.text.match(/^\s*GitHub issue #(\d+)/i);
+        if (issueMatch) {
+          typedStructural.add(ev.input.text);
+          pendingGate = { gate: provenGates.has("breadth") ? "depth" : "breadth", submitted: false, issueNumber: issueMatch[1] };
         }
       }
       continue;

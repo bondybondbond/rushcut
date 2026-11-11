@@ -166,6 +166,69 @@ test("2-cycle spawn: both gates proven", () => {
   assert.ok(result.provenGates.has("breadth") && result.provenGates.has("depth"));
 });
 
+// #226 decision C(ii): a REWORDED query is not "no research". Evidence (issue prefix + substantial query + submit + new
+// substantial read), not template wording. Order assigns the gate: first cycle = breadth, next = depth.
+const REWORDED_1 = "GitHub issue #226: please survey prior art and known failure modes for invariant hooks that guard secrets, destructive git and protected paths, with sources.";
+const REWORDED_2 = "GitHub issue #226: here is the revised plan, where does it break in practice, what did we miss, and which parts are over-reach? Be specific about failure semantics.";
+test("#226 reworded queries with the issue prefix still prove both gates (the 2026-11-10 false block)", () => {
+  const calls = twoFullCycleCalls();
+  calls[1] = { ...calls[1], input: { action: "type", text: REWORDED_1 } };
+  calls[4] = { ...calls[4], input: { action: "type", text: REWORDED_2 } };
+  const dir = writeSpawnFixture("reworded", "agentReworded", calls);
+  const result = countGateCycles(transcriptPathFor(dir), "agentReworded");
+  assert.ok(result.provenGates.has("breadth") && result.provenGates.has("depth"), "reworded breadth+depth must both be proven");
+  assert.strictEqual(result.issueNumbers.breadth, "226");
+  assert.strictEqual(result.issueNumbers.depth, "226");
+});
+test("#226 a reworded query WITHOUT the issue prefix does not count (still needs evidence)", () => {
+  const calls = twoFullCycleCalls();
+  // padded past TYPED_QUERY_FLOOR (150) so this fails for the PREFIX rule, not the length floor
+  const noPrefix = REWORDED_1.replace("GitHub issue #226: ", "") + " Please also cover how this breaks in practice and what we may have missed entirely.";
+  assert.ok(noPrefix.length >= 150, "fixture must clear the length floor, got " + noPrefix.length);
+  calls[1] = { ...calls[1], input: { action: "type", text: noPrefix } };
+  const dir = writeSpawnFixture("reworded-noprefix", "agentRewordedNoPrefix", calls.slice(0, 4));
+  const result = countGateCycles(transcriptPathFor(dir), "agentRewordedNoPrefix");
+  assert.strictEqual(result.provenGates.size, 0);
+});
+test("#226 the issue prefix must OPEN the query: a mention in the middle does not count", () => {
+  const calls = twoFullCycleCalls();
+  calls[1] = { ...calls[1], input: { action: "type", text: "Please survey prior art for this problem. " + REWORDED_1 } };
+  const dir = writeSpawnFixture("reworded-mid", "agentRewordedMid", calls.slice(0, 4));
+  assert.strictEqual(countGateCycles(transcriptPathFor(dir), "agentRewordedMid").provenGates.size, 0);
+});
+test("#226 length floor boundary: 149 chars does not count, 150 does", () => {
+  const mk = (n) => "GitHub issue #226: " + "x".repeat(n - "GitHub issue #226: ".length);
+  for (const [n, want] of [[149, 0], [150, 1]]) {
+    const calls = twoFullCycleCalls();
+    calls[1] = { ...calls[1], input: { action: "type", text: mk(n) } };
+    const dir = writeSpawnFixture("floor-" + n, "agentFloor" + n, calls.slice(0, 4));
+    assert.strictEqual(countGateCycles(transcriptPathFor(dir), "agentFloor" + n).provenGates.size, want, "length " + n);
+  }
+});
+test("#226 the SAME query typed twice proves only one gate", () => {
+  const calls = twoFullCycleCalls();
+  calls[1] = { ...calls[1], input: { action: "type", text: REWORDED_1 } };
+  calls[4] = { ...calls[4], input: { action: "type", text: REWORDED_1 } };
+  const dir = writeSpawnFixture("reworded-twice", "agentRewordedTwice", calls);
+  const r = countGateCycles(transcriptPathFor(dir), "agentRewordedTwice");
+  assert.strictEqual(r.provenGates.size, 1, "an identical retyped query must not prove a second gate");
+});
+test("#226 a stub query with the issue prefix but under the length floor does not count", () => {
+  const calls = twoFullCycleCalls();
+  calls[1] = { ...calls[1], input: { action: "type", text: "GitHub issue #226: hi" } };
+  const dir = writeSpawnFixture("reworded-stub", "agentRewordedStub", calls.slice(0, 4));
+  const result = countGateCycles(transcriptPathFor(dir), "agentRewordedStub");
+  assert.strictEqual(result.provenGates.size, 0);
+});
+test("#226 a reworded query typed but never submitted does not count", () => {
+  const calls = twoFullCycleCalls();
+  calls[1] = { ...calls[1], input: { action: "type", text: REWORDED_1 } };
+  const noSubmit = [calls[0], calls[1], calls[3]]; // navigate, type, read -- no submit
+  const dir = writeSpawnFixture("reworded-nosubmit", "agentRewordedNoSubmit", noSubmit);
+  const result = countGateCycles(transcriptPathFor(dir), "agentRewordedNoSubmit");
+  assert.strictEqual(result.provenGates.size, 0);
+});
+
 test("1-cycle spawn: only 1 gate proven when 2nd type/submit/read never happens", () => {
   const calls = twoFullCycleCalls().slice(0, 4); // only the breadth cycle
   const dir = writeSpawnFixture("one-cycle", "agentOneCycle", calls);

@@ -70,6 +70,9 @@ spike/output*
 # implementing the search-verification governance hooks are version-controlled — reviewable and
 # recoverable, not local-only. Everything else under .claude/ (skills, other agents,
 # settings.json/settings.local.json, local config) stays fully ignored, exactly as before.
+# Second, separate exception (2026-11-11, #226, explicit owner decision): ONE regression test,
+# .claude/hooks/test-kit-hooks.js, which protects the local-only kit invariant hooks. It is a test,
+# not a governance hook. Total tracked under .claude/: 8 governance files + 1 regression test.
 # Git will not apply a nested `!` negation under an excluded parent directory unless traversal is
 # explicitly reopened first — hence the `dir/` then `dir/*` pairs below, not a single pattern.
 .claude/*
@@ -77,6 +80,7 @@ spike/output*
 .claude/hooks/*
 !.claude/hooks/enforce-pp-plan-gates.js
 !.claude/hooks/enforce-pp-wrapup-signoff.js
+!.claude/hooks/test-kit-hooks.js
 !.claude/hooks/lib/
 .claude/hooks/lib/*
 !.claude/hooks/lib/transcript.js
