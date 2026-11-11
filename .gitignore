@@ -66,31 +66,16 @@ spike/tmp/
 spike/output*
 
 # Claude Code dev tooling — not part of the product; settings.local.json must never be public.
-# Exception (2026-07-24, documented in CLAUDE.md's ".claude/ is gitignored" rule): 8 exact files
-# implementing the search-verification governance hooks are version-controlled — reviewable and
-# recoverable, not local-only. Everything else under .claude/ (skills, other agents,
-# settings.json/settings.local.json, local config) stays fully ignored, exactly as before.
-# Second, separate exception (2026-11-11, #226, explicit owner decision): ONE regression test,
-# .claude/hooks/test-kit-hooks.js, which protects the local-only kit invariant hooks. It is a test,
-# not a governance hook. Total tracked under .claude/: 8 governance files + 1 regression test.
+# Everything under .claude/ (kit skills, agents, hooks, settings, rules, the strategy file) is local-only.
+# One exception (2026-11-11, #226, explicit owner decision): the regression test
+# .claude/hooks/test-kit-hooks.js, which protects the local-only kit invariant hooks.
+# The 8 governance-hook files tracked from 2026-07-24 were retired with the kit cutover (#225).
 # Git will not apply a nested `!` negation under an excluded parent directory unless traversal is
-# explicitly reopened first — hence the `dir/` then `dir/*` pairs below, not a single pattern.
+# explicitly reopened first — hence the `dir/` then `dir/*` pair below, not a single pattern.
 .claude/*
 !.claude/hooks/
 .claude/hooks/*
-!.claude/hooks/enforce-pp-plan-gates.js
-!.claude/hooks/enforce-pp-wrapup-signoff.js
 !.claude/hooks/test-kit-hooks.js
-!.claude/hooks/lib/
-.claude/hooks/lib/*
-!.claude/hooks/lib/transcript.js
-!.claude/hooks/lib/transcript.test.js
-!.claude/hooks/lib/paths.js
-!.claude/hooks/lib/paths.test.js
-!.claude/agents/
-.claude/agents/*
-!.claude/agents/rushcut-cpo.md
-!.claude/agents/rushcut-pp-consultant.md
 
 # Local-only project contract (#222): board IDs, project config, tier text. Same practice as the
 # sibling kit project. CLAUDE.md imports it and says so if it is missing (fresh clone, worktree).
