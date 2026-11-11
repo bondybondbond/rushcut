@@ -1,14 +1,23 @@
 # Quality Goal
 
-Transparency doc — not a strategy doc. Tracks progress toward the visual-quality north star so we don't re-propose rejected ideas or lose sight of the real bottleneck. Companion to [`docs/speed-goal.md`](speed-goal.md) — the two north stars are in tension (higher quality tends to cost render time) and any quality fix proposed here must respect the speed doc's ceiling, not quietly blow past it.
+Transparency doc — not a strategy doc. Tracks progress toward the visual-quality north star so we don't re-propose rejected ideas or lose sight of the real bottleneck. Companion to [`docs/speed-goal.md`](speed-goal.md). **Direction changed 2026-11-11 (owner): film quality comes first until it matches Resolve; render speed is hygiene with limits.** The rules below are current; the dated entries further down are history, kept as evidence.
 
 ## North star
 
 - **Close the gap to DaVinci Resolve's visual output quality**, with zoom/pan (Ken Burns) as the current headline gap — non-zoomed footage is already close after the 2026-07-12 CQP switch (see Current state below).
-- **Hard constraint: no severe render-time regression.** Any fix here must stay inside `docs/speed-goal.md`'s 5-min cold-render ceiling. A quality win that blows the speed budget is not a win — it needs to be scoped as a toggle/opt-in, not a default.
-- **Make it testable, not vibes-based.** "Closing the gap" = passing a blind side-by-side TV-check against a DaVinci Resolve export of the *same project*, at 2160p, specifically on zoomed/panned footage. Same TV-check discipline already used for the CQP switch and the #85/#110 encoder work — just anchored against an external DaVinci reference instead of an internal before/after.
+- **Render-time rule (2026-11-11, replaces the old "5-min hard ceiling"):** render time is the wait from pressing Render to the finished film. Target 5 minutes or less; no normal render reaches 10 minutes (see `docs/speed-goal.md`). A quality fix may use the room between 5 and 10 minutes only if the gain is visible on the TV. Work moved into background preparation while the user edits does not count against the wait, but its cost (processing time, storage, when clips become ready to edit) still has to be measured. A quality fix must not add a setting or toggle; prefer a better default.
+- **The TV side-by-side decides.** "Closing the gap" = the owner's side-by-side TV check against a DaVinci Resolve export of the *same project*. Metrics (VMAF, SSIM, PSNR) only locate the stage where quality is lost; a metric gain alone is never a pass (lesson from #124).
+- **Work order (2026-11-11):** #228 measures the whole chain against Resolve first. #198 (intermediate encodes) is built only if #228 shows the visible loss is there. #229 (zoom from source-resolution pixels) waits for both.
 
-## Current state (as of 2026-07-14)
+## How to read the history below (2026-11-11)
+
+The entries below were written when speed was priority #1 and the 5-minute ceiling was a hard constraint. Read them with that in mind:
+
+- A rejection that included a TV check which found **no visible benefit** (#124 proxy bypass, lanczos) still stands as quality evidence.
+- A rejection made **on render time alone** is not quality evidence. The unsharp test was never judged on the TV. It is not re-proposed here (no editor sharpens by default), but its rejection must not be cited as proof that it does not help.
+- "Hypothesis space closed" for #116 means the filter-layer and UI-guardrail angles. Changing the order of operations (#229) and the quality of the intermediates (#198) are different angles and remain open.
+
+## Current state (as of 2026-07-14, historical)
 
 - **Non-zoomed 4K quality: materially improved.** The launch-plan #1.1/#1.2 switch from AMF VBR (40M/50M) to CQP (`qp_i=18/qp_p=20`) was TV-checked and confirmed sharper on non-zoomed pan-heavy footage.
 - **Zoomed (Ken Burns) footage: now looks soft *by comparison*.** Filed as #116. Not yet established whether this is a regression the CQP change exposed (rest of the frame got sharper, so the zoomed region's pre-existing softness now stands out) or something that got worse. That's the first thing any #116 work should establish.

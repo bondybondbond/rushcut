@@ -2,11 +2,18 @@
 
 Transparency doc — not a strategy doc. Tracks progress toward the render-speed north star so we don't re-propose rejected ideas or lose sight of the real bottleneck.
 
-## North star
+## North star (revised 2026-11-11, owner)
 
-- **Cold render: 5 min max** (any project size, any resolution)
-- **Proxy gen: as little as possible, ~5–10 min ceiling** for a full project's background proxy batch
-- Existential goal: close the gap to DaVinci Resolve's render speed — see [[feedback_no_recalibrate_render_time_target]]. Do not soften this target.
+Film quality now comes first until it matches Resolve; render speed is hygiene with limits, not a north star of its own (see `docs/quality-goal.md`).
+
+- **Render time is the wait from pressing Render to the finished film.** Work done in the background while the user edits does not count against it.
+- **Target: 5 minutes or less. Limit: no normal render reaches 10 minutes.** A quality gain may use the room between 5 and 10 minutes only if it is visibly better on the TV.
+- The 10-minute limit applies to the reference project (below) and to normal projects of comparable complexity. Larger projects may take proportionately longer, but must not become unreasonably slow.
+- **Hide the wait.** Do as much work as possible in the background while the user edits (preparing, pre-rendering, caching, reusing finished work), keeping editing responsive. Background cost (processing time, storage, when clips become ready to edit) is measured, not assumed free.
+- No unexplained regressions; cheap wins welcome.
+- **Reference project:** the "Big case" below (about 20 clips, 4K, crossfade, opening and closing transitions, hardware encode). It is over the 5-minute target today and has at times been over the 10-minute limit. Its film length and how typical it is of real sessions are still to be confirmed. Every timing quoted against the limits records: proxies warm or cold, render cache warm or cold, transitions present, zoom present.
+
+Superseded on 2026-11-11: "Cold render: 5 min max (any project size, any resolution)" and "close the gap to Resolve's render speed" as an existential goal. The numbers and learning log below are history, kept as evidence.
 
 ## Current speed logs (real numbers, from `%TEMP%\rushcut\render-timing-log.jsonl`)
 
@@ -30,6 +37,8 @@ Transparency doc — not a strategy doc. Tracks progress toward the render-speed
 
 1. **#115 (P3-Low)** — opt-out toggle to skip the open/close boundary re-encode, follow-up to #88 (closed). Default stays ON (Best Quality) — opt-out only.
 2. **#106 (P3-Low)** — copy-stream normalise for already-compliant clips. Narrow: never fires on the primary DJI HEVC workload.
+
+**Update 2026-11-11:** lever-level speed work stays paused. Background work during editing is the open architecture angle; no issue has been raised for it yet. The redirect to `docs/PRD-DEV.md` product-gap items in the note below is superseded: film quality comes first.
 
 **Swimlane PAUSED (user decision, 2026-07-15):** 7/7 lever-level speed investigations since #65 failed to move `t_render_s` (#85/#104/#107/#110/#113/#124/#131). User confirmed: pause further speed-lever attempts, redirect effort to `docs/PRD-DEV.md` product-gap items (multi-track, cut-to-music, titles). Do not pick up another speed-lever issue without a genuinely new angle (architecture-level, not another filter-flag tweak) and without re-raising this with the user first.
 
