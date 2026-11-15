@@ -6,7 +6,7 @@ use base64::Engine as _;
 use db::{
     add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
-    get_setting, get_stuck_processing_jobs, set_setting,
+    get_setting, get_stuck_processing_jobs, has_active_job, set_setting,
     delete_setting, get_all_settings, migrate_render_prefs,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_all_encoding_claims, reset_done_with_missing_proxy, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
@@ -606,6 +606,175 @@ fn get_proxy_avg_timing_cmd(output_resolution: Option<String>) -> Result<Option<
     Ok(Some(avg))
 }
 
+// ---------------------------------------------------------------------------
+// [#198] Proxy encode quality + version tag + lazy upgrade of existing proxies
+// ---------------------------------------------------------------------------
+//
+// The 2160p background proxy is also the 4K final-render source, so its quality
+// is the first generation of the finished film. Blind viewing (#198 Stage 0,
+// two rounds) picked QP 18 as visibly best on steady, detail-rich zoomed shots;
+// QP 30 (the old value) was the worst. h264_amf, `-quality speed` stays: QP does
+// not change encode time and `quality` bought only ~0.1 VMAF for +30-70% time.
+//
+// QP and PROXY_TAG move together. Bump PROXY_TAG whenever the proxy encode
+// settings change so existing proxies are re-encoded lazily in the background.
+const PROXY_QP: &str = "18";
+const PROXY_TAG: &str = "rc-proxy-v2-qp18";
+// ffmpeg `-metadata` argument carrying PROXY_TAG (mp4 `comment` atom; read back by
+// proxy_tag_native). Kept as a separate literal because args are &'static str;
+// the unit test `proxy_tag_arg_matches_tag` keeps the two in sync.
+const PROXY_TAG_ARG: &str = "comment=rc-proxy-v2-qp18";
+
+/// Required free disk space before an upgrade encode: 3x the source file size plus 5 GiB
+/// headroom for renders / exports. Measured QP18 proxy size over 16 real DJI clips (#198):
+/// 0.34x-2.34x of the source file (high-detail landscape footage is the worst case), so 3x
+/// covers the sample with margin. The old proxy is kept during the upgrade, so both files
+/// coexist (the old one is already counted as used space).
+const UPGRADE_HEADROOM_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+/// Hard floor while an upgrade encode is running: if free space falls below this the encode
+/// is killed and its temp file removed, whatever the estimate said.
+const UPGRADE_FLOOR_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+
+fn upgrade_free_space_needed(src_len: u64) -> u64 {
+    src_len.saturating_mul(3).saturating_add(UPGRADE_HEADROOM_BYTES)
+}
+
+fn upgrade_floor_breached(free: u64) -> bool {
+    free < UPGRADE_FLOOR_BYTES
+}
+
+/// What to do with a valid proxy that already exists on disk.
+#[derive(Debug, PartialEq)]
+enum ProxyAction {
+    /// Current tag and 2160p: reuse as is.
+    Current,
+    /// Stale or missing tag, or below 2160p: re-encode in the background, keep the old file usable.
+    Upgrade,
+}
+
+fn proxy_action(height: u32, tag: Option<&str>) -> ProxyAction {
+    if height >= 2160 && tag == Some(PROXY_TAG) {
+        ProxyAction::Current
+    } else {
+        ProxyAction::Upgrade
+    }
+}
+
+/// How `encode_one_clip` treats a valid proxy that already exists on disk.
+#[derive(Debug, PartialEq)]
+enum ProxyRoute {
+    /// Use it as is.
+    Reuse,
+    /// Stale/missing tag: re-encode in the background AFTER the batch's fresh encodes.
+    Upgrade,
+    /// Legacy sub-2160p proxy: the pre-#198 re-encode path (unchanged; #233).
+    Reencode,
+}
+
+/// The routing table, kept pure so it can be unit-tested:
+///  - below 2160p: old path;
+///  - only the low-priority batch upgrades (a Render-screen boost never does: a render may be
+///    about to start);
+///  - only with the AMF encoder: the tag marks the AMF quality setting, and a software
+///    (libx264) proxy cannot be improved by re-encoding it with the same settings.
+fn proxy_route(height: u32, tag: Option<&str>, low_priority: bool, is_amf: bool) -> ProxyRoute {
+    if height < 2160 {
+        return ProxyRoute::Reencode;
+    }
+    if !low_priority || !is_amf {
+        return ProxyRoute::Reuse;
+    }
+    match proxy_action(height, tag) {
+        ProxyAction::Current => ProxyRoute::Reuse,
+        ProxyAction::Upgrade => ProxyRoute::Upgrade,
+    }
+}
+
+/// An upgrade queued by a worker, run by `run_bg_proxy_batch` after every fresh encode of the
+/// batch has finished, so an upgrade can never delay a clip that has no proxy yet.
+struct UpgradeJob {
+    clip_id: String,
+    local_path: String,
+    proxy_path: String,
+    old_tag: Option<String>,
+}
+
+/// Read the proxy encode-version tag (mp4 `comment`). None if absent or unreadable.
+fn proxy_tag_native(path: &str) -> Option<String> {
+    let out = std::process::Command::new(ffprobe_exe())
+        .args(["-v", "quiet", "-show_entries", "format_tags=comment", "-of", "csv=p=0", path])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// In-process bookkeeping for proxy upgrades: paths being upgraded right now (one
+/// worker per file) and paths whose upgrade already failed this session (never
+/// retried until the app restarts, so a bad file cannot trigger an upgrade loop).
+static PROXY_UPGRADES: OnceLock<Mutex<(HashSet<String>, HashSet<String>)>> = OnceLock::new();
+
+fn proxy_upgrades() -> &'static Mutex<(HashSet<String>, HashSet<String>)> {
+    PROXY_UPGRADES.get_or_init(|| Mutex::new((HashSet::new(), HashSet::new())))
+}
+
+/// Held for the whole of one upgrade encode: upgrades run strictly one at a time app-wide.
+static UPGRADE_SERIAL: Mutex<()> = Mutex::new(());
+
+struct UpgradeGuard {
+    path: String,
+}
+
+impl Drop for UpgradeGuard {
+    fn drop(&mut self) {
+        if let Ok(mut g) = proxy_upgrades().lock() {
+            g.0.remove(&self.path);
+        }
+    }
+}
+
+/// Some(guard) if this caller may upgrade `path` now; None if another worker is already
+/// on it or it already failed this session.
+fn try_begin_upgrade(path: &str) -> Option<UpgradeGuard> {
+    let mut g = proxy_upgrades().lock().ok()?;
+    if g.0.contains(path) || g.1.contains(path) {
+        return None;
+    }
+    g.0.insert(path.to_string());
+    Some(UpgradeGuard { path: path.to_string() })
+}
+
+fn mark_upgrade_failed(path: &str) {
+    if let Ok(mut g) = proxy_upgrades().lock() {
+        g.1.insert(path.to_string());
+    }
+}
+
+/// Free bytes available to the caller on the volume holding `dir` (None if unknown).
+#[cfg(target_os = "windows")]
+fn free_disk_bytes(dir: &str) -> Option<u64> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lp_directory_name: *const u16,
+            lp_free_bytes_available: *mut u64,
+            lp_total_number_of_bytes: *mut u64,
+            lp_total_number_of_free_bytes: *mut u64,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = dir.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut avail: u64 = 0;
+    let mut total: u64 = 0;
+    let mut free: u64 = 0;
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut free) };
+    if ok != 0 { Some(avail) } else { None }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn free_disk_bytes(_dir: &str) -> Option<u64> {
+    None
+}
+
 /// Return the video stream height of a proxy file (0 on error).
 /// Used to detect legacy 1080p proxies that need upgrading to 2160p for 4K render reuse.
 fn proxy_height_native(path: &str) -> u32 {
@@ -690,6 +859,13 @@ fn round_fps_to_standard(s: &str) -> u32 {
 /// passing them to AMF causes "Could not open encoder before EOF" (silent failure, elapsed=0.1s).
 /// Fixed here to mirror the same branching as `generate_proxy_file_normal_priority`.
 fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
+    generate_proxy_file_low_priority_cancellable(src, dst, &|| false)
+}
+
+/// Same encode as `generate_proxy_file_low_priority`, but `cancel` is polled while ffmpeg
+/// runs (about every 2 s). When it returns true the ffmpeg child is killed and the call
+/// returns false ([#198]: an upgrade must never keep the GPU encoder busy once a render starts).
+fn generate_proxy_file_low_priority_cancellable(src: &str, dst: &str, cancel: &dyn Fn() -> bool) -> bool {
     let encoder = detect_best_encoder();
     let is_amf = encoder == "h264_amf";
     // [Q2 Step 8b] Use native source fps so proxy matches render target_fps and passes reuse gate.
@@ -722,8 +898,8 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
             "-pix_fmt", "yuv420p",
             "-profile:v", "main",
             "-rc", "cqp",
-            "-qp_i", "30",
-            "-qp_p", "30",
+            "-qp_i", PROXY_QP,
+            "-qp_p", PROXY_QP,
             "-quality", "speed",
             // Normalize color primaries so AMF-encoded proxies don't carry
             // prim:reserved. Without these, downstream AMF encodes see prim:reserved
@@ -731,6 +907,8 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
             "-colorspace", "bt709",
             "-color_primaries", "bt709",
             "-color_trc", "bt709",
+            // [#198] version tag only for the AMF quality setting; software (libx264) proxies stay untagged and are never "upgraded".
+            "-metadata", PROXY_TAG_ARG,
         ]);
     } else {
         args.extend(["-preset", "ultrafast", "-crf", "23"]);
@@ -758,16 +936,60 @@ fn generate_proxy_file_low_priority(src: &str, dst: &str) -> bool {
         cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
     }
 
-    match cmd.output() {
-        Ok(out) if out.status.success() => true,
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            proxy_bg_log(&format!("[PROXY_BG] encode-spawn-error src={} err={}", src, e));
+            return false;
+        }
+    };
+    // Drain stderr on its own thread so a chatty ffmpeg can never block on a full pipe
+    // while this thread polls for exit / cancellation.
+    let stderr_pipe = child.stderr.take();
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(mut p) = stderr_pipe {
+            let _ = std::io::Read::read_to_string(&mut p, &mut s);
+        }
+        s
+    });
+    let mut cancelled = false;
+    let mut polls: u32 = 0;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) => {
+                polls += 1;
+                if polls % 20 == 0 && cancel() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    cancelled = true;
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => {
+                // Cannot read the child's state: stop it and reap it rather than leak it.
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let stderr = reader.join().unwrap_or_default();
+    if cancelled {
+        proxy_bg_log(&format!("[PROXY_BG] encode-cancelled (low priority) src={}", src));
+        return false;
+    }
+    match status {
+        Some(st) if st.success() => true,
+        Some(_) => {
             let tail: String = stderr.chars().rev().take(400).collect::<String>().chars().rev().collect();
             proxy_bg_log(&format!("[PROXY_BG] encode-error (low priority) src={} stderr_tail={}", src, tail));
             false
         }
-        Err(e) => {
-            proxy_bg_log(&format!("[PROXY_BG] encode-spawn-error src={} err={}", src, e));
+        None => {
+            proxy_bg_log(&format!("[PROXY_BG] encode-error (low priority) src={} status-unavailable", src));
             false
         }
     }
@@ -794,7 +1016,7 @@ fn generate_proxy_file_normal_priority(src: &str, dst: &str, threads: u32) -> bo
     // [S3] AMF uses different encode-control args than libx264. -preset and -crf
     // are libx264-only; AMF needs -rc cqp + -qp_i/-qp_p + -quality. Passing the
     // wrong args fails AMF init with "Could not open encoder before EOF".
-    // QP 30 / quality=speed is the proxy preset (intermediate quality, fast).
+    // PROXY_QP (18, #198) / quality=speed is the proxy preset; the libx264 branch is unchanged.
     let mut args: Vec<&str> = vec![
         "-hide_banner", "-loglevel", "error",
         // [#92] Hardware-decode the input HEVC on the GPU. Naming an AMF *output* encoder does
@@ -816,8 +1038,8 @@ fn generate_proxy_file_normal_priority(src: &str, dst: &str, threads: u32) -> bo
             "-pix_fmt", "yuv420p",
             "-profile:v", "main",
             "-rc", "cqp",
-            "-qp_i", "30",
-            "-qp_p", "30",
+            "-qp_i", PROXY_QP,
+            "-qp_p", PROXY_QP,
             "-quality", "speed",
             // Normalize color primaries so AMF-encoded proxies don't carry
             // prim:reserved. Without these, downstream AMF encodes see prim:reserved
@@ -825,6 +1047,8 @@ fn generate_proxy_file_normal_priority(src: &str, dst: &str, threads: u32) -> bo
             "-colorspace", "bt709",
             "-color_primaries", "bt709",
             "-color_trc", "bt709",
+            // [#198] version tag only for the AMF quality setting; software (libx264) proxies stay untagged and are never "upgraded".
+            "-metadata", PROXY_TAG_ARG,
         ]);
     } else {
         args.extend([
@@ -1972,6 +2196,126 @@ fn proxy_name_for_path(local_path: &str) -> String {
     format!("{:016x}", fnv1a64(local_path.to_lowercase().as_bytes()))
 }
 
+/// [#198] Re-encode an existing, valid 2160p proxy that carries a stale or missing tag.
+/// Contract (owner gates): the old proxy is never damaged and stays usable until the new
+/// file is complete and valid; `proxy_status` is never touched; a failed or skipped upgrade
+/// leaves the old file as it was; each path is attempted at most once per session after a
+/// failure, and one worker per file at a time; it never starts while ANY render is active
+/// (any project, either app instance: has_active_job reads the shared DB), and an encode in
+/// progress is killed within about 2 s when a render starts (retried in a later batch); it
+/// is skipped when the volume is short of space.
+fn upgrade_existing_proxy(
+    clip_id: &str,
+    local_path: &str,
+    proxy_path: &str,
+    proxy_dir: &str,
+    old_tag: Option<&str>,
+) {
+    let guard = match try_begin_upgrade(proxy_path) {
+        Some(g) => g,
+        None => {
+            proxy_bg_log(&format!("[PROXY_BG] upgrade-skip clip_id={} reason=in-flight-or-failed-this-session", clip_id));
+            return;
+        }
+    };
+    // Global serialisation: batches are keyed per project, so two projects' low-priority
+    // batches could otherwise upgrade at the same time and each pass the free-space check on
+    // the same free bytes. One upgrade encode at a time across the whole app; the render and
+    // disk checks below run only after this lock is held, so they are never stale.
+    let _serial = UPGRADE_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // Re-read after the lock: an earlier upgrade pass (or another batch's queue) may already have
+    // replaced this proxy while this job was waiting; never re-encode a proxy that is current.
+    if proxy_action(proxy_height_native(proxy_path), proxy_tag_native(proxy_path).as_deref()) == ProxyAction::Current {
+        proxy_bg_log(&format!("[PROXY_BG] upgrade-skip clip_id={} reason=already-current", clip_id));
+        return;
+    }
+    // A DB error counts as "render active": skipping is the safe side.
+    if has_active_job().unwrap_or(true) {
+        proxy_bg_log(&format!("[PROXY_BG] upgrade-skip clip_id={} reason=render-active", clip_id));
+        return;
+    }
+    let src_len = std::fs::metadata(local_path).map(|m| m.len()).unwrap_or(0);
+    let need = upgrade_free_space_needed(src_len);
+    match free_disk_bytes(proxy_dir) {
+        Some(free) if free >= need => {}
+        Some(free) => {
+            proxy_bg_log(&format!(
+                "[PROXY_BG] upgrade-skip clip_id={} reason=low-disk free={}MB need={}MB (old proxy kept)",
+                clip_id, free / 1_048_576, need / 1_048_576
+            ));
+            return;
+        }
+        None => {
+            // Unknown free space: the safe side is to leave the old proxy as it is.
+            proxy_bg_log(&format!("[PROXY_BG] upgrade-skip clip_id={} reason=disk-space-unknown (old proxy kept)", clip_id));
+            return;
+        }
+    }
+    // Own temp name (still ends in .tmp.mp4 so vacuum_proxies_cmd skips it): never the file the
+    // fresh-encode paths use for the same source.
+    let tmp_path = format!(r"{}\{}.upg.tmp.mp4", proxy_dir, proxy_name_for_path(local_path));
+    let _ = std::fs::remove_file(&tmp_path); // stale temp from a crashed run
+    proxy_bg_log(&format!("[PROXY_BG] upgrade-start clip_id={} old_tag={:?} new_tag={}", clip_id, old_tag, PROXY_TAG));
+    let t0 = std::time::Instant::now();
+    let render_started = std::cell::Cell::new(false);
+    let disk_low = std::cell::Cell::new(false);
+    let ok = generate_proxy_file_low_priority_cancellable(local_path, &tmp_path, &|| {
+        if has_active_job().unwrap_or(true) {
+            render_started.set(true);
+            return true;
+        }
+        if let Some(free) = free_disk_bytes(proxy_dir) {
+            if upgrade_floor_breached(free) {
+                disk_low.set(true);
+                return true;
+            }
+        }
+        false
+    });
+    let elapsed = t0.elapsed().as_secs_f64();
+    if render_started.get() || disk_low.get() {
+        proxy_bg_log(&format!(
+            "[PROXY_BG] upgrade-cancelled clip_id={} elapsed={:.1}s reason={} (old proxy kept, temp file removed)",
+            clip_id, elapsed, if render_started.get() { "render-started" } else { "disk-floor" }
+        ));
+        let _ = std::fs::remove_file(&tmp_path);
+        if disk_low.get() {
+            mark_upgrade_failed(proxy_path); // do not retry this session on a full disk
+        }
+        return;
+    }
+    let complete = ok
+        && is_valid_proxy_file(&tmp_path)
+        && proxy_height_native(&tmp_path) >= 2160
+        && proxy_tag_native(&tmp_path).as_deref() == Some(PROXY_TAG);
+    if !complete {
+        proxy_bg_log(&format!("[PROXY_BG] upgrade-failed clip_id={} elapsed={:.1}s (old proxy kept, not retried this session)", clip_id, elapsed));
+        let _ = std::fs::remove_file(&tmp_path);
+        mark_upgrade_failed(proxy_path);
+        return;
+    }
+    // A render may have started during the final probes: do not swap under it; retry later.
+    if has_active_job().unwrap_or(true) {
+        proxy_bg_log(&format!("[PROXY_BG] upgrade-cancelled clip_id={} reason=render-started-before-swap (old proxy kept, temp file removed)", clip_id));
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
+    }
+    // Windows replaces the destination atomically, and fails (leaving both files intact) when
+    // the old proxy is held open without share-delete (e.g. playing in the Trimmer).
+    match std::fs::rename(&tmp_path, proxy_path) {
+        Ok(()) => {
+            proxy_bg_log(&format!("[PROXY_BG] upgrade-done clip_id={} elapsed={:.1}s", clip_id, elapsed));
+            record_proxy_timing(elapsed, 2160);
+        }
+        Err(e) => {
+            proxy_bg_log(&format!("[PROXY_BG] upgrade-swap-failed clip_id={} err={} (old proxy kept, not retried this session)", clip_id, e));
+            let _ = std::fs::remove_file(&tmp_path);
+            mark_upgrade_failed(proxy_path);
+        }
+    }
+    drop(guard);
+}
+
 /// Per-clip encode logic, extracted so parallel workers can share it.
 /// Idempotent + safe to call concurrently from multiple workers on the same project
 /// thanks to `claim_clip_for_encoding`'s atomic compare-and-set on `proxy_status`.
@@ -1985,6 +2329,7 @@ fn encode_one_clip(
     sibling_clip_ids: &[String],
     low_priority: bool,
     threads_per_clip: u32,
+    deferred_upgrades: &Mutex<Vec<UpgradeJob>>,
 ) {
     // Codecs WebView2 decodes natively — no transcode needed (matches proxy.py logic).
     const NATIVE_CODECS: &[&str] = &["h264", "vp8", "vp9"];
@@ -2022,18 +2367,46 @@ fn encode_one_clip(
     // All cuts from the same source share this one file.
     let proxy_path = format!(r"{}\{}.mp4", proxy_dir, proxy_name_for_path(local_path));
 
-    // Already a valid proxy on disk? Only skip re-encode if it is 2160p-compatible.
-    // Legacy 1080p proxies (from earlier Batch N sessions before this fix) fall through
-    // and get re-encoded at 2160p so they work for both 1080p and 4K renders.
+    // Already a valid proxy on disk? Reuse it as is when it is 2160p AND carries the
+    // current encode tag. A stale/missing tag (QP30-era proxy) or a legacy 1080p proxy is
+    // upgraded IN THE BACKGROUND (#198): the old file stays usable and `done` the whole
+    // time, and is replaced atomically only when the new file is complete. The upgrade
+    // deliberately does NOT go through claim_clip_for_encoding (it refuses `done` clips) and
+    // never touches proxy_status.
     if std::path::Path::new(&proxy_path).exists() && is_valid_proxy_file(&proxy_path) {
         let h = proxy_height_native(&proxy_path);
-        if h >= 2160 {
-            proxy_bg_log(&format!("[PROXY_BG] done clip_id={} elapsed=0.0s reason=cached-2160p", canonical_clip_id));
-            fan_out(&proxy_path);
-            return;
+        let tag = proxy_tag_native(&proxy_path);
+        let route = proxy_route(h, tag.as_deref(), low_priority, detect_best_encoder() == "h264_amf");
+        match route {
+            ProxyRoute::Reuse => {
+                proxy_bg_log(&format!(
+                    "[PROXY_BG] done clip_id={} elapsed=0.0s reason=cached-2160p tag={:?} low_priority={}",
+                    canonical_clip_id, tag, low_priority
+                ));
+                fan_out(&proxy_path);
+                return;
+            }
+            ProxyRoute::Upgrade => {
+                // The old proxy is usable right now: make sure the clip reads as ready, and
+                // queue the re-encode for after this batch's fresh encodes (a clip with no
+                // proxy yet must never wait behind a long upgrade).
+                fan_out(&proxy_path);
+                proxy_bg_log(&format!("[PROXY_BG] upgrade-queued clip_id={} old_tag={:?}", canonical_clip_id, tag));
+                if let Ok(mut q) = deferred_upgrades.lock() {
+                    q.push(UpgradeJob {
+                        clip_id: canonical_clip_id.to_string(),
+                        local_path: local_path.to_string(),
+                        proxy_path: proxy_path.clone(),
+                        old_tag: tag,
+                    });
+                }
+                return;
+            }
+            ProxyRoute::Reencode => {
+                proxy_bg_log(&format!("[PROXY_BG] upgrade clip_id={} existing-height={}px re-encoding-at-2160p", canonical_clip_id, h));
+                // Legacy sub-2160p proxy: fall through to the existing re-encode path (unchanged, #233).
+            }
         }
-        proxy_bg_log(&format!("[PROXY_BG] upgrade clip_id={} existing-height={}px re-encoding-at-2160p", canonical_clip_id, h));
-        // Fall through to re-encode at 2160p.
     }
 
     // Real encode path (HEVC / unknown).
@@ -2200,6 +2573,7 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
     // also running concurrently.
     let queue: Arc<Mutex<Vec<(String, String, Option<String>, Vec<String>)>>> =
         Arc::new(Mutex::new(work));
+    let deferred: Arc<Mutex<Vec<UpgradeJob>>> = Arc::new(Mutex::new(Vec::new()));
 
     let mut handles = Vec::with_capacity(n_workers);
     for worker_idx in 0..n_workers {
@@ -2207,6 +2581,7 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
         let app = app.clone();
         let project_id = project_id.clone();
         let proxy_dir = proxy_dir.clone();
+        let deferred = Arc::clone(&deferred);
         handles.push(tokio::task::spawn_blocking(move || {
             loop {
                 let next = { queue.lock().unwrap().pop() };
@@ -2226,6 +2601,7 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
                             &siblings,
                             low_priority,
                             threads_per_clip,
+                            &deferred,
                         );
                     }
                 }
@@ -2238,6 +2614,21 @@ async fn run_bg_proxy_batch(app: AppHandle, project_id: String, low_priority: bo
     }
 
     proxy_bg_log(&format!("[PROXY_BG] batch-done project_id={}", project_id));
+
+    // [#198] Proxy upgrades run AFTER the batch (so no clip waits behind them) and detached from
+    // it (so this project's batch guard is released and a later batch for new clips is not
+    // skipped). They are serialised app-wide inside upgrade_existing_proxy.
+    let jobs: Vec<UpgradeJob> = deferred.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    if !jobs.is_empty() {
+        let proxy_dir_up = proxy_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            proxy_bg_log(&format!("[PROXY_BG] upgrade-pass-start count={}", jobs.len()));
+            for j in jobs {
+                upgrade_existing_proxy(&j.clip_id, &j.local_path, &j.proxy_path, &proxy_dir_up, j.old_tag.as_deref());
+            }
+            proxy_bg_log("[PROXY_BG] upgrade-pass-done");
+        });
+    }
 }
 
 /// Generate a proxy for a single clip on demand.
@@ -2698,4 +3089,246 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod proxy_upgrade_tests {
+    use super::*;
+
+    #[test]
+    fn proxy_tag_arg_matches_tag() {
+        assert_eq!(PROXY_TAG_ARG, format!("comment={}", PROXY_TAG));
+        assert_eq!(PROXY_QP, "18");
+        assert!(PROXY_TAG.contains("qp18"));
+    }
+
+    #[test]
+    fn proxy_action_table() {
+        assert_eq!(proxy_action(2160, Some(PROXY_TAG)), ProxyAction::Current);
+        assert_eq!(proxy_action(2160, None), ProxyAction::Upgrade); // QP30-era proxy, no tag
+        assert_eq!(proxy_action(2160, Some("rc-proxy-v1")), ProxyAction::Upgrade);
+        assert_eq!(proxy_action(1080, Some(PROXY_TAG)), ProxyAction::Upgrade);
+        assert_eq!(proxy_action(0, None), ProxyAction::Upgrade);
+    }
+
+    #[test]
+    fn proxy_route_table() {
+        // 2160p, current tag: reuse, whatever the batch kind.
+        assert_eq!(proxy_route(2160, Some(PROXY_TAG), true, true), ProxyRoute::Reuse);
+        assert_eq!(proxy_route(2160, Some(PROXY_TAG), false, true), ProxyRoute::Reuse);
+        // 2160p, stale or missing tag: only a low-priority AMF batch upgrades.
+        assert_eq!(proxy_route(2160, None, true, true), ProxyRoute::Upgrade);
+        assert_eq!(proxy_route(2160, Some("rc-proxy-v1"), true, true), ProxyRoute::Upgrade);
+        assert_eq!(proxy_route(2160, None, false, true), ProxyRoute::Reuse, "Render-screen boost never upgrades");
+        assert_eq!(proxy_route(2160, None, true, false), ProxyRoute::Reuse, "software encoder: nothing to improve");
+        // Legacy sub-2160p proxy keeps the pre-#198 path regardless.
+        assert_eq!(proxy_route(1080, None, true, true), ProxyRoute::Reencode);
+        assert_eq!(proxy_route(1080, Some(PROXY_TAG), false, false), ProxyRoute::Reencode);
+        assert_eq!(proxy_route(0, None, true, true), ProxyRoute::Reencode);
+    }
+
+    #[test]
+    fn upgrade_space_rule() {
+        let gib = 1024u64 * 1024 * 1024;
+        assert_eq!(upgrade_free_space_needed(0), 5 * gib);
+        assert_eq!(upgrade_free_space_needed(10 * gib), 30 * gib + 5 * gib);
+        assert!(upgrade_free_space_needed(u64::MAX) >= 5 * gib); // no overflow panic
+        // Worst measured ratio (2.34x source) fits the estimate with margin.
+        let src = 600u64 * 1024 * 1024;
+        assert!(upgrade_free_space_needed(src) > (src as f64 * 2.34) as u64 + 5 * gib - 1);
+        assert!(upgrade_floor_breached(3 * gib - 1));
+        assert!(!upgrade_floor_breached(3 * gib));
+    }
+
+    #[test]
+    fn upgrade_guard_is_exclusive_and_failure_sticks() {
+        let p = r"C:\test\proxies\guard-a.mp4";
+        let g = try_begin_upgrade(p).expect("first caller gets the guard");
+        assert!(try_begin_upgrade(p).is_none(), "second concurrent worker must be refused");
+        drop(g);
+        let g2 = try_begin_upgrade(p).expect("free again after the guard drops");
+        drop(g2);
+        mark_upgrade_failed(p);
+        assert!(try_begin_upgrade(p).is_none(), "a failed path is not retried this session");
+        assert!(try_begin_upgrade(r"C:\test\proxies\guard-b.mp4").is_some());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn free_disk_bytes_reads_temp_volume() {
+        let tmp = std::env::temp_dir();
+        let free = free_disk_bytes(tmp.to_str().unwrap());
+        assert!(free.map(|f| f > 0).unwrap_or(false));
+    }
+
+    // The swap: rename over the old proxy either replaces it whole or fails leaving BOTH files intact.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn swap_is_atomic_or_leaves_old_intact() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("rc-swap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("p.mp4");
+        let new = dir.join("p.tmp.mp4");
+        std::fs::write(&old, b"OLD-PROXY").unwrap();
+        std::fs::write(&new, b"NEW-PROXY").unwrap();
+        {
+            // Old proxy held open for reading WITHOUT share-delete (FILE_SHARE_READ only).
+            let _held = std::fs::OpenOptions::new().read(true).share_mode(1).open(&old).unwrap();
+            let r = std::fs::rename(&new, &old);
+            assert!(r.is_err(), "rename over a file held open without share-delete must fail");
+            assert_eq!(std::fs::read(&old).unwrap(), b"OLD-PROXY", "old proxy untouched");
+            assert_eq!(std::fs::read(&new).unwrap(), b"NEW-PROXY", "temp file untouched");
+        }
+        std::fs::rename(&new, &old).expect("swap succeeds once the old file is released");
+        assert_eq!(std::fs::read(&old).unwrap(), b"NEW-PROXY");
+        assert!(!new.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test against the REAL ffmpeg / AMF encoder and a real camera clip.
+    // Ignored by default. Run with RC_TEST_CLIP (a 4K clip, at least 40 s) and RC_TEST_DIR (an
+    // EMPTY scratch dir): the test points RUSHCUT_DATA_DIR at RC_TEST_DIR so the DB it reads is
+    // a throwaway one (a bare `jobs` table); it never touches the real %APPDATA% database.
+    //   cargo test --lib proxy_upgrade_tests::real_upgrade_paths -- --ignored --nocapture
+    // -----------------------------------------------------------------------
+    #[cfg(target_os = "windows")]
+    fn rc_run(exe: &str, args: &[&str]) -> bool {
+        std::process::Command::new(exe)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore]
+    fn real_upgrade_paths() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (clip, dir) = match (std::env::var("RC_TEST_CLIP"), std::env::var("RC_TEST_DIR")) {
+            (Ok(c), Ok(d)) if !c.is_empty() && !d.is_empty() => (c, std::path::PathBuf::from(d)),
+            _ => {
+                eprintln!("RC_TEST_CLIP / RC_TEST_DIR not set: skipping");
+                return;
+            }
+        };
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::env::set_var("RUSHCUT_DATA_DIR", &data);
+        assert!(crate::db::db_path().starts_with(&dir), "DB must be the scratch DB");
+        let proxies = dir.join("proxies");
+        std::fs::create_dir_all(&proxies).unwrap();
+        let proxies_s = proxies.to_str().unwrap().to_string();
+
+        // Throwaway DB with just the table has_active_job reads.
+        let conn = rusqlite::Connection::open(crate::db::db_path()).unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS jobs (id TEXT, project_id TEXT, status TEXT);").unwrap();
+
+        // 30 s source excerpt (stream copy), the "camera original" for this test.
+        let src = dir.join("src.mp4");
+        assert!(rc_run(ffmpeg_exe(), &["-hide_banner", "-loglevel", "error", "-ss", "10", "-t", "30", "-i", &clip,
+            "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-y", src.to_str().unwrap()]));
+        let src_s = src.to_str().unwrap().to_string();
+
+        // The old (QP30-era, untagged) proxy, built with the exact pre-#198 arguments.
+        let old30 = dir.join("old_qp30.mp4");
+        assert!(rc_run(ffmpeg_exe(), &["-hide_banner", "-loglevel", "error", "-i", &src_s, "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", "scale=-2:2160,format=yuv420p", "-r", "30000/1001", "-fps_mode", "cfr", "-c:v", "h264_amf", "-pix_fmt", "yuv420p",
+            "-profile:v", "main", "-rc", "cqp", "-qp_i", "30", "-qp_p", "30", "-quality", "speed", "-c:a", "aac", "-b:a", "128k",
+            "-ar", "48000", "-y", old30.to_str().unwrap()]));
+        let proxy = proxies.join(format!("{}.mp4", proxy_name_for_path(&src_s)));
+        let proxy_s = proxy.to_str().unwrap().to_string();
+        let tmp = proxies.join(format!("{}.upg.tmp.mp4", proxy_name_for_path(&src_s)));
+        let reset_old = || { std::fs::copy(&old30, &proxy).unwrap(); };
+        let set_job = |status: &str| {
+            let c = rusqlite::Connection::open(crate::db::db_path()).unwrap();
+            c.execute("DELETE FROM jobs", []).unwrap();
+            if status != "none" {
+                c.execute("INSERT INTO jobs (id, project_id, status) VALUES ('j1','p1',?1)", [status]).unwrap();
+            }
+        };
+        let old_size = std::fs::metadata(&old30).unwrap().len();
+
+        // A. clean upgrade: old untagged proxy -> tagged QP18 proxy, temp gone, decision now Current.
+        reset_old();
+        set_job("none");
+        assert_eq!(proxy_tag_native(&proxy_s), None);
+        upgrade_existing_proxy("t-a", &src_s, &proxy_s, &proxies_s, None);
+        assert_eq!(proxy_tag_native(&proxy_s).as_deref(), Some(PROXY_TAG), "A: tag written");
+        assert!(proxy_height_native(&proxy_s) >= 2160, "A: still 2160p");
+        let new_size = std::fs::metadata(&proxy).unwrap().len();
+        assert!(new_size > old_size, "A: QP18 proxy is bigger than the QP30 one ({} vs {})", new_size, old_size);
+        assert!(!tmp.exists(), "A: temp file removed");
+        assert_eq!(proxy_action(proxy_height_native(&proxy_s), proxy_tag_native(&proxy_s).as_deref()), ProxyAction::Current);
+        eprintln!("A ok: old {} B -> new {} B", old_size, new_size);
+        // A2. a queued duplicate of an already-upgraded proxy is skipped, not re-encoded.
+        let mtime_a = std::fs::metadata(&proxy).unwrap().modified().unwrap();
+        let t_dup = std::time::Instant::now();
+        upgrade_existing_proxy("t-a2", &src_s, &proxy_s, &proxies_s, None);
+        assert!(t_dup.elapsed().as_secs_f64() < 5.0, "A2: duplicate must skip, not re-encode");
+        assert_eq!(std::fs::metadata(&proxy).unwrap().modified().unwrap(), mtime_a, "A2: proxy file untouched");
+        eprintln!("A2 ok: duplicate upgrade of a current proxy skipped");
+
+        // B. a render is active (ANY project): the upgrade must not start; old proxy untouched.
+        reset_old();
+        set_job("processing");
+        upgrade_existing_proxy("t-b", &src_s, &proxy_s, &proxies_s, None);
+        assert_eq!(proxy_tag_native(&proxy_s), None, "B: old proxy untouched");
+        assert_eq!(std::fs::metadata(&proxy).unwrap().len(), old_size, "B: size unchanged");
+        assert!(!tmp.exists(), "B: no temp file");
+        eprintln!("B ok: skipped while a render is active");
+
+        // C. a render STARTS mid-encode: encode killed, temp removed, old proxy intact, retry allowed.
+        reset_old();
+        set_job("none");
+        let t0 = std::time::Instant::now();
+        let flipper = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let c = rusqlite::Connection::open(crate::db::db_path()).unwrap();
+            c.execute("INSERT INTO jobs (id, project_id, status) VALUES ('j2','p2','processing')", []).unwrap();
+        });
+        upgrade_existing_proxy("t-c", &src_s, &proxy_s, &proxies_s, None);
+        flipper.join().unwrap();
+        let took = t0.elapsed().as_secs_f64();
+        assert_eq!(proxy_tag_native(&proxy_s), None, "C: old proxy intact");
+        assert_eq!(std::fs::metadata(&proxy).unwrap().len(), old_size, "C: size unchanged");
+        assert!(!tmp.exists(), "C: temp removed");
+        assert!(try_begin_upgrade(&proxy_s).is_some(), "C: not marked failed, retry allowed");
+        // A full encode takes about 15 s; render started at 3 s; polled every 2 s => well under 10 s.
+        assert!(took < 10.0, "C: cancel must land within a few seconds of the render starting, took {:.1}s", took);
+        eprintln!("C ok: cancelled after {:.1}s (render started at 3 s)", took);
+
+        // D. swap fails (old proxy held open without share-delete): old intact, temp removed, not retried.
+        reset_old();
+        set_job("none");
+        {
+            let _held = std::fs::OpenOptions::new().read(true).share_mode(1).open(&proxy).unwrap();
+            upgrade_existing_proxy("t-d", &src_s, &proxy_s, &proxies_s, None);
+        }
+        assert_eq!(proxy_tag_native(&proxy_s), None, "D: old proxy intact");
+        assert_eq!(std::fs::metadata(&proxy).unwrap().len(), old_size, "D: size unchanged");
+        assert!(!tmp.exists(), "D: temp removed");
+        assert!(try_begin_upgrade(&proxy_s).is_none(), "D: marked failed, not retried this session");
+        eprintln!("D ok: swap failure keeps the old proxy, no retry loop");
+
+        // E. the encode itself fails (source missing): old proxy intact, no temp file, not retried.
+        let bad_src = dir.join("does-not-exist.mp4");
+        let bad_src_s = bad_src.to_str().unwrap().to_string();
+        let proxy_e = proxies.join(format!("{}.mp4", proxy_name_for_path(&bad_src_s)));
+        let proxy_e_s = proxy_e.to_str().unwrap().to_string();
+        std::fs::copy(&old30, &proxy_e).unwrap();
+        set_job("none");
+        upgrade_existing_proxy("t-e", &bad_src_s, &proxy_e_s, &proxies_s, None);
+        assert_eq!(proxy_tag_native(&proxy_e_s), None, "E: old proxy intact");
+        assert_eq!(std::fs::metadata(&proxy_e).unwrap().len(), old_size, "E: size unchanged");
+        assert!(!proxies.join(format!("{}.upg.tmp.mp4", proxy_name_for_path(&bad_src_s))).exists(), "E: no temp file");
+        assert!(try_begin_upgrade(&proxy_e_s).is_none(), "E: failed encode not retried this session");
+        eprintln!("E ok: failed encode keeps the old proxy and is not retried");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

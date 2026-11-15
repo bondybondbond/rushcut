@@ -927,6 +927,21 @@ pub fn get_active_job(project_id: &str) -> Result<Option<Job>, rusqlite::Error> 
     .optional()
 }
 
+/// [#198] True when ANY render job, in ANY project and from either app instance sharing
+/// this DB, is pending or processing. Background proxy upgrades use it so they never
+/// compete with a render for the GPU encoder (the 10-minute render limit).
+pub fn has_active_job() -> Result<bool, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    // Two rushcut.exe share this file: wait out a brief lock instead of reading it as "render active".
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'processing')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// Batch U1c: every job still marked 'processing' that is older than `min_age_secs`.
 /// Used by the startup self-heal in setup() to reconcile jobs whose binary was killed
 /// mid-render while the WSL pipeline kept running. ONE param, called twice by the caller:
