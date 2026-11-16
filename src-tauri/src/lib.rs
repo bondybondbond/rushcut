@@ -803,12 +803,21 @@ fn probe_clip_fps(src: &str) -> Option<String> {
         ])
         .output();
     match out {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.contains('/') { Some(s) } else { None }
-        }
+        Ok(o) => parse_fps_rational(&String::from_utf8_lossy(&o.stdout)),
         Err(_) => None,
     }
+}
+
+/// [#238] Extract a clean "num/den" from ffprobe csv output. Some DJI clips print
+/// "30000/1001," (csv writer emits a trailing empty field), which broke `-r` and the
+/// readiness gate. Takes the first line, first field; requires int/int, both non-zero.
+fn parse_fps_rational(raw: &str) -> Option<String> {
+    let field = raw.lines().next()?.split(',').next()?.trim();
+    let (n, d) = field.split_once('/')?;
+    let n: u32 = n.trim().parse().ok()?;
+    let d: u32 = d.trim().parse().ok()?;
+    if n == 0 || d == 0 { return None; }
+    Some(format!("{}/{}", n, d))
 }
 
 /// Batch R: probe a proxy file's video stream height + integer fps in one ffprobe call.
@@ -3089,6 +3098,23 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod fps_probe_tests {
+    use super::parse_fps_rational;
+
+    #[test]
+    fn parses_probe_output_variants() {
+        assert_eq!(parse_fps_rational("30000/1001\n").as_deref(), Some("30000/1001"));
+        assert_eq!(parse_fps_rational("30000/1001,\r\n").as_deref(), Some("30000/1001")); // #238
+        assert_eq!(parse_fps_rational("25/1").as_deref(), Some("25/1"));
+        assert_eq!(parse_fps_rational("0/0"), None);
+        assert_eq!(parse_fps_rational("30/0"), None);
+        assert_eq!(parse_fps_rational(""), None);
+        assert_eq!(parse_fps_rational("N/A"), None);
+        assert_eq!(parse_fps_rational("30"), None);
+    }
 }
 
 #[cfg(test)]

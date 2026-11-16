@@ -227,12 +227,28 @@ def _probe_fps(path: Path) -> str:
             capture_output=True,
             timeout=10,
         )
-        val = r.stdout.decode().strip()
-        if val and "/" in val:
-            return val
+        return parse_fps_rational(r.stdout.decode()) or "25"
     except Exception:
         pass
     return "25"
+
+
+def parse_fps_rational(raw: str):
+    """[#238] First line, first csv field, validated int/int (both non-zero).
+
+    Some DJI clips print '30000/1001,' (csv writer trailing empty field).
+    Returns None when unusable so callers keep their existing fallback.
+    """
+    try:
+        lines = raw.strip().splitlines()
+        field = lines[0].split(",")[0].strip()
+        n, d = field.split("/")
+        n, d = int(n), int(d)
+        if n > 0 and d > 0:
+            return f"{n}/{d}"
+    except Exception:
+        pass
+    return None
 
 
 def _proxy_meta(proxy_wsl: str) -> tuple[int, int]:
