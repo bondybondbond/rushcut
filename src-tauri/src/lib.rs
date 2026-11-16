@@ -2866,6 +2866,10 @@ fn vacuum_proxies_cmd() -> String {
     if VACUUM_RUNNING.swap(true, Ordering::SeqCst) {
         return "skipped=already_running".to_string();
     }
+    // Resets the flag on every exit path, including a panic.
+    struct RunGuard;
+    impl Drop for RunGuard { fn drop(&mut self) { VACUUM_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst); } }
+    let _guard = RunGuard;
     let proxy_dir = std::path::PathBuf::from(format!(r"{}\rushcut\proxies", appdata));
     let _ = std::fs::create_dir_all(&proxy_dir);
 
@@ -2873,13 +2877,15 @@ fn vacuum_proxies_cmd() -> String {
         &proxy_dir,
         std::time::Duration::from_secs(VACUUM_GRACE_SECS),
         || {
+            // Re-check right before the DB read: a render started since the first check
+            // makes this run give up (delete nothing) instead of racing it.
+            if has_active_job().unwrap_or(true) { return None; }
             db::get_proxy_refs_for_vacuum(VACUUM_ACTIVE_DAYS).ok().map(|(all, act)| (
                 all.into_iter().map(|p| p.to_lowercase()).collect(),
                 act.into_iter().map(|p| p.to_lowercase()).collect(),
             ))
         },
     );
-    VACUUM_RUNNING.store(false, Ordering::SeqCst);
     let (orphans, stale, bytes) = match swept {
         Some(t) => t,
         None => {
@@ -3502,16 +3508,22 @@ mod vacuum_tests {
              INSERT INTO clips VALUES ('c4','rendered','P_JOB','done','2020-01-01T00:00:00Z');
              INSERT INTO jobs VALUES ('j','rendered','done','2099-01-01T00:00:00Z');
              -- old project with an encoding proxy -> active
-             INSERT INTO clips VALUES ('c5','old','P_ENC','encoding','2020-01-01T00:00:00Z');",
+             INSERT INTO projects VALUES ('enc','x','2020-01-01T00:00:00Z');
+             INSERT INTO clips VALUES ('c5','enc','P_ENC','encoding','2020-01-01T00:00:00Z');
+             -- old clips in a project where the owner just added a NEW clip -> all its proxies active
+             INSERT INTO projects VALUES ('edit','e','2020-01-01T00:00:00Z');
+             INSERT INTO clips VALUES ('c6','edit','P_SIB_OLD','done','2020-01-01T00:00:00Z');
+             INSERT INTO clips VALUES ('c7','edit','P_SIB_NEW','done','2099-01-01T00:00:00Z');",
         ).unwrap();
         drop(conn);
         let (all, active) = crate::db::get_proxy_refs_for_vacuum(90).unwrap();
         std::env::remove_var("RUSHCUT_DATA_DIR");
         let a: HashSet<String> = all.into_iter().collect();
         let act: HashSet<String> = active.into_iter().collect();
-        assert_eq!(a.len(), 4);
-        assert!(!act.contains("P_STALE"));
+        assert_eq!(a.len(), 6);
+        assert!(!act.contains("P_STALE"), "a wholly stale project must not be kept");
         assert!(act.contains("P_SHARED") && act.contains("P_JOB") && act.contains("P_ENC"));
+        assert!(act.contains("P_SIB_OLD") && act.contains("P_SIB_NEW"), "sibling-clip activity must keep the whole project");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

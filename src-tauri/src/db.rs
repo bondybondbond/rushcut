@@ -619,9 +619,9 @@ pub fn delete_clip(clip_id: &str) -> Result<(), rusqlite::Error> {
 }
 
 /// #241: proxy paths for the vacuum. Returns (all referenced, kept-alive).
-/// "Kept-alive" = referenced by a clip whose project was active within `active_days`
-/// (activity = newest of project created_at, clip created_at, any job updated_at), or
-/// by a clip whose proxy is queued/encoding. A shared proxy is kept while ANY such
+/// "Kept-alive" = referenced by a clip of a project that was active within `active_days`
+/// (PROJECT level: newest of project created_at, ANY of its clips' created_at, any job
+/// updated_at, or any of its clips queued/encoding). A shared proxy is kept while ANY such
 /// project references it. Timestamps are ISO-8601 with a T, so every comparison wraps the
 /// column in datetime() (rust-tauri.md rule).
 pub fn get_proxy_refs_for_vacuum(
@@ -642,9 +642,10 @@ pub fn get_proxy_refs_for_vacuum(
             "SELECT DISTINCT c.proxy_path FROM clips c
              LEFT JOIN projects p ON p.id = c.project_id
              WHERE c.proxy_path IS NOT NULL AND c.proxy_path != ''
-               AND ( c.proxy_status IN ('queued','encoding')
-                  OR datetime(c.created_at) > datetime('now', ?1)
-                  OR datetime(p.created_at) > datetime('now', ?1)
+               AND ( datetime(p.created_at) > datetime('now', ?1)
+                  OR EXISTS (SELECT 1 FROM clips c2 WHERE c2.project_id = c.project_id
+                             AND ( c2.proxy_status IN ('queued','encoding')
+                                OR datetime(c2.created_at) > datetime('now', ?1) ))
                   OR EXISTS (SELECT 1 FROM jobs j WHERE j.project_id = c.project_id
                              AND datetime(j.updated_at) > datetime('now', ?1)) )",
         )?;
