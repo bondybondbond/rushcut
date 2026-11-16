@@ -2860,6 +2860,7 @@ fn vacuum_dir(
 fn vacuum_proxies_cmd() -> String {
     use std::sync::atomic::Ordering;
     if std::env::var("RUSHCUT_DATA_DIR").map(|v| !v.trim().is_empty()).unwrap_or(false) {
+        proxy_bg_log("[vacuum] skipped=isolated_data_dir");
         return "skipped=isolated_data_dir".to_string();
     }
     let appdata = match std::env::var("APPDATA") {
@@ -2867,9 +2868,11 @@ fn vacuum_proxies_cmd() -> String {
         Err(_) => return "error=APPDATA not set".to_string(),
     };
     if has_active_job().unwrap_or(true) {
+        proxy_bg_log("[vacuum] skipped=render_active");
         return "skipped=render_active".to_string();
     }
     if VACUUM_RUNNING.swap(true, Ordering::SeqCst) {
+        proxy_bg_log("[vacuum] skipped=already_running");
         return "skipped=already_running".to_string();
     }
     // Resets the flag on every exit path, including a panic.
