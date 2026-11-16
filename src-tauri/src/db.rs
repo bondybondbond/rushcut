@@ -618,18 +618,40 @@ pub fn delete_clip(clip_id: &str) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
-/// Batch T2: return every distinct non-null `proxy_path` referenced by any clip.
-/// Used by `vacuum_proxies_cmd` to decide which files in the proxy dir are still
-/// referenced — orphan detection now keys on full proxy_path (hash-named files),
-/// not clip-id stems (the old `{clip_id}.mp4` scheme).
-pub fn get_all_proxy_paths() -> Result<Vec<String>, rusqlite::Error> {
+/// #241: proxy paths for the vacuum. Returns (all referenced, kept-alive).
+/// "Kept-alive" = referenced by a clip whose project was active within `active_days`
+/// (activity = newest of project created_at, clip created_at, any job updated_at), or
+/// by a clip whose proxy is queued/encoding. A shared proxy is kept while ANY such
+/// project references it. Timestamps are ISO-8601 with a T, so every comparison wraps the
+/// column in datetime() (rust-tauri.md rule).
+pub fn get_proxy_refs_for_vacuum(
+    active_days: u32,
+) -> Result<(Vec<String>, Vec<String>), rusqlite::Error> {
     let conn = Connection::open(db_path())?;
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT proxy_path FROM clips WHERE proxy_path IS NOT NULL AND proxy_path != ''",
-    )?;
-    let paths = stmt.query_map([], |row| row.get(0))?
-        .collect::<Result<Vec<String>, _>>()?;
-    Ok(paths)
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let all: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT proxy_path FROM clips WHERE proxy_path IS NOT NULL AND proxy_path != ''",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        rows
+    };
+    let window = format!("-{} days", active_days);
+    let active: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT c.proxy_path FROM clips c
+             LEFT JOIN projects p ON p.id = c.project_id
+             WHERE c.proxy_path IS NOT NULL AND c.proxy_path != ''
+               AND ( c.proxy_status IN ('queued','encoding')
+                  OR datetime(c.created_at) > datetime('now', ?1)
+                  OR datetime(p.created_at) > datetime('now', ?1)
+                  OR EXISTS (SELECT 1 FROM jobs j WHERE j.project_id = c.project_id
+                             AND datetime(j.updated_at) > datetime('now', ?1)) )",
+        )?;
+        let rows = stmt.query_map(params![window], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        rows
+    };
+    Ok((all, active))
 }
 
 /// Returns true if the project has any clip with width >= 3840 or height >= 2160.

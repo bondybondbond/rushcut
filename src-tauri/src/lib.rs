@@ -4,7 +4,7 @@ mod splash;
 
 use base64::Engine as _;
 use db::{
-    add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_all_proxy_paths, get_clips_needing_bg_proxy,
+    add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
     get_setting, get_stuck_processing_jobs, has_active_job, set_setting,
     delete_setting, get_all_settings, migrate_render_prefs,
@@ -2788,68 +2788,110 @@ fn reset_proxy_encoding_cmd(project_id: String) -> Result<(), String> {
 /// from the same source — NOT `{clip_id}.mp4`. Orphan detection therefore keys on the
 /// set of distinct `proxy_path` values in the DB (full path match), not clip-id stems.
 /// Keying on clip ids here would delete every dedup proxy on the next render.
+/// #241 grace period: a proxy file younger than this is never removed (covers the gap
+/// between an encode renaming into place and its DB row being written, and the other
+/// rushcut.exe instance finishing a proxy while this one lists the folder).
+const VACUUM_GRACE_SECS: u64 = 3600;
+/// #241 owner decision 2026-11-16: a project untouched for 90 days is stale; its
+/// proxies (if no active project shares them) may go. Re-making a proxy is cheap.
+const VACUUM_ACTIVE_DAYS: u32 = 90;
+
+static VACUUM_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Pure sweep (testable on a scratch dir). Order matters: LIST the folder first, THEN read
+/// the DB sets via `load` (a file created after the listing is never considered).
+/// Returns (deleted_orphaned, deleted_stale, bytes_freed). Counts only successful removals.
+fn vacuum_dir(
+    proxy_dir: &std::path::Path,
+    grace: std::time::Duration,
+    load: impl FnOnce() -> Option<(HashSet<String>, HashSet<String>)>,
+) -> Option<(u32, u32, u64)> {
+    let now = std::time::SystemTime::now();
+    let mut listed: Vec<(std::path::PathBuf, u64, std::time::Duration)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(proxy_dir) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("mp4") { continue; }
+            // In-flight staging files (*.tmp.mp4, *.upg.tmp.mp4) are never touched.
+            if path.file_name().and_then(|s| s.to_str()).map(|n| n.ends_with(".tmp.mp4")).unwrap_or(false) { continue; }
+            // Only RushCut's own proxy names ({016x} hash of the source path): the vacuum can never
+            // become a general cleaner of whatever lands in this folder.
+            let stem_ok = path.file_stem().and_then(|s| s.to_str())
+                .map(|s| s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit()))
+                .unwrap_or(false);
+            if !stem_ok { continue; }
+            let md = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+            // Age = time since the NEWER of mtime and creation time (a rename keeps the
+            // temp file's mtime; a copy can reset either).
+            let newest = [md.modified().ok(), md.created().ok()].into_iter().flatten().max();
+            let age = newest.and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
+            listed.push((path, md.len(), age));
+        }
+    }
+    // None = the DB could not be read: delete NOTHING (never infer "orphan" from a failed read).
+    let (referenced, active) = load()?;
+    let (mut orphans, mut stale, mut bytes) = (0u32, 0u32, 0u64);
+    for (path, len, age) in listed {
+        if age < grace { continue; }
+        let key = path.to_string_lossy().to_lowercase();
+        let is_orphan = !referenced.contains(&key);
+        let is_stale = !is_orphan && !active.contains(&key);
+        if (is_orphan || is_stale) && std::fs::remove_file(&path).is_ok() {
+            if is_orphan { orphans += 1 } else { stale += 1 }
+            bytes += len;
+        }
+    }
+    Some((orphans, stale, bytes))
+}
+
+/// #241: remove proxies no project needs. Keeps every proxy referenced by a project active
+/// in the last 90 days (age of the file is irrelevant); removes orphans and proxies only
+/// referenced by stale projects. Refuses to run under RUSHCUT_DATA_DIR (an isolated QA
+/// instance sees a scratch DB but the REAL proxy dir, so every real proxy looks orphaned)
+/// and while any render is pending/processing. Runs at startup and after a render;
+/// result goes to proxy-bg.log (the app's stderr is not visible on a direct launch).
 #[tauri::command]
 fn vacuum_proxies_cmd() -> String {
-    use std::time::{Duration, SystemTime};
-
+    use std::sync::atomic::Ordering;
+    if std::env::var("RUSHCUT_DATA_DIR").map(|v| !v.trim().is_empty()).unwrap_or(false) {
+        return "skipped=isolated_data_dir".to_string();
+    }
     let appdata = match std::env::var("APPDATA") {
         Ok(v) => v,
         Err(_) => return "error=APPDATA not set".to_string(),
     };
-    let proxy_dir = format!(r"{}\rushcut\proxies", appdata);
-
-    // Ensure dir exists — no crash on fresh install with no proxies yet
-    if let Err(e) = std::fs::create_dir_all(&proxy_dir) {
-        return format!("error=cannot create proxy dir: {}", e);
+    if has_active_job().unwrap_or(true) {
+        return "skipped=render_active".to_string();
     }
+    if VACUUM_RUNNING.swap(true, Ordering::SeqCst) {
+        return "skipped=already_running".to_string();
+    }
+    let proxy_dir = std::path::PathBuf::from(format!(r"{}\rushcut\proxies", appdata));
+    let _ = std::fs::create_dir_all(&proxy_dir);
 
-    // Collect every proxy_path currently referenced by a clip (lower-cased for a
-    // case-insensitive match against on-disk filenames on Windows).
-    let known_proxy_paths: std::collections::HashSet<String> =
-        get_all_proxy_paths().unwrap_or_default()
-            .into_iter()
-            .map(|p| p.to_lowercase())
-            .collect();
-
-    let thirty_days = Duration::from_secs(30 * 24 * 3600);
-    let cutoff = SystemTime::now()
-        .checked_sub(thirty_days)
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-
-    let entries = match std::fs::read_dir(&proxy_dir) {
-        Ok(e) => e,
-        Err(e) => return format!("error=read_dir failed: {}", e),
+    let swept = vacuum_dir(
+        &proxy_dir,
+        std::time::Duration::from_secs(VACUUM_GRACE_SECS),
+        || {
+            db::get_proxy_refs_for_vacuum(VACUUM_ACTIVE_DAYS).ok().map(|(all, act)| (
+                all.into_iter().map(|p| p.to_lowercase()).collect(),
+                act.into_iter().map(|p| p.to_lowercase()).collect(),
+            ))
+        },
+    );
+    VACUUM_RUNNING.store(false, Ordering::SeqCst);
+    let (orphans, stale, bytes) = match swept {
+        Some(t) => t,
+        None => {
+            proxy_bg_log("[vacuum] skipped=db_unreadable");
+            return "skipped=db_unreadable".to_string();
+        }
     };
-
-    let mut deleted_orphaned: u32 = 0;
-    let mut deleted_stale: u32 = 0;
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("mp4") {
-            continue;
-        }
-        // Skip in-flight temp encodes (Batch T2 atomic-rename staging files).
-        if path.file_name().and_then(|s| s.to_str()).map(|n| n.ends_with(".tmp.mp4")).unwrap_or(false) {
-            continue;
-        }
-
-        let full = path.to_string_lossy().to_lowercase();
-        let orphaned = !full.is_empty() && !known_proxy_paths.contains(&full);
-        let stale = !orphaned && entry.metadata()
-            .and_then(|m| m.modified())
-            .map(|mtime| mtime < cutoff)
-            .unwrap_or(false);
-
-        if orphaned || stale {
-            if std::fs::remove_file(&path).is_ok() {
-                if orphaned { deleted_orphaned += 1; } else { deleted_stale += 1; }
-            }
-        }
-    }
-
-    let result = format!("deleted_orphaned={},deleted_stale={}", deleted_orphaned, deleted_stale);
-    eprintln!("[vacuum] {}", result);
+    let result = format!(
+        "deleted_orphaned={},deleted_stale={},freed_mb={}",
+        orphans, stale, bytes / (1024 * 1024)
+    );
+    proxy_bg_log(&format!("[vacuum] {}", result));
     result
 }
 
@@ -2959,6 +3001,10 @@ pub fn run() {
                 Ok(_) => {}
                 Err(e) => eprintln!("[proxy] startup: reset_all_encoding_claims failed: {}", e),
             }
+
+            // #241: sweep orphaned / long-stale proxies once per launch (background thread;
+            // refuses under RUSHCUT_DATA_DIR and while a render is active; logs to proxy-bg.log).
+            tauri::async_runtime::spawn_blocking(|| { vacuum_proxies_cmd(); });
 
             // Batch U1c: self-heal jobs left stuck in 'processing' when the binary was
             // killed mid-render (SIGTERM/crash/WDIO/reboot) while the WSL pipeline kept
@@ -3355,6 +3401,117 @@ mod proxy_upgrade_tests {
         assert!(try_begin_upgrade(&proxy_e_s).is_none(), "E: failed encode not retried this session");
         eprintln!("E ok: failed encode keeps the old proxy and is not retried");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod vacuum_tests {
+    use super::vacuum_dir;
+    use std::collections::HashSet;
+    use std::time::Duration;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rc_vacuum_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+    fn mk(d: &std::path::Path, n: &str) -> String {
+        let p = d.join(n);
+        std::fs::write(&p, vec![0u8; 2048]).unwrap();
+        p.to_string_lossy().to_lowercase()
+    }
+    fn set(v: &[&String]) -> HashSet<String> { v.iter().map(|s| (*s).clone()).collect() }
+
+    #[test]
+    fn orphan_removed_active_and_stale_rules() {
+        let d = scratch("rules");
+        let shared = mk(&d, "00000000000000a1.mp4");     // referenced by an active project too
+        let live = mk(&d, "00000000000000a2.mp4");         // referenced + active
+        let dead = mk(&d, "00000000000000a3.mp4");         // referenced only by a stale project
+        let orphan = mk(&d, "00000000000000a4.mp4");     // referenced by nothing
+        let tmp = mk(&d, "00000000000000a5.tmp.mp4");         // in-flight staging
+        let upg = mk(&d, "00000000000000a6.upg.tmp.mp4");
+        let foreign = mk(&d, "notes_not_a_proxy.mp4"); // not a RushCut proxy name: never touched
+        let (o, s, b) = vacuum_dir(&d, Duration::ZERO, || {
+            Some((set(&[&shared, &live, &dead]), set(&[&shared, &live])))
+        }).unwrap();
+        assert_eq!((o, s, b), (1, 1, 4096));
+        assert!(std::path::Path::new(&shared).exists());
+        assert!(std::path::Path::new(&live).exists());
+        assert!(!std::path::Path::new(&dead).exists());
+        assert!(!std::path::Path::new(&orphan).exists());
+        assert!(std::path::Path::new(&tmp).exists() && std::path::Path::new(&upg).exists());
+        assert!(std::path::Path::new(&foreign).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn old_file_of_active_project_survives_no_30_day_rule() {
+        let d = scratch("old");
+        let p = mk(&d, "00000000000000b1.mp4");
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(200 * 24 * 3600);
+        f.set_modified(old).unwrap();
+        drop(f);
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, || Some((set(&[&p]), set(&[&p])))).unwrap();
+        assert_eq!((o, s), (0, 0));
+        assert!(std::path::Path::new(&p).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unreadable_db_deletes_nothing() {
+        let d = scratch("nodb");
+        let p = mk(&d, "00000000000000d1.mp4");
+        assert!(vacuum_dir(&d, Duration::ZERO, || None).is_none());
+        assert!(std::path::Path::new(&p).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn young_files_are_skipped_by_grace() {
+        let d = scratch("grace");
+        let p = mk(&d, "00000000000000c1.mp4");
+        let (o, s, _) = vacuum_dir(&d, Duration::from_secs(3600), || Some((HashSet::new(), HashSet::new()))).unwrap();
+        assert_eq!((o, s), (0, 0));
+        assert!(std::path::Path::new(&p).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn isolated_dir_guard_and_activity_query_on_scratch_db() {
+        // One test owns RUSHCUT_DATA_DIR (env is process-wide): scratch DB, never the real one.
+        let dir = scratch("db");
+        std::env::set_var("RUSHCUT_DATA_DIR", &dir);
+        assert_eq!(super::vacuum_proxies_cmd(), "skipped=isolated_data_dir");
+        let conn = rusqlite::Connection::open(crate::db::db_path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT, name TEXT, created_at TEXT);
+             CREATE TABLE clips (id TEXT, project_id TEXT, proxy_path TEXT, proxy_status TEXT, created_at TEXT);
+             CREATE TABLE jobs (id TEXT, project_id TEXT, status TEXT, updated_at TEXT);
+             INSERT INTO projects VALUES ('old','o','2020-01-01T00:00:00Z'),('old2','o2','2020-01-01T00:00:00Z'),
+                                         ('rendered','r','2020-01-01T00:00:00Z'),('new','n','2099-01-01T00:00:00Z');
+             -- stale project only
+             INSERT INTO clips VALUES ('c1','old','P_STALE','done','2020-01-01T00:00:00Z');
+             -- shared by a stale and a new project -> active
+             INSERT INTO clips VALUES ('c2','old2','P_SHARED','done','2020-01-01T00:00:00Z');
+             INSERT INTO clips VALUES ('c3','new','P_SHARED','done','2099-01-01T00:00:00Z');
+             -- old project, but a recent job -> active
+             INSERT INTO clips VALUES ('c4','rendered','P_JOB','done','2020-01-01T00:00:00Z');
+             INSERT INTO jobs VALUES ('j','rendered','done','2099-01-01T00:00:00Z');
+             -- old project with an encoding proxy -> active
+             INSERT INTO clips VALUES ('c5','old','P_ENC','encoding','2020-01-01T00:00:00Z');",
+        ).unwrap();
+        drop(conn);
+        let (all, active) = crate::db::get_proxy_refs_for_vacuum(90).unwrap();
+        std::env::remove_var("RUSHCUT_DATA_DIR");
+        let a: HashSet<String> = all.into_iter().collect();
+        let act: HashSet<String> = active.into_iter().collect();
+        assert_eq!(a.len(), 4);
+        assert!(!act.contains("P_STALE"));
+        assert!(act.contains("P_SHARED") && act.contains("P_JOB") && act.contains("P_ENC"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
