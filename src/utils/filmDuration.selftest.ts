@@ -13,7 +13,7 @@
  * `seekFilmTo`/`gotoFilmClip` and Arrange's static playhead.
  */
 import type { Clip } from "@/types/project";
-import { cardRegionMs, filmTimeAtClipStart, CARD_DUR_MS, XFADE_DUR_MS } from "./filmDuration";
+import { cardRegionMs, filmTimeAtClipStart, cardDurMs, CARD_BASE_MS, XFADE_DUR_MS } from "./filmDuration";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -66,17 +66,19 @@ for (const xf of [0, XFADE_DUR_MS]) {
   const oneCard = filmTimeAtClipStart(film, 3, xf, [false, true, false, false]);
   const twoCards = filmTimeAtClipStart(film, 3, xf, [true, true, false, false]);
   check(
-    `filmTimeAtClipStart: each preceding card adds CARD_DUR_MS - xfade lead (xfade=${xf})`,
-    Math.abs((oneCard - noCards) - (CARD_DUR_MS - xf)) < 1e-6 &&
-      Math.abs((twoCards - oneCard) - (CARD_DUR_MS - xf)) < 1e-6,
+    `filmTimeAtClipStart: each preceding card adds cardDurMs(xf) - xfade lead (xfade=${xf})`,
+    Math.abs((oneCard - noCards) - (cardDurMs(xf) - xf)) < 1e-6 &&
+      Math.abs((twoCards - oneCard) - (cardDurMs(xf) - xf)) < 1e-6,
     `no=${noCards} one=${oneCard} two=${twoCards}`,
   );
 }
 
 // --- cardRegionMs -------------------------------------------------------------
-check("cardRegionMs(0) === CARD_DUR_MS", cardRegionMs(0) === CARD_DUR_MS);
-check("cardRegionMs(xfade) === CARD_DUR_MS - xfade", cardRegionMs(XFADE_DUR_MS) === CARD_DUR_MS - XFADE_DUR_MS);
-check("cardRegionMs never negative", cardRegionMs(CARD_DUR_MS + 5_000) === 0);
+check("cardDurMs(0) === 3000 (no transition: card unchanged)", cardDurMs(0) === CARD_BASE_MS);
+check("cardDurMs(1500) === 6000 (#190)", cardDurMs(XFADE_DUR_MS) === 6000);
+check("cardRegionMs(0) === 3000", cardRegionMs(0) === CARD_BASE_MS);
+check("cardRegionMs(xfade) === 3000 + xfade", cardRegionMs(XFADE_DUR_MS) === CARD_BASE_MS + XFADE_DUR_MS);
+check("card keeps >= 3000ms fully visible between two crossfades", cardDurMs(XFADE_DUR_MS) - 2 * XFADE_DUR_MS >= CARD_BASE_MS);
 
 if (failed > 0) {
   console.log(`\n${failed} check(s) FAILED`);

@@ -57,6 +57,7 @@ from .transitions import (
     plan_video_batches,
     resolve_cut_names,
     clamp_xfade_dur,
+    card_duration_s,
 )
 from .trim import trim  # partial-GOP trim_smart() (#104) explored and removed --
                           # 19-31% real-render regression under contention, see #104
@@ -985,6 +986,11 @@ def run_pipeline(
     # repeated splicing) so multiple cards land in declared order, not
     # accidental insertion order.
     n_items = len(items)
+    # #190: card length = 3s + 2 x the film's crossfade, so a card keeps ~3s fully
+    # visible whatever the global transition. Same value for every card.
+    _xf_active = (config.get("transition", "none") != "none") or config.get("shuffle_between", False)
+    card_dur_s = card_duration_s([get_duration(p) for p in current_paths], _xf_active)
+    log.info("[render] Step 4: card duration %.3fs (xfade_active=%s)", card_dur_s, _xf_active)
     cards_by_slot: "dict[int, list[ClipItem]]" = {}
     for card_num, c in enumerate(cards_config, start=1):
         log.info("[render] Step 4: card %d/%d at position=%s", card_num, len(cards_config), c.get("position"))
@@ -993,7 +999,7 @@ def run_pipeline(
         card_path = make_card(
             text=c["text"],
             color=c.get("color", "#000000"),
-            duration_s=3.0,
+            duration_s=card_dur_s,
             out_path=tmp / f"card_{card_num}.mp4",
             size=card_size,
             subtitle=c.get("subtitle", ""),

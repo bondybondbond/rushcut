@@ -30,9 +30,9 @@
 import type { Clip } from "@/types/project";
 import { orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
-import { CARD_DUR_MS, clampedXfadeMs, effectiveFilmMs, trimmedMs } from "@/utils/filmDuration";
+import { cardDurMs, clampedXfadeMs, effectiveFilmMs, trimmedMs } from "@/utils/filmDuration";
 
-export { CARD_DUR_MS };
+export { cardDurMs };
 
 // ---------------------------------------------------------------------------
 // Sequence structure
@@ -130,7 +130,7 @@ export function buildSequenceCore(
   const pushCardRun = (run: PlacedCard[] | undefined) => {
     for (const card of run ?? []) {
       cardOrdinalOf.set(card, cardOrdinal++);
-      raw.push({ kind: "card", nativeMs: CARD_DUR_MS, card });
+      raw.push({ kind: "card", nativeMs: cardDurMs(xfadeMs), card });
     }
   };
   inFilm.forEach((c, i) => {

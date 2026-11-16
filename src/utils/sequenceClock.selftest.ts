@@ -24,7 +24,7 @@
 import type { Clip } from "@/types/project";
 import type { PlacedCard } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
-import { CARD_DUR_MS, cardRegionMs, clampedXfadeMs, effectiveFilmMs } from "./filmDuration";
+import { cardDurMs, cardRegionMs, clampedXfadeMs, effectiveFilmMs } from "./filmDuration";
 import {
   advanceSequenceClock,
   buildSequence,
@@ -83,7 +83,7 @@ const D = clip("d", 0, 6_000);
   function stripTotal(film: Clip[], tc: TransitionConfig, cards: PlacedCard[]): number {
     const seq = buildSequence(film, tc, cards); // reuse item native widths + xfade
     const nativeArr = seq.items.map((it) =>
-      it.kind === "card" ? CARD_DUR_MS : (it.naiveEndMs - it.naiveStartMs),
+      it.kind === "card" ? cardDurMs(seq.xfadeMs) : (it.naiveEndMs - it.naiveStartMs),
     );
     return nativeArr.reduce(
       (sum, m, i) => sum + Math.max(0, m - (i < nativeArr.length - 1 ? seq.xfadeMs : 0)),

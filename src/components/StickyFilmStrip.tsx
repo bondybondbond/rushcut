@@ -19,7 +19,7 @@ import type { Clip } from "@/types/project";
 import { orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
 import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
-import { CARD_DUR_MS, trimmedMs } from "@/utils/filmDuration";
+import { cardDurMs, trimmedMs } from "@/utils/filmDuration";
 import { buildSequenceCore } from "@/utils/sequenceClock";
 
 /** Resolved card data for a strip card tile (#74, generalized to any position in #149). */
@@ -265,6 +265,7 @@ function SortableFilmTile({
 function CardStripTile({
   card,
   width,
+  cardMs,
   isActive,
   onSelectCard,
   draggable,
@@ -274,6 +275,8 @@ function CardStripTile({
 }: {
   card: StripCard;
   width: number;
+  /** #190: this card's length (3s + 2 x crossfade), shown in the duration stamp. */
+  cardMs: number;
   isActive: boolean;
   onSelectCard?: (cardId: string) => void;
   /** #151: enable native drag-to-reposition this placed card (Arrange Cards tab only). */
@@ -325,7 +328,7 @@ function CardStripTile({
       {/* Duration stamp — bottom, mirrors the clip-tile treatment */}
       <div className="absolute bottom-0 inset-x-0 pt-3 px-1 pb-0.5 pointer-events-none">
         <span className="text-[10px] font-mono select-none" style={{ color: fg }}>
-          {fmtMs(CARD_DUR_MS)}
+          {fmtMs(cardMs)}
         </span>
       </div>
     </div>
@@ -437,13 +440,13 @@ export function StickyFilmStrip({
   const clipSegIndex: number[] = [];
   for (const c of inFilm) {
     for (const p of cardsBeforeClip(c.id)) {
-      segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: p.card });
+      segments.push({ kind: "card", nativeMs: cardDurMs(xfadeOverlapMs), card: p.card });
     }
     clipSegIndex.push(segments.length);
     segments.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c });
   }
   for (const p of endCards) {
-    segments.push({ kind: "card", nativeMs: CARD_DUR_MS, card: p.card });
+    segments.push({ kind: "card", nativeMs: cardDurMs(xfadeOverlapMs), card: p.card });
   }
 
   // #174 Phase D: the telescoped (render-time) geometry is NO LONGER computed here.
@@ -1054,6 +1057,7 @@ export function StickyFilmStrip({
                             <CardStripTile
                               key={p.card.id}
                               card={p.card}
+                              cardMs={cardDurMs(xfadeOverlapMs)}
                               width={segWidths[runBaseSeg + k]}
                               isActive={p.card.id === activeCardId}
                               onSelectCard={onSelectCard}
@@ -1081,6 +1085,7 @@ export function StickyFilmStrip({
                   <CardStripTile
                     key={p.card.id}
                     card={p.card}
+                    cardMs={cardDurMs(xfadeOverlapMs)}
                     width={segWidths[segWidths.length - endCards.length + k]}
                     isActive={p.card.id === activeCardId}
                     onSelectCard={onSelectCard}

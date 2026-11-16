@@ -13,7 +13,7 @@ import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig, cardDurationFlags, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, cardDurMs } from "@/utils/filmDuration";
 import {
   buildSequence,
   advanceSequenceClock,
@@ -1169,7 +1169,7 @@ export default function Trimmer() {
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
-      if (elapsed >= CARD_DUR_MS) {
+      if (elapsed >= cardDurMs(filmXfadeOverlapMs)) {
         if (cardHoldTickerRef.current !== null) {
           clearInterval(cardHoldTickerRef.current);
           cardHoldTickerRef.current = null;
@@ -1460,7 +1460,7 @@ export default function Trimmer() {
       // follows), so park on whichever the seek time lands in.
       const run = runs.before.get(clips_[i].id) ?? [];
       for (let k = 0; k < run.length; k++) {
-        const cardMs = Math.max(0, CARD_DUR_MS - xfadeMs);
+        const cardMs = Math.max(0, cardDurMs(xfadeMs) - xfadeMs);
         if (filmMs < elapsed + cardMs) {
           activeFilmVideo()?.pause();
           setIsPlaying(false);
@@ -1524,7 +1524,7 @@ export default function Trimmer() {
     // card the seek lands in; the last end card is the film's final element (no telescope).
     for (let k = 0; k < runs.end.length; k++) {
       const isLast = k === runs.end.length - 1;
-      const cardMs = Math.max(0, CARD_DUR_MS - (isLast ? 0 : xfadeMs));
+      const cardMs = Math.max(0, cardDurMs(xfadeMs) - (isLast ? 0 : xfadeMs));
       if (filmMs < elapsed + cardMs || isLast) {
         activeFilmVideo()?.pause();
         setIsPlaying(false);

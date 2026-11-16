@@ -12,7 +12,7 @@ import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
 import { readTransitionConfig, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, cardRegionMs, CARD_DUR_MS } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, cardRegionMs, cardDurMs } from "@/utils/filmDuration";
 import {
   buildSequence,
   advanceSequenceClock,
@@ -1133,7 +1133,7 @@ export default function Sound() {
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
-      if (elapsed >= CARD_DUR_MS) {
+      if (elapsed >= cardDurMs(filmXfadeOverlapMs)) {
         if (cardHoldTickerRef.current !== null) {
           clearInterval(cardHoldTickerRef.current);
           cardHoldTickerRef.current = null;

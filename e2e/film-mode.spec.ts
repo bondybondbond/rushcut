@@ -549,16 +549,17 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     expect(maxAdv("aT")).toBeLessThan(0.3);
     expect(maxAdv("bT")).toBeLessThan(0.3);
 
-    // (4) The hold lasts ~CARD_DUR_MS then clears.
+    // (4) The hold lasts ~cardDurMs(xfade) then clears. #190: a card is 3s + 2 x the
+    // crossfade (6000ms at the 1500ms clamp used here), so the hold is ~6s, not ~3s.
     await browser.waitUntil(async () => !(await probe()).card, {
-      timeout: 5000,
+      timeout: 9000,
       interval: 100,
       timeoutMsg: "#185: leading card-hold overlay never cleared",
     });
     const heldMs = Date.now() - holdStartMs;
     console.log(`[film-mode] #185 leading card held for ~${heldMs}ms`);
-    expect(heldMs).toBeGreaterThan(2500);
-    expect(heldMs).toBeLessThan(3800);
+    expect(heldMs).toBeGreaterThan(5500);
+    expect(heldMs).toBeLessThan(6800);
 
     // (5) LEADING SEAM — after the card->clip0 seam settles, the needle advances
     // monotonically into clip 0, and clip 0's own <video> slot is the one playing.
