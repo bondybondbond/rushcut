@@ -487,6 +487,14 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     await filmBtn.click();
     await browser.pause(1500); // entry effect: anchorSeqClock(0) + loadIntoSlot(0) + its post-seek timeupdate
 
+    // #190: the strip's card tile stamps the card's real length (3s + 2 x 1.5s crossfade).
+    const cardStamp = await browser.execute(() => {
+      const t = document.querySelector('[data-testid^="filmstrip-card-"]');
+      return (t?.textContent ?? "").match(/\d+:\d\d/)?.[0] ?? "";
+    });
+    console.log(`[film-mode] #190 card tile stamp=${cardStamp}`);
+    expect(cardStamp).toBe("0:06");
+
     // Read both film <video> slots + the needle in one shot.
     const probe = () =>
       browser.execute(() => {
