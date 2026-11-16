@@ -91,21 +91,22 @@ def clamp_xfade_dur(durations: list[float], xfade_dur: float = XFADE_DUR) -> flo
     return min(xfade_dur, min(durations) / 2.0)
 
 
-CARD_BASE_S = 3.0  # fully-visible time every card must keep (#190)
+CARD_VISIBLE_S = 2.0   # fully-visible time every card keeps between its crossfades (#190, owner 2026-11-16)
+CARD_PLAIN_S = 3.0     # card length when no transition is active
 
 
 def card_duration_s(clip_durations: list[float], has_xfade: bool) -> float:
-    """Card length = CARD_BASE_S + one crossfade at each end (#190).
+    """Card length = CARD_VISIBLE_S + one crossfade at each end (#190); CARD_PLAIN_S with none.
 
     A card sits in the xfade chain, so each neighbouring cut eats one xfade of it.
     One uniform value for every card (position-independent): a leading/trailing card
-    keeps a little extra, never less than CARD_BASE_S. 0 xfade (transition "none")
-    leaves the card at CARD_BASE_S. SYNC: src/utils/filmDuration.ts cardDurMs().
+    keeps a little extra, never less than CARD_VISIBLE_S. 0 xfade (transition "none")
+    leaves the card at CARD_PLAIN_S (3s). SYNC: src/utils/filmDuration.ts cardDurMs().
     Uses real-clip durations only (cards are never the shortest element).
     """
     if not has_xfade or not clip_durations:
-        return CARD_BASE_S
-    return CARD_BASE_S + 2.0 * clamp_xfade_dur(clip_durations)
+        return CARD_PLAIN_S
+    return CARD_VISIBLE_S + 2.0 * clamp_xfade_dur(clip_durations)
 
 
 def plan_video_batches(

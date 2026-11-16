@@ -6,19 +6,21 @@ import type { TransitionConfig } from "@/utils/buildJobConfig";
 // clamped to half the shortest clip -- see render.py / transitions.py.
 export const XFADE_DUR_MS = 1500;
 
-// Fully-visible time every text card keeps (#190). A card is a real clip in the xfade
-// chain, so each neighbouring cut eats one crossfade of it: card length = base + 2 x xfade.
-// MUST stay in sync with pipeline/transitions.py CARD_BASE_S / card_duration_s().
-export const CARD_BASE_MS = 3000;
+// #190: a card is a real clip in the xfade chain, so each neighbouring cut eats one
+// crossfade of it. With a transition active a card is CARD_VISIBLE_MS + 2 x xfade (2s fully
+// visible between its crossfades, owner 2026-11-16); with none it is CARD_PLAIN_MS.
+// MUST stay in sync with pipeline/transitions.py CARD_VISIBLE_S / CARD_PLAIN_S / card_duration_s().
+export const CARD_VISIBLE_MS = 2000;
+export const CARD_PLAIN_MS = 3000;
 
 /**
- * Length of every text card in ms (#190): CARD_BASE_MS + one crossfade at each end.
- * One uniform value, position-independent. `xfadeMs` is the clamped crossfade
- * (clampedXfadeMs) -- 0 when no transition is active, which leaves the card at 3s.
+ * Length of every text card in ms (#190): CARD_VISIBLE_MS + one crossfade at each end,
+ * or CARD_PLAIN_MS when no transition is active. One uniform value, position-independent.
+ * `xfadeMs` is the clamped crossfade (clampedXfadeMs), 0 when no transition is active.
  * This only changes the card's INPUT length; the telescoping math is untouched.
  */
 export function cardDurMs(xfadeMs: number): number {
-  return CARD_BASE_MS + 2 * Math.max(0, xfadeMs);
+  return xfadeMs > 0 ? CARD_VISIBLE_MS + 2 * xfadeMs : CARD_PLAIN_MS;
 }
 
 /** Trimmed length of a single clip in ms (out - in, floored at 0). */
@@ -58,7 +60,7 @@ export function effectiveFilmMs(
   // Guard: no footage clips -> just the card seconds (nothing to crossfade between;
   // an all-empty clip manifest errors in start_job anyway, so this is purely defensive).
   // Preserves `return 0` when there are neither clips nor cards.
-  if (n === 0) return cardCount * CARD_BASE_MS;
+  if (n === 0) return cardCount * CARD_PLAIN_MS;
 
   // #190: card length depends on the clamped crossfade (0 when no overlap is active).
   const hasOverlap = tc.between !== "none" || tc.shuffleBetween;

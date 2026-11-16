@@ -13,7 +13,7 @@
  * `seekFilmTo`/`gotoFilmClip` and Arrange's static playhead.
  */
 import type { Clip } from "@/types/project";
-import { cardRegionMs, filmTimeAtClipStart, cardDurMs, CARD_BASE_MS, XFADE_DUR_MS } from "./filmDuration";
+import { cardRegionMs, filmTimeAtClipStart, cardDurMs, CARD_VISIBLE_MS, CARD_PLAIN_MS, XFADE_DUR_MS } from "./filmDuration";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -74,11 +74,12 @@ for (const xf of [0, XFADE_DUR_MS]) {
 }
 
 // --- cardRegionMs -------------------------------------------------------------
-check("cardDurMs(0) === 3000 (no transition: card unchanged)", cardDurMs(0) === CARD_BASE_MS);
-check("cardDurMs(1500) === 6000 (#190)", cardDurMs(XFADE_DUR_MS) === 6000);
-check("cardRegionMs(0) === 3000", cardRegionMs(0) === CARD_BASE_MS);
-check("cardRegionMs(xfade) === 3000 + xfade", cardRegionMs(XFADE_DUR_MS) === CARD_BASE_MS + XFADE_DUR_MS);
-check("card keeps >= 3000ms fully visible between two crossfades", cardDurMs(XFADE_DUR_MS) - 2 * XFADE_DUR_MS >= CARD_BASE_MS);
+check("cardDurMs(0) === 3000 (no transition: card unchanged)", cardDurMs(0) === CARD_PLAIN_MS);
+check("cardDurMs(1500) === 5000 (#190: 2s visible + 2 x 1.5s)", cardDurMs(XFADE_DUR_MS) === 5000);
+check("cardRegionMs(0) === 3000", cardRegionMs(0) === CARD_PLAIN_MS);
+check("cardRegionMs(xfade) === 2000 + xfade", cardRegionMs(XFADE_DUR_MS) === CARD_VISIBLE_MS + XFADE_DUR_MS);
+check("card keeps exactly 2000ms fully visible between two crossfades", cardDurMs(XFADE_DUR_MS) - 2 * XFADE_DUR_MS === CARD_VISIBLE_MS);
+check("shorter crossfade (800ms): still 2000ms visible", cardDurMs(800) - 2 * 800 === CARD_VISIBLE_MS);
 
 if (failed > 0) {
   console.log(`\n${failed} check(s) FAILED`);

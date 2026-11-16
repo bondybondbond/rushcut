@@ -487,13 +487,13 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     await filmBtn.click();
     await browser.pause(1500); // entry effect: anchorSeqClock(0) + loadIntoSlot(0) + its post-seek timeupdate
 
-    // #190: the strip's card tile stamps the card's real length (3s + 2 x 1.5s crossfade).
+    // #190: the strip's card tile stamps the card's real length (2s + 2 x 1.5s crossfade).
     const cardStamp = await browser.execute(() => {
       const t = document.querySelector('[data-testid^="filmstrip-card-"]');
       return (t?.textContent ?? "").match(/\d+:\d\d/)?.[0] ?? "";
     });
     console.log(`[film-mode] #190 card tile stamp=${cardStamp}`);
-    expect(cardStamp).toBe("0:06");
+    expect(cardStamp).toBe("0:05");
 
     // Read both film <video> slots + the needle in one shot.
     const probe = () =>
@@ -558,7 +558,7 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     expect(maxAdv("bT")).toBeLessThan(0.3);
 
     // (4) The hold lasts ~cardDurMs(xfade) then clears. #190: a card is 3s + 2 x the
-    // crossfade (6000ms at the 1500ms clamp used here), so the hold is ~6s, not ~3s.
+    // crossfade (5000ms at the 1500ms clamp used here), so the hold is ~5s, not ~3s.
     await browser.waitUntil(async () => !(await probe()).card, {
       timeout: 9000,
       interval: 100,
@@ -566,8 +566,8 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     });
     const heldMs = Date.now() - holdStartMs;
     console.log(`[film-mode] #185 leading card held for ~${heldMs}ms`);
-    expect(heldMs).toBeGreaterThan(5500);
-    expect(heldMs).toBeLessThan(6800);
+    expect(heldMs).toBeGreaterThan(4500);
+    expect(heldMs).toBeLessThan(5800);
 
     // (5) LEADING SEAM — after the card->clip0 seam settles, the needle advances
     // monotonically into clip 0, and clip 0's own <video> slot is the one playing.

@@ -1,4 +1,4 @@
-"""
+﻿"""
 pipeline/render_cache.py -- DaVinci-style render cache (#19 / Batch V4.1).
 
 Caches the "clean merged intermediate": the fully rendered timeline
@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 # short-lived _CACHE_VER=2 + `animation` signature field wrote cache entries
 # during that work; the bump is retained so those entries are orphaned rather
 # than risking a stale hit. The signature payload no longer carries `animation`.
-_CACHE_VER = 3  # #190: card duration now 3s + 2 x xfade
+_CACHE_VER = 4  # #190: card duration now 2s + 2 x xfade (3s with no transition)
 
 _PRUNE_KEEP = 20
 _PRUNE_MAX_AGE_DAYS = 7
