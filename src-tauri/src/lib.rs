@@ -2796,6 +2796,11 @@ const VACUUM_GRACE_SECS: u64 = 3600;
 /// proxies (if no active project shares them) may go. Re-making a proxy is cheap.
 const VACUUM_ACTIVE_DAYS: u32 = 90;
 
+/// #241 owner decision 2026-11-16: do NOT delete proxies of stale-but-referenced projects yet
+/// (the Stagecoach 2025 benchmark project must keep its proxies until it is finished). Orphan
+/// removal and every guard stay on. Flip to true to enable the 90-day rule (tested).
+const VACUUM_REMOVE_STALE: bool = false;
+
 static VACUUM_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Pure sweep (testable on a scratch dir). Order matters: LIST the folder first, THEN read
@@ -2804,6 +2809,7 @@ static VACUUM_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 fn vacuum_dir(
     proxy_dir: &std::path::Path,
     grace: std::time::Duration,
+    remove_stale: bool,
     load: impl FnOnce() -> Option<(HashSet<String>, HashSet<String>)>,
 ) -> Option<(u32, u32, u64)> {
     let now = std::time::SystemTime::now();
@@ -2835,7 +2841,7 @@ fn vacuum_dir(
         if age < grace { continue; }
         let key = path.to_string_lossy().to_lowercase();
         let is_orphan = !referenced.contains(&key);
-        let is_stale = !is_orphan && !active.contains(&key);
+        let is_stale = remove_stale && !is_orphan && !active.contains(&key);
         if (is_orphan || is_stale) && std::fs::remove_file(&path).is_ok() {
             if is_orphan { orphans += 1 } else { stale += 1 }
             bytes += len;
@@ -2876,6 +2882,7 @@ fn vacuum_proxies_cmd() -> String {
     let swept = vacuum_dir(
         &proxy_dir,
         std::time::Duration::from_secs(VACUUM_GRACE_SECS),
+        VACUUM_REMOVE_STALE,
         || {
             // Re-check right before the DB read: a render started since the first check
             // makes this run give up (delete nothing) instead of racing it.
@@ -3440,7 +3447,7 @@ mod vacuum_tests {
         let tmp = mk(&d, "00000000000000a5.tmp.mp4");         // in-flight staging
         let upg = mk(&d, "00000000000000a6.upg.tmp.mp4");
         let foreign = mk(&d, "notes_not_a_proxy.mp4"); // not a RushCut proxy name: never touched
-        let (o, s, b) = vacuum_dir(&d, Duration::ZERO, || {
+        let (o, s, b) = vacuum_dir(&d, Duration::ZERO, true, || {
             Some((set(&[&shared, &live, &dead]), set(&[&shared, &live])))
         }).unwrap();
         assert_eq!((o, s, b), (1, 1, 4096));
@@ -3461,9 +3468,21 @@ mod vacuum_tests {
         let old = std::time::SystemTime::now() - Duration::from_secs(200 * 24 * 3600);
         f.set_modified(old).unwrap();
         drop(f);
-        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, || Some((set(&[&p]), set(&[&p])))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, true, || Some((set(&[&p]), set(&[&p])))).unwrap();
         assert_eq!((o, s), (0, 0));
         assert!(std::path::Path::new(&p).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn stale_projects_kept_while_stale_removal_is_off() {
+        let d = scratch("nostale");
+        let dead = mk(&d, "00000000000000e1.mp4");   // referenced, project stale
+        let orphan = mk(&d, "00000000000000e2.mp4"); // referenced by nothing
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, false, || Some((set(&[&dead]), HashSet::new()))).unwrap();
+        assert_eq!((o, s), (1, 0));
+        assert!(std::path::Path::new(&dead).exists());
+        assert!(!std::path::Path::new(&orphan).exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -3471,7 +3490,7 @@ mod vacuum_tests {
     fn unreadable_db_deletes_nothing() {
         let d = scratch("nodb");
         let p = mk(&d, "00000000000000d1.mp4");
-        assert!(vacuum_dir(&d, Duration::ZERO, || None).is_none());
+        assert!(vacuum_dir(&d, Duration::ZERO, true, || None).is_none());
         assert!(std::path::Path::new(&p).exists());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -3480,7 +3499,7 @@ mod vacuum_tests {
     fn young_files_are_skipped_by_grace() {
         let d = scratch("grace");
         let p = mk(&d, "00000000000000c1.mp4");
-        let (o, s, _) = vacuum_dir(&d, Duration::from_secs(3600), || Some((HashSet::new(), HashSet::new()))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::from_secs(3600), true, || Some((HashSet::new(), HashSet::new()))).unwrap();
         assert_eq!((o, s), (0, 0));
         assert!(std::path::Path::new(&p).exists());
         let _ = std::fs::remove_dir_all(&d);
