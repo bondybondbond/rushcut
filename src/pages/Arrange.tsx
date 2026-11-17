@@ -241,6 +241,13 @@ export default function Arrange() {
   // what was being typed (confirmed live: this used to reset on every mode switch).
   const [newCardDraft, setNewCardDraft] = useState<ComposedCard>(() => blankComposedCard(lastCustomColor ?? undefined));
   const cardsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // #244: live text of the card being edited, shown before it is committed to placedCards.
+  const [cardEditDraft, setCardEditDraft] = useState<{ id: string; patch: Partial<ComposedCard> } | null>(null);
+  const pendingCardEditRef = useRef<{ id: string; patch: Partial<ComposedCard> } | null>(null);
+  const flushCardEditRef = useRef<() => void>(() => {});
+  const placedCardsRef = useRef<PlacedCard[]>([]);
+  placedCardsRef.current = placedCards;
+  useEffect(() => () => flushCardEditRef.current(), []);
   // U4: tracks the previous tab so the tab-switch effect can detect zoom-tab-leave.
   const prevTabRef = useRef<ArrangeTab>("zoom");
   const configured = useConfiguredTabs(projectId ?? "");
@@ -268,7 +275,13 @@ export default function Arrange() {
   // lose the draft since newCardDraft is untouched by selection changes.
   const editingCard = selectedCardId ? placedCards.find((c) => c.id === selectedCardId) ?? null : null;
   const composed: ComposedCard = editingCard
-    ? { text: editingCard.text, subtitle: editingCard.subtitle, color: editingCard.color, animation: editingCard.animation }
+    ? {
+        text: editingCard.text,
+        subtitle: editingCard.subtitle,
+        color: editingCard.color,
+        animation: editingCard.animation,
+        ...(cardEditDraft?.id === editingCard.id ? cardEditDraft.patch : {}),
+      }
     : newCardDraft;
 
   const selectedClip = selectedClipId ? clips.find((c) => c.id === selectedClipId) ?? null : null;
@@ -811,6 +824,7 @@ export default function Arrange() {
   // before a detour into editing an existing card is still there (confirmed live:
   // this used to reset the draft on every switch back to "New card").
   function handleNewCard() {
+    flushCardEdit();
     setSelectedCardId(null);
   }
 
@@ -825,6 +839,7 @@ export default function Arrange() {
   // Clicking a card tile in the filmstrip selects it -- the form (via the derived
   // `composed` const above) then reads straight from placedCards, no copy needed.
   function handleSelectCard(cardId: string) {
+    flushCardEdit();
     setSelectedCardId(cardId);
   }
 
@@ -837,11 +852,37 @@ export default function Arrange() {
       return;
     }
     const cardId = selectedCardId;
-    const apply = () => mutateCards((prev) => prev.map((c) => (c.id === cardId ? { ...c, ...patch } : c)));
-    if (!debounce) { apply(); return; }
+    if (!debounce) {
+      flushCardEdit();
+      mutateCards((prev) => prev.map((c) => (c.id === cardId ? { ...c, ...patch } : c)));
+      return;
+    }
+    // #244: typed text shows instantly from a local draft; the heavy part (placedCards ->
+    // strip/clock recompute + localStorage write) is committed once typing pauses.
+    // Patches accumulate so title + subtitle edited within the window are both kept.
+    const next = { id: cardId, patch: { ...(pendingCardEditRef.current?.id === cardId ? pendingCardEditRef.current.patch : {}), ...patch } };
+    pendingCardEditRef.current = next;
+    setCardEditDraft(next);
     if (cardsDebounceRef.current) clearTimeout(cardsDebounceRef.current);
-    cardsDebounceRef.current = setTimeout(apply, 300);
+    cardsDebounceRef.current = setTimeout(flushCardEdit, 300);
   }
+
+  // Commits any pending debounced text edit now (also called before selection changes
+  // and on unmount so no typed text is ever lost).
+  function flushCardEdit() {
+    if (cardsDebounceRef.current) { clearTimeout(cardsDebounceRef.current); cardsDebounceRef.current = null; }
+    const pending = pendingCardEditRef.current;
+    if (!pending) return;
+    pendingCardEditRef.current = null;
+    // Persist directly from the latest cards (not via a state updater) so a flush during
+    // unmount / navigate-away still reaches the settings store.
+    const next = placedCardsRef.current.map((c) => (c.id === pending.id ? { ...c, ...pending.patch } : c));
+    placedCardsRef.current = next;
+    if (projectId) savePlacedCards(projectId, next);
+    setPlacedCards(next);
+    setCardEditDraft(null);
+  }
+  flushCardEditRef.current = flushCardEdit;
 
   // Core placement, shared by drag-drop and "+ Add to film". Always creates a NEW
   // card from the current draft -- this never repositions an already-placed card
@@ -864,6 +905,7 @@ export default function Arrange() {
   }
 
   function handleDeleteCard(cardId: string) {
+    flushCardEdit();
     mutateCards((prev) => prev.filter((c) => c.id !== cardId));
     setSelectedCardId(null);
   }
