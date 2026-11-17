@@ -25,6 +25,7 @@ import {
   type ClockState,
 } from "@/utils/sequenceClock";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
+import { runSlotFade, rampVolumeDown, fadeKindFor } from "@/utils/filmCrossfade";
 
 type MusicMood = "none" | "cinematic" | "upbeat" | "chill" | "electronic" | "custom";
 type LibraryMood = "cinematic" | "upbeat" | "chill" | "electronic";
@@ -169,6 +170,18 @@ export default function Sound() {
   const seqNeedleWriteRef = useRef(0);
   const [seqNeedleMs, setSeqNeedleMsRaw] = useState(0);
   const cardHoldRef = useRef(false);
+  // #197: with a crossfade/dip the preview plays on the RULER's clock -- the next element starts
+  // when the ruler says the current one ends (one overlap before its full played length) and the
+  // outgoing clip keeps playing under the fade, exactly like the render. Before this the needle
+  // parked for the overlap at every cut / card end (and the preview ran longer than the film).
+  const slotFadeCancelRef = useRef<(() => void) | null>(null);   // running slot-to-slot fade
+  const advanceFiredIdxRef = useRef(-1);                          // clip idx whose end-of-clip advance already fired
+  const advanceRoughRef = useRef<(viaClock?: boolean) => void>(() => {}); // latest advanceFilmClipRough for the rAF loop
+  const tailPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tailRampCancelRef = useRef<(() => void) | null>(null); // audio ramp-down of a clip tail playing under a card
+  const fadingCardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCardFaceRef = useRef<{ color: string; text: string; subtitle: string } | null>(null);
+  const [fadingCard, setFadingCard] = useState<{ color: string; text: string; subtitle: string; ms: number } | null>(null);
   // #174 Gate 3 (finding #2): suppress `reconcile` for a short window after any
   // discrete position change -- playback start, a <video> src swap (erratic
   // `timeupdate` cadence for a few hundred ms), a seek, and while music audio is
@@ -202,7 +215,7 @@ export default function Sound() {
   // showing a card). cardHold is the single source of truth for "must not advance"; every
   // legitimate exit (the autoplay ticker firing, pause/resume mid-card, stopFilmPlayback,
   // startFilmPlayback, leaving the mixer tab) clears it (and cardHoldTickerRef) back to null.
-  const [cardHold, setCardHold] = useState<{ filmMs: number; color: string; text: string; subtitle: string } | null>(null);
+  const [cardHold, setCardHold] = useState<{ filmMs: number; color: string; text: string; subtitle: string; fadeInMs?: number } | null>(null);
   // The in-film index to promote to once the card hold ends. clips_.length sentinel means
   // "trailing end-card, nothing after it."
   const pendingCardAdvanceIdxRef = useRef<number | null>(null);
@@ -305,6 +318,39 @@ export default function Sound() {
     }
   }
 
+  // #197: leaving the screen mid-fade must not leave animation frames / timers running.
+  useEffect(() => () => {
+    slotFadeCancelRef.current?.();
+    tailRampCancelRef.current?.();
+    if (tailPauseTimerRef.current !== null) clearTimeout(tailPauseTimerRef.current);
+    if (fadingCardTimerRef.current !== null) clearTimeout(fadingCardTimerRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // #197: stop any running slot fade / card tail-pause / fading card overlay and re-arm the
+  // end-of-clip advance. Called on every discrete jump (start, stop, seek).
+  // Stop a running slot-to-slot fade and settle on the already-promoted incoming slot (the
+  // outgoing one is dropped). Does NOT re-arm the end-of-clip advance (see cancelPreviewFades).
+  function settleFade() {
+    if (!slotFadeCancelRef.current) return;
+    slotFadeCancelRef.current();
+    slotFadeCancelRef.current = null;
+    const keep = activeFilmSlotRef.current;
+    setSlotVisible(keep);
+    getFilmVideo(keep === "a" ? "b" : "a")?.pause();
+  }
+  function cancelPreviewFades() {
+    settleFade();
+    tailRampCancelRef.current?.();
+    tailRampCancelRef.current = null;
+    advanceFiredIdxRef.current = -1;
+    if (tailPauseTimerRef.current !== null) { clearTimeout(tailPauseTimerRef.current); tailPauseTimerRef.current = null; }
+    if (fadingCardTimerRef.current !== null) { clearTimeout(fadingCardTimerRef.current); fadingCardTimerRef.current = null; }
+    setFadingCard(null);
+  }
+  // The rAF loop below is a long-lived closure; give it the latest advance function.
+  advanceRoughRef.current = advanceFilmClipRough;
+
   // #174: mirror for the rAF loop / reconcile without re-subscribing every render.
   useEffect(() => { cardHoldRef.current = cardHold !== null; }, [cardHold]);
 
@@ -358,6 +404,30 @@ export default function Sound() {
           isPlaying: filmPlayingRef.current && !cardHoldRef.current,
           totalMs: Math.min(seq.totalMs, ceilMs),
         });
+        // #197: start the advance from this frame loop (~60 Hz) instead of waiting for the
+        // <video>'s `timeupdate` (~4 Hz), which added up to ~250 ms of needle standstill at every
+        // cut. The trigger is MEDIA-based, so a slow / cold-loading clip can never be advanced
+        // early by the free-running clock: the active slot must really be playing its own clip and
+        // have reached the clip's RULER end -- its trim end minus the transition overlap (equal to
+        // the trim end when there is no transition). With an overlap the outgoing clip then keeps
+        // playing under the fade. The video's own timeupdate/ended stays as a fallback (see
+        // advanceFilmClipRough).
+        if (
+          activeItem && filmPlayingRef.current && !cardHoldRef.current &&
+          pendingGateSlotRef.current === null &&
+          advanceFiredIdxRef.current !== filmPlayIdxRef.current
+        ) {
+          const av = getFilmVideo(activeFilmSlotRef.current);
+          const ac = inFilmRef.current[filmPlayIdxRef.current];
+          const followed = seq.xfadeMs <= 0 || activeItem.filmEndMs < seq.totalMs - 1;
+          if (
+            followed && !!av && !!ac && av.dataset.clipId === ac.id && !av.paused && av.readyState >= 2 &&
+            av.currentTime >= (ac.out_ms ?? ac.duration_ms) / 1000 - seq.xfadeMs / 1000 - 0.02
+          ) {
+            advanceFiredIdxRef.current = filmPlayIdxRef.current;
+            advanceRoughRef.current(true);
+          }
+        }
         const now = performance.now();
         if (now - seqNeedleWriteRef.current >= 50) {
           seqNeedleWriteRef.current = now;
@@ -713,16 +783,24 @@ export default function Sound() {
    * the exact same readiness gate (gateFrameRevealThen) rather than a second, weaker
    * ad hoc swap — mirrors Trimmer.tsx's promoteToFilmClip extraction for the same reason.
    */
-  function promoteToFilmClipRough(nextIdx: number) {
+  function promoteToFilmClipRough(nextIdx: number, fromCard = false) {
     const nextClip = inFilmRef.current[nextIdx];
     const nextSlot: "a" | "b" = activeFilmSlotRef.current === "a" ? "b" : "a";
     const nextV = getFilmVideo(nextSlot);
     if (!nextV || !nextClip) return;
+    // #197: clip -> clip with a transition = the incoming clip fades in over the outgoing one,
+    // which is still playing. (From a card the card overlay does the dissolving instead.)
+    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const overlapFade = xfadeMs > 0 && !fromCard;
+    settleFade(); // a clip shorter than two overlaps can advance while the previous fade still runs
 
     // Preload for this slot may not have started/finished yet (very short clips can
     // outrun the lookahead preload) — fall back to a full load rather than gating on
     // a video that was never given the right src.
     if (nextV.dataset.clipId !== nextClip.id) {
+      // #197: the outgoing clip is no longer paused by the advance in overlap mode; the cold
+      // reload below is a hard cut, so stop it here.
+      if (overlapFade) getFilmVideo(activeFilmSlotRef.current)?.pause();
       loadIntoSlot(nextIdx, nextSlot);
       return;
     }
@@ -739,11 +817,15 @@ export default function Sound() {
       if (pendingGateSlotRef.current === nextSlot) pendingGateSlotRef.current = null;
       if (slotGenRef.current[nextSlot] !== thisGen || !filmPlayingRef.current) return;
 
+      // The outgoing slot is by definition the other one. (Not `activeFilmSlotRef.current`: this
+      // callback can run twice for one boundary -- the advance is re-entered by timeupdate AND
+      // ended -- and on the second run the active slot is already the incoming one.)
+      const prevSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
+      const prevV = getFilmVideo(prevSlot);
+      const nextVolume = Math.min(1, nextClip.clip_volume ?? 1.0);
       filmPlayIdxRef.current = nextIdx;
       setFilmPlayIdx(nextIdx);
       activeFilmSlotRef.current = nextSlot;
-      nextV.volume = Math.min(1, nextClip.clip_volume ?? 1.0);
-      setSlotVisible(nextSlot);
 
       // #174: re-anchor the sequence clock to this clip's telescoped start and
       // gate reconcile briefly (erratic post-swap timeupdate cadence). The rAF
@@ -754,14 +836,40 @@ export default function Sound() {
       resetFilmPlaybackRate();
 
       const afterNextIdx = nextIdx + 1;
-      if (afterNextIdx < inFilmRef.current.length) {
-        const afterNextSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
-        preloadIntoSlot(afterNextIdx, afterNextSlot);
+      const preloadAfterNext = () => {
+        if (afterNextIdx < inFilmRef.current.length) {
+          preloadIntoSlot(afterNextIdx, prevSlot);
+        }
+      };
+
+      if (overlapFade && prevV) {
+        // Fade the incoming clip in over the outgoing one for one overlap. The outgoing slot is
+        // the preload target for the clip after next, so that preload waits for the fade to end.
+        slotFadeCancelRef.current?.();
+        slotFadeCancelRef.current = runSlotFade({
+          outV: prevV,
+          inV: nextV,
+          ms: xfadeMs,
+          kind: fadeKindFor(readTransitionConfig(projectId ?? "").between),
+          inVolume: nextVolume,
+          onDone: () => {
+            slotFadeCancelRef.current = null;
+            prevV.pause();
+            nextV.volume = nextVolume;
+            setSlotVisible(nextSlot);
+            preloadAfterNext();
+          },
+        });
+        return;
       }
+
+      nextV.volume = nextVolume;
+      setSlotVisible(nextSlot);
+      preloadAfterNext();
     });
   }
 
-  function advanceFilmClipRough() {
+  function advanceFilmClipRough(viaClock = false) {
     // Guard against stray onEnded re-entry after the film already stopped (e.g. a
     // buffered/preloaded slot firing `ended` post-seek). Without this, the advance
     // state machine plays one extra clip with no music sync. See U6 follow-up Bug A.
@@ -773,12 +881,24 @@ export default function Sound() {
     // just makes it self-evident (mirrors Trimmer.tsx's advanceFilmClip).
     if (cardHold) return;
 
+    // #197: with a transition overlap the outgoing clip keeps playing under the fade, so it is
+    // NOT paused here and `timeupdate` / `ended` keep arriving until the reveal. The ruler clock
+    // (rAF loop, viaClock) normally starts the advance one overlap before the media ends; a
+    // second trigger for the same clip (its own `timeupdate`/`ended`, or a missed clock tick)
+    // must be a no-op once one has fired.
+    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const overlap = xfadeMs > 0;
+    // Same guard with no transition: the clip's own `timeupdate` AND `ended` used to re-enter this
+    // for one boundary (the double advance seen in the #197 trace).
+    if (!viaClock && advanceFiredIdxRef.current === filmPlayIdxRef.current) return;
+    advanceFiredIdxRef.current = filmPlayIdxRef.current;
+
     // Pause the outgoing slot FIRST, synchronously, before anything else. A paused
     // video fires no more `timeupdate`, which is what actually prevents a second
     // `advanceFilmClipRough` re-entry while the reveal below waits on the frame gate
     // (#91 fix — activeFilmSlotRef used to flip synchronously here and do that job;
     // now it doesn't flip until the frame is confirmed, so pause must stand alone).
-    getFilmVideo(activeFilmSlotRef.current)?.pause();
+    if (!overlap) getFilmVideo(activeFilmSlotRef.current)?.pause();
 
     const nextIdx = filmPlayIdxRef.current + 1;
 
@@ -800,11 +920,24 @@ export default function Sound() {
       // render (cards never silence the music track). Video pause mirrors
       // pauseFilmPlayback's "pause both slots, not just the active one" — a pending gate
       // (#91) may already have the inactive slot playing invisibly.
-      filmVideoARef.current?.pause();
-      filmVideoBRef.current?.pause();
+      if (overlap) {
+        // #197: the card dissolves in over the clip's last overlap; the clip keeps playing (and
+        // its audio ramps down) under it, then is paused once the card is fully opaque.
+        tailRampCancelRef.current?.();
+        tailRampCancelRef.current = rampVolumeDown(getFilmVideo(activeFilmSlotRef.current), xfadeMs);
+        if (tailPauseTimerRef.current !== null) clearTimeout(tailPauseTimerRef.current);
+        tailPauseTimerRef.current = setTimeout(() => {
+          tailPauseTimerRef.current = null;
+          filmVideoARef.current?.pause();
+          filmVideoBRef.current?.pause();
+        }, xfadeMs);
+      } else {
+        filmVideoARef.current?.pause();
+        filmVideoBRef.current?.pause();
+      }
       pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end run
       pendingCardRunRef.current = upcomingRun.slice(1); // #184: card[0] held now, rest queued
-      holdCard(upcomingRun[0]);
+      holdCard(upcomingRun[0], overlap ? xfadeMs : 0);
       return;
     }
 
@@ -1015,6 +1148,7 @@ export default function Sound() {
 
   function startFilmPlayback() {
     stopPreview(); // stop any mood chip preview
+    cancelPreviewFades(); // #197
     hasPlayedRef.current = true;
     filmPlayingRef.current = true;
     setCardHold(null); // #150: any stale hold from a prior playback session is moot
@@ -1068,6 +1202,7 @@ export default function Sound() {
     diagLog(
       `pause maCurTime=${musicAudioRef.current?.currentTime.toFixed(2)} maPaused=${musicAudioRef.current?.paused} needle=${seqClockRef.current.seqTimeMs.toFixed(0)}`,
     );
+    cancelPreviewFades(); // #197: a pause stops a running crossfade and any card tail
     filmPlayingRef.current = false;
     // Pause BOTH slots, not just the active one — a pending advance/load gate (#91)
     // may already have the inactive slot playing (still invisible) while it waits
@@ -1136,7 +1271,10 @@ export default function Sound() {
     // #190: this card's own length/width (depends on how many crossfades touch it).
     const holdTiming = cardTimingAt(filmSeqRef.current, baseFilmMs);
     const holdRegionMs = holdTiming?.regionMs ?? filmCardRegionMs;
-    const holdDurMs = holdTiming?.durMs ?? cardDurMs(filmXfadeOverlapMs);
+    // #197: hold for the card's RULER width (not its full played length): the next clip starts
+    // fading in over the card's last overlap, exactly like the render. With no transition the two
+    // are equal, so nothing changes there.
+    const holdDurMs = holdTiming?.regionMs ?? filmCardRegionMs;
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
@@ -1173,11 +1311,12 @@ export default function Sound() {
    * #184: arm a single card's hold — anchors the needle to that card's telescoped
    * filmStartMs (from the authoritative sequence), shows the overlay, starts the ticker.
    */
-  function holdCard(card: PlacedCard) {
+  function holdCard(card: PlacedCard, fadeInMs = 0) {
     const seq = filmSeqRef.current;
     const cardSeg = seq?.items.find((it) => it.kind === "card" && it.card?.id === card.id);
     const filmMs = cardSeg ? cardSeg.filmStartMs : (seq?.totalMs ?? 0);
-    setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle });
+    lastCardFaceRef.current = { color: card.color, text: card.text, subtitle: card.subtitle };
+    setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle, fadeInMs });
     startCardHoldTicker(0, filmMs);
   }
 
@@ -1205,6 +1344,14 @@ export default function Sound() {
       stopFilmPlayback();
       return;
     }
+    // #197: with a transition the next clip fades in OVER the card: keep a purely visual copy of
+    // the card on screen for one overlap, fading out, while the clip underneath starts.
+    const cardFadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    if (cardFadeMs > 0 && lastCardFaceRef.current) {
+      setFadingCard({ ...lastCardFaceRef.current, ms: cardFadeMs });
+      if (fadingCardTimerRef.current !== null) clearTimeout(fadingCardTimerRef.current);
+      fadingCardTimerRef.current = setTimeout(() => { fadingCardTimerRef.current = null; setFadingCard(null); }, cardFadeMs + 150);
+    }
     // #174: anchor the clock to the next clip's telescoped start NOW -- the derived
     // needle flips from the cardHold branch to `seqNeedleMs` the instant
     // setCardHold(null) commits, so the clock must already be there or the needle
@@ -1212,6 +1359,10 @@ export default function Sound() {
     // re-anchors it (that re-anchor is then idempotent).
     const seq = filmSeqRef.current;
     if (seq) anchorSeqClock(itemToFilm(seq, "clip", pendingIdx, 0));
+    // #197: the clock is already in the NEXT clip's span; until the reveal gate flips the index the
+    // rAF loop would clamp it back to the previous clip's ruler end for ~100 ms (a visible dip of
+    // the whole card width). Point the index at the incoming clip now.
+    filmPlayIdxRef.current = pendingIdx;
     reconcileGateUntilRef.current = performance.now() + 350;
     filmPlayingRef.current = true;
     setIsFilmPlaying(true);
@@ -1220,7 +1371,7 @@ export default function Sound() {
     // the overlay's "skip now" click rather than the play/pause button to resume — ensure
     // it's playing regardless of entry path. A no-op if it was never paused.
     musicAudioRef.current?.play().catch(() => {});
-    promoteToFilmClipRough(pendingIdx);
+    promoteToFilmClipRough(pendingIdx, true);
   }
 
   /**
@@ -1232,6 +1383,12 @@ export default function Sound() {
   function toggleCardHoldPause() {
     if (isFilmPlaying) {
       stopCardHoldTicker();
+      // #197: the clip tail still playing under a card dissolving in stops with the pause
+      if (tailPauseTimerRef.current !== null) { clearTimeout(tailPauseTimerRef.current); tailPauseTimerRef.current = null; }
+      tailRampCancelRef.current?.();
+      tailRampCancelRef.current = null;
+      filmVideoARef.current?.pause();
+      filmVideoBRef.current?.pause();
       filmPlayingRef.current = false;
       musicAudioRef.current?.pause();
       setIsFilmPlaying(false);
@@ -1246,6 +1403,7 @@ export default function Sound() {
   }
 
   function stopFilmPlayback() {
+    cancelPreviewFades(); // #197
     filmPlayingRef.current = false;
     pendingGateSlotRef.current = null;
     setCardHold(null); // #150: stopping mid-hold must not leave a stale overlay/pending index
@@ -1277,7 +1435,8 @@ export default function Sound() {
     const seq = filmSeqRef.current;
     if (clips.length === 0 || !seq || seq.totalMs <= 0) return;
 
-    // A seek is a legitimate exit from a card hold.
+    // A seek is a legitimate exit from a card hold (and from any running crossfade, #197).
+    cancelPreviewFades();
     setCardHold(null);
     pendingCardAdvanceIdxRef.current = null;
     pendingCardRunRef.current = []; // #184
@@ -1337,6 +1496,7 @@ export default function Sound() {
       const cardStartMs = seq.items[seg].filmStartMs;
       // Resume the hold from wherever inside the card the user actually clicked,
       // not always from the card's start.
+      lastCardFaceRef.current = { color: card.color, text: card.text, subtitle: card.subtitle };
       setCardHold({ filmMs: cardStartMs, color: card.color, text: card.text, subtitle: card.subtitle });
       startCardHoldTicker(Math.max(0, clamped - cardStartMs), cardStartMs);
       return;
@@ -1893,10 +2053,42 @@ export default function Sound() {
               {/* #150: full parity with Trimmer's card-hold colour overlay (src/pages/Trimmer.tsx) —
                   ported verbatim, plus a click-to-resume affordance matching Sound's existing
                   click-video-to-play-pause pattern. */}
+              {/* #197: the card dissolving OUT under the clip that just started (visual only). */}
+              {fadingCard && !cardHold && (
+                <div
+                  className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none"
+                  style={{ background: fadingCard.color, animation: `rc-card-fade-out ${fadingCard.ms}ms linear both` }}
+                >
+                  {(fadingCard.text || fadingCard.subtitle) && (
+                    <div className="flex flex-col items-center gap-2 px-8 select-none">
+                      {fadingCard.text && (
+                        <p
+                          className="text-center font-semibold"
+                          style={{ color: cardTextColor(fadingCard.color), fontSize: "clamp(1.25rem, 3vw, 2.5rem)" }}
+                        >
+                          {fadingCard.text}
+                        </p>
+                      )}
+                      {fadingCard.subtitle && (
+                        <p
+                          className="text-center font-normal"
+                          style={{ color: cardTextColor(fadingCard.color), fontSize: "clamp(0.875rem, 1.8vw, 1.5rem)", opacity: 0.75 }}
+                        >
+                          {fadingCard.subtitle}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               {cardHold && (
                 <div
                   className="absolute inset-0 flex items-center justify-center z-20 cursor-pointer"
-                  style={{ background: cardHold.color }}
+                  style={{
+                    background: cardHold.color,
+                    // #197: dissolve in over the clip tail that is still playing underneath
+                    animation: cardHold.fadeInMs ? `rc-card-fade-in ${cardHold.fadeInMs}ms linear both` : undefined,
+                  }}
                   onClick={continueFromCardHold}
                 >
                   {(cardHold.text || cardHold.subtitle) && (

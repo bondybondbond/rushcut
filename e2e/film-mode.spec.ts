@@ -569,8 +569,16 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     });
     const heldMs = Date.now() - holdStartMs;
     console.log(`[film-mode] #185 leading card held for ~${heldMs}ms`);
-    expect(heldMs).toBeGreaterThan(2500);
-    expect(heldMs).toBeLessThan(3800);
+    // #197: the HOLD (overlay with both videos paused) now lasts the card's RULER width: 1.5s for
+    // this leading card (3s played minus the 1.5s crossfade into clip 0). Clip 0 then fades in OVER
+    // the card for that last 1.5s, so the viewer still sees the card for ~3s in total. (Was
+    // 2500-3800ms when the whole played length was one hold.)
+    expect(heldMs).toBeGreaterThan(1200);
+    expect(heldMs).toBeLessThan(2400);
+    // ...and the card is still on screen, dissolving out, right after the hold ends.
+    const fadeSeen = await browser.execute(() => !!document.querySelector('[data-testid="trim-card-fade"]'));
+    console.log(`[film-mode] #197 card dissolve overlay present right after the hold: ${fadeSeen}`);
+    expect(fadeSeen).toBe(true);
 
     // (5) LEADING SEAM — after the card->clip0 seam settles, the needle advances
     // monotonically into clip 0, and clip 0's own <video> slot is the one playing.
@@ -591,7 +599,9 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     expect(worstBack).toBeLessThanOrEqual(SEAM_TOL_MS);
     expect(advanced).toBeGreaterThan(300);
     // exactly one film slot is playing (not paused, currentTime advancing) ...
-    const lastThird = seam.slice(-6);
+    // #197: judged on the EARLY samples (0.7-1.5s into clip 0). By ~2.4s the next clip is already
+    // fading in over clip 0 on the ruler's clock, so two slots playing there is the new design.
+    const lastThird = seam.slice(0, 6);
     const aPlaying = lastThird.every((s) => !s.aPaused) && lastThird[lastThird.length - 1].aT - lastThird[0].aT > 0.1;
     const bPlaying = lastThird.every((s) => !s.bPaused) && lastThird[lastThird.length - 1].bT - lastThird[0].bT > 0.1;
     console.log(`[film-mode] #185 post-seam slots: aPlaying=${aPlaying} bPlaying=${bPlaying} aClip=${lastThird[0].aClip} bClip=${lastThird[0].bClip}`);

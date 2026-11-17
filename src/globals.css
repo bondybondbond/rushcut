@@ -8,6 +8,10 @@
   animation: rc-proxy-pulse 1.4s ease-in-out infinite;
 }
 
+/* #197: card overlay dissolving in over / out under the neighbouring clip in the film preview. */
+@keyframes rc-card-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rc-card-fade-out { from { opacity: 1; } to { opacity: 0; } }
+
 @keyframes rc-fly-in {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0);    }

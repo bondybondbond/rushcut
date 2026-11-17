@@ -26,6 +26,7 @@ import {
   type ClockState,
 } from "@/utils/sequenceClock";
 import { getRenderPref } from "@/utils/renderStore";
+import { runSlotFade, rampVolumeDown, fadeKindFor } from "@/utils/filmCrossfade";
 import { projectCache } from "@/utils/projectCache";
 
 // U5c (Issue #2): fire-and-forget freeze-diagnostic trace. Appends to
@@ -54,6 +55,7 @@ export default function Trimmer() {
   const [filmActiveId, setFilmActiveId] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(0.8);
+  const volumeRef = useRef(0.8);
   const [videoCanPlay, setVideoCanPlay] = useState(false);
   const [sourceFailed, setSourceFailed] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -70,7 +72,7 @@ export default function Trimmer() {
   // for "must not double-advance"; every legitimate exit path (the autoplay timer firing,
   // togglePlay's manual pause/resume during a card, seekFilmTo landing elsewhere, leaving
   // film mode) must clear it (and cardHoldTickerRef/cardHoldElapsedMs) back to null/0.
-  const [cardHold, setCardHold] = useState<{ filmMs: number; color: string; text: string; subtitle: string } | null>(null);
+  const [cardHold, setCardHold] = useState<{ filmMs: number; color: string; text: string; subtitle: string; fadeInMs?: number } | null>(null);
   // The in-film index to promote to once a card hold set by advanceFilmClip ends (timer
   // fires, or the user manually skips ahead). null when nothing is pending (idle, or the
   // hold was set by a manual seek instead, which has no pending promotion).
@@ -128,6 +130,18 @@ export default function Trimmer() {
   // Mirrors used by the rAF loop / reconcile without re-subscribing every render.
   const isPlayingRef = useRef(false);
   const cardHoldRef = useRef(false);
+  // #197: with a crossfade/dip the film preview runs on the RULER's clock -- the next element
+  // starts when the ruler says the current one ends (one overlap before its full played length)
+  // and the outgoing clip keeps playing under the fade, like the render. Before this the needle
+  // parked for the overlap at every cut / card end and the preview ran longer than the film.
+  const slotFadeCancelRef = useRef<(() => void) | null>(null);   // running slot-to-slot fade
+  const advanceFiredIdxRef = useRef(-1);                          // clip idx whose end-of-clip advance already fired
+  const advanceRef = useRef<(viaClock?: boolean) => void>(() => {}); // latest advanceFilmClip for the rAF loop
+  const tailPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tailRampCancelRef = useRef<(() => void) | null>(null); // audio ramp-down of a clip tail playing under a card
+  const fadingCardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCardFaceRef = useRef<{ color: string; text: string; subtitle: string } | null>(null);
+  const [fadingCard, setFadingCard] = useState<{ color: string; text: string; subtitle: string; ms: number } | null>(null);
   const currentPlaybackRateRef = useRef(1);
 
   // Dual-buffer film playback: two persistent video elements, ping-pong between them
@@ -281,6 +295,7 @@ export default function Trimmer() {
   }, [projectId]);
 
   useEffect(() => {
+    volumeRef.current = volume;
     if (clipVideoARef.current) clipVideoARef.current.volume = volume;
     if (clipVideoBRef.current) clipVideoBRef.current.volume = volume;
     if (filmVideoARef.current) filmVideoARef.current.volume = volume;
@@ -724,6 +739,12 @@ export default function Trimmer() {
         // clip: freeze/re-arm the ticker from where it left off, don't skip ahead.
         if (isPlaying) {
           stopCardHoldTicker();
+          // #197: the clip tail still playing under a card dissolving in stops with the pause
+          if (tailPauseTimerRef.current !== null) { clearTimeout(tailPauseTimerRef.current); tailPauseTimerRef.current = null; }
+          tailRampCancelRef.current?.();
+          tailRampCancelRef.current = null;
+          filmVideoARef.current?.pause();
+          filmVideoBRef.current?.pause();
           setIsPlaying(false);
         } else {
           setIsPlaying(true);
@@ -792,6 +813,12 @@ export default function Trimmer() {
       v.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
       v.pause();
+      if (viewMode === "film") {
+        // #197: a clip may still be playing under a fade -- a pause stops everything.
+        cancelPreviewFades();
+        filmVideoARef.current?.pause();
+        filmVideoBRef.current?.pause();
+      }
       setIsPlaying(false);
     }
   }
@@ -1120,17 +1147,32 @@ export default function Trimmer() {
    * resume-past-a-card-hold path, so both go through the exact same readiness handling
    * (optimistic play + fallback-reload) rather than a second, weaker ad hoc swap.
    */
-  function promoteToFilmClip(nextIdx: number) {
+  function promoteToFilmClip(nextIdx: number, fromCard = false) {
     const nextSlot: "a" | "b" = activeFilmSlotRef.current === "a" ? "b" : "a";
+    settleFade(); // a clip shorter than two overlaps can advance while the previous fade still runs
     const nextV = getFilmVideo(nextSlot);
+    const prevSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
+    const prevV = getFilmVideo(prevSlot);
+    // #197: the preloaded slot may hold a different clip (a fade cancelled by a pause/seek skipped
+    // its after-next preload). Load the right one cold instead of playing the stale element.
+    const nextClipForSlot = inFilmRef.current[nextIdx];
+    if (nextV && nextClipForSlot && nextV.dataset.clipId !== nextClipForSlot.id) {
+      getFilmVideo(activeFilmSlotRef.current)?.pause();
+      loadIntoSlot(nextIdx, nextSlot);
+      return;
+    }
+    // #197: clip -> clip with a transition = the incoming clip fades in over the outgoing one,
+    // which keeps playing. (From a card the card overlay does the dissolving instead.)
+    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const overlapFade = xfadeMs > 0 && !fromCard && !!nextV && !!prevV && !prevV.paused;
 
-    // Pause current slot
-    getFilmVideo(activeFilmSlotRef.current)?.pause();
+    // Pause current slot (not while it is still playing under a fade-in)
+    if (!overlapFade) getFilmVideo(activeFilmSlotRef.current)?.pause();
 
     filmPlayIdxRef.current = nextIdx;
     setFilmPlayIdx(nextIdx);
     activeFilmSlotRef.current = nextSlot;
-    setSlotVisible(nextSlot);
+    if (!overlapFade) setSlotVisible(nextSlot);
 
     // #165: re-anchor the sequence clock to this clip's telescoped start so the
     // needle picks up cleanly from ground truth (esp. after a card hold, where the
@@ -1141,7 +1183,35 @@ export default function Trimmer() {
     resetFilmPlaybackRate();
 
     if (nextV) {
+      const nextVolume = volumeRef.current; // Trimmer film slots play at the page's volume slider
+      const afterNextIdx = nextIdx + 1;
+      const preloadAfterNext = () => {
+        if (afterNextIdx < inFilmRef.current.length) preloadIntoSlot(afterNextIdx, prevSlot);
+      };
+      if (overlapFade && prevV) {
+        slotFadeCancelRef.current?.();
+        slotFadeCancelRef.current = runSlotFade({
+          outV: prevV,
+          inV: nextV,
+          ms: xfadeMs,
+          kind: fadeKindFor(readTransitionConfig(projectId ?? "").between),
+          inVolume: nextVolume,
+          onDone: () => {
+            slotFadeCancelRef.current = null;
+            prevV.pause();
+            nextV.volume = nextVolume;
+            setSlotVisible(nextSlot);
+            preloadAfterNext();
+          },
+        });
+      }
       nextV.play().catch(() => {
+        // #197: a failed play during a fade-in = a hard cut to the cold reload below.
+        if (overlapFade) {
+          slotFadeCancelRef.current?.();
+          slotFadeCancelRef.current = null;
+          prevV?.pause();
+        }
         // Inactive slot wasn't preloaded/seeked yet — load it fresh.
         // U5a step 1 (diagnostic): this fallback is the visible clip-switch hitch
         // (full src reload at the boundary). If this never logs during normal
@@ -1150,12 +1220,9 @@ export default function Trimmer() {
         diagLog(`film-advance-fallback idx=${nextIdx}`);
         loadIntoSlot(nextIdx, nextSlot);
       });
-      // Preload the clip after next
-      const afterNextIdx = nextIdx + 1;
-      if (afterNextIdx < inFilmRef.current.length) {
-        const afterNextSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
-        preloadIntoSlot(afterNextIdx, afterNextSlot);
-      }
+      // Preload the clip after next. During a fade the outgoing slot IS the preload target, so
+      // the fade's onDone does it.
+      if (!overlapFade) preloadAfterNext();
     }
   }
 
@@ -1168,7 +1235,9 @@ export default function Trimmer() {
   function startCardHoldTicker(fromMs: number, baseFilmMs: number) {
     cardHoldStartAtRef.current = performance.now() - fromMs;
     // #190: this card's own length (depends on how many crossfades touch it).
-    const holdDurMs = cardTimingAt(filmSeqRef.current, baseFilmMs)?.durMs ?? cardDurMs(filmXfadeOverlapMs);
+    // #197: hold for the card's RULER width (not its full played length): the next clip starts
+    // fading in over the card's last overlap, like the render. With no transition they are equal.
+    const holdDurMs = cardTimingAt(filmSeqRef.current, baseFilmMs)?.regionMs ?? cardRegionMs(filmXfadeOverlapMs);
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
@@ -1236,12 +1305,13 @@ export default function Trimmer() {
    * telescoped filmStartMs (read from the authoritative sequence, not re-derived),
    * shows the colour overlay, and starts the CARD_DUR_MS autoplay ticker.
    */
-  function holdCard(card: PlacedCard) {
+  function holdCard(card: PlacedCard, fadeInMs = 0) {
     const seq = filmSeqRef.current;
     const item = seq?.items.find((it) => it.kind === "card" && it.card?.id === card.id);
     const filmMs = item ? item.filmStartMs : (seq?.totalMs ?? 0);
     diagLog(`185 hold-card id=${card.id} filmMs=${Math.round(filmMs)} segIdx=${item?.segIndex ?? -1} segWidth=${item ? Math.round(item.filmEndMs - item.filmStartMs) : -1} autoplay=${cardHoldAutoplayRef.current ? 1 : 0} pendIdx=${pendingCardAdvanceIdxRef.current} runLen=${pendingCardRunRef.current.length} seqMs=${Math.round(seqClockRef.current.seqTimeMs)} t=${performance.now().toFixed(0)}`);
-    setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle });
+    lastCardFaceRef.current = { color: card.color, text: card.text, subtitle: card.subtitle };
+    setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle, fadeInMs });
     anchorSeqClock(filmMs);
     startCardHoldTicker(0, filmMs);
   }
@@ -1272,17 +1342,32 @@ export default function Trimmer() {
       setIsPlaying(false);
       return;
     }
-    promoteToFilmClip(pendingIdx);
+    // #197: with a transition the next clip fades in OVER the card: keep a purely visual copy of
+    // the card on screen for one overlap, fading out, while the clip underneath starts.
+    const cardFadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    if (cardFadeMs > 0 && lastCardFaceRef.current) {
+      setFadingCard({ ...lastCardFaceRef.current, ms: cardFadeMs });
+      if (fadingCardTimerRef.current !== null) clearTimeout(fadingCardTimerRef.current);
+      fadingCardTimerRef.current = setTimeout(() => { fadingCardTimerRef.current = null; setFadingCard(null); }, cardFadeMs + 150);
+    }
+    promoteToFilmClip(pendingIdx, true);
     setIsPlaying(true);
   }
 
   /** Called from timeupdate on the active slot when the clip boundary is reached. */
-  function advanceFilmClip() {
+  function advanceFilmClip(viaClock = false) {
     // #150 idempotency guard: already parked on a card — a stray re-entrant tick
     // (timeupdate firing again before pause takes effect) must be a no-op, not a
     // second transition. filmPlayIdxRef is never mutated while cardHold is set, so
     // this is also true by construction — the explicit check just makes it self-evident.
     if (cardHold) return;
+
+    // #197: the frame loop (viaClock) normally starts the advance; a second trigger for the same
+    // clip (its own timeupdate, or the error handler) must be a no-op once one has fired.
+    if (!viaClock && advanceFiredIdxRef.current === filmPlayIdxRef.current) return;
+    advanceFiredIdxRef.current = filmPlayIdxRef.current;
+    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const overlap = xfadeMs > 0;
 
     const nextIdx = filmPlayIdxRef.current + 1;
     diagLog(`film-advance next=${nextIdx}`);
@@ -1305,15 +1390,29 @@ export default function Trimmer() {
       // bug), before setCardHold's state update is even queued, let alone committed. A ref
       // read is the only thing guaranteed current at that exact synchronous instant.
       cardHoldAutoplayRef.current = true;
-      getFilmVideo(activeFilmSlotRef.current)?.pause();
+      if (overlap) {
+        // #197: the card dissolves in over the clip's last overlap; the clip keeps playing (its
+        // audio ramps down) under it, then is paused once the card is fully opaque.
+        tailRampCancelRef.current?.();
+        tailRampCancelRef.current = rampVolumeDown(getFilmVideo(activeFilmSlotRef.current), xfadeMs);
+        if (tailPauseTimerRef.current !== null) clearTimeout(tailPauseTimerRef.current);
+        tailPauseTimerRef.current = setTimeout(() => {
+          tailPauseTimerRef.current = null;
+          filmVideoARef.current?.pause();
+          filmVideoBRef.current?.pause();
+        }, xfadeMs);
+      } else {
+        getFilmVideo(activeFilmSlotRef.current)?.pause();
+      }
       pendingCardAdvanceIdxRef.current = nextIdx; // may be >= clips_.length — trailing end run
       pendingCardRunRef.current = upcomingRun.slice(1); // #184: card[0] held now, rest queued
-      holdCard(upcomingRun[0]);
+      holdCard(upcomingRun[0], overlap ? xfadeMs : 0);
       return;
     }
 
     if (nextIdx >= clips_.length) {
-      getFilmVideo(activeFilmSlotRef.current)?.pause();
+      filmVideoARef.current?.pause();
+      filmVideoBRef.current?.pause();
       filmModeRef.current = false;
       setIsPlaying(false);
       return;
@@ -1441,6 +1540,7 @@ export default function Trimmer() {
     // sequence clock straight to it. Covers every branch below (card park, same-clip
     // seek, cross-slot seek); reconcile() corrects any sub-frame seek-landing error
     // once the <video> reports its real post-`seeked` position.
+    cancelPreviewFades(); // #197: a seek ends any running crossfade and re-arms the end-of-clip advance
     anchorSeqClock(filmMs);
     resetFilmPlaybackRate();
     const clips_ = inFilmRef.current;
@@ -1587,6 +1687,39 @@ export default function Trimmer() {
     };
   }, []);
 
+  // #197: leaving the screen mid-fade must not leave animation frames / timers running.
+  useEffect(() => () => {
+    slotFadeCancelRef.current?.();
+    tailRampCancelRef.current?.();
+    if (tailPauseTimerRef.current !== null) clearTimeout(tailPauseTimerRef.current);
+    if (fadingCardTimerRef.current !== null) clearTimeout(fadingCardTimerRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // #197: stop any running slot fade / card tail-pause / fading card overlay and re-arm the
+  // end-of-clip advance. Called on every discrete jump (seek, film-mode enter/exit, pause).
+  // Stop a running slot-to-slot fade and settle on the already-promoted incoming slot (the
+  // outgoing one is dropped). Does NOT re-arm the end-of-clip advance (see cancelPreviewFades).
+  function settleFade() {
+    if (!slotFadeCancelRef.current) return;
+    slotFadeCancelRef.current();
+    slotFadeCancelRef.current = null;
+    const keep = activeFilmSlotRef.current;
+    setSlotVisible(keep);
+    getFilmVideo(keep === "a" ? "b" : "a")?.pause();
+  }
+  function cancelPreviewFades() {
+    settleFade();
+    tailRampCancelRef.current?.();
+    tailRampCancelRef.current = null;
+    advanceFiredIdxRef.current = -1;
+    if (tailPauseTimerRef.current !== null) { clearTimeout(tailPauseTimerRef.current); tailPauseTimerRef.current = null; }
+    if (fadingCardTimerRef.current !== null) { clearTimeout(fadingCardTimerRef.current); fadingCardTimerRef.current = null; }
+    setFadingCard(null);
+  }
+  // The rAF loop below is a long-lived closure; give it the latest advance function.
+  advanceRef.current = advanceFilmClip;
+
   // #165: mirrors for the sequence-clock rAF loop (no re-subscribe on every render).
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { cardHoldRef.current = cardHold !== null; }, [cardHold]);
@@ -1672,6 +1805,29 @@ export default function Trimmer() {
           isPlaying: isPlayingRef.current && !cardHoldRef.current,
           totalMs: Math.min(seq.totalMs, ceilMs),
         });
+        // #197: start the advance from this frame loop (~60 Hz) instead of waiting for the
+        // <video>'s `timeupdate` (~4 Hz), which added up to ~250 ms of needle standstill at every
+        // cut. The trigger is MEDIA-based, so a slow / cold-loading clip can never be advanced
+        // early by the free-running clock: the active slot must really be playing its own clip and
+        // have reached the clip's RULER end -- its trim end minus the transition overlap (equal to
+        // the trim end when there is no transition). With an overlap the outgoing clip then keeps
+        // playing under the fade. The video's own timeupdate/ended stays as a fallback (see
+        // advanceFilmClip).
+        if (
+          activeItem && filmModeRef.current && isPlayingRef.current && !cardHoldRef.current &&
+          advanceFiredIdxRef.current !== filmPlayIdxRef.current
+        ) {
+          const av = getFilmVideo(activeFilmSlotRef.current);
+          const ac = inFilmRef.current[filmPlayIdxRef.current];
+          const followed = seq.xfadeMs <= 0 || activeItem.filmEndMs < seq.totalMs - 1;
+          if (
+            followed && !!av && !!ac && av.dataset.clipId === ac.id && !av.paused && av.readyState >= 2 &&
+            av.currentTime >= (ac.out_ms ?? ac.duration_ms) / 1000 - seq.xfadeMs / 1000 - 0.02
+          ) {
+            advanceFiredIdxRef.current = filmPlayIdxRef.current;
+            advanceRef.current(true);
+          }
+        }
         const now = performance.now();
         if (now - seqNeedleWriteRef.current >= 50) {
           seqNeedleWriteRef.current = now;
@@ -1691,6 +1847,7 @@ export default function Trimmer() {
   // Enter/exit film mode
   useEffect(() => {
     filmModeRef.current = viewMode === "film";
+    cancelPreviewFades(); // #197
     if (viewMode === "film") {
       // Leaving clip mode: pause + hide the clip slots (clip mode is no longer active, so
       // blanking them here does not violate the never-blank-while-active rule).
@@ -2126,11 +2283,44 @@ export default function Trimmer() {
                 region (paused, film mode). Solid colour mirrors the strip card tile.
                 Text is interim: the final preview uses card preview proxies (#76). */}
             {/* #150: shown throughout the autoplay hold too, not just while paused. */}
+            {/* #197: the card dissolving OUT under the clip that just started (visual only). */}
+            {viewMode === "film" && fadingCard && !cardHold && (
+              <div
+                data-testid="trim-card-fade"
+                className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center"
+                style={{ background: fadingCard.color, animation: `rc-card-fade-out ${fadingCard.ms}ms linear both` }}
+              >
+                {(fadingCard.text || fadingCard.subtitle) && (
+                  <div className="flex flex-col items-center gap-2 px-8 select-none">
+                    {fadingCard.text && (
+                      <p
+                        className="text-center font-semibold"
+                        style={{ color: cardTextColor(fadingCard.color), fontSize: "clamp(1.25rem, 3vw, 2.5rem)" }}
+                      >
+                        {fadingCard.text}
+                      </p>
+                    )}
+                    {fadingCard.subtitle && (
+                      <p
+                        className="text-center font-normal"
+                        style={{ color: cardTextColor(fadingCard.color), fontSize: "clamp(0.875rem, 1.8vw, 1.5rem)", opacity: 0.75 }}
+                      >
+                        {fadingCard.subtitle}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             {viewMode === "film" && cardHold && (
               <div
                 data-testid="trim-card-hold"
                 className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center"
-                style={{ background: cardHold.color }}
+                style={{
+                  background: cardHold.color,
+                  // #197: dissolve in over the clip tail that is still playing underneath
+                  animation: cardHold.fadeInMs ? `rc-card-fade-in ${cardHold.fadeInMs}ms linear both` : undefined,
+                }}
               >
                 {(cardHold.text || cardHold.subtitle) && (
                   <div className="flex flex-col items-center gap-2 px-8 select-none">

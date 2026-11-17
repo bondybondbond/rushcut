@@ -20,6 +20,7 @@
     "test:e2e:qa:arrange": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/arrange.spec.ts",
     "test:e2e:qa:film": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/film-mode.spec.ts",
     "test:e2e:qa:cardedit": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/card-edit.spec.ts",
+    "test:e2e:qa:stall": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/film-stall.spec.ts",
     "test:e2e:qa:stamps": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/strip-stamps.spec.ts",
     "test:e2e:qa:cardadd": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/card-add.spec.ts"
   },
