@@ -1087,6 +1087,7 @@ A read-only proportional timeline rendered inside EditorShell's timeline row (Tr
 - **Thumbnail tiling (DaVinci-style):** CSS `backgroundImage`, `backgroundSize: auto 100%`, `backgroundRepeat: repeat-x`. Do NOT use `<video>` elements in the HUD.
 - Sequence number badge: `text-[9px] text-[#0a0a0a] font-bold` on `bg-[#99B3FF]` pill (top-left `absolute top-0.5 left-0.5`).
 - Duration overlay: `text-[10px] text-white font-mono drop-shadow-sm` gradient footer (`bg-gradient-to-t from-black/80`).
+- **One duration per tile (#245).** The stamp on a clip or card tile shows its ON-RULER length (its tile width in time = full length minus the crossfade into the next item, none for the last item), shown to one decimal (`0:02.5`; whole seconds would drift from the ruler by up to a second per crossfade). So the stamps add up to the ruler total (each stamp is rounded to a tenth on its own, so an odd trim can differ from the exact total by under 0.05 s per tile; tile width is proportional to the stamp above the 40 px minimum tile width); a tile reading 0:04 takes 4 s off the timer. Never show a tile's full pre-overlap length on the strip. Tiles carry `data-stamp-ms` (unrounded) for tests.
 - Empty state: filmstrip SVG icon + `"No clips yet"` in `text-sm text-[#e5e5e5]/30`.
 
 ### Bin icon (hover-reveal delete)

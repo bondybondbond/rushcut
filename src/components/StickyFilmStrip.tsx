@@ -136,10 +136,26 @@ interface SortableFilmTileProps {
   clip: Clip;
   index: number;
   width: number;
+  /** #245: the time this tile occupies on the ruler (its telescoped span); the stamp shows this. */
+  stampMs: number;
   isActive: boolean;
   reorderable: boolean;
   onSelectClip?: (clipId: string) => void;
   onDeleteClip?: (clipId: string) => void;
+}
+
+/**
+ * #245: one duration per tile. The stamp, the tile width and the ruler all use the tile's
+ * on-ruler length (full length minus the crossfade into the next item), so the stamps add
+ * up to the ruler total. One decimal ("0:02.5"): whole seconds (fmtMs floors, rounding goes
+ * the other way) make a 1.5 s crossfade shift every label by up to a second, so the labels
+ * would no longer add up to the ruler.
+ */
+function fmtStampMs(ms: number): string {
+  const tenths = Math.round(ms / 100);
+  const m = Math.floor(tenths / 600);
+  const s = Math.floor((tenths % 600) / 10);
+  return `${m}:${String(s).padStart(2, "0")}.${tenths % 10}`;
 }
 
 /**
@@ -150,6 +166,7 @@ function SortableFilmTile({
   clip,
   index,
   width,
+  stampMs,
   isActive,
   reorderable,
   onSelectClip,
@@ -159,8 +176,6 @@ function SortableFilmTile({
     id: clip.id,
     disabled: !reorderable,
   });
-
-  const trimmedMs = Math.max(0, (clip.out_ms ?? clip.duration_ms) - (clip.in_ms ?? 0));
 
   // Use Translate (not Transform) — Transform adds a scale component that would stretch our
   // variable-width tiles during drag.
@@ -185,6 +200,7 @@ function SortableFilmTile({
     <div
       ref={setNodeRef}
       data-testid="filmstrip-clip"
+      data-stamp-ms={Math.round(stampMs)}
       className={`group relative flex-shrink-0 overflow-hidden border-2 transition-colors outline-none ${
         isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/25"
       } ${onSelectClip ? "cursor-pointer" : ""} ${reorderable ? "cursor-grab active:cursor-grabbing" : ""}`}
@@ -229,7 +245,7 @@ function SortableFilmTile({
       </div>
       {/* Duration label */}
       <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 px-1 pb-0.5 pointer-events-none">
-        <span className="text-[10px] text-white font-mono drop-shadow-sm">{fmtMs(trimmedMs)}</span>
+        <span className="text-[10px] text-white font-mono drop-shadow-sm">{fmtStampMs(stampMs)}</span>
       </div>
       {/* State badge icons — bottom-right */}
       <div className="absolute bottom-1 right-1 flex gap-0.5 z-10 pointer-events-none">
@@ -277,7 +293,7 @@ function CardStripTile({
 }: {
   card: StripCard;
   width: number;
-  /** #190: this card's length (3s + 2 x crossfade), shown in the duration stamp. */
+  /** #245: this card's on-ruler length (telescoped span), shown in the duration stamp. */
   cardMs: number;
   isActive: boolean;
   onSelectCard?: (cardId: string) => void;
@@ -295,6 +311,7 @@ function CardStripTile({
   return (
     <div
       data-testid={`filmstrip-card-${card.id}`}
+      data-stamp-ms={Math.round(cardMs)}
       draggable={draggable ?? false}
       className={`relative flex-shrink-0 overflow-hidden border-2 transition-colors ${
         isActive ? "border-[#FF8A65]" : "border-[#99B3FF]/40"
@@ -330,7 +347,7 @@ function CardStripTile({
       {/* Duration stamp — bottom, mirrors the clip-tile treatment */}
       <div className="absolute bottom-0 inset-x-0 pt-3 px-1 pb-0.5 pointer-events-none">
         <span className="text-[10px] font-mono select-none" style={{ color: fg }}>
-          {fmtMs(cardMs)}
+          {fmtStampMs(cardMs)}
         </span>
       </div>
     </div>
@@ -1060,7 +1077,7 @@ export function StickyFilmStrip({
                             <CardStripTile
                               key={p.card.id}
                               card={p.card}
-                              cardMs={seqItems[runBaseSeg + k].naiveEndMs - seqItems[runBaseSeg + k].naiveStartMs}
+                              cardMs={renderMsArr[runBaseSeg + k]}
                               width={segWidths[runBaseSeg + k]}
                               isActive={p.card.id === activeCardId}
                               onSelectCard={onSelectCard}
@@ -1074,6 +1091,7 @@ export function StickyFilmStrip({
                             clip={clip}
                             index={idx}
                             width={clipWidths[idx]}
+                            stampMs={renderMsArr[clipSegIndex[idx]]}
                             isActive={clip.id === activeId}
                             reorderable={reorderable}
                             onSelectClip={onSelectClip}
@@ -1088,10 +1106,7 @@ export function StickyFilmStrip({
                   <CardStripTile
                     key={p.card.id}
                     card={p.card}
-                    cardMs={
-                      seqItems[segWidths.length - endCards.length + k].naiveEndMs -
-                      seqItems[segWidths.length - endCards.length + k].naiveStartMs
-                    }
+                    cardMs={renderMsArr[segWidths.length - endCards.length + k]}
                     width={segWidths[segWidths.length - endCards.length + k]}
                     isActive={p.card.id === activeCardId}
                     onSelectCard={onSelectCard}
