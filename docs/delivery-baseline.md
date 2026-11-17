@@ -336,3 +336,4 @@ u = unknown.
 | D238 | #238 | product | 2026-11-16 | forward | 0 | 1 | 70 | 445 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
 | D241 | #241 | product | 2026-11-16 | forward | 3 | 3 | 15 | 98 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
 | D190 | #190 #243 | product | 2026-11-16 | forward | 1 | 0 | 9 | 45 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
+| D244 | #244 | product | 2026-11-17 | forward | 0 | 0 | 12 | 162 | pending | pending | pending | validated | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
