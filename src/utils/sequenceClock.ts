@@ -28,9 +28,9 @@
  * (`pnpm dlx tsx src/utils/sequenceClock.selftest.ts`).
  */
 import type { Clip } from "@/types/project";
-import { orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
+import { cardEdges, orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
-import { cardDurMs, clampedXfadeMs, effectiveFilmMs, trimmedMs } from "@/utils/filmDuration";
+import { cardCuts, cardDurMs, clampedXfadeMs, edgeFadesOf, NO_EDGE_FADES, type EdgeFades, effectiveFilmMs, trimmedMs } from "@/utils/filmDuration";
 
 export { cardDurMs };
 
@@ -90,8 +90,9 @@ export function buildSequence(
   inFilm: Clip[],
   tc: TransitionConfig,
   placedCards: PlacedCard[],
+  edge: EdgeFades = NO_EDGE_FADES,
 ): Sequence {
-  return buildSequenceCore(inFilm, clampedXfadeMs(inFilm, tc), placedCards);
+  return buildSequenceCore(inFilm, clampedXfadeMs(inFilm, tc), placedCards, edgeFadesOf(tc));
 }
 
 /**
@@ -111,6 +112,7 @@ export function buildSequenceCore(
   inFilm: Clip[],
   xfadeMs: number,
   placedCards: PlacedCard[],
+  edge: EdgeFades = NO_EDGE_FADES,
 ): Sequence {
   // #184: multiple cards may share one anchor. `orderedCardRuns` is the single
   // resolver for card order/count -- every interleaving consumer derives from it
@@ -130,7 +132,7 @@ export function buildSequenceCore(
   const pushCardRun = (run: PlacedCard[] | undefined) => {
     for (const card of run ?? []) {
       cardOrdinalOf.set(card, cardOrdinal++);
-      raw.push({ kind: "card", nativeMs: cardDurMs(xfadeMs), card });
+      raw.push({ kind: "card", nativeMs: 0, card }); // length set below, once its position is known
     }
   };
   inFilm.forEach((c, i) => {
@@ -138,6 +140,12 @@ export function buildSequenceCore(
     raw.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c, index: i });
   });
   pushCardRun(runs.end);
+
+  // #190: a card's length depends on how many crossfades touch it (2 inside the film, 1 at
+  // the very start/end), so set it now that every element's position is known.
+  raw.forEach((r, i) => {
+    if (r.kind === "card") r.nativeMs = cardDurMs(xfadeMs, cardCuts(i, raw.length, edge));
+  });
 
   // 2. Telescoped + naive prefix sums.
   const items: SeqItem[] = [];
@@ -200,6 +208,24 @@ export interface ItemPosition {
   localMs: number;
   /** True when `filmMs` was at/past the end of the sequence (clamped). */
   atEnd: boolean;
+}
+
+/**
+ * The card item whose telescoped span starts at (or contains) `filmMs`, with its own
+ * lengths (#190: card length depends on how many crossfades touch it, so a hold can no
+ * longer assume one fixed card length). `durMs` = the card's native length, `regionMs` =
+ * its telescoped on-screen width. Null when no card is there.
+ */
+export function cardTimingAt(
+  seq: Sequence | null | undefined,
+  filmMs: number,
+): { durMs: number; regionMs: number } | null {
+  if (!seq) return null;
+  const it =
+    seq.items.find((x) => x.kind === "card" && Math.abs(x.filmStartMs - filmMs) < 1) ??
+    seq.items.find((x) => x.kind === "card" && filmMs >= x.filmStartMs && filmMs < x.filmEndMs);
+  if (!it) return null;
+  return { durMs: it.naiveEndMs - it.naiveStartMs, regionMs: it.filmEndMs - it.filmStartMs };
 }
 
 /**
@@ -525,5 +551,5 @@ export function playbackTotalFromEffective(
   const black =
     (tc.opening && tc.opening !== "none" ? 100 : 0) +
     (tc.closing && tc.closing !== "none" ? 100 : 0);
-  return effectiveFilmMs(inFilm, tc, placedCards.length) - black;
+  return effectiveFilmMs(inFilm, tc, cardEdges(placedCards, inFilm.map((c) => c.id))) - black;
 }

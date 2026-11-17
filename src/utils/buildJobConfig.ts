@@ -1,6 +1,7 @@
 import type { CardSpec, JobConfig, TransitionValue } from "@/types/project";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
+import type { CardEdges } from "@/utils/filmDuration";
 
 export const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 export const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
@@ -182,8 +183,26 @@ export function orderedCardRuns<T extends { beforeClipId: string | null }>(
  * regardless of where it sits). Consumers that need live in-memory state instead
  * (Arrange's Cards tab, as it's being edited) read their own PlacedCard[] directly.
  */
-export function cardDurationFlags(projectId: string): { count: number } {
-  return { count: readPlacedCards(projectId).length };
+export function cardDurationFlags(projectId: string, inFilmClipIds: string[]): CardEdges {
+  return cardEdges(readPlacedCards(projectId), inFilmClipIds);
+}
+
+/**
+ * Card count plus whether a card is the film's first / last ELEMENT (#190): a card's length
+ * is its fully-visible time plus one crossfade per neighbouring cut, and the first/last
+ * element has only one. Resolved through orderedCardRuns, the single card-order resolver.
+ */
+export function cardEdges(
+  cards: readonly { beforeClipId: string | null }[],
+  inFilmClipIds: string[],
+): CardEdges {
+  const runs = orderedCardRuns(cards, inFilmClipIds);
+  const first = inFilmClipIds[0];
+  return {
+    count: cards.length,
+    leading: first !== undefined && (runs.before.get(first)?.length ?? 0) > 0,
+    trailing: runs.end.length > 0,
+  };
 }
 
 /**

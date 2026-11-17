@@ -19,7 +19,7 @@ import type { Clip } from "@/types/project";
 import { orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
 import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
-import { cardDurMs, trimmedMs } from "@/utils/filmDuration";
+import { trimmedMs, NO_EDGE_FADES, type EdgeFades } from "@/utils/filmDuration";
 import { buildSequenceCore } from "@/utils/sequenceClock";
 
 /** Resolved card data for a strip card tile (#74, generalized to any position in #149). */
@@ -80,6 +80,8 @@ interface StickyFilmStripProps {
    * their telescoped contribution but do not draw the overlap shape (that is #74).
    */
   xfadeOverlapMs?: number;
+  /** #190: opening/closing fade-to-black is on (consumes the first/last element like a cut). */
+  edgeFades?: EdgeFades;
   /**
    * All positioned text cards (#74, generalized to any position in #149). Each 3s card
    * tile is spliced into the strip at its resolved gap and the ruler/playhead/seek
@@ -345,6 +347,7 @@ export function StickyFilmStrip({
   playheadMs,
   onSeek,
   xfadeOverlapMs = 0,
+  edgeFades = NO_EDGE_FADES,
   cards = [],
   activeCardId = null,
   onSelectCard,
@@ -440,13 +443,13 @@ export function StickyFilmStrip({
   const clipSegIndex: number[] = [];
   for (const c of inFilm) {
     for (const p of cardsBeforeClip(c.id)) {
-      segments.push({ kind: "card", nativeMs: cardDurMs(xfadeOverlapMs), card: p.card });
+      segments.push({ kind: "card", nativeMs: 0, card: p.card }); // real length comes from buildSequenceCore (seqItems)
     }
     clipSegIndex.push(segments.length);
     segments.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c });
   }
   for (const p of endCards) {
-    segments.push({ kind: "card", nativeMs: cardDurMs(xfadeOverlapMs), card: p.card });
+    segments.push({ kind: "card", nativeMs: 0, card: p.card });
   }
 
   // #174 Phase D: the telescoped (render-time) geometry is NO LONGER computed here.
@@ -456,7 +459,7 @@ export function StickyFilmStrip({
   // the strip ruler and the film-mode playback needle can never geometrically
   // disagree (they now literally share the resolver). This component keeps only
   // the px mapping on top of those spans.
-  const filmSeq = buildSequenceCore(inFilm, xfadeOverlapMs, cardsForSeq);
+  const filmSeq = buildSequenceCore(inFilm, xfadeOverlapMs, cardsForSeq, edgeFades);
   const seqItems = filmSeq.items; // 1:1 with `segments` by construction (same order)
 
   // Per-SEGMENT telescoped width in ms, straight off the resolver's spans.
@@ -1057,7 +1060,7 @@ export function StickyFilmStrip({
                             <CardStripTile
                               key={p.card.id}
                               card={p.card}
-                              cardMs={cardDurMs(xfadeOverlapMs)}
+                              cardMs={seqItems[runBaseSeg + k].naiveEndMs - seqItems[runBaseSeg + k].naiveStartMs}
                               width={segWidths[runBaseSeg + k]}
                               isActive={p.card.id === activeCardId}
                               onSelectCard={onSelectCard}
@@ -1085,7 +1088,10 @@ export function StickyFilmStrip({
                   <CardStripTile
                     key={p.card.id}
                     card={p.card}
-                    cardMs={cardDurMs(xfadeOverlapMs)}
+                    cardMs={
+                      seqItems[segWidths.length - endCards.length + k].naiveEndMs -
+                      seqItems[segWidths.length - endCards.length + k].naiveStartMs
+                    }
                     width={segWidths[segWidths.length - endCards.length + k]}
                     isActive={p.card.id === activeCardId}
                     onSelectCard={onSelectCard}

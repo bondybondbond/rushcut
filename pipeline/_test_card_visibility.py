@@ -15,10 +15,10 @@ Run from WSL (needs an NTFS work dir the manifest can live in):
   python3 pipeline/_test_card_visibility.py --work-dir /mnt/c/Users/<you>/AppData/Local/Temp/claude/<session>/scratch/cardtest       --res 1080p|4k --transition crossfade|wipe|none [--open-close] [--consecutive] [--keep]
 
 Exit 0 = pass, 1 = fail. FAILS on any segmented-render fallback (a monolithic fallback must
-never count as validation), a wrong run count, or a card shorter than 1.9 s fully opaque
-(crossfade/wipe) / not ~3.0 s (none). Expected with a 1.5 s crossfade: a middle card is
-~2.0 s opaque; a first/last card is ~3.5 s (it has only one neighbouring cut -- the uniform
-rule gives every card the same length). The work dir is removed at the end unless --keep.
+never count as validation), a wrong run count, or a card outside 1.3-1.9 s fully opaque
+(crossfade/wipe) / not ~3.0 s (none). Expected with a 1.5 s crossfade: EVERY card (first, middle, last) is ~1.5 s fully opaque --
+a card's length is 1.5 s + one crossfade per neighbouring cut (2 inside the film, 1 at its
+start or end). The work dir is removed at the end unless --keep.
 """
 import argparse
 import json
@@ -127,7 +127,7 @@ def main() -> int:
     print(f"res={a.res} transition={a.transition} open_close={a.open_close} consecutive={a.consecutive} "
           f"film_dur={dur:.1f}s opaque_runs_s={runs} segmented_fallback={fallback}")
     passed = ok and not fallback and len(runs) == len(cards) and all(
-        (abs(x - 3.0) < 0.15) if a.transition == "none" else (x >= 1.9) for x in runs)
+        (abs(x - 3.0) < 0.15) if a.transition == "none" else (1.3 <= x <= 1.9) for x in runs)
     if not passed:
         print("FAIL", "(render error)" if not ok else "")
         print(log[-1500:])

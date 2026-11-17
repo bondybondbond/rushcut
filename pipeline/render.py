@@ -58,6 +58,7 @@ from .transitions import (
     resolve_cut_names,
     clamp_xfade_dur,
     card_duration_s,
+    card_cuts,
 )
 from .trim import trim  # partial-GOP trim_smart() (#104) explored and removed --
                           # 19-31% real-render regression under contention, see #104
@@ -986,16 +987,31 @@ def run_pipeline(
     # repeated splicing) so multiple cards land in declared order, not
     # accidental insertion order.
     n_items = len(items)
-    # #190: card length = 3s + 2 x the film's crossfade, so a card keeps ~3s fully
-    # visible whatever the global transition. Same value for every card.
+    # #190: a card keeps CARD_VISIBLE_S fully visible between its crossfades, so its length is
+    # CARD_VISIBLE_S + one crossfade per neighbouring cut (2 inside the film, 1 at the very
+    # start or end of the film); CARD_PLAIN_S with no transition. Needs the card's final
+    # element index, so resolve every card's slot first.
     _xf_active = (config.get("transition", "none") != "none") or config.get("shuffle_between", False)
-    card_dur_s = card_duration_s([get_duration(p) for p in current_paths], _xf_active)
-    log.info("[render] Step 4: card duration %.3fs (xfade_active=%s)", card_dur_s, _xf_active)
+    _clip_durs = [get_duration(p) for p in current_paths]
+    _slots: "list[int]" = []
+    for c in cards_config:
+        pos = c.get("position", -1)
+        _slots.append(n_items if pos == -1 else max(0, min(int(pos), n_items)))
+    _total_elems = n_items + len(cards_config)
     cards_by_slot: "dict[int, list[ClipItem]]" = {}
     for card_num, c in enumerate(cards_config, start=1):
         log.info("[render] Step 4: card %d/%d at position=%s", card_num, len(cards_config), c.get("position"))
-        pos = c.get("position", -1)
-        idx = n_items if pos == -1 else max(0, min(int(pos), n_items))
+        idx = _slots[card_num - 1]
+        _rank = sum(1 for s in _slots[:card_num - 1] if s == idx)
+        _elem_idx = idx + sum(1 for s in _slots if s < idx) + _rank
+        card_dur_s = card_duration_s(
+            _clip_durs, _xf_active,
+            card_cuts(_elem_idx, _total_elems,
+                      config.get("opening_transition", "none") != "none",
+                      config.get("closing_transition", "none") != "none"),
+        )
+        log.info("[render] Step 4: card %d duration %.3fs (element %d of %d, xfade_active=%s)",
+                 card_num, card_dur_s, _elem_idx, _total_elems, _xf_active)
         card_path = make_card(
             text=c["text"],
             color=c.get("color", "#000000"),

@@ -13,7 +13,7 @@ import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { readTransitionConfig, cardDurationFlags, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, cardDurMs } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, cardDurMs, cardCuts, edgeFadesOf } from "@/utils/filmDuration";
 import {
   buildSequence,
   advanceSequenceClock,
@@ -21,6 +21,7 @@ import {
   mediaToFilm,
   itemToFilm,
   filmToItem,
+  cardTimingAt,
   type Sequence,
   type ClockState,
 } from "@/utils/sequenceClock";
@@ -726,7 +727,7 @@ export default function Trimmer() {
           setIsPlaying(false);
         } else {
           setIsPlaying(true);
-          startCardHoldTicker(cardHoldElapsedMs);
+          startCardHoldTicker(cardHoldElapsedMs, cardHold.filmMs);
         }
         return;
       }
@@ -1164,12 +1165,14 @@ export default function Trimmer() {
    * existing playhead-throttle convention elsewhere in this codebase; ticks the visible
    * needle position forward and fires continueFromCardHold once CARD_DUR_MS is reached.
    */
-  function startCardHoldTicker(fromMs: number) {
+  function startCardHoldTicker(fromMs: number, baseFilmMs: number) {
     cardHoldStartAtRef.current = performance.now() - fromMs;
+    // #190: this card's own length (depends on how many crossfades touch it).
+    const holdDurMs = cardTimingAt(filmSeqRef.current, baseFilmMs)?.durMs ?? cardDurMs(filmXfadeOverlapMs);
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
-      if (elapsed >= cardDurMs(filmXfadeOverlapMs)) {
+      if (elapsed >= holdDurMs) {
         if (cardHoldTickerRef.current !== null) {
           clearInterval(cardHoldTickerRef.current);
           cardHoldTickerRef.current = null;
@@ -1240,7 +1243,7 @@ export default function Trimmer() {
     diagLog(`185 hold-card id=${card.id} filmMs=${Math.round(filmMs)} segIdx=${item?.segIndex ?? -1} segWidth=${item ? Math.round(item.filmEndMs - item.filmStartMs) : -1} autoplay=${cardHoldAutoplayRef.current ? 1 : 0} pendIdx=${pendingCardAdvanceIdxRef.current} runLen=${pendingCardRunRef.current.length} seqMs=${Math.round(seqClockRef.current.seqTimeMs)} t=${performance.now().toFixed(0)}`);
     setCardHold({ filmMs, color: card.color, text: card.text, subtitle: card.subtitle });
     anchorSeqClock(filmMs);
-    startCardHoldTicker(0);
+    startCardHoldTicker(0, filmMs);
   }
 
   /**
@@ -1460,7 +1463,8 @@ export default function Trimmer() {
       // follows), so park on whichever the seek time lands in.
       const run = runs.before.get(clips_[i].id) ?? [];
       for (let k = 0; k < run.length; k++) {
-        const cardMs = Math.max(0, cardDurMs(xfadeMs) - xfadeMs);
+        // #190: the card before clip 0 is the film's first element (one neighbouring cut).
+        const cardMs = cardRegionMs(xfadeMs, i === 0 && k === 0 ? cardCuts(0, 2, edgeFadesOf(readTransitionConfig(projectId ?? ""))) : 2, false);
         if (filmMs < elapsed + cardMs) {
           activeFilmVideo()?.pause();
           setIsPlaying(false);
@@ -1524,7 +1528,7 @@ export default function Trimmer() {
     // card the seek lands in; the last end card is the film's final element (no telescope).
     for (let k = 0; k < runs.end.length; k++) {
       const isLast = k === runs.end.length - 1;
-      const cardMs = Math.max(0, cardDurMs(xfadeMs) - (isLast ? 0 : xfadeMs));
+      const cardMs = cardRegionMs(xfadeMs, isLast ? cardCuts(1, 2, edgeFadesOf(readTransitionConfig(projectId ?? ""))) : 2, isLast);
       if (filmMs < elapsed + cardMs || isLast) {
         activeFilmVideo()?.pause();
         setIsPlaying(false);
@@ -1557,7 +1561,7 @@ export default function Trimmer() {
     const xfadeMs = clampedXfadeMs(list, readTransitionConfig(projectId ?? ""));
     const placedCards = list.length > 0 ? readPlacedCards(projectId ?? "") : [];
     const cardsBeforeClip = list.map((c) => placedCards.some((p) => p.beforeClipId === c.id));
-    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, cardsBeforeClip));
+    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, cardsBeforeClip, edgeFadesOf(readTransitionConfig(projectId ?? ""))));
   }
 
   // #74/#150: a card-region hold is a film-mode-only state (autoplay holds keep isPlaying
@@ -1732,7 +1736,7 @@ export default function Trimmer() {
   inFilmRef.current = inFilm;
   const inFilmCount = inFilm.length;
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
-  const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "").count);
+  const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "", inFilm.map((c) => c.id)));
 
   // Render-time (telescoped) overlap per cut — shared by the playhead, seek + ruler (#71).
   const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
@@ -1762,7 +1766,10 @@ export default function Trimmer() {
   // hold still rides `cardHoldElapsedMs` clamped to the telescoped card-region width
   // (that wall-clock -> telescoped remap is card-specific; the clock is paused while
   // parked on a card and re-anchored to the next clip's start when the hold ends).
-  const filmCardRegionMs = cardRegionMs(filmXfadeOverlapMs);
+  // #190: the held card's own telescoped width (depends on its position), not one shared value.
+  const filmCardRegionMs = cardHold
+    ? (cardTimingAt(filmSeq, cardHold.filmMs)?.regionMs ?? cardRegionMs(filmXfadeOverlapMs))
+    : cardRegionMs(filmXfadeOverlapMs);
   const filmPositionMs = viewMode === "film"
     ? (cardHold
         // #150 animate the needle across the autoplay hold; #163 clamp to the card-region
@@ -1947,6 +1954,7 @@ export default function Trimmer() {
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
           xfadeOverlapMs={filmXfadeOverlapMs}
+          edgeFades={edgeFadesOf(readTransitionConfig(projectId ?? ""))}
           cards={filmCardsForStrip}
           onDropCut={viewMode === "clip" ? handleDropCutAtIndex : undefined}
         />

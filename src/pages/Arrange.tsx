@@ -9,9 +9,9 @@ import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/component
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { projectCache } from "@/utils/projectCache";
 import { fmtMs } from "@/utils/fmtMs";
-import { readTransitionConfig, readPlacedCards, savePlacedCards } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readPlacedCards, savePlacedCards, cardEdges } from "@/utils/buildJobConfig";
 import type { TransitionConfig, PlacedCard, CardAnimation } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, edgeFadesOf } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import {
   parseZoom, buildZoomMode, zoomLabel, FIXED_AMOUNTS, KB_AMOUNTS,
@@ -250,7 +250,7 @@ export default function Arrange() {
   // #62/#63: displayed runtime subtracts transition overlap (telescoped) + adds card seconds.
   // #149: source from live in-memory placedCards (not a re-read from localStorage) so the
   // runtime + strip tiles update instantly as the user places/edits/deletes on the Cards tab.
-  const totalMs = effectiveFilmMs(inFilm, transConfig, placedCards.length);
+  const totalMs = effectiveFilmMs(inFilm, transConfig, cardEdges(placedCards, inFilm.map((c) => c.id)));
 
   // #74/#149: live card tiles for the filmstrip — sourced from in-memory placedCards.
   const cardsForStrip: PositionedCard[] = placedCards.map((c) => ({
@@ -617,7 +617,7 @@ export default function Arrange() {
   // Render-time position of the current clip playback — drives the StickyFilmStrip playhead.
   // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71).
   const filmPlayheadMs = selectedIndex >= 0 && selectedClip
-    ? filmTimeAtClipStart(inFilm, selectedIndex, xfadeOverlapMs, cardsBeforeClip)
+    ? filmTimeAtClipStart(inFilm, selectedIndex, xfadeOverlapMs, cardsBeforeClip, edgeFadesOf(transConfig))
       + Math.max(0, currentMs - (selectedClip.in_ms ?? 0))
     : undefined;
 
@@ -903,6 +903,7 @@ export default function Arrange() {
           onReorder={handleReorder}
           playheadMs={tab === "zoom" ? filmPlayheadMs : undefined}
           xfadeOverlapMs={xfadeOverlapMs}
+          edgeFades={edgeFadesOf(transConfig)}
           cards={cardsForStrip}
           activeCardId={tab === "cards" ? selectedCardId : null}
           onSelectCard={tab === "cards" ? handleSelectCard : undefined}

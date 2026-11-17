@@ -13,7 +13,7 @@
  * `seekFilmTo`/`gotoFilmClip` and Arrange's static playhead.
  */
 import type { Clip } from "@/types/project";
-import { cardRegionMs, filmTimeAtClipStart, cardDurMs, CARD_VISIBLE_MS, CARD_PLAIN_MS, XFADE_DUR_MS } from "./filmDuration";
+import { cardRegionMs, filmTimeAtClipStart, cardDurMs, cardCuts, CARD_VISIBLE_MS, CARD_PLAIN_MS, XFADE_DUR_MS } from "./filmDuration";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -66,20 +66,32 @@ for (const xf of [0, XFADE_DUR_MS]) {
   const oneCard = filmTimeAtClipStart(film, 3, xf, [false, true, false, false]);
   const twoCards = filmTimeAtClipStart(film, 3, xf, [true, true, false, false]);
   check(
-    `filmTimeAtClipStart: each preceding card adds cardDurMs(xf) - xfade lead (xfade=${xf})`,
-    Math.abs((oneCard - noCards) - (cardDurMs(xf) - xf)) < 1e-6 &&
-      Math.abs((twoCards - oneCard) - (cardDurMs(xf) - xf)) < 1e-6,
+    `filmTimeAtClipStart: an interior card adds cardDurMs(xf,2) - xfade, the film-first card cardDurMs(xf,1) - xfade (xfade=${xf})`,
+    Math.abs((oneCard - noCards) - (cardDurMs(xf, 2) - xf)) < 1e-6 &&
+      Math.abs((twoCards - oneCard) - (cardDurMs(xf, 1) - xf)) < 1e-6,
     `no=${noCards} one=${oneCard} two=${twoCards}`,
   );
 }
 
 // --- cardRegionMs -------------------------------------------------------------
 check("cardDurMs(0) === 3000 (no transition: card unchanged)", cardDurMs(0) === CARD_PLAIN_MS);
-check("cardDurMs(1500) === 5000 (#190: 2s visible + 2 x 1.5s)", cardDurMs(XFADE_DUR_MS) === 5000);
+check("cardDurMs(1500) === 4500 (#190: 1.5s visible + 2 x 1.5s, interior card)", cardDurMs(XFADE_DUR_MS) === 4500);
+check("cardDurMs(1500, 1) === 3000 (first/last card: one neighbouring crossfade)", cardDurMs(XFADE_DUR_MS, 1) === 3000);
+check("cardCuts: first=1, interior=2, last=1, sole=0",
+  cardCuts(0, 5) === 1 && cardCuts(2, 5) === 2 && cardCuts(4, 5) === 1 && cardCuts(0, 1) === 0);
+check("cardCuts with opening+closing fades: first and last element count the fade as a cut",
+  cardCuts(0, 5, { open: true, close: true }) === 2 && cardCuts(4, 5, { open: true, close: true }) === 2 &&
+  cardCuts(0, 5, { open: true, close: false }) === 2 && cardCuts(4, 5, { open: true, close: false }) === 1 &&
+  cardCuts(2, 5, { open: true, close: true }) === 2);
+for (const cuts of [0, 1, 2]) {
+  check(`every card keeps exactly ${CARD_VISIBLE_MS}ms fully visible (cuts=${cuts})`, cardDurMs(XFADE_DUR_MS, cuts) - cuts * XFADE_DUR_MS === CARD_VISIBLE_MS);
+}
+check("no transition: every card stays 3000ms whatever its position", cardDurMs(0, 0) === 3000 && cardDurMs(0, 1) === 3000 && cardDurMs(0, 2) === 3000);
 check("cardRegionMs(0) === 3000", cardRegionMs(0) === CARD_PLAIN_MS);
-check("cardRegionMs(xfade) === 2000 + xfade", cardRegionMs(XFADE_DUR_MS) === CARD_VISIBLE_MS + XFADE_DUR_MS);
-check("card keeps exactly 2000ms fully visible between two crossfades", cardDurMs(XFADE_DUR_MS) - 2 * XFADE_DUR_MS === CARD_VISIBLE_MS);
-check("shorter crossfade (800ms): still 2000ms visible", cardDurMs(800) - 2 * 800 === CARD_VISIBLE_MS);
+check("cardRegionMs(xfade) interior === visible + 2 x xfade - xfade", cardRegionMs(XFADE_DUR_MS) === CARD_VISIBLE_MS + XFADE_DUR_MS);
+check("cardRegionMs last element keeps its full length (no outgoing cut)", cardRegionMs(XFADE_DUR_MS, 1, true) === CARD_VISIBLE_MS + XFADE_DUR_MS);
+check("interior card keeps exactly the visible time between two crossfades", cardDurMs(XFADE_DUR_MS) - 2 * XFADE_DUR_MS === CARD_VISIBLE_MS);
+check("shorter crossfade (800ms): same visible time", cardDurMs(800) - 2 * 800 === CARD_VISIBLE_MS);
 
 if (failed > 0) {
   console.log(`\n${failed} check(s) FAILED`);

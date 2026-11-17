@@ -22,7 +22,7 @@
  *   - reconcile: 3 zones; NO backward seqTimeMs correction for |drift| < hardBack
  */
 import type { Clip } from "@/types/project";
-import type { PlacedCard } from "@/utils/buildJobConfig";
+import { cardEdges, type PlacedCard } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
 import { cardDurMs, cardRegionMs, clampedXfadeMs, effectiveFilmMs } from "./filmDuration";
 import {
@@ -83,7 +83,7 @@ const D = clip("d", 0, 6_000);
   function stripTotal(film: Clip[], tc: TransitionConfig, cards: PlacedCard[]): number {
     const seq = buildSequence(film, tc, cards); // reuse item native widths + xfade
     const nativeArr = seq.items.map((it) =>
-      it.kind === "card" ? cardDurMs(seq.xfadeMs) : (it.naiveEndMs - it.naiveStartMs),
+      it.naiveEndMs - it.naiveStartMs,
     );
     return nativeArr.reduce(
       (sum, m, i) => sum + Math.max(0, m - (i < nativeArr.length - 1 ? seq.xfadeMs : 0)),
@@ -126,7 +126,7 @@ const D = clip("d", 0, 6_000);
         check(
           `AC2b totalMs == effectiveFilmMs - blackNet (${label})`,
           Math.abs(seq.totalMs - expected) < 1e-6,
-          `seq.totalMs=${seq.totalMs} expected=${expected} effectiveFilmMs=${effectiveFilmMs(film, tc, cards.length)}`,
+          `seq.totalMs=${seq.totalMs} expected=${expected} effectiveFilmMs=${effectiveFilmMs(film, tc, cardEdges(cards, film.map((c) => c.id)))}`,
         );
       }
     }

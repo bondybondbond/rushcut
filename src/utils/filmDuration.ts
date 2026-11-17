@@ -7,20 +7,54 @@ import type { TransitionConfig } from "@/utils/buildJobConfig";
 export const XFADE_DUR_MS = 1500;
 
 // #190: a card is a real clip in the xfade chain, so each neighbouring cut eats one
-// crossfade of it. With a transition active a card is CARD_VISIBLE_MS + 2 x xfade (2s fully
-// visible between its crossfades, owner 2026-11-16); with none it is CARD_PLAIN_MS.
-// MUST stay in sync with pipeline/transitions.py CARD_VISIBLE_S / CARD_PLAIN_S / card_duration_s().
-export const CARD_VISIBLE_MS = 2000;
+// crossfade of it. With a transition active a card is CARD_VISIBLE_MS + one crossfade per
+// neighbouring cut (1.5s fully visible between its crossfades, owner 2026-11-17); with none
+// it is CARD_PLAIN_MS. MUST stay in sync with pipeline/transitions.py CARD_VISIBLE_S /
+// CARD_PLAIN_S / card_duration_s() / card_cuts().
+export const CARD_VISIBLE_MS = 1500;
 export const CARD_PLAIN_MS = 3000;
 
 /**
- * Length of every text card in ms (#190): CARD_VISIBLE_MS + one crossfade at each end,
- * or CARD_PLAIN_MS when no transition is active. One uniform value, position-independent.
+ * Crossfades touching the element at `elementIndex` of `elementCount` (0, 1 or 2): one per
+ * side, minus the film's own start and end. Elements = clips + cards in film order.
+ */
+export function cardCuts(
+  elementIndex: number,
+  elementCount: number,
+  edge: EdgeFades = NO_EDGE_FADES,
+): number {
+  const left = elementIndex > 0 || edge.open ? 1 : 0;
+  const right = elementIndex < elementCount - 1 || edge.close ? 1 : 0;
+  return left + right;
+}
+
+/** The opening / closing transition (fade from / to black) is on. It uses the crossfade
+ *  length, so it consumes the film's first / last element exactly like a neighbouring cut. */
+export interface EdgeFades {
+  open: boolean;
+  close: boolean;
+}
+export const NO_EDGE_FADES: EdgeFades = { open: false, close: false };
+export function edgeFadesOf(tc: TransitionConfig): EdgeFades {
+  return { open: tc.opening !== "none", close: tc.closing !== "none" };
+}
+
+/**
+ * Length of a text card in ms (#190): CARD_VISIBLE_MS + one crossfade per neighbouring cut
+ * (`cuts`, from cardCuts: 2 inside the film, 1 at the very start/end), or CARD_PLAIN_MS when
+ * no transition is active. Same fully-visible time for every card, wherever it sits.
  * `xfadeMs` is the clamped crossfade (clampedXfadeMs), 0 when no transition is active.
  * This only changes the card's INPUT length; the telescoping math is untouched.
  */
-export function cardDurMs(xfadeMs: number): number {
-  return xfadeMs > 0 ? CARD_VISIBLE_MS + 2 * xfadeMs : CARD_PLAIN_MS;
+export function cardDurMs(xfadeMs: number, cuts = 2): number {
+  return xfadeMs > 0 ? CARD_VISIBLE_MS + cuts * xfadeMs : CARD_PLAIN_MS;
+}
+
+/** Where cards sit at the film's edges: a card is the first/last ELEMENT of the film. */
+export interface CardEdges {
+  count: number;
+  leading: boolean;
+  trailing: boolean;
 }
 
 /** Trimmed length of a single clip in ms (out - in, floored at 0). */
@@ -40,10 +74,10 @@ export function naiveFilmMs(inFilm: Clip[]): number {
 /**
  * Effective DISPLAYED runtime after subtracting transition overlap -- mirrors the
  * pipeline telescoping math (#62/#63). This is the value shown to the user as the film
- * runtime, NOT the absolute rendered-file duration. Text cards are real 3s clips the
- * pipeline splices in and that join the same xfade chain, so each active card adds
- * CARD_DUR_MS AND one more xfade overlap regardless of where it sits (#63/#149). Pass
- * the total card count via `cardCount`. Backend/music truth comes from get_duration(output).
+ * runtime, NOT the absolute rendered-file duration. Text cards are real clips the
+ * pipeline splices in and that join the same xfade chain, so each active card adds its
+ * length (cardDurMs) AND one more xfade overlap (#63/#149). Pass the card count and
+ * whether a card is the film's first / last element via `cards` (cardEdges()). Backend/music truth comes from get_duration(output).
  *
  * Mirrors render.py: has_xfade = (between != "none") || shuffleBetween;
  *   elements = clips + open-card + close-card
@@ -53,9 +87,10 @@ export function naiveFilmMs(inFilm: Clip[]): number {
 export function effectiveFilmMs(
   inFilm: Clip[],
   tc: TransitionConfig,
-  cardCount = 0,
+  cards: CardEdges = { count: 0, leading: false, trailing: false },
 ): number {
   const n = inFilm.length;
+  const cardCount = cards.count;
 
   // Guard: no footage clips -> just the card seconds (nothing to crossfade between;
   // an all-empty clip manifest errors in start_job anyway, so this is purely defensive).
@@ -69,7 +104,17 @@ export function effectiveFilmMs(
     hasOverlap && positiveDurs.length > 0
       ? Math.min(XFADE_DUR_MS, Math.min(...positiveDurs) / 2)
       : 0;
-  let total = naiveFilmMs(inFilm) + cardCount * cardDurMs(xfadeForCards);
+  // Each card's length = visible + one crossfade per neighbouring cut: 2 inside the film,
+  // 1 for a card that is the film's first / last element (cardCuts).
+  const cardCutsTotal =
+    2 * cardCount -
+    (cards.leading && tc.opening === "none" ? 1 : 0) -
+    (cards.trailing && tc.closing === "none" ? 1 : 0);
+  let total =
+    naiveFilmMs(inFilm) +
+    (xfadeForCards > 0
+      ? cardCount * CARD_VISIBLE_MS + cardCutsTotal * xfadeForCards
+      : cardCount * CARD_PLAIN_MS);
 
   // Cards count as elements in the xfade chain, so each adds one more (elements-1) overlap.
   const elementCount = n + cardCount;
@@ -141,27 +186,32 @@ export function filmTimeAtClipStart(
   index: number,
   xfadeMs: number,
   cardsBeforeClip: boolean[] | false = false,
+  edge: EdgeFades = NO_EDGE_FADES,
 ): number {
   const lim = Math.min(index, inFilm.length);
   let naive = 0;
   for (let i = 0; i < lim; i++) naive += trimmedMs(inFilm[i]);
   const arr = cardsBeforeClip || [];
   let cardsBefore = 0;
-  for (let i = 0; i < lim; i++) if (arr[i]) cardsBefore++;
-  const lead = cardsBefore * cardDurMs(xfadeMs);
+  let lead = 0;
+  for (let i = 0; i < lim; i++) {
+    if (!arr[i]) continue;
+    cardsBefore++;
+    // The card before clip 0 is the film's first element: one neighbouring cut, not two.
+    lead += cardDurMs(xfadeMs, i === 0 ? cardCuts(0, 2, edge) : 2);
+  }
   const cuts = lim + cardsBefore;
   return Math.max(0, lead + naive - cuts * xfadeMs);
 }
 
 /**
  * Telescoped on-screen width of one text card in film-time ms (#163). A card is a real
- * CARD_DUR_MS element in the xfade chain, so it loses one overlap to the following cut --
- * exactly like a clip. Single source of this expression: every film-mode playhead site
- * (Trimmer + Sound) MUST call this instead of re-deriving `CARD_DUR_MS - xfadeMs`, so the
- * relationship stays in one place if the transition/overlap model ever changes.
- * Pass the same xfade value from clampedXfadeMs(inFilm, tc). Returns CARD_DUR_MS when no
- * crossfade is active (xfadeMs === 0).
+ * element in the xfade chain, so it loses one overlap to the following cut -- exactly like
+ * a clip (none if it is the film's last element). Single source of this expression: every
+ * film-mode playhead site MUST call this instead of re-deriving `cardDurMs - xfadeMs`.
+ * Pass the same xfade value from clampedXfadeMs(inFilm, tc) and the card's `cuts`
+ * (cardCuts). Equals the card length when no crossfade is active (xfadeMs === 0).
  */
-export function cardRegionMs(xfadeMs: number): number {
-  return Math.max(0, cardDurMs(xfadeMs) - xfadeMs);
+export function cardRegionMs(xfadeMs: number, cuts = 2, isLastElement = false): number {
+  return Math.max(0, cardDurMs(xfadeMs, cuts) - (isLastElement ? 0 : xfadeMs));
 }

@@ -91,22 +91,32 @@ def clamp_xfade_dur(durations: list[float], xfade_dur: float = XFADE_DUR) -> flo
     return min(xfade_dur, min(durations) / 2.0)
 
 
-CARD_VISIBLE_S = 2.0   # fully-visible time every card keeps between its crossfades (#190, owner 2026-11-16)
+CARD_VISIBLE_S = 1.5   # fully-visible time every card keeps between its crossfades (#190, owner 2026-11-17)
 CARD_PLAIN_S = 3.0     # card length when no transition is active
 
 
-def card_duration_s(clip_durations: list[float], has_xfade: bool) -> float:
-    """Card length = CARD_VISIBLE_S + one crossfade at each end (#190); CARD_PLAIN_S with none.
+def card_cuts(element_index: int, element_count: int, open_on: bool = False, close_on: bool = False) -> int:
+    """Crossfades touching the element at `element_index` of `element_count` (0, 1 or 2):
+    one on each side. The film's own start/end has none, unless the opening/closing
+    transition (fade from/to black, which uses the same crossfade length) is on.
+    SYNC: filmDuration.ts cardCuts()."""
+    left = 1 if (element_index > 0 or open_on) else 0
+    right = 1 if (element_index < element_count - 1 or close_on) else 0
+    return left + right
+
+
+def card_duration_s(clip_durations: list[float], has_xfade: bool, cuts: int = 2) -> float:
+    """Card length = CARD_VISIBLE_S + one crossfade per neighbouring cut (#190); CARD_PLAIN_S with none.
 
     A card sits in the xfade chain, so each neighbouring cut eats one xfade of it.
-    One uniform value for every card (position-independent): a leading/trailing card
-    keeps a little extra, never less than CARD_VISIBLE_S. 0 xfade (transition "none")
-    leaves the card at CARD_PLAIN_S (3s). SYNC: src/utils/filmDuration.ts cardDurMs().
+    `cuts` = neighbouring cuts (2 inside the film, 1 for the first/last element), so every
+    card keeps the same CARD_VISIBLE_S. No transition leaves the card at CARD_PLAIN_S (3s).
+    SYNC: src/utils/filmDuration.ts cardDurMs() / cardCuts().
     Uses real-clip durations only (cards are never the shortest element).
     """
     if not has_xfade or not clip_durations:
         return CARD_PLAIN_S
-    return CARD_VISIBLE_S + 2.0 * clamp_xfade_dur(clip_durations)
+    return CARD_VISIBLE_S + cuts * clamp_xfade_dur(clip_durations)
 
 
 def plan_video_batches(

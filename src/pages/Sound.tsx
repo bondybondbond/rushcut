@@ -10,9 +10,9 @@ import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/component
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
-import { readTransitionConfig, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readPlacedCards, orderedCardRuns, cardEdges } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, cardRegionMs, cardDurMs } from "@/utils/filmDuration";
+import { effectiveFilmMs, clampedXfadeMs, cardRegionMs, cardDurMs, edgeFadesOf } from "@/utils/filmDuration";
 import {
   buildSequence,
   advanceSequenceClock,
@@ -20,6 +20,7 @@ import {
   mediaToFilm,
   filmToMedia,
   itemToFilm,
+  cardTimingAt,
   type Sequence,
   type ClockState,
 } from "@/utils/sequenceClock";
@@ -228,7 +229,7 @@ export default function Sound() {
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   const clipCount = inFilm.length;
   const placedCards = readPlacedCards(projectId ?? "");
-  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), placedCards.length);
+  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardEdges(placedCards, inFilm.map((c) => c.id)));
 
   // #174: the ONE canonical timeline for the Master tab -- same inputs the
   // StickyFilmStrip ruler uses, so the needle and ruler cannot geometrically
@@ -242,7 +243,10 @@ export default function Sound() {
   filmSeqRef.current = filmSeq;
   const totalMs = filmSeq.totalMs;
   const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
-  const filmCardRegionMs = cardRegionMs(filmXfadeOverlapMs);
+  // #190: the held card's own telescoped width (depends on its position).
+  const filmCardRegionMs = cardHold
+    ? (cardTimingAt(filmSeq, cardHold.filmMs)?.regionMs ?? cardRegionMs(filmXfadeOverlapMs))
+    : cardRegionMs(filmXfadeOverlapMs);
 
   // Keep inFilmRef current so playback callbacks always read the latest clip list
   // without needing to re-subscribe on every render.
@@ -1129,11 +1133,14 @@ export default function Sound() {
     // + label while parked (the rAF loop skips those pixels during a hold). Clamp to
     // the card-region WIDTH so at the hold's end it sits exactly at the next clip's
     // telescoped start -- no overshoot during the last ~xfade of the 3s hold.
-    const holdRegionMs = filmCardRegionMs;
+    // #190: this card's own length/width (depends on how many crossfades touch it).
+    const holdTiming = cardTimingAt(filmSeqRef.current, baseFilmMs);
+    const holdRegionMs = holdTiming?.regionMs ?? filmCardRegionMs;
+    const holdDurMs = holdTiming?.durMs ?? cardDurMs(filmXfadeOverlapMs);
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
-      if (elapsed >= cardDurMs(filmXfadeOverlapMs)) {
+      if (elapsed >= holdDurMs) {
         if (cardHoldTickerRef.current !== null) {
           clearInterval(cardHoldTickerRef.current);
           cardHoldTickerRef.current = null;
@@ -1572,6 +1579,7 @@ export default function Sound() {
           clips={clips}
           projectId={projectId!}
           xfadeOverlapMs={clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""))}
+          edgeFades={edgeFadesOf(readTransitionConfig(projectId ?? ""))}
           cards={placedCards.map((c): PositionedCard => ({
             card: { id: c.id, color: c.color, text: c.text },
             beforeClipId: c.beforeClipId,
