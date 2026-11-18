@@ -721,6 +721,70 @@ fn proxy_upgrades() -> &'static Mutex<(HashSet<String>, HashSet<String>)> {
 /// Held for the whole of one upgrade encode: upgrades run strictly one at a time app-wide.
 static UPGRADE_SERIAL: Mutex<()> = Mutex::new(());
 
+/// [#234] Background proxy ffmpeg children that are running right now: (pid, staging file).
+/// Dropping a `Child` does not kill it, so closing the app would leave the encode running and
+/// its multi-GB staging file behind. `shutdown_background_work` (called on app exit) ends them.
+static BG_FFMPEG: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+
+fn bg_ffmpeg_register(pid: u32, dst: &str) {
+    if let Ok(mut g) = BG_FFMPEG.lock() { g.push((pid, dst.to_string())); }
+}
+
+fn bg_ffmpeg_unregister(pid: u32) {
+    if let Ok(mut g) = BG_FFMPEG.lock() { g.retain(|(p, _)| *p != pid); }
+}
+
+/// [#234] App exit: stop every running background proxy ffmpeg and delete its staging file.
+/// The finished proxy (and the old one an upgrade replaces) is never touched: only files
+/// registered as in-flight staging files are removed. Bounded: never delays exit by more
+/// than a few seconds.
+pub fn shutdown_background_work() {
+    let running: Vec<(u32, String)> = match BG_FFMPEG.lock() {
+        Ok(mut g) => std::mem::take(&mut *g),
+        Err(_) => return,
+    };
+    for (pid, dst) in running {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let _ = cmd.status();
+        // Windows releases the file handle a moment after the process dies.
+        for _ in 0..20 {
+            if !std::path::Path::new(&dst).exists() || std::fs::remove_file(&dst).is_ok() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        proxy_bg_log(&format!("[PROXY_BG] shutdown-killed pid={} staging_removed={}", pid, !std::path::Path::new(&dst).exists()));
+    }
+}
+
+/// [#234] Fallback for a crash / forced kill: remove `*.upg.tmp.mp4` upgrade staging files whose
+/// last write is older than `grace`. A live encode (this or the other rushcut.exe) writes
+/// continuously, so a file idle for `grace` is abandoned. Touches only that exact suffix.
+/// Returns (files_removed, bytes_freed).
+fn sweep_orphan_upgrade_temps(proxy_dir: &std::path::Path, grace: std::time::Duration) -> (u32, u64) {
+    let now = std::time::SystemTime::now();
+    let (mut n, mut bytes) = (0u32, 0u64);
+    if let Ok(rd) = std::fs::read_dir(proxy_dir) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name_ok = path.file_name().and_then(|s| s.to_str())
+                .map(|s| s.ends_with(".upg.tmp.mp4")).unwrap_or(false);
+            if !name_ok { continue; }
+            let md = match std::fs::metadata(&path) { Ok(m) => m, Err(_) => continue }; // fresh stat: a directory listing can lag for a file still open for writing
+            let age = md.modified().ok().and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
+            if age < grace { continue; }
+            if std::fs::remove_file(&path).is_ok() { n += 1; bytes += md.len(); }
+        }
+    }
+    (n, bytes)
+}
+
 struct UpgradeGuard {
     path: String,
 }
@@ -962,6 +1026,8 @@ fn generate_proxy_file_low_priority_cancellable(src: &str, dst: &str, cancel: &d
         }
         s
     });
+    let child_pid = child.id();
+    bg_ffmpeg_register(child_pid, dst); // [#234] so app exit can end it
     let mut cancelled = false;
     let mut polls: u32 = 0;
     let status = loop {
@@ -985,6 +1051,7 @@ fn generate_proxy_file_low_priority_cancellable(src: &str, dst: &str, cancel: &d
             }
         }
     };
+    bg_ffmpeg_unregister(child_pid);
     let stderr = reader.join().unwrap_or_default();
     if cancelled {
         proxy_bg_log(&format!("[PROXY_BG] encode-cancelled (low priority) src={}", src));
@@ -3020,7 +3087,21 @@ pub fn run() {
 
             // #241: sweep orphaned / long-stale proxies once per launch (background thread;
             // refuses under RUSHCUT_DATA_DIR and while a render is active; logs to proxy-bg.log).
-            tauri::async_runtime::spawn_blocking(|| { vacuum_proxies_cmd(); });
+            tauri::async_runtime::spawn_blocking(|| {
+                // #234: abandoned upgrade staging files from a crashed / force-killed run.
+                // Same isolation rule as the vacuum: a QA instance sees the REAL proxy dir.
+                let isolated = std::env::var("RUSHCUT_DATA_DIR").map(|v| !v.trim().is_empty()).unwrap_or(false);
+                if !isolated {
+                    if let Ok(appdata) = std::env::var("APPDATA") {
+                        let dir = std::path::PathBuf::from(format!(r"{}\rushcut\proxies", appdata));
+                        let (n, bytes) = sweep_orphan_upgrade_temps(&dir, std::time::Duration::from_secs(600));
+                        if n > 0 {
+                            proxy_bg_log(&format!("[PROXY_BG] startup-sweep removed={} freed_mb={}", n, bytes / (1024 * 1024)));
+                        }
+                    }
+                }
+                vacuum_proxies_cmd();
+            });
 
             // Batch U1c: self-heal jobs left stuck in 'processing' when the binary was
             // killed mid-render (SIGTERM/crash/WDIO/reboot) while the WSL pipeline kept
@@ -3158,8 +3239,14 @@ pub fn run() {
             delete_setting_cmd,
             migrate_render_prefs_cmd,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // #234: closing RushCut must stop background proxy encodes and remove their staging files.
+            if let tauri::RunEvent::Exit = event {
+                shutdown_background_work();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -3418,6 +3505,68 @@ mod proxy_upgrade_tests {
         eprintln!("E ok: failed encode keeps the old proxy and is not retried");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // #234: the startup fallback removes only OLD *.upg.tmp.mp4 files.
+    #[test]
+    fn sweep_removes_only_old_upgrade_temps() {
+        let d = std::env::temp_dir().join(format!("rc_sweep_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mk = |n: &str| { std::fs::write(d.join(n), b"x").unwrap(); };
+        mk("00000000000000a1.upg.tmp.mp4");
+        mk("00000000000000a2.tmp.mp4");
+        mk("00000000000000a3.mp4");
+        // grace zero = everything old enough: only the exact upgrade-temp suffix goes.
+        let (n, _) = sweep_orphan_upgrade_temps(&d, std::time::Duration::ZERO);
+        assert_eq!(n, 1);
+        assert!(!d.join("00000000000000a1.upg.tmp.mp4").exists());
+        assert!(d.join("00000000000000a2.tmp.mp4").exists(), "fresh-encode staging file untouched");
+        assert!(d.join("00000000000000a3.mp4").exists(), "real proxy untouched");
+        // a recent upgrade temp (live encode) survives a real grace period.
+        mk("00000000000000a4.upg.tmp.mp4");
+        let (n2, _) = sweep_orphan_upgrade_temps(&d, std::time::Duration::from_secs(600));
+        assert_eq!(n2, 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // #234 probe (ignored, needs a clip). Starts a real upgrade, then simulates closing the app:
+    // RC_PROBE_SHUTDOWN=1 runs the exit hook first; unset = the old behaviour (reproduction).
+    // After the process ends, the runner checks for a surviving ffmpeg and a leftover temp file.
+    //   $env:RC_TEST_CLIP=...; $env:RC_TEST_DIR=<scratch>; cargo test --lib proxy_upgrade_tests::exit_mid_upgrade_probe -- --ignored --nocapture
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore]
+    fn exit_mid_upgrade_probe() {
+        let (clip, dir) = match (std::env::var("RC_TEST_CLIP"), std::env::var("RC_TEST_DIR")) {
+            (Ok(c), Ok(d)) if !c.is_empty() && !d.is_empty() => (c, std::path::PathBuf::from(d)),
+            _ => { eprintln!("RC_TEST_CLIP / RC_TEST_DIR not set: skipping"); return; }
+        };
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::env::set_var("RUSHCUT_DATA_DIR", &data);
+        let proxies = dir.join("proxies");
+        std::fs::create_dir_all(&proxies).unwrap();
+        let conn = rusqlite::Connection::open(crate::db::db_path()).unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS jobs (id TEXT, project_id TEXT, status TEXT);").unwrap();
+        let src = dir.join("src.mp4");
+        assert!(rc_run(ffmpeg_exe(), &["-hide_banner", "-loglevel", "error", "-ss", "10", "-t", "60", "-i", &clip,
+            "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-y", src.to_str().unwrap()]));
+        let src_s = src.to_str().unwrap().to_string();
+        let proxy = proxies.join(format!("{}.mp4", proxy_name_for_path(&src_s)));
+        let proxy_s = proxy.to_str().unwrap().to_string();
+        let proxies_s = proxies.to_str().unwrap().to_string();
+        let tmp = proxies.join(format!("{}.upg.tmp.mp4", proxy_name_for_path(&src_s)));
+        // old untagged proxy, so the upgrade has something to replace
+        assert!(rc_run(ffmpeg_exe(), &["-hide_banner", "-loglevel", "error", "-i", &src_s, "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", "scale=-2:2160,format=yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-c:a", "aac", "-y", &proxy_s]));
+        let old_len = std::fs::metadata(&proxy).unwrap().len();
+        let (p2, s2, d2) = (proxy_s.clone(), src_s.clone(), proxies_s.clone());
+        std::thread::spawn(move || { upgrade_existing_proxy("probe", &s2, &p2, &d2, None); });
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        eprintln!("PROBE before-exit: tmp_exists={} registered={}", tmp.exists(), BG_FFMPEG.lock().unwrap().len());
+        if std::env::var("RC_PROBE_SHUTDOWN").as_deref() == Ok("1") { shutdown_background_work(); }
+        eprintln!("PROBE after-hook: tmp_exists={} old_proxy_intact={}", tmp.exists(), std::fs::metadata(&proxy).map(|m| m.len() == old_len).unwrap_or(false));
+        std::process::exit(0); // the app closing: no unwinding, no Drop
     }
 }
 
