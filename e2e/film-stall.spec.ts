@@ -23,6 +23,9 @@ import { seedRenderPrefs } from "./helpers/renderPrefs";
 // 900 ms keeps any return of the old 1.8-2.0 s standstill failing, with room for that cold start;
 // WebDriver sampling adds ~50-100 ms. Pre-warming the decoder is NOT done here (engine change).
 const STALL_MAX_MS = 900;
+// Every cut AFTER the first is ordinary playback (the next clip had a full clip of lead time to
+// preload): held to the ~150 ms target plus ~100-200 ms of WebDriver sampling noise.
+const LATER_CUT_MAX_MS = 350;
 // Needle movement smaller than this between two samples counts as "standing still".
 const MOVE_EPS_MS = 4;
 // Played wall-clock time may differ from the film length on the ruler by at most this.
@@ -107,8 +110,12 @@ async function sampleUntilEnd(maxMs: number): Promise<Sample[]> {
   return out;
 }
 
-/** Longest standing-still interval (ms) between first movement and the film's end. */
-function analyse(label: string, s: Sample[]) {
+/**
+ * Needle standstill episodes between steady state and the film's end, split into the FIRST cut
+ * (cold: the next clip was only just preloaded / the decoder is cold) and every LATER cut (ordinary
+ * playback). `firstCutFilmMs` = where the first clip ends on the ruler.
+ */
+function analyse(label: string, s: Sample[], firstCutFilmMs: number) {
   // Measure from steady state: the first ~1 s is clip load + the clock's initial re-sync to the
   // video, which has nothing to do with boundaries.
   const first = s.findIndex((x) => x.filmMs >= 1200);
@@ -116,22 +123,25 @@ function analyse(label: string, s: Sample[]) {
   // drop the trailing plateau after the film ended
   let last = s.length - 1;
   while (last > first && Math.abs(s[last].filmMs - s[last - 1].filmMs) <= MOVE_EPS_MS) last--;
-  let longest = 0, longestAt = 0, stillSince = s[first].t, ref = s[first].filmMs;
+  // standstill episodes (>= 100 ms): start position + duration
+  const episodes: Array<{ at: number; ms: number }> = [];
+  let stillSince = s[first].t, stillAt = s[first].filmMs, ref = s[first].filmMs;
+  const close = (endT: number) => { const d = endT - stillSince; if (d >= 100) episodes.push({ at: stillAt, ms: d }); };
   for (let i = first + 1; i <= last; i++) {
-    if (Math.abs(s[i].filmMs - ref) > MOVE_EPS_MS) { ref = s[i].filmMs; stillSince = s[i].t; continue; }
-    const d = s[i].t - stillSince;
-    if (d > longest) { longest = d; longestAt = s[i].filmMs; }
+    if (Math.abs(s[i].filmMs - ref) > MOVE_EPS_MS) { close(s[i].t); ref = s[i].filmMs; stillSince = s[i].t; stillAt = s[i].filmMs; }
   }
-  if (process.env.STALL_TIMELINE) {
-    const rows: string[] = [];
-    for (let i = first; i <= Math.min(s.length - 1, last + 3); i += 12) rows.push(`${((s[i].t - s[first].t) / 1000).toFixed(1)}s:${s[i].filmMs.toFixed(0)}`);
-    console.log(`[film-stall] timeline ${label}: ${rows.join(" ")}`);
-  }
+  close(s[last].t);
+  const isFirstCut = (e: { at: number }) => Math.abs(e.at - firstCutFilmMs) <= 300;
+  const firstCutStill = Math.max(0, ...episodes.filter(isFirstCut).map((e) => e.ms));
+  const laterStill = Math.max(0, ...episodes.filter((e) => !isFirstCut(e)).map((e) => e.ms));
+  const laterAt = episodes.filter((e) => !isFirstCut(e)).sort((x, y) => y.ms - x.ms)[0]?.at ?? 0;
   const runMs = s[last].t - s[first].t;
-  if (process.env.STALL_TIMELINE) console.log(`[film-stall] tail ${label}: lastFilm=${s[s.length - 1].filmMs.toFixed(0)} lastIdx=${last}/${s.length - 1}`);
   const filmSpan = s[last].filmMs - s[first].filmMs;
-  console.log(`[film-stall] ${label}: longestStill=${longest.toFixed(0)}ms at film=${longestAt.toFixed(0)}ms run=${runMs.toFixed(0)}ms filmSpan=${filmSpan.toFixed(0)}ms samples=${s.length}`);
-  return { longest, runMs, filmSpan };
+  console.log(
+    `[film-stall] ${label}: firstCutStill=${firstCutStill.toFixed(0)}ms laterStill=${laterStill.toFixed(0)}ms (at film=${laterAt.toFixed(0)}) ` +
+      `run=${runMs.toFixed(0)}ms filmSpan=${filmSpan.toFixed(0)}ms gap=${(runMs - filmSpan).toFixed(0)}ms samples=${s.length}`,
+  );
+  return { firstCutStill, laterStill, runMs, filmSpan };
 }
 
 // "short" = 2.5 s cuts: the crossfade clamps to half the shortest clip (1.25 s), so every clip is
@@ -144,6 +154,8 @@ const VARIANTS = [
 ] as const;
 
 for (const { transition, cutMs, label } of VARIANTS) {
+  // Where clip 0 ends on the ruler: its cut length minus the transition overlap (clamped to half a clip).
+  const firstCutFilmMs = transition === "none" ? cutMs : cutMs - Math.min(1500, cutMs / 2);
   describe(`#197 needle stalls at clip/card boundaries (${label})`, () => {
     let projectId: string | null = null;
 
@@ -154,7 +166,7 @@ for (const { transition, cutMs, label } of VARIANTS) {
       if (!projectId) throw new Error("C:\\clips needs >=3 video files to run this spec");
     });
 
-    it(`Trimmer film mode: no needle stall > ${STALL_MAX_MS}ms, run length matches the film`, async () => {
+    it(`Trimmer film mode: ordinary cuts <= ${LATER_CUT_MAX_MS}ms, first cut <= ${STALL_MAX_MS}ms, run length matches the film`, async () => {
       // Genuine remount (same-route pushState inherits the previous test's live state).
       await gotoRoute(projectId!, "sound");
       await gotoRoute(projectId!, "trimmer");
@@ -163,12 +175,13 @@ for (const { transition, cutMs, label } of VARIANTS) {
       await filmBtn.click();
       await browser.pause(1500);
       await (await $('[data-testid="trim-playpause"]')).click();
-      const r = analyse(`Trimmer/${label}`, await sampleUntilEnd(22_000));
-      expect(r.longest).toBeLessThanOrEqual(STALL_MAX_MS);
+      const r = analyse(`Trimmer/${label}`, await sampleUntilEnd(22_000), firstCutFilmMs);
+      expect(r.firstCutStill).toBeLessThanOrEqual(STALL_MAX_MS);
+      expect(r.laterStill).toBeLessThanOrEqual(LATER_CUT_MAX_MS);
       expect(Math.abs(r.runMs - r.filmSpan)).toBeLessThanOrEqual(RUN_VS_FILM_MAX_MS);
     });
 
-    it(`Sound Master: no needle stall > ${STALL_MAX_MS}ms, run length matches the film`, async () => {
+    it(`Sound Master: ordinary cuts <= ${LATER_CUT_MAX_MS}ms, first cut <= ${STALL_MAX_MS}ms, run length matches the film`, async () => {
       await gotoRoute(projectId!, "trimmer");
       await gotoRoute(projectId!, "sound");
       const masterTab = await $('[data-testid="music-tab-mixer"]');
@@ -178,7 +191,7 @@ for (const { transition, cutMs, label } of VARIANTS) {
       const playBtn = await $('[data-testid="master-playpause"]');
       await playBtn.waitForExist({ timeout: 10_000 });
       await playBtn.click();
-      const r = analyse(`Sound/${label}`, await sampleUntilEnd(22_000));
+      const r = analyse(`Sound/${label}`, await sampleUntilEnd(22_000), firstCutFilmMs);
       if (process.env.STALL_TIMELINE) {
         const st = await browser.execute(() => ({
           card: !!document.body.textContent?.includes("MID ROLL"),
@@ -186,7 +199,8 @@ for (const { transition, cutMs, label } of VARIANTS) {
         }));
         console.log(`[film-stall] state after run: ${JSON.stringify(st)}`);
       }
-      expect(r.longest).toBeLessThanOrEqual(STALL_MAX_MS);
+      expect(r.firstCutStill).toBeLessThanOrEqual(STALL_MAX_MS);
+      expect(r.laterStill).toBeLessThanOrEqual(LATER_CUT_MAX_MS);
       expect(Math.abs(r.runMs - r.filmSpan)).toBeLessThanOrEqual(RUN_VS_FILM_MAX_MS);
     });
 
