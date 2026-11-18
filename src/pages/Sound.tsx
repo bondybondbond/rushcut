@@ -175,6 +175,7 @@ export default function Sound() {
   // outgoing clip keeps playing under the fade, exactly like the render. Before this the needle
   // parked for the overlap at every cut / card end (and the preview ran longer than the film).
   const slotFadeCancelRef = useRef<(() => void) | null>(null);   // running slot-to-slot fade
+  const slotFadeFinishRef = useRef<(() => void) | null>(null);   // runs that fade's end-of-fade steps now (pause outgoing, preload, ...)
   const advanceFiredIdxRef = useRef(-1);                          // clip idx whose end-of-clip advance already fired
   const advanceRoughRef = useRef<(viaClock?: boolean) => void>(() => {}); // latest advanceFilmClipRough for the rAF loop
   const tailPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -335,9 +336,19 @@ export default function Sound() {
     if (!slotFadeCancelRef.current) return;
     slotFadeCancelRef.current();
     slotFadeCancelRef.current = null;
+    slotFadeFinishRef.current = null;
     const keep = activeFilmSlotRef.current;
     setSlotVisible(keep);
     getFilmVideo(keep === "a" ? "b" : "a")?.pause();
+  }
+  // The next advance can arrive before the running fade has ended (clips about twice the overlap
+  // long): finish the fade NOW -- same end state as its natural end, including the after-next
+  // preload -- instead of dropping it, which lost that preload and forced a cold reload.
+  function finishFadeEarly() {
+    const finish = slotFadeFinishRef.current;
+    if (!finish) return;
+    slotFadeCancelRef.current?.();
+    finish();
   }
   function cancelPreviewFades() {
     settleFade();
@@ -792,7 +803,7 @@ export default function Sound() {
     // which is still playing. (From a card the card overlay does the dissolving instead.)
     const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
     const overlapFade = xfadeMs > 0 && !fromCard;
-    settleFade(); // a clip shorter than two overlaps can advance while the previous fade still runs
+    finishFadeEarly(); // a clip about two overlaps long can advance while the previous fade still runs
 
     // Preload for this slot may not have started/finished yet (very short clips can
     // outrun the lookahead preload) — fall back to a full load rather than gating on
@@ -846,19 +857,22 @@ export default function Sound() {
         // Fade the incoming clip in over the outgoing one for one overlap. The outgoing slot is
         // the preload target for the clip after next, so that preload waits for the fade to end.
         slotFadeCancelRef.current?.();
+        const finishFade = () => {
+          slotFadeCancelRef.current = null;
+          slotFadeFinishRef.current = null;
+          prevV.pause();
+          nextV.volume = nextVolume;
+          setSlotVisible(nextSlot);
+          preloadAfterNext();
+        };
+        slotFadeFinishRef.current = finishFade;
         slotFadeCancelRef.current = runSlotFade({
           outV: prevV,
           inV: nextV,
           ms: xfadeMs,
           kind: fadeKindFor(readTransitionConfig(projectId ?? "").between),
           inVolume: nextVolume,
-          onDone: () => {
-            slotFadeCancelRef.current = null;
-            prevV.pause();
-            nextV.volume = nextVolume;
-            setSlotVisible(nextSlot);
-            preloadAfterNext();
-          },
+          onDone: finishFade,
         });
         return;
       }
@@ -920,6 +934,7 @@ export default function Sound() {
       // render (cards never silence the music track). Video pause mirrors
       // pauseFilmPlayback's "pause both slots, not just the active one" — a pending gate
       // (#91) may already have the inactive slot playing invisibly.
+      finishFadeEarly(); // a short clip can reach its card while the fade INTO it still runs
       if (overlap) {
         // #197: the card dissolves in over the clip's last overlap; the clip keeps playing (and
         // its audio ramps down) under it, then is paused once the card is fully opaque.
@@ -1387,6 +1402,7 @@ export default function Sound() {
       if (tailPauseTimerRef.current !== null) { clearTimeout(tailPauseTimerRef.current); tailPauseTimerRef.current = null; }
       tailRampCancelRef.current?.();
       tailRampCancelRef.current = null;
+      settleFade();
       filmVideoARef.current?.pause();
       filmVideoBRef.current?.pause();
       filmPlayingRef.current = false;

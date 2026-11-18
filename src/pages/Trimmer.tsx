@@ -135,6 +135,7 @@ export default function Trimmer() {
   // and the outgoing clip keeps playing under the fade, like the render. Before this the needle
   // parked for the overlap at every cut / card end and the preview ran longer than the film.
   const slotFadeCancelRef = useRef<(() => void) | null>(null);   // running slot-to-slot fade
+  const slotFadeFinishRef = useRef<(() => void) | null>(null);   // runs that fade's end-of-fade steps now (pause outgoing, preload, ...)
   const advanceFiredIdxRef = useRef(-1);                          // clip idx whose end-of-clip advance already fired
   const advanceRef = useRef<(viaClock?: boolean) => void>(() => {}); // latest advanceFilmClip for the rAF loop
   const tailPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -743,6 +744,7 @@ export default function Trimmer() {
           if (tailPauseTimerRef.current !== null) { clearTimeout(tailPauseTimerRef.current); tailPauseTimerRef.current = null; }
           tailRampCancelRef.current?.();
           tailRampCancelRef.current = null;
+          settleFade();
           filmVideoARef.current?.pause();
           filmVideoBRef.current?.pause();
           setIsPlaying(false);
@@ -1149,7 +1151,7 @@ export default function Trimmer() {
    */
   function promoteToFilmClip(nextIdx: number, fromCard = false) {
     const nextSlot: "a" | "b" = activeFilmSlotRef.current === "a" ? "b" : "a";
-    settleFade(); // a clip shorter than two overlaps can advance while the previous fade still runs
+    finishFadeEarly(); // a clip about two overlaps long can advance while the previous fade still runs
     const nextV = getFilmVideo(nextSlot);
     const prevSlot: "a" | "b" = nextSlot === "a" ? "b" : "a";
     const prevV = getFilmVideo(prevSlot);
@@ -1157,7 +1159,11 @@ export default function Trimmer() {
     // its after-next preload). Load the right one cold instead of playing the stale element.
     const nextClipForSlot = inFilmRef.current[nextIdx];
     if (nextV && nextClipForSlot && nextV.dataset.clipId !== nextClipForSlot.id) {
-      getFilmVideo(activeFilmSlotRef.current)?.pause();
+      const oldV = getFilmVideo(activeFilmSlotRef.current);
+      // Flip the active slot first: the old element's native 'pause' event would otherwise read as
+      // the user pausing and flip isPlaying false until the cold load starts playing again.
+      activeFilmSlotRef.current = nextSlot;
+      oldV?.pause();
       loadIntoSlot(nextIdx, nextSlot);
       return;
     }
@@ -1190,19 +1196,22 @@ export default function Trimmer() {
       };
       if (overlapFade && prevV) {
         slotFadeCancelRef.current?.();
+        const finishFade = () => {
+          slotFadeCancelRef.current = null;
+          slotFadeFinishRef.current = null;
+          prevV.pause();
+          nextV.volume = nextVolume;
+          setSlotVisible(nextSlot);
+          preloadAfterNext();
+        };
+        slotFadeFinishRef.current = finishFade;
         slotFadeCancelRef.current = runSlotFade({
           outV: prevV,
           inV: nextV,
           ms: xfadeMs,
           kind: fadeKindFor(readTransitionConfig(projectId ?? "").between),
           inVolume: nextVolume,
-          onDone: () => {
-            slotFadeCancelRef.current = null;
-            prevV.pause();
-            nextV.volume = nextVolume;
-            setSlotVisible(nextSlot);
-            preloadAfterNext();
-          },
+          onDone: finishFade,
         });
       }
       nextV.play().catch(() => {
@@ -1390,6 +1399,7 @@ export default function Trimmer() {
       // bug), before setCardHold's state update is even queued, let alone committed. A ref
       // read is the only thing guaranteed current at that exact synchronous instant.
       cardHoldAutoplayRef.current = true;
+      finishFadeEarly(); // a short clip can reach its card while the fade INTO it still runs
       if (overlap) {
         // #197: the card dissolves in over the clip's last overlap; the clip keeps playing (its
         // audio ramps down) under it, then is paused once the card is fully opaque.
@@ -1704,9 +1714,19 @@ export default function Trimmer() {
     if (!slotFadeCancelRef.current) return;
     slotFadeCancelRef.current();
     slotFadeCancelRef.current = null;
+    slotFadeFinishRef.current = null;
     const keep = activeFilmSlotRef.current;
     setSlotVisible(keep);
     getFilmVideo(keep === "a" ? "b" : "a")?.pause();
+  }
+  // The next advance can arrive before the running fade has ended (clips about twice the overlap
+  // long): finish the fade NOW -- same end state as its natural end, including the after-next
+  // preload -- instead of dropping it, which lost that preload and forced a cold reload.
+  function finishFadeEarly() {
+    const finish = slotFadeFinishRef.current;
+    if (!finish) return;
+    slotFadeCancelRef.current?.();
+    finish();
   }
   function cancelPreviewFades() {
     settleFade();

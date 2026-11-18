@@ -16,15 +16,17 @@ import { trackTestProject } from "./helpers/testProjects";
 import { seedRenderPrefs } from "./helpers/renderPrefs";
 
 // #197: the stall being fixed was 1.8-2.0 s (the transition overlap parked the needle). What is
-// left is the video decoder starting the next clip; on the Sound Master screen the FIRST cut of a
-// run measured 65-280 ms normally and up to ~550 ms on a cold decoder (the pre-fix code showed the
-// same 0.5-0.7 s there with no transition). 700 ms catches any return of the old multi-second
-// standstill with room for that cold start; sampling itself adds ~50-100 ms of WebDriver latency.
-const STALL_MAX_MS = 700;
+// left is the video decoder starting the next clip. On Sound Master the FIRST cut of a run waits for
+// a confirmed frame of a clip whose preload only started when the current clip appeared: 65-280 ms
+// with 4 s clips, up to ~700 ms with 2.5 s clips (less lead time) or a cold decoder; the pre-fix code
+// showed 0.5-0.7 s there even with no transition. Trimmer starts the fade at once (56-150 ms).
+// 900 ms keeps any return of the old 1.8-2.0 s standstill failing, with room for that cold start;
+// WebDriver sampling adds ~50-100 ms. Pre-warming the decoder is NOT done here (engine change).
+const STALL_MAX_MS = 900;
 // Needle movement smaller than this between two samples counts as "standing still".
 const MOVE_EPS_MS = 4;
 // Played wall-clock time may differ from the film length on the ruler by at most this.
-const RUN_VS_FILM_MAX_MS = 900;
+const RUN_VS_FILM_MAX_MS = 1200; // up to ~3 cold gate waits in the 2.5 s film (pre-fix: +4.8 s)
 
 interface Sample { t: number; filmMs: number }
 
@@ -38,7 +40,7 @@ async function reachAppRoute() {
   await browser.pause(400);
 }
 
-async function seedProject(transition: "crossfade" | "dip_to_black" | "none"): Promise<string | null> {
+async function seedProject(transition: "crossfade" | "dip_to_black" | "none", cutMs = 4000): Promise<string | null> {
   const projectId = await browser.execute(async (name: string) => {
     const { invoke } = (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
     const metas = (await invoke("scan_folder", { folderPath: "C:\\clips" })) as Array<Record<string, unknown>>;
@@ -48,22 +50,22 @@ async function seedProject(transition: "crossfade" | "dip_to_black" | "none"): P
       width: m.width, height: m.height, has_audio: m.has_audio, thumbnail_data: m.thumbnail_data ?? null,
     }));
     return (await invoke("create_project", { name, clips })) as string;
-  }, `Stall E2E ${transition}`);
+  }, `Stall E2E ${transition} ${cutMs}`);
   if (!projectId) return null;
 
-  const cutIds = await browser.execute(async (id: string) => {
+  const cutIds = await browser.execute(async (id: string, outMs: number) => {
     const { invoke } = (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
     const data = (await invoke("get_project", { projectId: id })) as { clips: Array<{ id: string; include: number; sort_order: number }> };
     const sources = data.clips.filter((c) => c.include === 0).sort((a, b) => a.sort_order - b.sort_order);
     const ids: string[] = [];
     for (const src of sources.slice(0, 3)) {
-      const cut = (await invoke("add_clip_cut_cmd", { projectId: id, sourceClipId: src.id, inMs: 0, outMs: 4000 })) as { id: string };
+      const cut = (await invoke("add_clip_cut_cmd", { projectId: id, sourceClipId: src.id, inMs: 0, outMs })) as { id: string };
       ids.push(cut.id);
     }
     // stable order (see e2e.md: tied sort_order after add_clip_cut_cmd)
     await invoke("reorder_clips_cmd", { clipIds: ids });
     return ids;
-  }, projectId);
+  }, projectId, cutMs);
 
   await seedRenderPrefs(projectId, {
     transition: { between: transition, opening: "none", closing: "none", shuffleBetween: false },
@@ -132,13 +134,22 @@ function analyse(label: string, s: Sample[]) {
   return { longest, runMs, filmSpan };
 }
 
-for (const transition of ["crossfade", "dip_to_black", "none"] as const) {
-  describe(`#197 needle stalls at clip/card boundaries (${transition})`, () => {
+// "short" = 2.5 s cuts: the crossfade clamps to half the shortest clip (1.25 s), so every clip is
+// only 2 x the overlap long -- the case where the next clip's preload has the least lead time.
+const VARIANTS = [
+  { transition: "crossfade", cutMs: 4000, label: "crossfade" },
+  { transition: "dip_to_black", cutMs: 4000, label: "dip_to_black" },
+  { transition: "none", cutMs: 4000, label: "none" },
+  { transition: "crossfade", cutMs: 2500, label: "crossfade-short" },
+] as const;
+
+for (const { transition, cutMs, label } of VARIANTS) {
+  describe(`#197 needle stalls at clip/card boundaries (${label})`, () => {
     let projectId: string | null = null;
 
     before(async () => {
       await reachAppRoute();
-      projectId = await seedProject(transition);
+      projectId = await seedProject(transition, cutMs);
       trackTestProject(projectId);
       if (!projectId) throw new Error("C:\\clips needs >=3 video files to run this spec");
     });
@@ -152,7 +163,7 @@ for (const transition of ["crossfade", "dip_to_black", "none"] as const) {
       await filmBtn.click();
       await browser.pause(1500);
       await (await $('[data-testid="trim-playpause"]')).click();
-      const r = analyse(`Trimmer/${transition}`, await sampleUntilEnd(22_000));
+      const r = analyse(`Trimmer/${label}`, await sampleUntilEnd(22_000));
       expect(r.longest).toBeLessThanOrEqual(STALL_MAX_MS);
       expect(Math.abs(r.runMs - r.filmSpan)).toBeLessThanOrEqual(RUN_VS_FILM_MAX_MS);
     });
@@ -167,7 +178,7 @@ for (const transition of ["crossfade", "dip_to_black", "none"] as const) {
       const playBtn = await $('[data-testid="master-playpause"]');
       await playBtn.waitForExist({ timeout: 10_000 });
       await playBtn.click();
-      const r = analyse(`Sound/${transition}`, await sampleUntilEnd(22_000));
+      const r = analyse(`Sound/${label}`, await sampleUntilEnd(22_000));
       if (process.env.STALL_TIMELINE) {
         const st = await browser.execute(() => ({
           card: !!document.body.textContent?.includes("MID ROLL"),
@@ -201,11 +212,14 @@ for (const transition of ["crossfade", "dip_to_black", "none"] as const) {
             await browser.pause(800);
             await (await $('[data-testid="master-playpause"]')).click();
           }
-          // First crossfade runs on the ruler from ~2.5 s to ~4.0 s: wait until the needle is inside it.
-          await browser.waitUntil(async () => {
-            const ms = await browser.execute(() => Number(document.querySelector('[data-testid="filmstrip-playhead"]')?.getAttribute("data-film-ms") ?? "NaN"));
-            return ms >= 2800 && ms <= 3600;
-          }, { timeout: 15_000, interval: 40, timeoutMsg: "needle never entered the first crossfade window" });
+          // Prove a fade is really running (incoming slot stacked on top via z-index) right before pausing.
+          const fadeProbe = () => browser.execute((w: string) => {
+            const vids = Array.from(document.querySelectorAll(w === "trimmer" ? '[data-testid^="trim-film-video-"]' : "video")) as HTMLVideoElement[];
+            const film = w === "trimmer" ? vids : vids.filter((v) => v.dataset.clipId);
+            return { stacked: film.some((v) => v.style.zIndex === "2"), playing: film.filter((v) => !v.paused).length };
+          }, where);
+          await browser.waitUntil(async () => { const f = await fadeProbe(); return f.stacked && f.playing === 2; },
+            { timeout: 20_000, interval: 30, timeoutMsg: "no running crossfade (two playing slots, one stacked) to pause in" });
           await (await $(where === "trimmer" ? '[data-testid="trim-playpause"]' : '[data-testid="master-playpause"]')).click();
           await browser.pause(400);
           const st = await browser.execute((w: string) => {
