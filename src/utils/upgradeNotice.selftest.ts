@@ -11,6 +11,8 @@ function check(name: string, cond: boolean, detail = "") {
 }
 
 check("empty list shows nothing", upgradeNoticeText([]) === null);
+// CPO wrap-readiness: when EVERY clip is listed there is no "rest of the film" to compare with.
+check("no comparison to the rest of the film", !/rest of your film/.test(upgradeNoticeText(["a"])!));
 const one = upgradeNoticeText(["DJI_0012"])!;
 check("one clip is singular and named", one.startsWith("1 clip will") && one.includes("DJI_0012") && one.includes("prepare it fully"), one);
 const three = upgradeNoticeText(["a", "b", "c"])!;

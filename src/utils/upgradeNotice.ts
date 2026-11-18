@@ -9,7 +9,7 @@ export function upgradeNoticeText(names: string[]): string | null {
   const more = names.length > 3 ? ` and ${names.length - 3} more` : "";
   const subject = names.length === 1 ? "1 clip will" : `${names.length} clips will`;
   return (
-    `${subject} look lower quality than the rest of your film because there isn't enough free storage to prepare ` +
+    `${subject} look lower quality than they could because there isn't enough free storage to prepare ` +
     `${names.length === 1 ? "it" : "them"} fully: ${shown}${more}. ` +
     `Free up some space, then open the editor again to fix this. You can still render now.`
   );
