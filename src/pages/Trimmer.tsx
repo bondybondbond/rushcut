@@ -11,7 +11,7 @@ import { TrimBar } from "@/components/trimmer/TrimBar";
 import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
-import { readTransitionConfig, cardDurationFlags, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
+import { readTransitionConfig, cardDurationFlags, readPlacedCards, orderedCardRuns, cardEdges } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
 import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, cardDurMs, cardCuts, edgeFadesOf } from "@/utils/filmDuration";
 import {
@@ -1554,7 +1554,7 @@ export default function Trimmer() {
     anchorSeqClock(filmMs);
     resetFilmPlaybackRate();
     const clips_ = inFilmRef.current;
-    const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""));
+    const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""), cardEdges(readPlacedCards(projectId ?? ""), clips_.map((c) => c.id)).count);
 
     // #74/#149: cards bracket/interleave the film as first-class 3s elements. `filmMs` from
     // the strip is card-inclusive, so walk clip-by-clip, checking for a card immediately
@@ -1668,7 +1668,7 @@ export default function Trimmer() {
     diagLog(`film-nav dir=${dir} target=${target}`);
     // Render-time start of the target clip — seekFilmTo consumes card-inclusive telescoped
     // render-time (#71/#74/#149), so pass the same per-clip card map filmTimeAtClipStart needs.
-    const xfadeMs = clampedXfadeMs(list, readTransitionConfig(projectId ?? ""));
+    const xfadeMs = clampedXfadeMs(list, readTransitionConfig(projectId ?? ""), cardEdges(readPlacedCards(projectId ?? ""), list.map((c) => c.id)).count);
     const placedCards = list.length > 0 ? readPlacedCards(projectId ?? "") : [];
     const cardsBeforeClip = list.map((c) => placedCards.some((p) => p.beforeClipId === c.id));
     seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, cardsBeforeClip, edgeFadesOf(readTransitionConfig(projectId ?? ""))));
@@ -1916,7 +1916,7 @@ export default function Trimmer() {
   const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "", inFilm.map((c) => c.id)));
 
   // Render-time (telescoped) overlap per cut — shared by the playhead, seek + ruler (#71).
-  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
+  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""), cardEdges(readPlacedCards(projectId ?? ""), inFilm.map((c) => c.id)).count);
 
   // #74/#149: card tiles for the filmstrip + the per-clip "card precedes this clip" map
   // used by filmTimeAtClipStart below (generalizes the old single hasOpenCard boolean to

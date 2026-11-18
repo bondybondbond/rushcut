@@ -92,7 +92,8 @@ export function buildSequence(
   placedCards: PlacedCard[],
   edge: EdgeFades = NO_EDGE_FADES,
 ): Sequence {
-  return buildSequenceCore(inFilm, clampedXfadeMs(inFilm, tc), placedCards, edgeFadesOf(tc));
+  const cardCount = cardEdges(placedCards, inFilm.map((c) => c.id)).count;
+  return buildSequenceCore(inFilm, clampedXfadeMs(inFilm, tc, cardCount), placedCards, edgeFadesOf(tc));
 }
 
 /**
@@ -102,7 +103,7 @@ export function buildSequence(
  * core directly. Both entry points share the one telescoping / prefix-sum
  * implementation here -- given the same `xfadeMs` they produce byte-identical
  * geometry, so the strip ruler and the playback needle cannot geometrically
- * disagree. (Callers must pass `clampedXfadeMs(inFilm, tc)` for that `xfadeMs` --
+ * disagree. (Callers must pass `clampedXfadeMs(inFilm, tc, cardCount)` for that `xfadeMs` --
  * `buildSequence` does; `StickyFilmStrip`'s parent passes it as `xfadeOverlapMs`.)
  *
  * `cards` need only carry `id` + `beforeClipId`; `color`/`text`/`subtitle` are

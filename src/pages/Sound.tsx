@@ -256,7 +256,7 @@ export default function Sound() {
   const filmSeq = buildSequence(inFilm, readTransitionConfig(projectId ?? ""), placedCards);
   filmSeqRef.current = filmSeq;
   const totalMs = filmSeq.totalMs;
-  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""));
+  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""), cardEdges(placedCards, inFilm.map((c) => c.id)).count);
   // #190: the held card's own telescoped width (depends on its position).
   const filmCardRegionMs = cardHold
     ? (cardTimingAt(filmSeq, cardHold.filmMs)?.regionMs ?? cardRegionMs(filmXfadeOverlapMs))
@@ -1754,7 +1754,7 @@ export default function Sound() {
         <StickyFilmStrip
           clips={clips}
           projectId={projectId!}
-          xfadeOverlapMs={clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""))}
+          xfadeOverlapMs={filmXfadeOverlapMs}
           edgeFades={edgeFadesOf(readTransitionConfig(projectId ?? ""))}
           cards={placedCards.map((c): PositionedCard => ({
             card: { id: c.id, color: c.color, text: c.text },

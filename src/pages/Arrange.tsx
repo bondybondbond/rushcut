@@ -625,7 +625,7 @@ export default function Arrange() {
   const selectedIndex = selectedClipId ? inFilm.findIndex((c) => c.id === selectedClipId) : -1;
 
   // Render-time (telescoped) overlap per cut — shared by the playhead + the filmstrip ruler.
-  const xfadeOverlapMs = clampedXfadeMs(inFilm, transConfig);
+  const xfadeOverlapMs = clampedXfadeMs(inFilm, transConfig, cardEdges(placedCards, inFilm.map((c) => c.id)).count);
 
   // Render-time position of the current clip playback — drives the StickyFilmStrip playhead.
   // Telescoped via the shared filmTimeAtClipStart so the playhead matches the ruler (#71).

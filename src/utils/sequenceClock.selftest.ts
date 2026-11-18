@@ -70,14 +70,10 @@ const D = clip("d", 0, 6_000);
 //   (a) buildSequence.totalMs ALWAYS equals an independent recomputation of the
 //       StickyFilmStrip renderMsArr telescoped sum -- the "needle matches ruler"
 //       contract (holds for every n, including n<2 where clampedXfadeMs is 0).
-//   (b) for n>=2 with cards anchored in-film, that also equals
-//       effectiveFilmMs minus the +100ms/black-fade net. (n<2 is skipped here:
-//       effectiveFilmMs's own inline xfade calc telescopes card seams even at
-//       n==1, while clampedXfadeMs -- what the strip AND every playhead caller
-//       use -- guards `inFilm.length < 2` to 0. That pre-existing latent
-//       divergence is out of #165's scope; buildSequence deliberately follows
-//       the strip / clampedXfadeMs so the needle can never disagree with the
-//       ruler the user is looking at.)
+//   (b) for n>=2, or n==1 with at least one card (#243: cards are elements, so
+//       clampedXfadeMs counts them like effectiveFilmMs and the render do), that also
+//       equals effectiveFilmMs minus the +100ms/black-fade net. Only n==1 with NO card is
+//       skipped (nothing to overlap).
 {
   // Independent strip-total recompute (mirrors StickyFilmStrip renderMsArr).
   function stripTotal(film: Clip[], tc: TransitionConfig, cards: PlacedCard[]): number {
@@ -98,6 +94,8 @@ const D = clip("d", 0, 6_000);
     { film: [A, B, C, D], cards: [card("k2", "c")] },
     { film: [A], cards: [] },
     { film: [A], cards: [card("k0", "a"), card("kE", null)] },
+    { film: [A], cards: [card("k0", "a")] }, // #243 opening card only
+    { film: [A], cards: [card("kE", null)] }, // #243 closing card only
   ];
   const transitions: TransitionConfig[] = [
     tcfg(),
@@ -121,7 +119,7 @@ const D = clip("d", 0, 6_000);
         `AC2  totalMs == last item filmEndMs (${label})`,
         !last || Math.abs(last.filmEndMs - seq.totalMs) < 1e-6,
       );
-      if (film.length >= 2) {
+      if (film.length >= 2 || cards.length > 0) { // #243: n=1 + cards now agrees too
         const expected = playbackTotalFromEffective(film, tc, cards);
         check(
           `AC2b totalMs == effectiveFilmMs - blackNet (${label})`,
@@ -132,6 +130,10 @@ const D = clip("d", 0, 6_000);
     }
   }
 }
+
+// --- #243: 1 clip, no card never overlaps; 1 clip + a card does (negative + positive) ----
+check("#243 1 clip, no card, crossfade -> overlap 0", clampedXfadeMs([A], tcfg({ between: "crossfade" }), 0) === 0);
+check("#243 1 clip + 1 card, crossfade -> overlap 1500", clampedXfadeMs([A], tcfg({ between: "crossfade" }), 1) === 1500);
 
 // --- AC1: round-trip filmToItem <-> itemToFilm, offset-bounded ---------------
 {
@@ -387,7 +389,7 @@ const D = clip("d", 0, 6_000);
   ];
   for (const [film, tc, cards] of cases) {
     const viaWrapper = buildSequence(film, tc, cards);
-    const viaCore = buildSequenceCore(film, clampedXfadeMs(film, tc), cards);
+    const viaCore = buildSequenceCore(film, clampedXfadeMs(film, tc, cardEdges(cards, film.map((c) => c.id)).count), cards);
     const label = `n=${film.length} cards=${cards.length} ${tc.between}`;
     check(
       `Phase D: buildSequenceCore geometry identical to buildSequence (${label})`,
@@ -430,7 +432,7 @@ const D = clip("d", 0, 6_000);
     ["3 stacked at end", [A], tcfg(), [card("e1", null), card("e2", null), card("e3", null)]],
   ];
   for (const [label, film, tc, cards] of cases) {
-    const seq = buildSequenceCore(film, clampedXfadeMs(film, tc), cards);
+    const seq = buildSequenceCore(film, clampedXfadeMs(film, tc, cardEdges(cards, film.map((c) => c.id)).count), cards);
     const seqCardIds = seq.items.filter((i) => i.kind === "card").map((i) => i.card!.id);
     check(`#184 ${label}: buildSequenceCore card order == strip card order`,
       JSON.stringify(seqCardIds) === JSON.stringify(stripCardOrder(film, cards)),

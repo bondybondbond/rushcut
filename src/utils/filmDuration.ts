@@ -138,14 +138,16 @@ export function effectiveFilmMs(
  * The single source of the per-cut crossfade overlap value (#71). Mirrors the clamp
  * inside effectiveFilmMs and the pipeline (transitions.py clamps xfade_dur to
  * min(1.5s, shortest_clip / 2)). Returns 0 when no crossfade/shuffle is active or there
- * is nothing to overlap (< 2 clips, or no positive-duration clips).
+ * is nothing to overlap (fewer than 2 elements, counting `cardCount` text cards as elements like
+ * effectiveFilmMs and the render do, #243; or no positive-duration clips).
  *
  * Callers pass the result BOTH to StickyFilmStrip (`xfadeOverlapMs` prop) AND to
  * filmTimeAtClipStart for the playhead, so the ruler and the playhead share exactly one
  * overlap decision and cannot drift apart.
  */
-export function clampedXfadeMs(inFilm: Clip[], tc: TransitionConfig): number {
-  if (inFilm.length < 2) return 0;
+export function clampedXfadeMs(inFilm: Clip[], tc: TransitionConfig, cardCount = 0): number {
+  // #243: cards are elements in the render's xfade chain, so 1 clip + a card still crossfades.
+  if (inFilm.length + cardCount < 2) return 0;
   const hasOverlap = tc.between !== "none" || tc.shuffleBetween;
   if (!hasOverlap) return 0;
   const positiveDurs = inFilm.map(trimmedMs).filter((d) => d > 0);
@@ -158,7 +160,7 @@ export function clampedXfadeMs(inFilm: Clip[], tc: TransitionConfig): number {
  * start of the preceding clips minus the overlap consumed by the preceding cuts.
  * This is the ONE boundary formula shared by every screen's playhead feed (Trimmer,
  * Arrange, Sound) so they cannot fork into slightly different telescoping math (#71).
- * Pass the xfade value from clampedXfadeMs(inFilm, tc).
+ * Pass the xfade value from clampedXfadeMs(inFilm, tc, cardCount).
  *
  * `cardsBeforeClip[i]` (#149, generalizes #74's single hasOpenCard boolean to arbitrary
  * mid-roll positions) is true when a text card sits immediately before clip[i] -- each

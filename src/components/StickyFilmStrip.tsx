@@ -74,7 +74,7 @@ interface StickyFilmStripProps {
   /**
    * Per-cut crossfade overlap in ms (#71). When > 0 the ruler/playhead/seek geometry is
    * telescoped so the timeline reads true render time instead of the naive sum of clip
-   * durations. The caller computes this once via clampedXfadeMs(inFilm, tc) and passes the
+   * durations. The caller computes this once via clampedXfadeMs(inFilm, tc, cardCount) and passes the
    * final number — this component does no transition reasoning. Default 0 (no overlap).
    * NOTE: this makes the strip time-correct, NOT overlap-visual-correct: tiles narrow to
    * their telescoped contribution but do not draw the overlap shape (that is #74).
