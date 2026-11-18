@@ -13,6 +13,7 @@ import { buildJobConfig, readTransitionConfig, cardDurationFlags } from "@/utils
 import { effectiveFilmMs } from "@/utils/filmDuration";
 import { getRenderPref, setRenderPref, removeRenderPref } from "@/utils/renderStore";
 import { absoluteDateTime } from "@/utils/timeAgo";
+import { upgradeNoticeText } from "@/utils/upgradeNotice";
 import { resLabel, durationLabel, formatFileSize } from "@/utils/jobMeta";
 
 // T5: metadata shown on the film/done view. `iso` is the render timestamp,
@@ -85,6 +86,9 @@ export default function Render() {
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
   const [totalMs, setTotalMs] = useState(() => effectiveFilmMs(_cachedIncluded, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "", _cachedIncluded.map((c) => c.id))));
   const [phase, setPhase] = useState<Phase>("starting");
+  // #236: clips whose quality improvement was skipped for lack of free storage. Derived on
+  // demand (nothing stored); re-checked every time the pre-render gate is shown.
+  const [upgradeNames, setUpgradeNames] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Starting up the magic...");
@@ -687,6 +691,19 @@ export default function Render() {
     };
   }, [phase]);
 
+  // #236: pre-render notice. Failure is silent: it must never get in the way of rendering.
+  useEffect(() => {
+    if (phase !== "ready" || !projectId) {
+      setUpgradeNames([]); // never show stale names when the gate comes back
+      return;
+    }
+    let cancelled = false;
+    invoke<string[]>("get_upgrade_space_notice_cmd", { projectId })
+      .then((names) => { if (!cancelled) setUpgradeNames(names); })
+      .catch(() => { if (!cancelled) setUpgradeNames([]); });
+    return () => { cancelled = true; };
+  }, [phase, projectId]);
+
   // Batch R+S: poll proxy readiness and listen to proxy-progress while in the
   // awaiting-proxies wait state. Elapsed timer ticks every second.
   useEffect(() => {
@@ -797,6 +814,14 @@ export default function Render() {
           {/* Ready — Save-to folder (mandatory, #13) + Output Resolution (4K only) */}
           {phase === "ready" && (
             <div className="space-y-6">
+              {upgradeNoticeText(upgradeNames) && (
+                <div
+                  data-testid="upgrade-space-notice"
+                  className="bg-white/5 border border-white/10 border-l-2 border-l-[#FF8A65] rounded-md p-3"
+                >
+                  <p className="text-sm text-[#e5e5e5]">{upgradeNoticeText(upgradeNames)}</p>
+                </div>
+              )}
               {has4K && (
                 <div className="border border-white/15 rounded-lg p-6 space-y-4">
                   <div>

@@ -643,6 +643,13 @@ fn upgrade_floor_breached(free: u64) -> bool {
     free < UPGRADE_FLOOR_BYTES
 }
 
+/// [#236] True only when free space is KNOWN and below what an upgrade of this source needs.
+/// Unknown free space is never reported to the owner (we cannot truthfully say "not enough").
+/// Uses `upgrade_free_space_needed`, the same threshold the background pass applies.
+fn upgrade_space_short(free: Option<u64>, src_len: u64) -> bool {
+    matches!(free, Some(f) if f < upgrade_free_space_needed(src_len))
+}
+
 /// What to do with a valid proxy that already exists on disk.
 #[derive(Debug, PartialEq)]
 enum ProxyAction {
@@ -2140,6 +2147,65 @@ fn get_proxy_readiness_cmd(
     })
 }
 
+/// [#236] Source file names (one per source file) of the film's clips whose 2160p working copy
+/// is out of date and that the background pass cannot improve because free space is short.
+/// Read-only and derived on demand: nothing is stored, so it clears by itself once the copies
+/// are upgraded or space is freed. Silent (empty) when free space is unknown, a render is
+/// active, the machine has no AMF encoder (no upgrade is ever attempted there), or the
+/// working copy is current / legacy / missing.
+fn upgrade_space_notice(project_id: &str) -> Result<Vec<String>, String> {
+    if detect_best_encoder() != "h264_amf" {
+        return Ok(vec![]);
+    }
+    if has_active_job().unwrap_or(true) {
+        return Ok(vec![]);
+    }
+    let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
+    let proxy_dir = format!(r"{}\rushcut\proxies", appdata);
+    let free = free_disk_bytes(&proxy_dir);
+    let clips = get_included_clips_with_proxy(project_id).map_err(|e| format!("DB error: {}", e))?;
+    let sources: Vec<String> = clips.into_iter().map(|(_id, local, _proxy)| local).collect();
+    Ok(upgrade_space_notice_for(&sources, &proxy_dir, free))
+}
+
+/// The decision itself, with free space and the proxy folder passed in so it can be tested
+/// against real files with a faked free-space value.
+fn upgrade_space_notice_for(sources: &[String], proxy_dir: &str, free: Option<u64>) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut names = Vec::new();
+    for local_path in sources {
+        if !seen.insert(local_path.to_lowercase()) {
+            continue; // cuts of one source share one working copy
+        }
+        let src_len = std::fs::metadata(local_path).map(|m| m.len()).unwrap_or(0);
+        // Cheap exit first: no ffprobe when this source would fit anyway.
+        if !upgrade_space_short(free, src_len) {
+            continue;
+        }
+        let proxy_path = format!(r"{}\{}.mp4", proxy_dir, proxy_name_for_path(local_path));
+        if !std::path::Path::new(&proxy_path).exists() || !is_valid_proxy_file(&proxy_path) {
+            continue;
+        }
+        let h = proxy_height_native(&proxy_path);
+        // Legacy sub-2160p copies take the separate pre-#198 path, not the upgrade pass.
+        if h >= 2160 && proxy_action(h, proxy_tag_native(&proxy_path).as_deref()) == ProxyAction::Upgrade {
+            let name = std::path::Path::new(local_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| local_path.clone());
+            names.push(name);
+        }
+    }
+    names
+}
+
+#[tauri::command]
+async fn get_upgrade_space_notice_cmd(project_id: String) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || upgrade_space_notice(&project_id))
+        .await
+        .map_err(|e| format!("notice task failed: {}", e))?
+}
+
 /// Kick off the upfront media batch (thumbnail + waveform) for all clips in a project.
 ///
 /// Batch N: when `low_priority=true`, additionally pre-encode proxies for clips
@@ -3222,6 +3288,7 @@ pub fn run() {
             cancel_render_cmd,
             generate_proxies_cmd,
             get_proxy_readiness_cmd,
+            get_upgrade_space_notice_cmd,
             get_proxy_avg_timing_cmd,
             generate_proxy_for_clip,
             vacuum_proxies_cmd,
@@ -3275,6 +3342,18 @@ mod proxy_upgrade_tests {
         assert_eq!(PROXY_TAG_ARG, format!("comment={}", PROXY_TAG));
         assert_eq!(PROXY_QP, "18");
         assert!(PROXY_TAG.contains("qp18"));
+    }
+
+    #[test]
+    fn upgrade_space_short_table() {
+        let gib: u64 = 1024 * 1024 * 1024;
+        let src = 2 * gib; // need = 3x2 + 5 = 11 GiB
+        assert!(upgrade_space_short(Some(10 * gib), src), "below the threshold is reported");
+        assert!(!upgrade_space_short(Some(11 * gib), src), "exactly enough is not reported");
+        assert!(!upgrade_space_short(Some(50 * gib), src), "plenty of space is silent");
+        assert!(!upgrade_space_short(None, src), "unknown free space is silent");
+        // Same threshold the background pass uses.
+        assert_eq!(upgrade_free_space_needed(src), 11 * gib);
     }
 
     #[test]
@@ -3377,6 +3456,66 @@ mod proxy_upgrade_tests {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    /// [#236] Real files, real ffprobe, faked free space:
+    ///   $env:RC_TEST_DIR=<scratch dir>; cargo test --lib proxy_upgrade_tests::space_notice_real_files -- --ignored --nocapture
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore]
+    fn space_notice_real_files() {
+        let dir = match std::env::var("RC_TEST_DIR") {
+            Ok(d) if !d.is_empty() => std::path::PathBuf::from(d),
+            _ => {
+                eprintln!("RC_TEST_DIR not set: skipping");
+                return;
+            }
+        };
+        let proxies = dir.join("proxies");
+        std::fs::create_dir_all(&proxies).unwrap();
+        let proxies_s = proxies.to_str().unwrap().to_string();
+        // Three tiny "camera originals" (content irrelevant; only their path and size matter).
+        let mk_src = |n: &str| {
+            let p = dir.join(n);
+            std::fs::write(&p, vec![0u8; 1024]).unwrap();
+            p.to_str().unwrap().to_string()
+        };
+        let stale_src = mk_src("STALE_clip.mp4");
+        let current_src = mk_src("CURRENT_clip.mp4");
+        let legacy_src = mk_src("LEGACY_clip.mp4");
+        let mk_proxy = |src: &str, h: &str, tag: Option<&str>| {
+            let out = proxies.join(format!("{}.mp4", proxy_name_for_path(src)));
+            let scale = format!("testsrc2=size={}x{}:rate=5:duration=1", (h.parse::<u32>().unwrap() * 16 / 9) & !1, h);
+            let mut args: Vec<&str> = vec!["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &scale,
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"];
+            let meta;
+            if let Some(t) = tag {
+                meta = format!("comment={}", t);
+                args.extend_from_slice(&["-metadata", &meta]);
+            }
+            args.extend_from_slice(&["-y", out.to_str().unwrap()]);
+            assert!(rc_run(ffmpeg_exe(), &args));
+        };
+        mk_proxy(&stale_src, "2160", None); // QP30-era: 2160p, no tag -> stale
+        mk_proxy(&current_src, "2160", Some(PROXY_TAG)); // already the new quality
+        mk_proxy(&legacy_src, "1080", None); // legacy 1080p: not the upgrade pass's job
+
+        let all = vec![
+            stale_src.clone(),
+            stale_src.clone(), // a second cut of the same source: reported once
+            current_src.clone(),
+            legacy_src.clone(),
+        ];
+        let gib: u64 = 1024 * 1024 * 1024;
+        // Short on space: only the stale 2160p copy is reported, once.
+        assert_eq!(upgrade_space_notice_for(&all, &proxies_s, Some(1 * gib)), vec!["STALE_clip".to_string()]);
+        // Plenty of space: silent.
+        assert!(upgrade_space_notice_for(&all, &proxies_s, Some(500 * gib)).is_empty());
+        // Unknown free space: silent.
+        assert!(upgrade_space_notice_for(&all, &proxies_s, None).is_empty());
+        // No working copy on disk yet: silent.
+        assert!(upgrade_space_notice_for(&[dir.join("nope.mp4").to_str().unwrap().to_string()], &proxies_s, Some(1 * gib)).is_empty());
+        eprintln!("space_notice_real_files ok");
     }
 
     #[cfg(target_os = "windows")]
