@@ -83,7 +83,7 @@ describe("#236 -- skipped-quality-improvement notice on the Render screen", () =
   });
 
   it("the command is registered and returns a list", async () => {
-    if (!projectId) return;
+    expect(projectId).not.toBeNull(); // a silent early return would be a false pass (needs >= 2 clips in C:\clips)
     const res = await browser.execute(async (id: string) => {
       const { invoke } = (window as unknown as { __TAURI_INTERNALS__: Internals }).__TAURI_INTERNALS__;
       return (await invoke("get_upgrade_space_notice_cmd", { projectId: id })) as unknown;
@@ -92,7 +92,7 @@ describe("#236 -- skipped-quality-improvement notice on the Render screen", () =
   });
 
   it("negative: nothing skipped -> no panel on the pre-render screen", async () => {
-    if (!projectId) return;
+    expect(projectId).not.toBeNull(); // a silent early return would be a false pass (needs >= 2 clips in C:\clips)
     await goto(`/render/${projectId}`, "/render/");
     await (await $('[data-testid="btn-render-film"]')).waitForExist({ timeout: 15_000 });
     await browser.pause(800); // let the notice query settle
