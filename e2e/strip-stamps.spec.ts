@@ -43,7 +43,7 @@ async function gotoRoute(id: string, screen: "arrange" | "sound") {
   await browser.pause(1500);
 }
 
-async function seedProject(): Promise<{ projectId: string; cutIds: string[] } | null> {
+async function seedProject(count = 3): Promise<{ projectId: string; cutIds: string[] } | null> {
   const projectId = await browser.execute(async () => {
     const { invoke } = (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
     const metas = (await invoke("scan_folder", { folderPath: "C:\\clips" })) as Array<Record<string, unknown>>;
@@ -61,12 +61,12 @@ async function seedProject(): Promise<{ projectId: string; cutIds: string[] } | 
     return (await invoke("create_project", { name: "Strip-stamps E2E", clips })) as string;
   });
   if (!projectId) return null;
-  const cutIds = await browser.execute(async (id: string) => {
+  const cutIds = await browser.execute(async (id: string, n: number) => {
     const { invoke } = (window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
     const data = (await invoke("get_project", { projectId: id })) as { clips: Array<{ id: string; include: number; sort_order: number }> };
     const sources = data.clips.filter((c) => c.include === 0).sort((a, b) => a.sort_order - b.sort_order);
     const out: Array<{ id: string; sort_order: number }> = [];
-    for (const src of sources.slice(0, 3)) {
+    for (const src of sources.slice(0, n)) {
       const cut = (await invoke("add_clip_cut_cmd", { projectId: id, sourceClipId: src.id, inMs: 0, outMs: 4000 })) as { id: string };
       out.push({ id: cut.id, sort_order: 0 });
     }
@@ -74,7 +74,7 @@ async function seedProject(): Promise<{ projectId: string; cutIds: string[] } | 
     const ids = out.map((c) => c.id);
     await invoke("reorder_clips_cmd", { clipIds: ids });
     return ids;
-  }, projectId);
+  }, projectId, count);
   return { projectId, cutIds };
 }
 
@@ -205,5 +205,26 @@ describe("#245 -- strip stamps equal on-ruler length", () => {
         { kind: "card", ms: 4500 },
       ],
     );
+  });
+  // #243: with ONE clip, a card is still an element of the crossfade chain, so the strip
+  // overlaps it with the clip exactly like the render does. Old behaviour: clip 4000 + card 3000
+  // with no overlap (the editor showed a film 1.5 s longer than the export).
+  it("#243 one clip + opening card, crossfade: overlap applied; one clip alone: unchanged", async () => {
+    const seeded = await seedProject(1);
+    expect(seeded).not.toBeNull();
+    if (!seeded) return;
+    projectId = seeded.projectId;
+    cutIds = seeded.cutIds;
+    trackTestProject(projectId);
+    const xf = { between: "crossfade", opening: "none", closing: "none", shuffleBetween: false };
+    await runScenario("one-clip-open-card", xf, [card("o1", "OPEN", cutIds[0])], [
+      { kind: "card", ms: 3000 - X }, // 1.5 visible + 1 crossfade, minus the cut into the clip
+      { kind: "clip", ms: 4000 },
+    ]);
+    await runScenario("one-clip-close-card", xf, [card("o2", "END", null)], [
+      { kind: "clip", ms: 4000 - X },
+      { kind: "card", ms: 3000 },
+    ]);
+    await runScenario("one-clip-no-card", xf, [], [{ kind: "clip", ms: 4000 }]); // negative case
   });
 });
