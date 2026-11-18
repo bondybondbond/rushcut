@@ -983,6 +983,60 @@ pub fn get_stuck_processing_jobs(min_age_secs: i64) -> Result<Vec<Job>, rusqlite
     rows.collect()
 }
 
+/// [#235] Startup self-heal for a job row left in 'pending'. start_job inserts the row as
+/// 'pending' and it only becomes 'processing' on the pipeline's first PROGRESS line, so an app
+/// kill or a hung pipeline before that point left a row nothing ever reconciled: has_active_job()
+/// stayed true (every background proxy upgrade skipped) and start_job re-attached to the dead
+/// job instead of starting a render. A live pipeline prints its first STAGE line about 6 s after
+/// spawn and every later STAGE/PROGRESS line refreshes updated_at, so a 'pending' row whose
+/// updated_at is older than `min_age_secs` (900 at the call site, as the 'processing' heal and
+/// reset_all_encoding_claims use) has no live pipeline behind it. updated_at is the clock, not
+/// created_at, so a render still emitting stage lines in the other app instance is never touched;
+/// a malformed updated_at falls back to created_at, and a row with neither parseable is left
+/// alone. Returns the ids it failed. 'processing' rows are not this function's business.
+pub fn fail_stale_pending_jobs(min_age_secs: i64) -> Result<Vec<String>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    // Two rushcut.exe share this file: wait out a brief lock instead of failing the heal.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    fail_stale_pending_jobs_on(&conn, min_age_secs, &|p| std::path::Path::new(p).exists())
+}
+
+/// Connection-level body of [`fail_stale_pending_jobs`] (testable on a scratch connection).
+/// `output_exists` guards the one case where failing would be wrong: a finished output file.
+fn fail_stale_pending_jobs_on(
+    conn: &Connection,
+    min_age_secs: i64,
+    output_exists: &dyn Fn(&str) -> bool,
+) -> Result<Vec<String>, rusqlite::Error> {
+    const STALE: &str = "status = 'pending'
+         AND COALESCE(datetime(updated_at), datetime(created_at)) < datetime('now', ?1)";
+    let age_clause = format!("-{} seconds", min_age_secs);
+    let stale: Vec<(String, Option<String>)> = {
+        let mut stmt = conn.prepare(&format!("SELECT id, local_output_path FROM jobs WHERE {}", STALE))?;
+        let rows = stmt.query_map(params![age_clause], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut failed = Vec::new();
+    for (id, out) in stale {
+        if out.as_deref().map(output_exists).unwrap_or(false) {
+            continue; // a finished file exists: leave the row, never call it failed
+        }
+        // Same predicate again in the UPDATE: a job that moved on since the SELECT is not touched.
+        let n = conn.execute(
+            &format!(
+                "UPDATE jobs SET status = 'failed', error_message = ?2, updated_at = ?3
+                 WHERE id = ?4 AND {}",
+                STALE
+            ),
+            params![age_clause, "Render did not start -- please try again", now(), id],
+        )?;
+        if n == 1 {
+            failed.push(id);
+        }
+    }
+    Ok(failed)
+}
+
 /// Most recent completed render (status 'done' with an output path) for a project, if any.
 /// Batch T5: the Render screen shows this instead of auto-rendering a fresh job.
 pub fn get_latest_render(project_id: &str) -> Result<Option<Job>, rusqlite::Error> {
@@ -1068,4 +1122,104 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+#[cfg(test)]
+mod stale_pending_tests {
+    use super::fail_stale_pending_jobs_on;
+    use rusqlite::Connection;
+
+    const OLD: &str = "2020-01-01T00:00:00Z";
+    const FRESH: &str = "2099-01-01T00:00:00Z"; // never older than now - 900 s
+
+    // In-memory jobs table with the columns the heal reads/writes and the real unique index.
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, project_id TEXT, status TEXT, local_output_path TEXT,
+                                error_message TEXT, created_at TEXT, updated_at TEXT);
+             CREATE UNIQUE INDEX idx_jobs_active_per_project ON jobs(project_id)
+                 WHERE status IN ('pending','processing');",
+        ).unwrap();
+        c
+    }
+    fn add(c: &Connection, id: &str, project: &str, status: &str, created: &str, updated: &str, out: Option<&str>) {
+        c.execute(
+            "INSERT INTO jobs (id, project_id, status, local_output_path, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![id, project, status, out, created, updated],
+        ).unwrap();
+    }
+    fn status(c: &Connection, id: &str) -> String {
+        c.query_row("SELECT status FROM jobs WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+    }
+    // The has_active_job() predicate.
+    fn active(c: &Connection) -> i64 {
+        c.query_row("SELECT COUNT(*) FROM jobs WHERE status IN ('pending','processing')", [], |r| r.get(0)).unwrap()
+    }
+    fn no_file(_: &str) -> bool { false }
+
+    #[test]
+    fn stale_pending_is_failed_frees_the_project_and_is_idempotent() {
+        let c = db();
+        add(&c, "dead", "p1", "pending", OLD, OLD, None);
+        // The bug this fixes: the dead row counts as an active render and holds the project's slot.
+        assert_eq!(active(&c), 1);
+        assert!(c.execute("INSERT INTO jobs (id, project_id, status) VALUES ('new','p1','pending')", []).is_err(),
+                "a new render for the project is rejected while the dead row is active");
+        let failed = fail_stale_pending_jobs_on(&c, 900, &no_file).unwrap();
+        assert_eq!(failed, vec!["dead".to_string()]);
+        assert_eq!(status(&c, "dead"), "failed");
+        let msg: String = c.query_row("SELECT error_message FROM jobs WHERE id='dead'", [], |r| r.get(0)).unwrap();
+        assert!(msg.is_ascii() && msg.contains("try again"));
+        assert_eq!(active(&c), 0, "has_active_job() is false again");
+        c.execute("INSERT INTO jobs (id, project_id, status, created_at, updated_at) VALUES ('new','p1','pending','2099-01-01T00:00:00Z','2099-01-01T00:00:00Z')", []).unwrap();
+        assert!(fail_stale_pending_jobs_on(&c, 900, &no_file).unwrap().is_empty(), "second run changes nothing");
+        assert_eq!(status(&c, "new"), "pending");
+    }
+
+    #[test]
+    fn negative_cases_are_never_touched() {
+        let c = db();
+        add(&c, "fresh", "p1", "pending", FRESH, FRESH, None);                 // just started
+        add(&c, "live", "p2", "pending", OLD, FRESH, None);                    // old row, but still emitting stage lines
+        add(&c, "proc", "p3", "processing", OLD, OLD, None);                   // 'processing' has its own heal
+        add(&c, "done", "p4", "done", OLD, OLD, None);
+        add(&c, "unk", "p5", "pending", "garbage", "garbage", None);           // age unknowable: leave it
+        add(&c, "file", "p6", "pending", OLD, OLD, Some("C:/out.mp4"));        // finished output exists
+        let failed = fail_stale_pending_jobs_on(&c, 900, &|p| p == "C:/out.mp4").unwrap();
+        assert!(failed.is_empty(), "nothing here may be failed, got {:?}", failed);
+        for (id, st) in [("fresh","pending"),("live","pending"),("proc","processing"),("done","done"),("unk","pending"),("file","pending")] {
+            assert_eq!(status(&c, id), st, "{}", id);
+        }
+    }
+
+    #[test]
+    fn malformed_updated_at_falls_back_to_created_at() {
+        let c = db();
+        add(&c, "m", "p1", "pending", OLD, "garbage", None);
+        assert_eq!(fail_stale_pending_jobs_on(&c, 900, &no_file).unwrap(), vec!["m".to_string()]);
+    }
+
+    #[test]
+    fn real_timestamps_either_side_of_900_seconds() {
+        // Guards the unit of the age clause (seconds, not minutes) with timestamps in the real
+        // now() format, 60 s and 1000 s ago, rather than the far-past / far-future constants.
+        let c = db();
+        for (id, project, secs) in [("young", "p1", 60), ("old", "p2", 1000)] {
+            let ts: String = c.query_row(
+                &format!("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now','-{} seconds')", secs), [], |r| r.get(0)).unwrap();
+            add(&c, id, project, "pending", &ts, &ts, None);
+        }
+        assert_eq!(fail_stale_pending_jobs_on(&c, 900, &no_file).unwrap(), vec!["old".to_string()]);
+        assert_eq!(status(&c, "young"), "pending");
+    }
+
+    #[test]
+    fn age_boundary_follows_the_threshold() {
+        let c = db();
+        add(&c, "a", "p1", "pending", OLD, OLD, None);
+        // A threshold far larger than the row's age spares it.
+        assert!(fail_stale_pending_jobs_on(&c, 40 * 365 * 24 * 3600, &no_file).unwrap().is_empty());
+        assert_eq!(status(&c, "a"), "pending");
+    }
 }

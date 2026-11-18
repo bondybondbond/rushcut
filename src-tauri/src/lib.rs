@@ -6,7 +6,7 @@ use base64::Engine as _;
 use db::{
     add_clip_cut, delete_clip, delete_project, get_active_job, get_all_clips_for_bg_proxy, get_clips_needing_bg_proxy,
     get_included_clips_with_proxy, get_job, get_latest_render, get_project_output_paths, get_project_with_clips,
-    get_setting, get_stuck_processing_jobs, has_active_job, set_setting,
+    get_setting, get_stuck_processing_jobs, has_active_job, set_setting, fail_stale_pending_jobs,
     delete_setting, get_all_settings, migrate_render_prefs,
     has_4k_clips, insert_clip, insert_job, insert_project, list_projects, rename_project,
     claim_clip_for_encoding, reset_all_encoding_claims, reset_done_with_missing_proxy, reset_stale_encoding_claims, reorder_clips, set_clip_proxy_status,
@@ -1738,8 +1738,9 @@ async fn start_job(
     // Two concurrent 4K pipelines competing for WSL memory is the prime
     // SIGTERM (exit 15) suspect. Keying on project_id makes this safe across
     // both the user binary and any WDIO process (two-instances-share-one-DB).
-    // A long-dead "processing" row can't permanently block: list_projects()
-    // auto-fails rows older than 60 min.
+    // A long-dead row can't permanently block: list_projects() auto-fails a
+    // 'processing' row older than 60 min, and the startup heal in setup() fails a
+    // 'pending' row (never reached its first progress line) idle for over 15 min (#235).
     if let Some(active) = get_active_job(&project_id)
         .map_err(|e| format!("DB error (active job guard): {}", e))?
     {
@@ -3149,6 +3150,20 @@ pub fn run() {
                 Ok(n) if n > 0 => eprintln!("[proxy] startup: reset {} stale 'encoding' claim(s)", n),
                 Ok(_) => {}
                 Err(e) => eprintln!("[proxy] startup: reset_all_encoding_claims failed: {}", e),
+            }
+
+            // #235: a job row stuck in 'pending' (app killed or pipeline hung before its first
+            // progress line) counts as an active render forever: every background proxy upgrade
+            // is skipped and start_job re-attaches to the dead job. Fail it once it has been idle
+            // 15 min (a live pipeline refreshes updated_at within seconds). Runs BEFORE the
+            // vacuum / upgrade work below, which both skip while any job is active.
+            match fail_stale_pending_jobs(900) {
+                Ok(ids) => {
+                    for id in &ids {
+                        eprintln!("[heal] job {} -> failed (still pending after 15 min, never started)", id);
+                    }
+                }
+                Err(e) => eprintln!("[heal] startup: fail_stale_pending_jobs(900) failed: {}", e),
             }
 
             // #241: sweep orphaned / long-stale proxies once per launch (background thread;
