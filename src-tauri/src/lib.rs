@@ -1474,6 +1474,21 @@ async fn cancel_render_cmd(app: AppHandle, job_id: String) -> Result<(), String>
     // mid-render kill usually leaves NO file here; the delete is belt-and-braces.
     let output_path = get_job(&job_id).ok().and_then(|j| j.local_output_path);
 
+    // #252: a job that already finished or failed has nothing to cancel: do not
+    // kill, do not delete its output, do not emit.
+    if let Ok(j) = get_job(&job_id) {
+        if j.status != "pending" && j.status != "processing" {
+            return Ok(());
+        }
+    }
+    // #252: flag the cancel BEFORE the kill. The pipeline reader thread wakes the
+    // moment the kill closes the pipe (before the cleanup below ends); while this
+    // flag is set it stays silent, so it can neither write its generic "Pipeline
+    // exited" error nor emit a second pipeline-error. The DB row deliberately stays
+    // 'processing' until the kill is done, so the one-active-render-per-project slot
+    // is not released early.
+    cancelling_set().lock().unwrap().insert(job_id.clone());
+
     // All blocking work (wsl spawn + filesystem) off the async runtime.
     let job_id_bg = job_id.clone();
     let _ = tokio::task::spawn_blocking(move || {
@@ -1503,9 +1518,9 @@ async fn cancel_render_cmd(app: AppHandle, job_id: String) -> Result<(), String>
         // 2. Cleanup. Defensive partial output (usually absent); NTFS working
         //    dir (U1g/U4c segments); WSL /tmp tmpfs dir; the pid file. All
         //    non-fatal -- a missing target is the normal case.
-        if let Some(p) = &output_path {
-            let _ = std::fs::remove_file(p);
-        }
+        // (#252: the partial-output delete is NOT done here any more: it runs only
+        // after the guarded cancel write below proves the job really was cancelled,
+        // so a cancel that loses a photo-finish with DONE can never delete the film.)
         let _ = std::fs::remove_dir_all(temp_dir.join(&job_id_bg));
         let _ = std::process::Command::new("wsl")
             .args(["-d", "Ubuntu-24.04", "-u", "root", "--",
@@ -1516,7 +1531,17 @@ async fn cancel_render_cmd(app: AppHandle, job_id: String) -> Result<(), String>
     .await;
 
     // 3. Mark failed + notify the Render screen (reuses the error-phase wiring).
-    let _ = update_job_error(&job_id, "Render cancelled");
+    //    Guarded write: if the job somehow reached a terminal state in the meantime
+    //    (Ok(false)), someone else already reported it, so emit nothing. A DB error
+    //    still emits, so the user is never left without an answer.
+    let changed = update_job_error(&job_id, "Render cancelled");
+    cancelling_set().lock().unwrap().remove(&job_id);
+    if matches!(changed, Ok(false)) {
+        return Ok(());
+    }
+    if let Some(p) = &output_path {
+        let _ = std::fs::remove_file(p);
+    }
     emit_error(&app, &job_id, "Render cancelled");
     Ok(())
 }
@@ -1994,8 +2019,9 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
         Err(e) => {
             let msg = format!("Failed to spawn pipeline: {}", e);
             eprintln!("[pipeline] {}", msg);
-            let _ = update_job_error(&job_id, &msg);
-            emit_error(&app, &job_id, &msg);
+            if !is_cancelling(&job_id) && !matches!(update_job_error(&job_id, &msg), Ok(false)) {
+                emit_error(&app, &job_id, &msg);
+            }
             return;
         }
     };
@@ -2049,19 +2075,28 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
             last_analysis = Some(trimmed);
         } else if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
             let pct: i64 = pct_str.trim().parse().unwrap_or(0);
-            let _ = update_job_progress(&job_id, pct, "processing");
-            let _ = app.emit(
-                "pipeline-progress",
-                json!({
-                    "jobId": job_id,
-                    "progress": pct,
-                }),
-            );
+            // #252: Ok(false) = the row is already terminal (cancelled / failed),
+            // so this late line must neither revive it nor reach the UI.
+            if !is_cancelling(&job_id)
+                && !matches!(update_job_progress(&job_id, pct, "processing"), Ok(false))
+            {
+                let _ = app.emit(
+                    "pipeline-progress",
+                    json!({
+                        "jobId": job_id,
+                        "progress": pct,
+                    }),
+                );
+            }
         } else if let Some(wsl_out) = line.strip_prefix("DONE:") {
             // Convert WSL path back to Windows path for storage
             let wsl_out = wsl_out.trim();
             let win_out = wsl_to_win(wsl_out);
-            let _ = update_job_done(&job_id, &win_out);
+            // #252: a cancel that already marked the row failed wins over a DONE
+            // line that was already in the pipe: no "done" event after "cancelled".
+            if is_cancelling(&job_id) || matches!(update_job_done(&job_id, &win_out), Ok(false)) {
+                return;
+            }
             let _ = app.emit(
                 "pipeline-done",
                 json!({
@@ -2078,8 +2113,10 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
             return;
         } else if let Some(err_msg) = line.strip_prefix("ERROR:") {
             let msg = err_msg.trim().to_string();
-            let _ = update_job_error(&job_id, &msg);
-            emit_error(&app, &job_id, &msg);
+            // #252: only the writer that actually changed the row reports the error.
+            if !is_cancelling(&job_id) && !matches!(update_job_error(&job_id, &msg), Ok(false)) {
+                emit_error(&app, &job_id, &msg);
+            }
             return;
         }
     }
@@ -2089,17 +2126,17 @@ async fn run_pipeline(app: AppHandle, job_id: String, wsl_manifest_path: String)
         std::process::ExitStatus::default()
     });
     if !status.success() {
-        // Guard against double-error: cancel_render_cmd may have already marked
-        // this job as error ("Cancelled by user") before the pipe-close reaches
-        // here. Don't overwrite it with the generic signal-15 message that fires
-        // from the same kill (it would confuse acceptance checks + the log).
-        let already_error = get_job(&job_id)
-            .map(|j| j.status == "error")
-            .unwrap_or(false);
-        if !already_error {
+        // #252: guard against double-error. While cancel_render_cmd is killing the
+        // pipeline it flags the job as cancelling, so the pipe closing here stays
+        // silent (cancel reports "Render cancelled" itself, once). Any other writer
+        // that already ended the job makes this guarded write change nothing
+        // (Ok(false)). (The old guard compared the status to "error", which is never
+        // written.)
+        if !is_cancelling(&job_id) {
             let msg = format!("Pipeline exited with status: {}", status);
-            let _ = update_job_error(&job_id, &msg);
-            emit_error(&app, &job_id, &msg);
+            if !matches!(update_job_error(&job_id, &msg), Ok(false)) {
+                emit_error(&app, &job_id, &msg);
+            }
         }
     }
 }
@@ -3106,6 +3143,16 @@ fn get_music_dir_cmd() -> String {
     }
 
     String::new()
+}
+
+/// #252: jobs whose cancel is in flight (kill + cleanup not finished yet).
+fn cancelling_set() -> &'static Mutex<HashSet<String>> {
+    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn is_cancelling(job_id: &str) -> bool {
+    cancelling_set().lock().map(|s| s.contains(job_id)).unwrap_or(false)
 }
 
 fn emit_error(app: &AppHandle, job_id: &str, message: &str) {

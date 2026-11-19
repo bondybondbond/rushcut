@@ -717,14 +717,24 @@ pub fn update_job_analysis(job_id: &str, analysis_summary: &str) -> Result<(), r
     Ok(())
 }
 
-pub fn update_job_progress(job_id: &str, progress_pct: i64, status: &str) -> Result<(), rusqlite::Error> {
-    let conn = Connection::open(db_path())?;
-    let ts = now();
-    conn.execute(
-        "UPDATE jobs SET progress_pct = ?1, status = ?2, updated_at = ?3 WHERE id = ?4",
+/// #252: a job's live status only moves while the row is still active
+/// ('pending' / 'processing'). A late PROGRESS line can therefore never flip a
+/// failed / done row back to 'processing'. Returns Ok(true) when the row was
+/// changed, Ok(false) when it was already terminal, Err on a real DB error
+/// (never confuse the two: a busy DB is not "already terminal").
+fn update_job_progress_on(conn: &Connection, job_id: &str, progress_pct: i64, status: &str, ts: &str) -> Result<bool, rusqlite::Error> {
+    let n = conn.execute(
+        "UPDATE jobs SET progress_pct = ?1, status = ?2, updated_at = ?3
+         WHERE id = ?4 AND status IN ('pending','processing')",
         params![progress_pct, status, ts, job_id],
     )?;
-    Ok(())
+    Ok(n > 0)
+}
+
+pub fn update_job_progress(job_id: &str, progress_pct: i64, status: &str) -> Result<bool, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    update_job_progress_on(&conn, job_id, progress_pct, status, &now())
 }
 
 /// Batch U1: persist the live pipeline stage so the Render screen can restore
@@ -746,24 +756,39 @@ pub fn update_job_stage(
     Ok(())
 }
 
-pub fn update_job_done(job_id: &str, output_path: &str) -> Result<(), rusqlite::Error> {
-    let conn = Connection::open(db_path())?;
-    let ts = now();
-    conn.execute(
-        "UPDATE jobs SET status = 'done', progress_pct = 100, local_output_path = ?1, updated_at = ?2 WHERE id = ?3",
+/// #252: terminal writes (done / failed) win only once. They apply only while
+/// the row is still active, so a cancel that already marked the row failed is
+/// not overwritten by a DONE line already sitting in the pipe, and a generic
+/// "pipeline exited" message cannot overwrite "Render cancelled". Ok(true) =
+/// this call decided the outcome; Ok(false) = someone else already did.
+fn update_job_done_on(conn: &Connection, job_id: &str, output_path: &str, ts: &str) -> Result<bool, rusqlite::Error> {
+    let n = conn.execute(
+        "UPDATE jobs SET status = 'done', progress_pct = 100, local_output_path = ?1, updated_at = ?2
+         WHERE id = ?3 AND status IN ('pending','processing')",
         params![output_path, ts, job_id],
     )?;
-    Ok(())
+    Ok(n > 0)
 }
 
-pub fn update_job_error(job_id: &str, error_message: &str) -> Result<(), rusqlite::Error> {
-    let conn = Connection::open(db_path())?;
-    let ts = now();
-    conn.execute(
-        "UPDATE jobs SET status = 'failed', error_message = ?1, updated_at = ?2 WHERE id = ?3",
+fn update_job_error_on(conn: &Connection, job_id: &str, error_message: &str, ts: &str) -> Result<bool, rusqlite::Error> {
+    let n = conn.execute(
+        "UPDATE jobs SET status = 'failed', error_message = ?1, updated_at = ?2
+         WHERE id = ?3 AND status IN ('pending','processing')",
         params![error_message, ts, job_id],
     )?;
-    Ok(())
+    Ok(n > 0)
+}
+
+pub fn update_job_done(job_id: &str, output_path: &str) -> Result<bool, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    update_job_done_on(&conn, job_id, output_path, &now())
+}
+
+pub fn update_job_error(job_id: &str, error_message: &str) -> Result<bool, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    update_job_error_on(&conn, job_id, error_message, &now())
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,5 +1246,83 @@ mod stale_pending_tests {
         // A threshold far larger than the row's age spares it.
         assert!(fail_stale_pending_jobs_on(&c, 40 * 365 * 24 * 3600, &no_file).unwrap().is_empty());
         assert_eq!(status(&c, "a"), "pending");
+    }
+}
+
+#[cfg(test)]
+mod terminal_state_tests {
+    use super::{update_job_done_on, update_job_error_on, update_job_progress_on};
+    use rusqlite::Connection;
+
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, project_id TEXT, status TEXT, progress_pct INTEGER,
+                                local_output_path TEXT, error_message TEXT, updated_at TEXT);",
+        ).unwrap();
+        c
+    }
+    fn add(c: &Connection, id: &str, status: &str) {
+        c.execute("INSERT INTO jobs (id, project_id, status, progress_pct) VALUES (?1,'p',?2,0)", rusqlite::params![id, status]).unwrap();
+    }
+    fn st(c: &Connection, id: &str) -> (String, i64, Option<String>) {
+        c.query_row("SELECT status, progress_pct, error_message FROM jobs WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+    }
+
+    #[test]
+    fn normal_render_goes_pending_processing_done() {
+        let c = db();
+        add(&c, "j", "pending");
+        assert!(update_job_progress_on(&c, "j", 10, "processing", "t").unwrap());
+        assert_eq!(st(&c, "j").0, "processing");
+        assert!(update_job_progress_on(&c, "j", 60, "processing", "t").unwrap());
+        assert!(update_job_done_on(&c, "j", "C:/o.mp4", "t").unwrap());
+        assert_eq!(st(&c, "j"), ("done".to_string(), 100, None));
+    }
+
+    #[test]
+    fn late_progress_cannot_revive_a_failed_or_done_row() {
+        let c = db();
+        add(&c, "f", "processing");
+        assert!(update_job_error_on(&c, "f", "boom", "t").unwrap());
+        assert!(!update_job_progress_on(&c, "f", 55, "processing", "t").unwrap());
+        assert_eq!(st(&c, "f"), ("failed".to_string(), 0, Some("boom".to_string())));
+        add(&c, "d", "processing");
+        assert!(update_job_done_on(&c, "d", "C:/o.mp4", "t").unwrap());
+        assert!(!update_job_progress_on(&c, "d", 5, "processing", "t").unwrap());
+        assert_eq!(st(&c, "d").0, "done");
+    }
+
+    #[test]
+    fn cancel_then_generic_exit_error_keeps_render_cancelled_and_reports_no_change() {
+        let c = db();
+        add(&c, "j", "processing");
+        assert!(update_job_error_on(&c, "j", "Render cancelled", "t").unwrap());
+        // run_pipeline's later "Pipeline exited with status" write must not win or emit.
+        assert!(!update_job_error_on(&c, "j", "Pipeline exited with status: 15", "t").unwrap());
+        assert_eq!(st(&c, "j").2.as_deref(), Some("Render cancelled"));
+    }
+
+    #[test]
+    fn cancel_then_done_already_in_pipe_stays_cancelled_and_done_after_cancel_is_a_noop() {
+        let c = db();
+        add(&c, "j", "processing");
+        assert!(update_job_error_on(&c, "j", "Render cancelled", "t").unwrap());
+        assert!(!update_job_done_on(&c, "j", "C:/o.mp4", "t").unwrap());
+        assert_eq!(st(&c, "j").0, "failed");
+        // Other order: done first, then a cancel is a no-op (no kill, no event upstream).
+        add(&c, "k", "processing");
+        assert!(update_job_done_on(&c, "k", "C:/o.mp4", "t").unwrap());
+        assert!(!update_job_error_on(&c, "k", "Render cancelled", "t").unwrap());
+        assert_eq!(st(&c, "k").0, "done");
+    }
+
+    #[test]
+    fn genuine_failure_is_written_once() {
+        let c = db();
+        add(&c, "j", "processing");
+        assert!(update_job_error_on(&c, "j", "ffmpeg died", "t").unwrap());
+        assert!(!update_job_error_on(&c, "j", "Pipeline exited with status: 1", "t").unwrap());
+        assert_eq!(st(&c, "j").2.as_deref(), Some("ffmpeg died"));
     }
 }
