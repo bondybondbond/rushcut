@@ -816,11 +816,13 @@ fn try_begin_upgrade(path: &str) -> Option<UpgradeGuard> {
 }
 
 /// [#251] Whether a CANCELLED upgrade encode counts as a failure for the rest of the session.
-/// Never: both cancels (a render started, free space fell below the floor) are temporary, and the
-/// free-space check before each start is the loop guard. Real encode/swap failures are marked
-/// elsewhere and stay sticky.
-fn cancel_marks_failed(_render_started: bool, _disk_low: bool) -> bool {
-    false
+/// A render-started cancel and an externally caused disk-floor cancel are temporary: the
+/// free-space check before each start is the loop guard. But if free space is already back above
+/// the start threshold once this encode's own temp file is gone, the encode itself caused the
+/// breach (output far bigger than estimated), so a retry would repeat it forever: stay failed.
+/// Real encode/swap failures are marked elsewhere and stay sticky.
+fn cancel_marks_failed(render_started: bool, disk_low: bool, free_after_cleanup: Option<u64>, need: u64) -> bool {
+    !render_started && disk_low && matches!(free_after_cleanup, Some(f) if f >= need)
 }
 
 fn mark_upgrade_failed(path: &str) {
@@ -2444,7 +2446,7 @@ fn upgrade_existing_proxy(
         // #251: a disk-floor cancel is temporary, not a failure. Not marked failed, so the next
         // pass retries once space is freed. The loop guard is the free-space check above: it needs
         // upgrade_free_space_needed() (always above UPGRADE_FLOOR_BYTES) before any encode starts.
-        if cancel_marks_failed(render_started.get(), disk_low.get()) {
+        if cancel_marks_failed(render_started.get(), disk_low.get(), free_disk_bytes(proxy_dir), need) {
             mark_upgrade_failed(proxy_path);
         }
         return;
@@ -3444,13 +3446,19 @@ mod proxy_upgrade_tests {
         // Apply the same decision the cancel branch applies, then check retryability.
         let p = r"C:\test\proxies\floor-cancel.mp4";
         let g = try_begin_upgrade(p).expect("first attempt");
-        if cancel_marks_failed(false, true) {
+        let need = upgrade_free_space_needed(600 * 1024 * 1024);
+        // External drop: space is still short after our temp file is gone -> retryable.
+        if cancel_marks_failed(false, true, Some(UPGRADE_FLOOR_BYTES - 1), need) {
             mark_upgrade_failed(p);
         }
         drop(g);
-        assert!(!cancel_marks_failed(false, true), "disk-floor cancel is not a failure");
-        assert!(!cancel_marks_failed(true, false), "render-started cancel is not a failure");
-        assert!(try_begin_upgrade(p).is_some(), "retryable after a disk-floor cancel");
+        assert!(try_begin_upgrade(p).is_some(), "retryable after an external disk-floor cancel");
+        assert!(!cancel_marks_failed(true, false, Some(need * 2), need), "render-started cancel is not a failure");
+        assert!(!cancel_marks_failed(false, true, None, need), "unknown free space: not marked");
+        // Self-caused: space is back above the start threshold once our temp is gone -> sticky.
+        assert!(cancel_marks_failed(false, true, Some(need), need), "own temp file caused the breach: stay failed");
+        assert!(cancel_marks_failed(false, true, Some(need + 1), need));
+        assert!(!cancel_marks_failed(false, true, Some(need - 1), need));
     }
 
     #[test]
