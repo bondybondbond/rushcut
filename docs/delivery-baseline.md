@@ -343,3 +343,4 @@ u = unknown.
 | D243 | #243 #250 | product | 2026-11-18 | forward | 1 | 0 | 19 | 215 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
 | D236 | #236 #251 | product | 2026-11-18 | forward | 0 | 0 | 40 | 354 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
 | D235 | #235 #252 | product | 2026-11-18 | forward | 0 | 0 | 29 | 258 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
+| D253 | #253 #254 | tooling | 2026-11-19 | forward | 1 | 0 | 16 | 67 | pending | pending | pending | unknown | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
