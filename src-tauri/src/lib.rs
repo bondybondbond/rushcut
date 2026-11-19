@@ -834,6 +834,10 @@ fn mark_upgrade_failed(path: &str) {
 /// Test-only free-space override (0 = off), used by the ignored real-encoder test for #251.
 #[cfg(test)]
 static TEST_FAKE_FREE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Test-only: when set, the first read of a below-floor fake value flips the fake back to 500 GiB,
+/// modelling "free space recovers once the encode's own temp file is deleted" (self-caused breach).
+#[cfg(test)]
+static TEST_FAKE_SELF_CAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Free bytes available to the caller on the volume holding `dir` (None if unknown).
 #[cfg(target_os = "windows")]
@@ -842,6 +846,9 @@ fn free_disk_bytes(dir: &str) -> Option<u64> {
     {
         let f = TEST_FAKE_FREE.load(std::sync::atomic::Ordering::SeqCst);
         if f != 0 {
+            if f < UPGRADE_FLOOR_BYTES && TEST_FAKE_SELF_CAUSED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                TEST_FAKE_FREE.store(500 * 1024 * 1024 * 1024, std::sync::atomic::Ordering::SeqCst);
+            }
             return Some(f);
         }
     }
@@ -3785,6 +3792,34 @@ mod proxy_upgrade_tests {
         upgrade_existing_proxy("t-f3", &src_s, &proxy_s, &proxies_s, None);
         assert_eq!(proxy_tag_native(&proxy_s).as_deref(), Some(PROXY_TAG), "F3: upgraded after space freed");
         assert!(!tmp.exists(), "F3: temp removed");
+
+        // 5. Self-caused breach: the floor is hit mid-encode and free space is back above the start
+        //    threshold once our temp file is gone -> the clip stays failed, no repeated encode.
+        let src2 = dir.join("src2.mp4");
+        std::fs::copy(&src, &src2).unwrap();
+        let src2_s = src2.to_str().unwrap().to_string();
+        let proxy2 = proxies.join(format!("{}.mp4", proxy_name_for_path(&src2_s)));
+        let proxy2_s = proxy2.to_str().unwrap().to_string();
+        let tmp2 = proxies.join(format!("{}.upg.tmp.mp4", proxy_name_for_path(&src2_s)));
+        std::fs::copy(&old30, &proxy2).unwrap();
+        TEST_FAKE_FREE.store(500 * gib, SeqCst);
+        let dropper2 = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            TEST_FAKE_SELF_CAUSED.store(true, SeqCst);
+            TEST_FAKE_FREE.store(1 * gib, SeqCst);
+        });
+        upgrade_existing_proxy("t-f5a", &src2_s, &proxy2_s, &proxies_s, None);
+        dropper2.join().unwrap();
+        assert_eq!(proxy_tag_native(&proxy2_s), None, "F5: old proxy intact");
+        assert!(!tmp2.exists(), "F5: temp removed");
+        TEST_FAKE_SELF_CAUSED.store(false, SeqCst);
+        TEST_FAKE_FREE.store(500 * gib, SeqCst); // plenty of space again
+        let t5 = std::time::Instant::now();
+        upgrade_existing_proxy("t-f5b", &src2_s, &proxy2_s, &proxies_s, None);
+        assert!(t5.elapsed().as_secs_f64() < 3.0, "F5: self-caused clip is not re-encoded");
+        assert!(!tmp2.exists(), "F5: no temp file on the retry attempt");
+        assert_eq!(proxy_tag_native(&proxy2_s), None, "F5: stays on the old proxy for this session");
+        assert!(try_begin_upgrade(&proxy2_s).is_none(), "F5: marked failed for the session");
 
         // 4. A genuinely failing encode is still marked failed (guard kept).
         let bad_src = dir.join("does-not-exist.mp4");
