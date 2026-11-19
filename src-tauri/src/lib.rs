@@ -815,15 +815,34 @@ fn try_begin_upgrade(path: &str) -> Option<UpgradeGuard> {
     Some(UpgradeGuard { path: path.to_string() })
 }
 
+/// [#251] Whether a CANCELLED upgrade encode counts as a failure for the rest of the session.
+/// Never: both cancels (a render started, free space fell below the floor) are temporary, and the
+/// free-space check before each start is the loop guard. Real encode/swap failures are marked
+/// elsewhere and stay sticky.
+fn cancel_marks_failed(_render_started: bool, _disk_low: bool) -> bool {
+    false
+}
+
 fn mark_upgrade_failed(path: &str) {
     if let Ok(mut g) = proxy_upgrades().lock() {
         g.1.insert(path.to_string());
     }
 }
 
+/// Test-only free-space override (0 = off), used by the ignored real-encoder test for #251.
+#[cfg(test)]
+static TEST_FAKE_FREE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Free bytes available to the caller on the volume holding `dir` (None if unknown).
 #[cfg(target_os = "windows")]
 fn free_disk_bytes(dir: &str) -> Option<u64> {
+    #[cfg(test)]
+    {
+        let f = TEST_FAKE_FREE.load(std::sync::atomic::Ordering::SeqCst);
+        if f != 0 {
+            return Some(f);
+        }
+    }
     #[link(name = "kernel32")]
     extern "system" {
         fn GetDiskFreeSpaceExW(
@@ -2422,8 +2441,11 @@ fn upgrade_existing_proxy(
             clip_id, elapsed, if render_started.get() { "render-started" } else { "disk-floor" }
         ));
         let _ = std::fs::remove_file(&tmp_path);
-        if disk_low.get() {
-            mark_upgrade_failed(proxy_path); // do not retry this session on a full disk
+        // #251: a disk-floor cancel is temporary, not a failure. Not marked failed, so the next
+        // pass retries once space is freed. The loop guard is the free-space check above: it needs
+        // upgrade_free_space_needed() (always above UPGRADE_FLOOR_BYTES) before any encode starts.
+        if cancel_marks_failed(render_started.get(), disk_low.get()) {
+            mark_upgrade_failed(proxy_path);
         }
         return;
     }
@@ -3409,6 +3431,28 @@ mod proxy_upgrade_tests {
         assert!(!upgrade_floor_breached(3 * gib));
     }
 
+    // #251: a disk-floor cancel is not marked failed, so the retry is gated only by the start
+    // check. That check must be strictly stricter than the cancel floor at every source size,
+    // otherwise a retry could start and be cancelled again in a loop.
+    #[test]
+    fn disk_floor_cancel_retry_is_gated_by_start_check() {
+        let gib = 1024u64 * 1024 * 1024;
+        for src in [0u64, 1, 100 * 1024 * 1024, 600 * 1024 * 1024, 10 * gib, u64::MAX] {
+            let need = upgrade_free_space_needed(src);
+            assert!(need > UPGRADE_FLOOR_BYTES, "start threshold must exceed the cancel floor");
+        }
+        // Apply the same decision the cancel branch applies, then check retryability.
+        let p = r"C:\test\proxies\floor-cancel.mp4";
+        let g = try_begin_upgrade(p).expect("first attempt");
+        if cancel_marks_failed(false, true) {
+            mark_upgrade_failed(p);
+        }
+        drop(g);
+        assert!(!cancel_marks_failed(false, true), "disk-floor cancel is not a failure");
+        assert!(!cancel_marks_failed(true, false), "render-started cancel is not a failure");
+        assert!(try_begin_upgrade(p).is_some(), "retryable after a disk-floor cancel");
+    }
+
     #[test]
     fn upgrade_guard_is_exclusive_and_failure_sticks() {
         let p = r"C:\test\proxies\guard-a.mp4";
@@ -3658,6 +3702,93 @@ mod proxy_upgrade_tests {
         assert!(try_begin_upgrade(&proxy_e_s).is_none(), "E: failed encode not retried this session");
         eprintln!("E ok: failed encode keeps the old proxy and is not retried");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// [#251] Real encoder, faked free space: a disk-floor cancel must not block the retry.
+    ///   $env:RC_TEST_CLIP=...; $env:RC_TEST_DIR=<scratch>; cargo test --lib proxy_upgrade_tests::disk_floor_retry_real_files -- --ignored --nocapture
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore]
+    fn disk_floor_retry_real_files() {
+        use std::sync::atomic::Ordering::SeqCst;
+        struct ResetFake;
+        impl Drop for ResetFake {
+            fn drop(&mut self) {
+                TEST_FAKE_FREE.store(0, SeqCst);
+            }
+        }
+        let _reset = ResetFake;
+        let (clip, dir) = match (std::env::var("RC_TEST_CLIP"), std::env::var("RC_TEST_DIR")) {
+            (Ok(c), Ok(d)) if !c.is_empty() && !d.is_empty() => (c, std::path::PathBuf::from(d)),
+            _ => {
+                eprintln!("RC_TEST_CLIP / RC_TEST_DIR not set: skipping");
+                return;
+            }
+        };
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::env::set_var("RUSHCUT_DATA_DIR", &data);
+        assert!(crate::db::db_path().starts_with(&dir), "DB must be the scratch DB");
+        let proxies = dir.join("proxies");
+        std::fs::create_dir_all(&proxies).unwrap();
+        let proxies_s = proxies.to_str().unwrap().to_string();
+        let conn = rusqlite::Connection::open(crate::db::db_path()).unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS jobs (id TEXT, project_id TEXT, status TEXT);").unwrap();
+        let src = dir.join("src.mp4");
+        assert!(rc_run(ffmpeg_exe(), &["-hide_banner", "-loglevel", "error", "-ss", "10", "-t", "30", "-i", &clip,
+            "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-y", src.to_str().unwrap()]));
+        let src_s = src.to_str().unwrap().to_string();
+        let old30 = dir.join("old_qp30.mp4");
+        assert!(rc_run(ffmpeg_exe(), &["-hide_banner", "-loglevel", "error", "-i", &src_s, "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", "scale=-2:2160,format=yuv420p", "-r", "30000/1001", "-fps_mode", "cfr", "-c:v", "h264_amf", "-pix_fmt", "yuv420p",
+            "-profile:v", "main", "-rc", "cqp", "-qp_i", "30", "-qp_p", "30", "-quality", "speed", "-c:a", "aac", "-b:a", "128k",
+            "-ar", "48000", "-y", old30.to_str().unwrap()]));
+        let proxy = proxies.join(format!("{}.mp4", proxy_name_for_path(&src_s)));
+        let proxy_s = proxy.to_str().unwrap().to_string();
+        let tmp = proxies.join(format!("{}.upg.tmp.mp4", proxy_name_for_path(&src_s)));
+        std::fs::copy(&old30, &proxy).unwrap();
+        let old_size = std::fs::metadata(&old30).unwrap().len();
+        let gib: u64 = 1024 * 1024 * 1024;
+
+        // 1. Plenty of space at the start, then space drops below the 3 GiB floor mid-encode.
+        TEST_FAKE_FREE.store(500 * gib, SeqCst);
+        let dropper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            TEST_FAKE_FREE.store(1 * gib, SeqCst);
+        });
+        let t0 = std::time::Instant::now();
+        upgrade_existing_proxy("t-f1", &src_s, &proxy_s, &proxies_s, None);
+        dropper.join().unwrap();
+        assert!(t0.elapsed().as_secs_f64() < 10.0, "F1: cancel must land within seconds of the floor breach");
+        assert_eq!(proxy_tag_native(&proxy_s), None, "F1: old proxy intact");
+        assert_eq!(std::fs::metadata(&proxy).unwrap().len(), old_size, "F1: size unchanged");
+        assert!(!tmp.exists(), "F1: temp removed");
+
+        // 2. Space still short: the retry must NOT start an encode (no temp file, no loop).
+        let t1 = std::time::Instant::now();
+        upgrade_existing_proxy("t-f2", &src_s, &proxy_s, &proxies_s, None);
+        assert!(t1.elapsed().as_secs_f64() < 3.0, "F2: skipped at once, no encode");
+        assert!(!tmp.exists(), "F2: no temp file while space is short");
+        assert_eq!(proxy_tag_native(&proxy_s), None, "F2: old proxy intact");
+
+        // 3. Space freed, same session, no restart: the clip upgrades.
+        TEST_FAKE_FREE.store(500 * gib, SeqCst);
+        upgrade_existing_proxy("t-f3", &src_s, &proxy_s, &proxies_s, None);
+        assert_eq!(proxy_tag_native(&proxy_s).as_deref(), Some(PROXY_TAG), "F3: upgraded after space freed");
+        assert!(!tmp.exists(), "F3: temp removed");
+
+        // 4. A genuinely failing encode is still marked failed (guard kept).
+        let bad_src = dir.join("does-not-exist.mp4");
+        let bad_s = bad_src.to_str().unwrap().to_string();
+        let proxy_e = proxies.join(format!("{}.mp4", proxy_name_for_path(&bad_s)));
+        let proxy_e_s = proxy_e.to_str().unwrap().to_string();
+        std::fs::copy(&old30, &proxy_e).unwrap();
+        upgrade_existing_proxy("t-f4", &bad_s, &proxy_e_s, &proxies_s, None);
+        assert!(try_begin_upgrade(&proxy_e_s).is_none(), "F4: failed encode not retried this session");
+
+        TEST_FAKE_FREE.store(0, SeqCst);
+        eprintln!("disk_floor_retry_real_files ok");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
