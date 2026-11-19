@@ -1,8 +1,8 @@
 # RushCut — Phase 2 Build Plan (strategic)
 
-> **Phase goal:** The founder can upload a full 60+ clip DJI session, have RushCut intelligently filter and compile it into a 3–6 min film with music, card text, zoom, and smart moment selection — a film they're proud enough to publish.
+> **Phase goal:** The founder turns a real session's raw clips into a 3–6 min film with music, cards, zoom and transitions, at the quality of their usual Resolve export, and is proud enough to publish it.
 >
-> **Phase 2 exit gate:** "I used RushCut to produce a video from a real 60+ clip DJI session that I was proud to publish." Not: paying users. Not: user testing scores. (See `archive/DECISIONS.md` DEC-018, DEC-020.)
+> **Phase 2 exit gate:** "I produced my last three real films from start to finish in RushCut and was proud to publish each of them." Not: paying users. Not: user testing scores. (Earlier gate: `archive/DECISIONS.md` DEC-018, DEC-020.)
 
 ---
 
@@ -12,7 +12,7 @@
 > - Phase goal and exit gate
 > - Swimlane legend — purpose and scope of each batch series
 > - Forward roadmap specs (AI Director, Auth/4K/Tier) — not yet started
-> - AI Enablement — goals/principles for the AI feature tier
+> - AI Enablement — later-phase wishlist (P4, On Hold); kept for reference
 > - Phase 3 Preview — cloud/backend/monetization direction (high-level)
 > - Vision Notes — future directions (inspiration, not scheduled)
 >
@@ -20,7 +20,7 @@
 > - Execution backlog / individual items → **[GitHub Projects #1](https://github.com/users/bondybondbond/projects/1)** (`gh project item-list 1 --owner bondybondbond`)
 > - Changelog / "what shipped when" → **git log** (authoritative) + `docs/archive/completed-plans/PRD-DEV-batches-14-N-full.md` (pre-2026-06-17 detail)
 > - Specs for delivered batches → archived in `docs/archive/completed-plans/`
-> - Current state / next task → **MEMORY.md** (single source; do not duplicate here)
+> - Current state / next task → the local session state file (not in this repo); do not duplicate here
 > - Implementation details → `LEARNINGS.md` or `.claude/rules/`
 > - Lambda / Next.js / Supabase / R2 references — that infrastructure is gone
 
@@ -38,24 +38,24 @@ Each batch series has a distinct purpose. When choosing where a new item belongs
 | **V2.x** | UX polish — visual accuracy, discoverability, small quality-of-life improvements | V2.1–V2.3 queued |
 | **V3** | Advanced editor features — multi-version renders, add/remove clips, film-tab trim handles, branding | Deferred |
 | **V4.x** | Pipeline architecture — clean render intermediate (DaVinci-style cache), parallel decode+encode | Deferred |
-| **AI** | AI-powered automation — DJI highlight import, smart defaults, one-tap render, director screen, beat sync | Deferred (pre-GTM) |
+| **AI** | AI-powered automation — DJI highlight import, smart defaults, one-tap render, director screen, beat sync | Later phase — P4 wishlist, On Hold |
 | **Photos** | Photo montage feature — Ken Burns sequence, frame styles, fan stack animation | Deferred |
 | **Phase3** | Cloud and platform — auth, Stripe, music API, Google Video Intelligence | Out of scope now |
 
 **Swimlane rules:**
 - Each batch in a series targets 1–3 items at most
 - Bugs and features in the same swimlane share a common theme — do not cross-pollinate
-- Deferred items stay in GitHub Issues (Status=Deferred) until a session picks them up
-- When a new series is needed, add it here and create the Target Batch options in GitHub Projects (see `.claude/skills/rushcut-wrapup/SKILL.md` Step 2.5 for field IDs)
+- Deferred items stay in GitHub Issues (Status=On Hold) until a session picks them up
+- When a new series is needed, add it here
 
 ---
 
 ## Forward roadmap specs (not yet started)
 
-### AI Director Screen (deferred)
+### AI Director Screen (later phase, P4 wishlist)
 
 > **Goal:** Surface the AI's edit proposal explicitly, between Upload and the editor.
-> **Prerequisite:** AI Enablement groundwork (below).
+> **Prerequisite:** AI Enablement (below), itself a later phase.
 
 New route `/director/:projectId`, inserted after scan, before the editor.
 
@@ -67,7 +67,7 @@ New route `/director/:projectId`, inserted after scan, before the editor.
 ### Auth + 4K + Tier (Phase3 entry)
 
 > **Goal:** Product is shareable with paying users; Pro tier enforced.
-> **Prerequisite:** DEC-020 conditions met (AI layer shipped).
+> **Prerequisite:** not yet defined. DEC-020 (March 2026) held the paid tier until an AI layer shipped; AI is now a later phase, so the Phase 3 entry condition is an open owner decision.
 
 - Supabase Auth (email + Google OAuth)
 - 4K pipeline path (already shipped for free during Phase 2 — gate it here)
@@ -78,9 +78,9 @@ New route `/director/:projectId`, inserted after scan, before the editor.
 
 ---
 
-## AI Enablement (large, pre-GTM)
+## AI Enablement (later phase, P4 wishlist)
 
-> **Biggest remaining piece of work. Target: before go-to-market.**
+> **Not current work:** #24-#28 are On Hold on the board.
 
 **Goal:** A user who doesn't bother with settings gets a good result immediately. Most decisions pre-configured, including auto-trimmed sections pulled from DJI metadata (Osmo Pocket 3 marks highlights in the DJI app).
 
