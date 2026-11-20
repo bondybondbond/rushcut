@@ -436,9 +436,13 @@ export default function Render() {
   // flips this screen into the error phase (with "Try Again").
   async function cancelRender() {
     if (!jobId) return;
-    const ok = await confirm("Cancel this render? Your clips are safe.", {
-      title: "Cancel render",
+    // #261: owner-approved wording (2026-11-20). "export" here is deliberate
+    // while the rest of the app still says "render" (migration tracked separately).
+    const ok = await confirm("You can export it again any time.", {
+      title: "Stop exporting this video?",
       kind: "warning",
+      okLabel: "Stop exporting",
+      cancelLabel: "Keep exporting",
     });
     if (!ok) return;
     await invoke("cancel_render_cmd", { jobId }).catch((e) =>
