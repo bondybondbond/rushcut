@@ -23,7 +23,8 @@
     "test:e2e:qa:stall": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/film-stall.spec.ts",
     "test:e2e:qa:stamps": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/strip-stamps.spec.ts",
     "test:e2e:qa:cardadd": "pnpm exec wdio run wdio.qa.conf.ts --spec e2e/qa-isolation.spec.ts --spec e2e/card-add.spec.ts",
-    "accept": "tsx e2e/run-acceptance.ts"
+    "accept": "tsx e2e/run-acceptance.ts",
+    "cancel-check": "tsx e2e/run-cancel-check.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
