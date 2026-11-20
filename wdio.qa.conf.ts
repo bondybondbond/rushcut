@@ -5,6 +5,10 @@ import os from "os";
 import http from "http";
 import { trackedTestProjects, clearTrackedTestProjects } from "./e2e/helpers/testProjects";
 import { ensureMatchingEdgeDriver } from "./e2e/helpers/edgeDriver";
+import { imageName, killGuarded, sweepOrphanWebviews as sweepOrphans } from "./e2e/helpers/qaProcess";
+import { saveSnapshot, snapshotReal } from "./e2e/helpers/realLocations";
+
+const sweepOrphanWebviews = () => sweepOrphans(QA_ROOT);
 
 // ---------------------------------------------------------------------------
 // wdio.qa.conf.ts (#170) -- ISOLATED QA E2E instance.
@@ -39,9 +43,23 @@ const usingDebug  = APP_PATH === debugPath;
 const CDP_PORT    = 9223;  // QA WebView2 remote debug port  (main config: 9222)
 const DRIVER_PORT = 9516;  // QA msedgedriver port           (main config: 9515, attach: 9517)
 
-const QA_ROOT       = path.join(os.tmpdir(), "rushcut", "qa-e2e");
+// #237: RC_QA_ROOT overrides the QA root (the acceptance runner passes a SHORT path such as
+// C:\rcqa\<runid>: a long TEMP breaks GetTempPath, and short paths keep /mnt/c paths safe).
+// QA_ISOLATE_RENDER=1 additionally points APPDATA/TMP/TEMP of the spawned app into the QA
+// root so proxies, manifests, job logs and the timing log never touch the real folders.
+const QA_ROOT       = process.env.RC_QA_ROOT
+  ? path.resolve(process.env.RC_QA_ROOT)
+  : path.join(os.tmpdir(), "rushcut", "qa-e2e");
+// Teardown runs fs.rmSync(QA_ROOT, { recursive }), so an override may ONLY ever point at a
+// direct child of C:\rcqa\ (a stray RC_QA_ROOT=. or C:\ in a shell must never reach rmSync).
+if (process.env.RC_QA_ROOT && !/^[A-Za-z]:\\rcqa\\[^\\/:*?"<>|]+$/i.test(QA_ROOT)) {
+  throw new Error(`[qa] RC_QA_ROOT must be a direct child of <drive>:\\rcqa\\ (got "${QA_ROOT}"); refusing to use it as a delete target`);
+}
 const QA_DATA_DIR   = path.join(QA_ROOT, "data");     // RUSHCUT_DATA_DIR -> <this>/rushcut.db
 const QA_PROFILE_DIR = path.join(QA_ROOT, "profile"); // WEBVIEW2_USER_DATA_FOLDER
+const ISOLATE_RENDER = process.env.QA_ISOLATE_RENDER === "1";
+const QA_APPDATA_DIR = path.join(QA_ROOT, "appdata"); // APPDATA (proxies live under <this>\rushcut\proxies)
+const QA_TEMP_DIR    = path.join(QA_ROOT, "temp");    // TMP + TEMP (job manifests/logs under <this>\rushcut)
 const LOCK_PATH     = path.resolve(__dirname, "e2e", ".qa-lock.json");
 
 // The real user profile's WebView2 folder. Used only when NO other rushcut.exe is running
@@ -125,16 +143,6 @@ async function waitForAppRoute(timeoutMs = 30_000): Promise<void> {
   });
 }
 
-/** PID -> process image name (lowercase), or "" if the PID is gone. Used to guard every kill
- *  against PID reuse -- a recycled PID must never be terminated as if it were ours. */
-function imageName(pid: number): string {
-  try {
-    const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], { encoding: "utf8" }).stdout ?? "";
-    const m = out.match(/^"([^"]+)"/m);
-    return m ? m[1].toLowerCase() : "";
-  } catch { return ""; }
-}
-
 /** PIDs currently LISTENING on `port`. Get-NetTCPConnection returns one IPv4 + one IPv6 row
  *  per listener (same PID -- deduped here), and can surface OwningProcess 0 / System PIDs for
  *  half-closed sockets; those are filtered out (`n > 4`) so they never trip the fail-closed
@@ -148,32 +156,6 @@ function portOwners(port: number): number[] {
       out.split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isInteger(n) && n > 4),
     )];
   } catch { return []; }
-}
-
-/** Kill one PID and its child tree, but ONLY if its image name is one we expect to have spawned. */
-function killGuarded(pid: number, expected: string[]): void {
-  if (!Number.isInteger(pid) || pid <= 0) return;
-  const img = imageName(pid);
-  if (!img) return; // already gone
-  if (!expected.includes(img)) {
-    console.warn(`[qa] refusing to kill PID ${pid} -- image "${img}" is not one of ${expected.join("/")} (PID reuse guard)`);
-    return;
-  }
-  spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "pipe" });
-}
-
-/** Kill msedgewebview2.exe processes whose command line contains the QA data dir -- these are
- *  orphaned WebView2 children `taskkill /T` misses when the Tauri parent dies first (#170 F5). */
-function sweepOrphanWebviews(): void {
-  try {
-    const marker = QA_ROOT.replace(/\\/g, "\\\\");
-    spawnSync("powershell.exe", ["-NoProfile", "-Command",
-      `Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | ` +
-      `Where-Object { $_.CommandLine -like '*${QA_ROOT.replace(/'/g, "''")}*' } | ` +
-      `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-    ], { stdio: "pipe" });
-    void marker;
-  } catch {}
 }
 
 /** Idempotent recover/validate boundary -- runs in onPrepare (global) AND defensively at
@@ -273,6 +255,11 @@ export const config: WebdriverIO.Config = {
   onPrepare: () => {
     fs.mkdirSync(QA_DATA_DIR, { recursive: true });
     fs.mkdirSync(QA_PROFILE_DIR, { recursive: true });
+    if (ISOLATE_RENDER) {
+      // Created BEFORE spawn: GetTempPath does not check that the directory exists.
+      fs.mkdirSync(QA_APPDATA_DIR, { recursive: true });
+      fs.mkdirSync(QA_TEMP_DIR, { recursive: true });
+    }
     acquireQaPortsOrThrow();
   },
 
@@ -282,12 +269,25 @@ export const config: WebdriverIO.Config = {
 
     userWebviewMtimeBefore = dirMtime(USER_WEBVIEW_DIR);
 
+    // #237: baseline of the REAL folders, taken BEFORE the QA app is spawned so a startup-time
+    // leak into a real folder cannot hide in the baseline (read by qa-acceptance.spec.ts).
+    // WDIO runs a session PER SPEC FILE and the previous session's afterSession deleted the QA
+    // root, so recreate the folders here (onPrepare only ran once) before writing the baseline.
+    if (ISOLATE_RENDER) {
+      try {
+        fs.mkdirSync(QA_APPDATA_DIR, { recursive: true });
+        fs.mkdirSync(QA_TEMP_DIR, { recursive: true });
+        saveSnapshot(path.join(QA_ROOT, "real-before.json"), snapshotReal(QA_ROOT));
+      } catch (e) { console.warn(`[qa] could not write the real-location baseline: ${(e as Error).message}`); }
+    }
+
     appProcess = spawn(APP_PATH, [], {
       env: {
         ...process.env,
         WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${CDP_PORT}`,
         WEBVIEW2_USER_DATA_FOLDER: QA_PROFILE_DIR,
         RUSHCUT_DATA_DIR: QA_DATA_DIR,
+        ...(ISOLATE_RENDER ? { APPDATA: QA_APPDATA_DIR, TMP: QA_TEMP_DIR, TEMP: QA_TEMP_DIR } : {}),
       },
       stdio: "pipe",
     });
@@ -326,6 +326,9 @@ export const config: WebdriverIO.Config = {
   before: async () => {
     process.env.QA_DATA_DIR = QA_DATA_DIR;
     process.env.QA_PROFILE_DIR = QA_PROFILE_DIR;
+    process.env.QA_ROOT = QA_ROOT;
+    process.env.QA_APPDATA_DIR = ISOLATE_RENDER ? QA_APPDATA_DIR : "";
+    process.env.QA_TEMP_DIR = ISOLATE_RENDER ? QA_TEMP_DIR : "";
     process.env.QA_CDP_PORT = String(CDP_PORT);
     process.env.QA_USER_WEBVIEW_DIR = USER_WEBVIEW_DIR;
     process.env.QA_USER_WEBVIEW_MTIME_BEFORE = userWebviewMtimeBefore;
@@ -388,7 +391,8 @@ export const config: WebdriverIO.Config = {
 
     if (viteServer) viteServer.kill("SIGTERM");
 
-    try { fs.rmSync(QA_ROOT, { recursive: true, force: true }); } catch {}
+    // RC_QA_KEEP=1 (acceptance runner --keep) leaves the QA root for post-mortem; default deletes it.
+    if (process.env.RC_QA_KEEP !== "1") { try { fs.rmSync(QA_ROOT, { recursive: true, force: true }); } catch {} }
     try { fs.rmSync(LOCK_PATH, { force: true }); } catch {}
   },
 };
