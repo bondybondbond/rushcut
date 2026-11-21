@@ -58,10 +58,20 @@ const STAGE_LABELS: Record<string, string> = {
   silence_trim: "Trimming silence...",
   zoom:         "Applying zoom...",
   cards:        "Adding title cards...",
-  render:       "Exporting transitions...",
+  render:       "Building transitions...",
   music:        "Mixing music...",
   loudnorm:     "Loudness normalisation...",
 };
+
+// #262: backend error strings (Rust/pipeline) still say "render"; show them as "export".
+// Display only: comparisons elsewhere use the raw string.
+function exportWording(msg: string | null): string | null {
+  if (msg == null) return msg;
+  return msg
+    .replace(/\bRendering\b/g, "Exporting").replace(/\brendering\b/g, "exporting")
+    .replace(/\bRendered\b/g, "Exported").replace(/\brendered\b/g, "exported")
+    .replace(/\bRender\b/g, "Export").replace(/\brender\b/g, "export");
+}
 
 function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage;
@@ -1213,7 +1223,7 @@ export default function Render() {
           {/* Error */}
           {phase === "error" && (
             <div className="rounded-lg bg-red-900/20 border border-red-500/30 p-4 space-y-3">
-              <p className="text-red-300 text-sm font-medium">{errorMsg?.replace(/^Render\b/, "Export")}</p>
+              <p className="text-red-300 text-sm font-medium">{exportWording(errorMsg)}</p>
               {errorMsg === "Render cancelled" ? (
                 <p className="text-sm text-[#a3a3a3]">
                   No changes were made. Select Try Again to restart the export, or go back to make changes.
