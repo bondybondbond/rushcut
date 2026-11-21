@@ -85,8 +85,21 @@ function splitStage(raw: string): { primary: string; detail: string | null } {
   return { primary: raw.slice(0, at), detail: raw.slice(at + STAGE_DETAIL_SEP.length) || null };
 }
 
-function stageLabel(stage: string): string {
+// #268: the pipeline emits the "cards" stage and the "Mixing music" label on every export. The
+// display (not the pipeline contract) decides whether they describe real work: cards need at
+// least one non-blank card, music needs a chosen mood. Same predicates as pipeline/render.py
+// (cards_active / music_on), read from the same saved prefs buildJobConfig() sent at start.
+function stageLabel(stage: string, projectId?: string): string {
   const { primary, detail } = splitStage(stage);
+  if (projectId && (primary === "cards" || primary === "Mixing music")) {
+    const cfg = buildJobConfig(projectId);
+    if (primary === "cards" && !cfg.cards.some((c) => (c.text ?? "").trim())) return "";
+    const musicOn = !!cfg.music_mood && cfg.music_mood !== "none"
+      && !(cfg.music_mood === "custom" && !cfg.custom_music_path);
+    if (primary === "Mixing music" && !musicOn) {
+      return "Adjusting audio levels...";
+    }
+  }
   // #265: exportWording() is a safety net on the PRIMARY label only. The detail line is left
   // as the pipeline sends it: what technical words belong there is #267's decision.
   const mapped = exportWording(STAGE_LABELS[primary] ?? primary) ?? primary;
@@ -528,7 +541,7 @@ export default function Render() {
         // stageLabel("") returns "" (raw-string fallthrough), so || keeps a
         // human label only when stage is genuinely unknown (job started, no
         // STAGE: line emitted yet).
-        setStage(stageLabel(status.active_job.current_stage ?? "") || "Starting up...");
+        setStage(stageLabel(status.active_job.current_stage ?? "", projectId) || "Starting up...");
         // #142: restore the step counter from the persisted job row.
         setStepIndex(status.active_job.current_stage_step ?? null);
         setStepTotal(status.active_job.current_stage_total ?? null);
@@ -616,11 +629,14 @@ export default function Render() {
 
     const unlistenStage = listen<{ jobId: string; stage: string; stepIndex?: number | null; stepTotal?: number | null }>("pipeline-stage", (event) => {
       if (event.payload.jobId !== jobId) return;
-      setStage(stageLabel(event.payload.stage));
+      const nextLabel = stageLabel(event.payload.stage, projectId);
+      // #268: "" = a stage that does no work for this film (no cards): leave label AND
+      // counter untouched so they keep agreeing.
+      if (nextLabel) setStage(nextLabel);
       // #142: only update when both are present -- an untagged STAGE line
       // (no step info) leaves the last-known N/M on screen rather than
       // flashing it away for one tick.
-      if (event.payload.stepIndex != null && event.payload.stepTotal != null) {
+      if (nextLabel && event.payload.stepIndex != null && event.payload.stepTotal != null) {
         setStepIndex(event.payload.stepIndex);
         setStepTotal(event.payload.stepTotal);
       }
