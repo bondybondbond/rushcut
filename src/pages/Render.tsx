@@ -61,6 +61,9 @@ const STAGE_LABELS: Record<string, string> = {
   render:       "Building transitions...",
   music:        "Mixing music...",
   loudnorm:     "Loudness normalisation...",
+  // #265: pipeline/render.py sends the DISPLAY TEXT "Rendering" for the whole-film encode
+  // step (clips + transitions + zoom + cards in one pass), never the bare key above.
+  Rendering:    "Assembling your film...",
 };
 
 // #262: backend error strings (Rust/pipeline) still say "render"; show them as "export".
@@ -84,7 +87,9 @@ function splitStage(raw: string): { primary: string; detail: string | null } {
 
 function stageLabel(stage: string): string {
   const { primary, detail } = splitStage(stage);
-  const mapped = STAGE_LABELS[primary] ?? primary;
+  // #265: exportWording() is a safety net on the PRIMARY label only. The detail line is left
+  // as the pipeline sends it: what technical words belong there is #267's decision.
+  const mapped = exportWording(STAGE_LABELS[primary] ?? primary) ?? primary;
   return detail ? `${mapped}${STAGE_DETAIL_SEP}${detail}` : mapped;
 }
 
