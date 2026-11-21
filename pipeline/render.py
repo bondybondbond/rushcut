@@ -810,8 +810,7 @@ def run_pipeline(
                 i = futures[f]
                 pre_trimmed_paths[i], pipeline_clips[i] = f.result()
                 units_done += 1
-                # #191: no counter in the primary line during the pre-trim pass (the encode
-                # pass below owns the "D of M done" count, so it never appears to restart).
+                # #191: the primary line never carries a number; the detail line does.
                 report_stage(f"Preparing clips... | Cut clip {units_done} of {len(norm_clip_indices)}", step_key="normalise")
                 report(int(units_done / total_units * checkpoints["normalise"]))
 
@@ -830,7 +829,7 @@ def run_pipeline(
 
         def _normalise_progress(done: int, total: int) -> None:
             # #191: done = completions (normalise() counts under its lock), so this only rises.
-            report_stage(f"Preparing clips ({done} of {total} done) | Finished encoding clip {done} of {total}", step_key="normalise")
+            report_stage(f"Preparing clips... | {done} of {total} done - Encoded clip {done} of {total}", step_key="normalise")
             report(int((units_done + done) / total_units * checkpoints["normalise"]))
 
         normed = normalise(
@@ -898,8 +897,9 @@ def run_pipeline(
 
             def _trim_label() -> str:
                 s, d = trim_counts["started"], trim_counts["done"]
-                primary = f"Trimming clips ({d} of {total_jobs} done)" if d else "Trimming clips..."
-                return f"{primary} | Started clip {s} of {total_jobs} - {d} done"
+                # Owner decision 2026-11-21: recreational-first. The main line carries no number;
+                # the counts live only in the detail line (behind the toggle).
+                return f"Trimming clips... | {d} of {total_jobs} done - Started clip {s} of {total_jobs}"
 
             def _trim_worker(job_num: int, i: int, p, start: float, end: float) -> None:
                 with report_lock:
