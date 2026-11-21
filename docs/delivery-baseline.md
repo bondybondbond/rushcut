@@ -352,3 +352,4 @@ u = unknown.
 | D262 | #262 #264 | product | 2026-11-21 | forward | 3 | 0 | 15 | 176 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
 | D191 | #191 | product | 2026-11-21 | forward | 1 | 0 | 21 | 123 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
 | D265 | #265 #268 | product | 2026-11-21 | forward | 1 | 0 | 17 | 93 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
+| D268 | #268 | product | 2026-11-21 | forward | 1 | 0 | 14 | 57 | pending | pending | pending | technical | a:j b:j c:d d:d lvl:j (a,b,c provisional) |  |
