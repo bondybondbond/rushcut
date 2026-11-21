@@ -1352,7 +1352,7 @@ export default function Arrange() {
                                 content) -- inherent, doesn't reach the render. See
                                 docs/LEARNINGS.md "WebView2 -- gradual zoom preview judder". */}
                             <p className="text-xs text-[#a3a3a3] italic">
-                              Preview may look slightly stuttery during the zoom -- final render is unaffected.
+                              Preview may look slightly stuttery during the zoom -- final export is unaffected.
                             </p>
                           </>
                         )}

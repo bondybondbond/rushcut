@@ -67,19 +67,19 @@ describe("Library — project cards and routing", () => {
     expect(await card.isDisplayed()).toBe(true);
   });
 
-  it("shows 'No renders' status for the freshly-created project (idle state)", async () => {
+  it("shows 'No exports' status for the freshly-created project (idle state)", async () => {
     // Find the card for our project by navigating via the project's Open button.
-    // We look for the project-status element on the page and find one with "No renders".
+    // We look for the project-status element on the page and find one with "No exports".
     const statuses = await $$('[data-testid="project-status"]');
     await browser.waitUntil(
       async () => (await $$('[data-testid="project-status"]')).length > 0,
       { timeout: 5_000, interval: 200 }
     );
-    // At least one status chip should say "No renders" (our freshly-created project).
+    // At least one status chip should say "No exports" (our freshly-created project).
     let foundIdle = false;
     for (const el of statuses) {
       const text = await el.getText();
-      if (text.includes("No renders")) { foundIdle = true; break; }
+      if (text.includes("No exports")) { foundIdle = true; break; }
     }
     expect(foundIdle).toBe(true);
   });

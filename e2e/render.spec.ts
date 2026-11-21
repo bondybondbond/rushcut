@@ -158,11 +158,11 @@ describe("Full E2E render — /render/:projectId", () => {
     }
   });
 
-  it("clicks Render Film if present (4K resolution gate), then stage label appears", async () => {
+  it("clicks Export Film if present (4K resolution gate), then stage label appears", async () => {
     const heading = await $('h1');
     await heading.waitForExist({ timeout: 5_000 });
-    // B: h1 is always the screen name "Render" (screen-naming rule introduced in U4g fixes)
-    expect(await heading.getText()).toBe("Render");
+    // B: h1 is always the screen name "Export" (screen-naming rule introduced in U4g fixes)
+    expect(await heading.getText()).toBe("Export");
 
     // #13: the "ready" gate (Save-to folder, + resolution chips for 4K) is now
     // unconditional -- btn-render-film always renders. The folder was already
@@ -193,7 +193,7 @@ describe("Full E2E render — /render/:projectId", () => {
   it("progress bar increments and pipeline completes", async () => {
     await browser.waitUntil(
       async () => {
-        // B: h1 is always "Render" — use dedicated render-done marker instead of heading text
+        // B: h1 is always "Export" — use dedicated render-done marker instead of heading text
         const done = await $('[data-testid="render-done"]');
         if (await done.isExisting()) return true;
         const pct = await $('[data-testid="progress-pct"]');
@@ -209,11 +209,11 @@ describe("Full E2E render — /render/:projectId", () => {
     );
   });
 
-  it("Render heading is always the screen name", async () => {
-    // B: h1 is always "Render" regardless of phase (screen-naming rule, U4g fixes).
+  it("Export heading is always the screen name", async () => {
+    // B: h1 is always "Export" regardless of phase (screen-naming rule, U4g fixes).
     const h1 = await $("h1");
     await h1.waitForExist({ timeout: 10_000 });
-    expect(await h1.getText()).toBe("Render");
+    expect(await h1.getText()).toBe("Export");
   });
 
   it("video player has src set after render completes", async () => {
@@ -286,10 +286,10 @@ describe("Full E2E render — /render/:projectId", () => {
     expect(audioStream.codec_name).toBe("aac");
   });
 
-  it("Render another version button is present on done-state", async () => {
-    // U4g V3 redesign: renamed from "Render new version" -> "Render another version".
+  it("Export another version button is present on done-state", async () => {
+    // U4g V3 redesign: renamed from "Render new version" -> "Export another version".
     const btn = await $('[data-testid="btn-render-new"]');
     await btn.waitForExist({ timeout: 5_000 });
-    expect(await btn.getText()).toBe("Render another version");
+    expect(await btn.getText()).toBe("Export another version");
   });
 });

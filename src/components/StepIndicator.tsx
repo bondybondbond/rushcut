@@ -3,7 +3,7 @@ type Step = "upload" | "edit" | "render";
 const STEPS: { key: Step; label: string }[] = [
   { key: "upload", label: "Upload" },
   { key: "edit", label: "Edit" },
-  { key: "render", label: "Render" },
+  { key: "render", label: "Export" },
 ];
 
 export function StepIndicator({ currentStep }: { currentStep: Step }) {

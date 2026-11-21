@@ -1700,7 +1700,7 @@ export default function Sound() {
       : source === "custom" && sound.customPath
       ? "Your own audio track will be mixed with your clips."
       : source === "none"
-      ? "Your film will render without a music track."
+      ? "Your film will export without a music track."
       : null;
 
   const selectedTrackMs =

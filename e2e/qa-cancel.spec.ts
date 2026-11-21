@@ -6,10 +6,10 @@
  * APPDATA/TMP/TEMP under C:\rcqa\<runid>) and sets RC_CANCEL_CLIPS / RC_CANCEL_OUT.
  *
  * What it proves (all through production code and the real buttons):
- *   1. Pressing Cancel render opens the native dialog; its title, message and button names are read
+ *   1. Pressing Cancel export opens the native dialog; its title, message and button names are read
  *      back with Windows UI Automation (WebDriver cannot reach a native dialog, UI Automation can).
  *   2. "Keep exporting" -> the render carries on (still processing, progress does not stop).
- *   3. "Stop exporting" -> "Render cancelled" shows exactly once, the job row is failed /
+ *   3. "Stop exporting" -> "Export cancelled" shows exactly once, the job row is failed /
  *      Render cancelled, no done / progress event revives it (#252), and 10 s later no process
  *      carrying the job id is alive (Linux ps + Windows command lines).
  *   4. A new render started straight after the cancel completes normally (negative case).
@@ -177,18 +177,18 @@ describe("#261 cancel-render lifecycle (real native dialog)", function () {
       evidence.keepPath = { status: jobAfterKeep.status, pctBefore: p0, pctAfter: await progressPct().catch(() => -1) };
       expect(jobAfterKeep.status).toBe("processing");
       expect(await $('[data-testid="btn-cancel-render"]').isExisting()).toBe(true);
-      expect(await bodyText()).not.toContain("Render cancelled");
+      expect(await bodyText()).not.toContain("Export cancelled");
 
       await $('[data-testid="btn-cancel-render"]').click();
       const stop = dialog(appPid, "Stop exporting");
       expect(stop.clicked).toBe("Stop exporting");
       const cancelAt = Date.now();
-      await browser.waitUntil(async () => (await bodyText()).includes("Render cancelled"), { timeout: 60_000, interval: 500, timeoutMsg: "no 'Render cancelled' after Stop exporting" });
+      await browser.waitUntil(async () => (await bodyText()).includes("Export cancelled"), { timeout: 60_000, interval: 500, timeoutMsg: "no 'Export cancelled' after Stop exporting" });
       await browser.pause(15_000);   // #252: a late done / error / progress event would show up in this window
       const txt = await bodyText();
       const job1End = await invoke<any>("get_job_cmd", { jobId: job1 });
-      evidence.stopPath = { cancelledCount: countOf(txt, "Render cancelled"), doneShown: txt.includes("Your film"), status: job1End.status, error: job1End.error_message };
-      expect(countOf(txt, "Render cancelled")).toBe(1);
+      evidence.stopPath = { cancelledCount: countOf(txt, "Export cancelled"), doneShown: txt.includes("Your film"), status: job1End.status, error: job1End.error_message };
+      expect(countOf(txt, "Export cancelled")).toBe(1);
       expect(await $('[data-testid="render-done"]').isExisting()).toBe(false);
       expect(await $('[data-testid="progress-bar"]').isExisting()).toBe(false);
       expect(job1End.status).toBe("failed");

@@ -29,8 +29,8 @@ export function BottomTabBar({ projectId, activeTab, configured }: BottomTabBarP
       const soundOk = configured.has("sound");
       if (!arrangeOk && !soundOk) {
         const ok = await confirm(
-          "You haven't set transitions or music yet. Render anyway?",
-          { title: "Render", kind: "warning" }
+          "You haven't set transitions or music yet. Export anyway?",
+          { title: "Export", kind: "warning" }
         );
         if (!ok) return;
       }
@@ -50,7 +50,7 @@ export function BottomTabBar({ projectId, activeTab, configured }: BottomTabBarP
     { id: "trim",   label: "Trim",    Icon: Scissors    },
     { id: "arrange",label: "Arrange", Icon: Layers      },
     { id: "sound",  label: "Music",   Icon: Music       },
-    { id: "render", label: "Render",  Icon: Clapperboard },
+    { id: "render", label: "Export",  Icon: Clapperboard },
   ];
 
   function tabClass(id: ActiveTab) {

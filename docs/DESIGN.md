@@ -54,14 +54,14 @@ User decides. Pipeline executes. Every UI decision should reinforce this: give c
 
 ## Screen title (h1) — always the screen name
 
-Every screen's `h1` is the **screen name**, unchanged by state. It is never replaced by status copy ("Your film", "Render Your Film", "Ready", etc.).
+Every screen's `h1` is the **screen name**, unchanged by state. It is never replaced by status copy ("Your film", "Export Your Film", "Ready", etc.).
 
 ```tsx
-<h1 className="text-3xl font-semibold text-[#FF8A65]">Render</h1>
-// NOT: "Your film" / "Render Your Film" / "Rendering..." etc.
+<h1 className="text-3xl font-semibold text-[#FF8A65]">Export</h1>
+// NOT: "Your film" / "Export Your Film" / "Exporting..." etc.
 ```
 
-Current screen names: **Trim**, **Arrange**, **Sound**, **Render**. Library and Upload are full-page views, not editor screens, and may use different heading styles. Status information (done, error, rendering) lives inside the content area below the h1, not in the h1 itself.
+Current screen names: **Trim**, **Arrange**, **Sound**, **Export**. Library and Upload are full-page views, not editor screens, and may use different heading styles. Status information (done, error, exporting) lives inside the content area below the h1, not in the h1 itself.
 
 ---
 
@@ -284,7 +284,7 @@ Trigger: only show the gate when the project actually has the capability (e.g. 4
     </div>
     <button data-testid="btn-render-film" onClick={handleCommit}
       className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base">
-      Render Film
+      Export Film
     </button>
   </div>
 )}
@@ -786,7 +786,7 @@ fixed bottom-0 left-0 right-0 h-12 bg-[#0a0a0a] border-t border-white/10 flex it
 | Trim    | `Scissors`     | `tab-trim`    |
 | Arrange | `Layers`       | `tab-arrange` |
 | Sound   | `Music`        | `tab-sound`   |
-| Render  | `Clapperboard` | `tab-render`  |
+| Export  | `Clapperboard` | `tab-render`  |
 
 Icons: `w-4 h-4`; labels: `text-[10px] leading-none font-medium`.
 
@@ -797,9 +797,9 @@ Icons: `w-4 h-4`; labels: `text-[10px] leading-none font-medium`.
 - "sound" configured: `rc_sound_${projectId}` parsed JSON has `mood` that is non-null and !== `"none"`.
 - Active tab always shows peach regardless of configuration state.
 
-### Render tab guard
+### Export tab guard
 
-If `!configured.has("arrange") && !configured.has("sound")`, show `window.confirm("You haven't set transitions or music yet. Render anyway?")` before navigating to `/render/:id`. If user cancels, stay on current screen. If either is configured, navigate directly.
+If `!configured.has("arrange") && !configured.has("sound")`, show `window.confirm("You haven't set transitions or music yet. Export anyway?")` before navigating to `/render/:id`. If user cancels, stay on current screen. If either is configured, navigate directly.
 
 ### RC wordmark
 
@@ -849,7 +849,7 @@ The timeline row ALWAYS has `w-52 left gutter + filmstrip + w-48 effects`, regar
 | Trim    | MediaPantry (w-52) | `flex h-full`: video+TrimBar (`flex-1`) + controls (`w-48`) | StickyFilmStrip                   |
 | Arrange | —                  | centered chip picker                                        | StickyFilmStrip                   |
 | Sound   | —                  | source selector                                             | StickyFilmStrip                   |
-| Render  | —                  | ready/rendering/done phases                                 | — (no timeline, no ChosenEffects) |
+| Export  | —                  | ready/rendering/done phases                                 | — (no timeline, no ChosenEffects) |
 
 ### Video container responsive sizing (Trimmer)
 
@@ -1365,3 +1365,4 @@ Appears only during `phase === "rendering"`. Destructive secondary style (NOT pe
 | "Re-render with changes"            | "Re-render with changes" (disabled if no change) | Lean — avoids wasted Lambda invocations       |
 | "processing…" in clip duration      | "—"                                              | "processing" confused users; no ETA available |
 | "Saved to your library for 30 days" | "Saved for 30 days"                              | Concise; no auth in Phase 1                   |
+| "Render" (tab, button, status, toast, dialog) | "Export" (#262, owner 2026-11-20) | One user-facing term for turning the edit into a film. Internal names (routes, testids, DB, logs, the stored "Render cancelled" error sentinel) stay "render"; the UI maps the sentinel to "Export cancelled". |

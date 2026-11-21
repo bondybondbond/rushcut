@@ -11,6 +11,6 @@ export function upgradeNoticeText(names: string[]): string | null {
   return (
     `${subject} look lower quality than they could because there isn't enough free storage to prepare ` +
     `${names.length === 1 ? "it" : "them"} fully: ${shown}${more}. ` +
-    `Free up some space, then open the editor again to fix this. You can still render now.`
+    `Free up some space, then open the editor again to fix this. You can still export now.`
   );
 }

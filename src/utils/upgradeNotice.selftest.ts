@@ -21,6 +21,6 @@ const five = upgradeNoticeText(["a", "b", "c", "d", "e"])!;
 check("five clips: three named + 'and 2 more'", five.includes("a, b, c and 2 more") && five.startsWith("5 clips will"), five);
 for (const t of [one, three, five]) {
   check("no technical words", !/proxy|encod|upgrad|working copy|2160|QP|low-disk/i.test(t), t);
-  check("says rendering still works", t.includes("You can still render now"));
+  check("says exporting still works", t.includes("You can still export now"));
 }
 process.exit(failed ? 1 : 0);

@@ -58,7 +58,7 @@ const STAGE_LABELS: Record<string, string> = {
   silence_trim: "Trimming silence...",
   zoom:         "Applying zoom...",
   cards:        "Adding title cards...",
-  render:       "Rendering transitions...",
+  render:       "Exporting transitions...",
   music:        "Mixing music...",
   loudnorm:     "Loudness normalisation...",
 };
@@ -298,7 +298,7 @@ export default function Render() {
     // path to start_job. Reads the ref, not the state var (see declaration).
     const outputDir = outputFolderRef.current;
     if (!outputDir) {
-      setErrorMsg("Choose a folder to save your film to before rendering.");
+      setErrorMsg("Choose a folder to save your film to before exporting.");
       setPhase("error");
       return;
     }
@@ -335,7 +335,7 @@ export default function Render() {
       setPhase("rendering");
     } catch (e) {
       removeRenderPref(`rc_render_pending_${pid}`);
-      setErrorMsg(`Failed to start render: ${e}`);
+      setErrorMsg(`Failed to start export: ${e}`);
       setPhase("error");
     }
   }
@@ -436,8 +436,7 @@ export default function Render() {
   // flips this screen into the error phase (with "Try Again").
   async function cancelRender() {
     if (!jobId) return;
-    // #261: owner-approved wording (2026-11-20). "export" here is deliberate
-    // while the rest of the app still says "render" (migration tracked separately).
+    // #261: owner-approved wording (2026-11-20); #262 made "export" the app-wide term.
     const ok = await confirm("You can export it again any time.", {
       title: "Stop exporting this video?",
       kind: "warning",
@@ -631,7 +630,7 @@ export default function Render() {
         analysisDuration: durationLabel({ analysis_summary: analysis ?? null }),
       });
       if (analysis && /(^|,)amf_fallback=1(,|$)/.test(analysis)) {
-        setToast("GPU encode unavailable -- rendered on CPU (standard quality)");
+        setToast("GPU encode unavailable -- exported on CPU (standard quality)");
         setTimeout(() => setToast(null), 6000);
       }
       if (projectId) {
@@ -643,7 +642,7 @@ export default function Render() {
       if (event.payload.jobId !== jobId) return;
       completedRef.current = true;
       if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
-      setErrorMsg(event.payload.message || "Render failed");
+      setErrorMsg(event.payload.message || "Export failed");
       setPhase("error");
     });
 
@@ -813,7 +812,7 @@ export default function Render() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
 
-          <h1 className="text-3xl font-semibold text-[#FF8A65]">Render</h1>
+          <h1 className="text-3xl font-semibold text-[#FF8A65]">Export</h1>
 
           {/* Ready — Save-to folder (mandatory, #13) + Output Resolution (4K only) */}
           {phase === "ready" && (
@@ -831,7 +830,7 @@ export default function Render() {
                   <div>
                     <p className="text-xl font-medium text-[#e5e5e5]">Output Resolution</p>
                     <p className="text-sm text-[#a3a3a3] mt-0.5">
-                      Your project contains 4K clips. Choose your output resolution before rendering.
+                      Your project contains 4K clips. Choose your output resolution before exporting.
                     </p>
                   </div>
                   <div className="flex gap-3">
@@ -902,7 +901,7 @@ export default function Render() {
                 onClick={() => projectId && submitJob(projectId)}
                 className="inline-flex items-center gap-2 px-6 py-3 bg-[#FF8A65] text-[#0a0a0a] font-semibold rounded-md hover:bg-[#ff9e7a] transition-all duration-200 text-base disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Render Film
+                Export Film
               </button>
             </div>
           )}
@@ -988,7 +987,7 @@ export default function Render() {
                   onClick={cancelRender}
                   className="px-5 py-2.5 border border-white/30 text-[#e5e5e5] text-base rounded-md hover:border-white/60 hover:bg-white/5 transition-all duration-200"
                 >
-                  Cancel render
+                  Cancel export
                 </button>
               </div>
 
@@ -1002,7 +1001,7 @@ export default function Render() {
                   className="mt-3 flex items-center justify-between gap-4 rounded-md border border-white/10 border-l-2 border-l-[#FF8A65] bg-white/5 p-3"
                 >
                   <p className="text-sm text-[#e5e5e5]">
-                    This is taking longer than expected -- the render may have stalled. You can wait, or try again.
+                    This is taking longer than expected -- the export may have stalled. You can wait, or try again.
                   </p>
                   <button
                     data-testid="btn-stall-retry"
@@ -1030,7 +1029,7 @@ export default function Render() {
                   {/* Status pill */}
                   <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-3 py-[5px] rounded-full bg-green-500/10 text-green-400 border border-green-500/20">
                     <Check size={14} strokeWidth={2.5} />
-                    Rendering completed
+                    Export completed
                   </div>
 
                   {/* Film name */}
@@ -1059,7 +1058,7 @@ export default function Render() {
                       </div>
                     </div>
                     <div className="mt-[10px]">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4a4946] mb-[3px]">Rendered</div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4a4946] mb-[3px]">Exported</div>
                       <div className="text-[15px] font-bold text-[#e8e6e2] tracking-tight leading-tight">
                         {doneMeta?.iso ? shortDateTime(doneMeta.iso) : "--"}
                       </div>
@@ -1124,7 +1123,7 @@ export default function Render() {
                     className="w-full flex items-center justify-start gap-1.5 px-[18px] py-[10px] border border-white/[0.14] text-[#c8c5c0] text-[14px] font-semibold rounded-lg hover:bg-white/[0.06] hover:border-white/[0.22] transition-all duration-150 text-left"
                   >
                     <RotateCcw size={15} strokeWidth={2} className="text-[#8a8883] flex-shrink-0" />
-                    Render another version
+                    Export another version
                   </button>
                 </div>
               </div>
@@ -1176,7 +1175,7 @@ export default function Render() {
                   The 1080p videoMissing path is kept as a fallback for the onError case. */}
               {(!fileOnDisk || (outputRes !== "4k" && videoMissing)) && (
                 <div data-testid="render-missing" className="rounded-lg border border-white/10 bg-white/5 p-4">
-                  <p className="text-sm text-[#a3a3a3]">This render is no longer on disk. Render a new version to recreate it.</p>
+                  <p className="text-sm text-[#a3a3a3]">This export is no longer on disk. Export a new version to recreate it.</p>
                 </div>
               )}
 
@@ -1214,14 +1213,14 @@ export default function Render() {
           {/* Error */}
           {phase === "error" && (
             <div className="rounded-lg bg-red-900/20 border border-red-500/30 p-4 space-y-3">
-              <p className="text-red-300 text-sm font-medium">{errorMsg}</p>
+              <p className="text-red-300 text-sm font-medium">{errorMsg?.replace(/^Render\b/, "Export")}</p>
               {errorMsg === "Render cancelled" ? (
                 <p className="text-sm text-[#a3a3a3]">
-                  No changes were made. Select Try Again to restart the render, or go back to make changes.
+                  No changes were made. Select Try Again to restart the export, or go back to make changes.
                 </p>
               ) : inFilmCount > 0 ? (
                 <p className="text-sm text-[#a3a3a3]">
-                  Your edits and optimised clips are safe -- Try Again just re-runs the render and reuses them.
+                  Your edits and optimised clips are safe -- Try Again just re-runs the export and reuses them.
                 </p>
               ) : null}
               <div className="flex items-center gap-3">

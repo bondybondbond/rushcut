@@ -269,18 +269,18 @@ export default function Library() {
                       <span className="text-[#a3a3a3] text-xs">{p.file_count} file{p.file_count !== 1 ? "s" : ""} &middot; {p.cut_count} cut{p.cut_count !== 1 ? "s" : ""}</span>
                       {/* T4 render-state line */}
                       {state === "rendering" && (
-                        <span data-testid="project-status" className="text-[#C9A96E] text-xs font-medium">Rendering &mdash; {pct}%</span>
+                        <span data-testid="project-status" className="text-[#C9A96E] text-xs font-medium">Exporting &mdash; {pct}%</span>
                       )}
                       {state === "done" && (
                         <span data-testid="project-status" className="text-[#a3a3a3] text-xs">
-                          Last render: {timeAgo(job?.updated_at)}{res ? <> &middot; {res}</> : null}
+                          Last export: {timeAgo(job?.updated_at)}{res ? <> &middot; {res}</> : null}
                         </span>
                       )}
                       {state === "error" && (
-                        <span data-testid="project-status" className="text-red-400 text-xs font-medium">Render failed</span>
+                        <span data-testid="project-status" className="text-red-400 text-xs font-medium">Export failed</span>
                       )}
                       {state === "idle" && (
-                        <span data-testid="project-status" className="text-[#a3a3a3] text-xs">No renders</span>
+                        <span data-testid="project-status" className="text-[#a3a3a3] text-xs">No exports</span>
                       )}
                     </div>
                     {/* Live progress bar (green), only while rendering */}
@@ -324,8 +324,8 @@ export default function Library() {
                   <div className="mx-1 mb-1 px-4 py-3 rounded-b-lg border border-t-0 border-red-400/30 bg-red-950/30 flex items-center justify-between gap-4">
                     <p className="text-xs text-[#e5e5e5]/80 leading-snug">
                       {pendingDelete.hasRenders
-                        ? <>Delete <span className="font-medium text-[#e5e5e5]">{p.name}</span>? The rendered video file on disk will also be removed.</>
-                        : <>Delete <span className="font-medium text-[#e5e5e5]">{p.name}</span>? Only the project record will be removed (no renders exist).</>
+                        ? <>Delete <span className="font-medium text-[#e5e5e5]">{p.name}</span>? The exported video file on disk will also be removed.</>
+                        : <>Delete <span className="font-medium text-[#e5e5e5]">{p.name}</span>? Only the project record will be removed (no exports exist).</>
                       }
                     </p>
                     <div className="flex items-center gap-2 flex-shrink-0">
