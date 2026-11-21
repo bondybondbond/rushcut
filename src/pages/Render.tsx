@@ -91,8 +91,16 @@ function splitStage(raw: string): { primary: string; detail: string | null } {
 // (cards_active / music_on), read from the same saved prefs buildJobConfig() sent at start.
 function stageLabel(stage: string, projectId?: string): string {
   const { primary, detail } = splitStage(stage);
-  if (projectId && (primary === "cards" || primary === "Mixing music")) {
+  if (projectId && (primary === "cards" || primary === "Mixing music" || primary === "zoom")) {
     const cfg = buildJobConfig(projectId);
+    // #269: "zoom" is emitted on every export; zoom_active in pipeline/render.py = any in-film clip
+    // with zoom_mode set and not "none", or the global config.zoom. The stall-timer extension reads
+    // the RAW event stage, so hiding the label here does not affect it.
+    if (primary === "zoom") {
+      const clips = projectCache.get(projectId)?.clips ?? [];
+      const zoomOn = !!cfg.zoom || clips.some((c) => c.include === 1 && c.zoom_mode && c.zoom_mode !== "none");
+      if (!zoomOn) return "";
+    }
     if (primary === "cards" && !cfg.cards.some((c) => (c.text ?? "").trim())) return "";
     const musicOn = !!cfg.music_mood && cfg.music_mood !== "none"
       && !(cfg.music_mood === "custom" && !cfg.custom_music_path);
