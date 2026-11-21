@@ -18,6 +18,8 @@ Protocol (stdout, line-by-line):
   STAGE:<human-readable stage name>[::<step>/<total>]  -- #142: optional trailing
     "::N/M" for the "Step N of M" indicator, present only when the stage belongs
     to a known major stage (normalise/trim/zoom/cards/render/audio).
+    #191: the text may be "primary | detail"; the UI shows primary and puts detail behind
+    a click-to-expand toggle. Never put " | " or "::" inside either part.
   ANALYSIS:clips_used=N,clips_total=M,clips_excluded=X
   DONE:<wsl_path_to_output>
   ERROR:<message>

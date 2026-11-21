@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { Check, Play, Folder, RotateCcw } from "lucide-react";
+import { Check, Play, Folder, RotateCcw, ChevronDown } from "lucide-react";
 import type { ProjectWithClips, JobConfig, PipelineProgressEvent, Job } from "@/types/project";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
@@ -73,8 +73,19 @@ function exportWording(msg: string | null): string | null {
     .replace(/\bRender\b/g, "Export").replace(/\brender\b/g, "export");
 }
 
+// #191: the pipeline may send "primary | detail" in one STAGE string (no event/DB contract
+// change). Split FIRST so the STAGE_LABELS lookup still sees bare keys like "zoom".
+const STAGE_DETAIL_SEP = " | ";
+function splitStage(raw: string): { primary: string; detail: string | null } {
+  const at = raw.indexOf(STAGE_DETAIL_SEP);
+  if (at < 0) return { primary: raw, detail: null };
+  return { primary: raw.slice(0, at), detail: raw.slice(at + STAGE_DETAIL_SEP.length) || null };
+}
+
 function stageLabel(stage: string): string {
-  return STAGE_LABELS[stage] ?? stage;
+  const { primary, detail } = splitStage(stage);
+  const mapped = STAGE_LABELS[primary] ?? primary;
+  return detail ? `${mapped}${STAGE_DETAIL_SEP}${detail}` : mapped;
 }
 
 type Phase = "ready" | "starting" | "rendering" | "done" | "error";
@@ -102,6 +113,9 @@ export default function Render() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("Starting up the magic...");
+  // #191: click-to-expand second status line; per-view only, never persisted.
+  const [detailOpen, setDetailOpen] = useState(false);
+  const { primary: stagePrimary, detail: stageDetail } = splitStage(stage);
   // #142: "Step N of M" indicator, alongside the existing stage label. Both
   // null until the first STAGE line carrying step info arrives (or on reattach,
   // seeded from the persisted job row).
@@ -327,6 +341,7 @@ export default function Render() {
       });
       setJobId(newJobId);
       setStage("Starting up the magic...");
+      setDetailOpen(false);
       setProgress(0);
       // #142: a fresh render has no step data yet -- clear any leftover N/M
       // from a previous render on this same screen instance.
@@ -429,6 +444,7 @@ export default function Render() {
     setJobId(null);
     setProgress(0);
     setStage("Starting up the magic...");
+    setDetailOpen(false);
     // #142: clear any leftover N/M so a subsequent render's own step count is
     // never confused with the previous render's.
     setStepIndex(null);
@@ -965,9 +981,23 @@ export default function Render() {
                       {`Step ${stepIndex} of ${stepTotal} · `}
                     </span>
                   )}
-                  <span data-testid="stage-label" className="text-[#a3a3a3] truncate" title={stage}>
-                    {stage}
+                  <span data-testid="stage-label" className="text-[#a3a3a3] truncate" title={stagePrimary}>
+                    {stagePrimary}
                   </span>
+                  {/* #191: always mounted (like still-working-note) so the row never reflows;
+                      hidden and inert in stages that send no detail line. */}
+                  <button
+                    type="button"
+                    data-testid="stage-detail-toggle"
+                    aria-expanded={detailOpen}
+                    aria-label={detailOpen ? "Hide status details" : "Show status details"}
+                    disabled={!stageDetail}
+                    tabIndex={stageDetail ? 0 : -1}
+                    onClick={() => setDetailOpen((o) => !o)}
+                    className={`ml-1 shrink-0 self-center text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors ${stageDetail ? "visible" : "invisible"}`}
+                  >
+                    <ChevronDown className={`w-4 h-4 transition-transform duration-200 motion-reduce:transition-none ${detailOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+                  </button>
                   <span
                     data-testid="still-working-note"
                     aria-hidden={!barPulsing}
@@ -980,6 +1010,9 @@ export default function Render() {
                 </span>
                 <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono shrink-0">{progress}%</span>
               </div>
+              {detailOpen && (
+                <p data-testid="stage-detail" className="text-xs text-[#a3a3a3] min-h-4">{stageDetail ?? " "}</p>
+              )}
               <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                 <div
                   data-testid="progress-bar"

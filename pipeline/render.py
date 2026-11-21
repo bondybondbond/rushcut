@@ -810,7 +810,9 @@ def run_pipeline(
                 i = futures[f]
                 pre_trimmed_paths[i], pipeline_clips[i] = f.result()
                 units_done += 1
-                report_stage(f"Preparing clip {units_done} of {len(norm_clip_indices)}", step_key="normalise")
+                # #191: no counter in the primary line during the pre-trim pass (the encode
+                # pass below owns the "D of M done" count, so it never appears to restart).
+                report_stage(f"Preparing clips... | Cut clip {units_done} of {len(norm_clip_indices)}", step_key="normalise")
                 report(int(units_done / total_units * checkpoints["normalise"]))
 
     print(f"TIMING:pretrim={time.time() - t_pretrim:.1f}s (jobs={len(norm_clip_indices)})", flush=True)
@@ -827,7 +829,8 @@ def run_pipeline(
         norm_src = [pre_trimmed_paths[i] for i in norm_clip_indices]
 
         def _normalise_progress(done: int, total: int) -> None:
-            report_stage(f"Preparing clip {done} of {total}", step_key="normalise")
+            # #191: done = completions (normalise() counts under its lock), so this only rises.
+            report_stage(f"Preparing clips ({done} of {total} done) | Finished encoding clip {done} of {total}", step_key="normalise")
             report(int((units_done + done) / total_units * checkpoints["normalise"]))
 
         normed = normalise(
@@ -849,7 +852,7 @@ def run_pipeline(
     )
 
     # 2. Silence trim.
-    report_stage("Trimming clips", step_key="trim")
+    report_stage("Trimming clips...", step_key="trim")
     t0 = time.time()
 
     if trim_active:
@@ -889,9 +892,19 @@ def run_pipeline(
             # calls report()/report_stage() for this stage.
             report_lock = threading.Lock()
 
+            # #191: primary line counts COMPLETED clips only; the detail line (after " | ")
+            # carries started + done. Both counters change under report_lock, so each only rises.
+            trim_counts = {"started": 0, "done": 0}
+
+            def _trim_label() -> str:
+                s, d = trim_counts["started"], trim_counts["done"]
+                primary = f"Trimming clips ({d} of {total_jobs} done)" if d else "Trimming clips..."
+                return f"{primary} | Started clip {s} of {total_jobs} - {d} done"
+
             def _trim_worker(job_num: int, i: int, p, start: float, end: float) -> None:
                 with report_lock:
-                    report_stage(f"Trimming clip {job_num} of {total_jobs}...", step_key="trim")
+                    trim_counts["started"] += 1
+                    report_stage(_trim_label(), step_key="trim")
                 out = tmp / f"trim_{i}.mp4"
                 trimmed[i] = trim(p, start, end, out, threads=threads_per_worker)
 
@@ -908,7 +921,8 @@ def run_pipeline(
                     f.result()  # re-raise any worker exception immediately (no swallowing)
                     done += 1
                     with report_lock:
-                        report_stage(f"Trimming clip {done} of {total_jobs}", step_key="trim")
+                        trim_counts["done"] = done
+                        report_stage(_trim_label(), step_key="trim")
                         report(int(trim_lo + done / total_jobs * (trim_hi - trim_lo)))
 
         current_paths = trimmed
