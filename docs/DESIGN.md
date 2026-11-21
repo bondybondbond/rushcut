@@ -1286,7 +1286,7 @@ The render done state uses a split card with a vertical divider: metadata left, 
                        hover:bg-[#ffA07a] transition-colors duration-150">
       <Play size={15} fill="currentColor" stroke="none" /> Open film
     </button>
-    {/* Secondary: Open folder / Render another version */}
+    {/* Secondary: Open folder / Export another version */}
     <button className="w-full flex items-center gap-1.5 px-[18px] py-[10px]
                        border border-white/20 text-[#e5e5e5] font-medium text-[14px] rounded-lg
                        hover:border-white/40 hover:bg-white/5 transition-colors duration-150">
@@ -1295,7 +1295,7 @@ The render done state uses a split card with a vertical divider: metadata left, 
     <button className="w-full flex items-center gap-1.5 px-[18px] py-[10px]
                        border border-white/20 text-[#e5e5e5] font-medium text-[14px] rounded-lg
                        hover:border-white/40 hover:bg-white/5 transition-colors duration-150">
-      <RotateCcw size={15} /> Render another version
+      <RotateCcw size={15} /> Export another version
     </button>
   </div>
 </div>
@@ -1349,7 +1349,7 @@ Appears only during `phase === "rendering"`. Destructive secondary style (NOT pe
 <button data-testid="btn-cancel-render"
         className="border border-white/30 text-[#e5e5e5] px-5 py-2.5 rounded-lg text-base
                    font-medium hover:border-white/60 hover:bg-white/5 transition-colors duration-150">
-  Cancel render
+  Cancel export
 </button>
 ```
 
