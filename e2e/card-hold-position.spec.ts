@@ -35,18 +35,23 @@ async function setup(): Promise<string | null> {
     async () => /\/(upload|library|editor|trimmer|arrange|sound)\b/.test(await browser.getUrl()),
     { timeout: 25_000, interval: 300, timeoutMsg: "no app route" },
   );
-  const projectId = (await browser.execute(async () => {
-    const { invoke } = (window as unknown as Inv).__TAURI_INTERNALS__;
-    const metas = (await invoke("scan_folder", { folderPath: "C:\clips" })) as Array<Record<string, unknown>>;
-    if (!metas || metas.length < 1) return null;
-    const m = metas[0];
-    const clips = [{
-      filename: m.filename, local_path: m.local_path, size_bytes: m.size_bytes,
-      duration_ms: m.duration_ms, width: m.width, height: m.height,
-      has_audio: m.has_audio, thumbnail_data: m.thumbnail_data ?? null,
-    }];
-    return (await invoke("create_project", { name: "Card-hold E2E", clips })) as string;
-  })) as string | null;
+  // scan_folder can return [] right after app start (probe not ready); retry before failing.
+  let projectId: string | null = null;
+  for (let attempt = 0; attempt < 6 && !projectId; attempt++) {
+    projectId = (await browser.execute(async () => {
+      const { invoke } = (window as unknown as Inv).__TAURI_INTERNALS__;
+      const metas = (await invoke("scan_folder", { folderPath: "C:\\clips" })) as Array<Record<string, unknown>>;
+      if (!metas || metas.length < 1) return null;
+      const m = metas[0];
+      const clips = [{
+        filename: m.filename, local_path: m.local_path, size_bytes: m.size_bytes,
+        duration_ms: m.duration_ms, width: m.width, height: m.height,
+        has_audio: m.has_audio, thumbnail_data: m.thumbnail_data ?? null,
+      }];
+      return (await invoke("create_project", { name: "Card-hold E2E", clips })) as string;
+    })) as string | null;
+    if (!projectId) await browser.pause(3000);
+  }
   trackTestProject(projectId);
   if (!projectId) return null;
 
@@ -68,27 +73,37 @@ async function setup(): Promise<string | null> {
   return projectId;
 }
 
-/** Dispatch a native cut-drag onto the strip track; atStart=true drops at the left edge (index 0). */
+/**
+ * Dispatch a native cut-drag onto the strip track; atStart=true drops at the left edge (index 0).
+ * dragover and drop are separate steps with a pause: the drop handler reads the index from React
+ * state set by dragover, so firing both in one tick silently drops at the END.
+ */
 async function dropCut(atStart: boolean) {
-  await browser.execute((start: boolean) => {
+  const ev = (type: string, start: boolean) => {
+    const w = window as unknown as { __rcDt?: DataTransfer };
     const tile = document.querySelector('[data-testid="filmstrip-clip"]');
     const track = tile?.closest(".overflow-x-auto") as HTMLElement | null;
     if (!track) throw new Error("strip track not found");
     const r = track.getBoundingClientRect();
-    const dt = new DataTransfer();
-    dt.setData("application/x-rushcut-cut", "1");
-    const x = start ? r.left + 1 : r.right - 1;
-    const mk = (type: string) =>
-      new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: r.top + 5 });
-    track.dispatchEvent(mk("dragover"));
-    track.dispatchEvent(mk("drop"));
-  }, atStart);
+    if (!w.__rcDt) {
+      w.__rcDt = new DataTransfer();
+      w.__rcDt.setData("application/x-rushcut-cut", "1");
+    }
+    track.dispatchEvent(new DragEvent(type, {
+      bubbles: true, cancelable: true, dataTransfer: w.__rcDt,
+      clientX: start ? r.left + 1 : r.right - 1, clientY: r.top + 5,
+    }));
+  };
+  await browser.execute(ev, "dragover", atStart);
+  await browser.pause(400);
+  await browser.execute(ev, "drop", atStart);
   await browser.pause(1500);
 }
 
 describe("#181 -- end card holds its position when a clip is added", () => {
   it("button add: card is re-anchored before the new cut", async () => {
     const projectId = await setup();
+    expect(projectId).not.toBeNull(); // never pass vacuously (setup returns null if C:\clips has no clip)
     if (!projectId) return;
     const before = await filmIds(projectId);
     expect(before.length).toBe(2);
@@ -101,11 +116,10 @@ describe("#181 -- end card holds its position when a clip is added", () => {
     expect((await storedCards(projectId))[0].beforeClipId).toBe(after[2]);
   });
 
-  // NOTE: smoke only. Verified 2026-11-22 that this case still passes when the stale-list
-  // bug is re-introduced (filmIdsRef -> click-time inFilm), so it does NOT prove the
-  // overlap fix; that fix is covered by code review only.
+  // Verified 2026-11-22: fails when the stale-list bug is re-introduced (filmIdsRef -> click-time inFilm).
   it("two overlapping adds: card stays before the FIRST new cut ([.., card, A, B])", async () => {
     const projectId = await setup();
+    expect(projectId).not.toBeNull(); // never pass vacuously (setup returns null if C:\clips has no clip)
     if (!projectId) return;
     await browser.execute(() => {
       const b = document.querySelector('[data-testid="btn-add-to-film"]') as HTMLButtonElement;
@@ -122,6 +136,7 @@ describe("#181 -- end card holds its position when a clip is added", () => {
 
   it("drop at strip end: card is re-anchored before the dropped cut", async () => {
     const projectId = await setup();
+    expect(projectId).not.toBeNull(); // never pass vacuously (setup returns null if C:\clips has no clip)
     if (!projectId) return;
     await dropCut(false);
     const after = await filmIds(projectId);
@@ -131,6 +146,7 @@ describe("#181 -- end card holds its position when a clip is added", () => {
 
   it("negative: drop mid-film (index 0) leaves the end card alone", async () => {
     const projectId = await setup();
+    expect(projectId).not.toBeNull(); // never pass vacuously (setup returns null if C:\clips has no clip)
     if (!projectId) return;
     await dropCut(true);
     const after = await filmIds(projectId);
