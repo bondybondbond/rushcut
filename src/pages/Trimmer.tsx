@@ -359,8 +359,17 @@ export default function Trimmer() {
   }, [clip, projectId, inMs, outMs]);
 
   async function handlePantrySelect(newClip: Clip) {
-    if (newClip.id === clip?.id) return;
+    // #177: a deliberate pantry click in film mode wins over the playback-following highlight:
+    // leave film mode (the viewMode effect pauses film playback) and open the clip paused.
+    const fromFilm = viewMode === "film";
+    if (newClip.id === clip?.id) {
+      if (fromFilm) setViewMode("clip");
+      return;
+    }
     await saveCurrentClip();
+    // The clip-load effect skips while filmModeRef is set; it is cleared by the viewMode effect
+    // only AFTER that load effect ran in the same commit, so clear it here or the clip never loads.
+    if (fromFilm) filmModeRef.current = false;
     setSelectedClip(newClip);
     setInMs(newClip.in_ms ?? 0);
     setOutMs(newClip.out_ms ?? newClip.duration_ms);
@@ -370,6 +379,7 @@ export default function Trimmer() {
     setVideoCanPlay(false);
     setSourceFailed(false);
     generatingProxyRef.current.delete(newClip.id);
+    if (fromFilm) setViewMode("clip");
   }
 
   async function handleNav(dir: -1 | 1) {

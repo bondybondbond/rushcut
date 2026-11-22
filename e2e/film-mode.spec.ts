@@ -612,4 +612,77 @@ describe("Film-mode playback — sequence-clock acceptance (#174)", () => {
     const playingClip = aPlaying ? lastThird[lastThird.length - 1].aClip : lastThird[lastThird.length - 1].bClip;
     expect(playingClip).toBe(inFilmIds[0]);
   });
+
+  it("#177 Trimmer film mode: a pantry click leaves film mode and opens that clip paused", async () => {
+    const tileIds = async () =>
+      browser.execute(() =>
+        Array.from(document.querySelectorAll('[data-testid="pantry-tile"]')).map((e) => e.getAttribute("data-clip-id")),
+      );
+    const state = () =>
+      browser.execute(() => {
+        const active = document.querySelector('[data-testid="pantry-tile"][data-active="true"]');
+        const a = document.querySelector('[data-testid="trim-film-video-a"]') as HTMLVideoElement | null;
+        const b = document.querySelector('[data-testid="trim-film-video-b"]') as HTMLVideoElement | null;
+        return {
+          clipMode: !!document.querySelector('[data-testid="trim-clip-prev"]'),
+          filmMode: !!document.querySelector('[data-testid="trim-film-prev"]'),
+          activeId: active?.getAttribute("data-clip-id") ?? null,
+          filmPlaying: !!((a && !a.paused) || (b && !b.paused)),
+        };
+      });
+    const clickTile = async (id: string) => {
+      await $(`[data-testid="pantry-tile"][data-clip-id="${id}"]`).click();
+    };
+    const enterFilmAndPlay = async () => {
+      // Fresh remount each time (same-URL gotoRoute is a no-op).
+      await gotoRoute(projectId!, "sound");
+      await gotoRoute(projectId!, "trimmer");
+      const filmBtn = await $('[data-testid="trim-viewmode-film"]');
+      await filmBtn.waitForExist({ timeout: 15_000 });
+      await filmBtn.click();
+      await browser.pause(1200);
+      await $('[data-testid="trim-playpause"]').click();
+      await browser.pause(800);
+    };
+
+    // (a) click a tile that is NOT the one clip mode had selected.
+    await enterFilmAndPlay();
+    const ids = (await tileIds()) as string[];
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    const picked = ids[ids.length - 1];
+    expect((await state()).filmMode).toBe(true);
+    await clickTile(picked);
+    await browser.pause(800);
+    const a = await state();
+    console.log(`[film-mode] #177 click other tile: ${JSON.stringify(a)}`);
+    expect(a.clipMode).toBe(true);
+    expect(a.filmMode).toBe(false);
+    expect(a.activeId).toBe(picked);
+    expect(a.filmPlaying).toBe(false);
+    // The picked clip must actually LOAD (play button enables only once the new slot can play);
+    // before the fix the old clip stayed on screen and the button stayed disabled.
+    await browser.waitUntil(async () => (await $('[data-testid="trim-playpause"]').isEnabled()), {
+      timeout: 15_000,
+      timeoutMsg: "#177: picked clip never became playable after the film-mode click",
+    });
+
+    // (b) click the tile clip mode ALREADY had selected (the early-return branch): still switches.
+    await enterFilmAndPlay();
+    // Film mode highlights the playing tile, not the selection: read the real clip-mode selection
+    // by flipping to clip mode and back first, then click that exact tile from film mode.
+    await $('[data-testid="trim-viewmode-clip"]').click();
+    await browser.pause(600);
+    const sel = (await browser.execute(() =>
+      document.querySelector('[data-testid="pantry-tile"][data-active="true"]')?.getAttribute("data-clip-id") ?? null,
+    )) as string;
+    expect(sel).not.toBeNull();
+    await $('[data-testid="trim-viewmode-film"]').click();
+    await browser.pause(800);
+    await clickTile(sel);
+    await browser.pause(800);
+    const b = await state();
+    console.log(`[film-mode] #177 click selected tile: ${JSON.stringify(b)}`);
+    expect(b.clipMode).toBe(true);
+    expect(b.filmPlaying).toBe(false);
+  });
 });
