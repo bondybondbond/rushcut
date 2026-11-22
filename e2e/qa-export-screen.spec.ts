@@ -10,7 +10,7 @@
  * first stage, ends at Finish), the old "Step N of M" text is gone, the detail toggle exists only while the
  * pipeline sends detail, leaving the Export tab mid-export and coming back reattaches with the phase and
  * elapsed time restored, and the export still completes. Saves early / mid / reattached / done screenshots.
- * Not covered: the stall warning and the error state (they need a forced silence or failure).
+ * The stall warning is checked by shifting the page clock (no production change). The error view is the one the cancel-check reaches ("Export cancelled").
  */
 import fs from "fs";
 import path from "path";
@@ -147,6 +147,7 @@ describe("#267 export screen (ring + phase bar + card)", function () {
       const samples: any[] = [];
       const t0 = Date.now();
       let lastKey = "", shotEarly = false, shotDetail = false, shotMid = false, reattached = false;
+      let stallTried = false, stallResult: any = null;
       let maxRank = -1, wentBack = false, sawNote = false, firstStageSeen = false, preStageOk = true;
       await browser.waitUntil(async () => {
         if (await $('[data-testid="render-done"]').isExisting()) return true;
@@ -165,6 +166,25 @@ describe("#267 export screen (ring + phase bar + card)", function () {
           await $('[data-testid="stage-detail-toggle"]').click().catch(() => {});
           await browser.pause(300); await snap("early-detail-open"); shotDetail = true;
           await $('[data-testid="stage-detail-toggle"]').click().catch(() => {});
+        }
+        // Stall warning, no production change: run the page clock fast (x500) so the screen's own stall check
+        // (Date.now() minus the last pipeline signal, polled every 30 s) trips even though live events keep arriving.
+        // The DOM is read and the clock restored in the same call the moment the banner shows.
+        if (shotDetail && !stallTried && p.steps[0] === "current") {
+          stallTried = true;
+          await browser.execute(() => { const real = Date.now.bind(Date); const t0 = real(); (window as any).__rcRealNow = real; Date.now = () => t0 + (real() - t0) * 500; });
+          try {
+            await browser.waitUntil(async () => await $('[data-testid="render-stall-warning"]').isExisting(), { timeout: 60_000, interval: 250 });
+          } catch { /* judged after the loop */ }
+          stallResult = await browser.execute(() => {
+            const r = (window as any).__rcRealNow; if (r) Date.now = r;
+            const q = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
+            return {
+              shown: !!q("render-stall-warning"), text: q("render-stall-warning")?.textContent ?? "",
+              retry: !!q("btn-stall-retry"), cancel: !!q("btn-cancel-render"), ring: !!q("progress-bar"), phaseBar: !!q("phase-bar"), card: !!q("stage-label"),
+            };
+          });
+          await snap("stall");
         }
         if (!shotMid && p.steps[1] === "current" && Number(p.pct) >= 40) { await snap("mid"); shotMid = true; }
         // Reattach: leave the Export tab for another tab and come back while the export is in its Process phase.
@@ -200,6 +220,10 @@ describe("#267 export screen (ring + phase bar + card)", function () {
       expect(preStageOk).toBe(true);         // nothing is marked before the first stage arrives
       expect(maxRank).toBe(2);               // ends in Finish
       expect(reattached).toBe(true);
+      evidence.stall = stallResult;
+      expect(stallResult?.shown).toBe(true);
+      expect(stallResult?.text).toContain("taking longer than expected");
+      expect(stallResult?.retry && stallResult?.cancel && stallResult?.ring && stallResult?.phaseBar && stallResult?.card).toBe(true);   // nothing displaced
       expect(samples.every((x) => x.stepCounter === false && x.ringRole === "progressbar")).toBe(true);
     } finally {
       evidence.finishedAt = new Date().toISOString();
