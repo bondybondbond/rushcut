@@ -799,9 +799,9 @@ Icons: `w-4 h-4`; labels: `text-[10px] leading-none font-medium`.
 - "sound" configured: `rc_sound_${projectId}` parsed JSON has `mood` that is non-null and !== `"none"`.
 - Active tab always shows peach regardless of configuration state.
 
-### Export tab guard
+### Export tab
 
-If `!configured.has("arrange") && !configured.has("sound")`, show `window.confirm("You haven't set transitions or music yet. Export anyway?")` before navigating to `/render/:id`. If user cancels, stay on current screen. If either is configured, navigate directly.
+No confirmation prompt: the Export tab navigates straight to `/render/:id` whether or not transitions or music are set (owner, 2026-11-22; the owner keeps control, the app does not nag about recommended steps).
 
 ### RC wordmark
 
