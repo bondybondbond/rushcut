@@ -203,9 +203,17 @@ Always **green** (`#22c55e`), never white/grey.
 
 **Note:** the `.progress-indeterminate` marquee class above is documented but was never actually implemented in `globals.css` or used anywhere (confirmed via repo-wide grep, #140 session) — treat it as aspirational, not a real pattern to copy yet.
 
+### Export screen: ring + phase bar + status card (#267)
+
+Three layers, each answering one question; the ring is the largest and the card the quietest. Heading stays "Export".
+
+- **Ring** (`ProgressRing` in `Render.tsx`): 150px green (`#22c55e`) SVG ring on a `white/10` track, the percentage inside (`progress-pct` holds only the number) and "N elapsed" under it. No time-left estimate anywhere: RushCut has no honest ETA. The #140/#141 stall pulse (`animate-pulse`) is applied to the ring arc.
+- **Phase bar** Prepare / Process / Finish, 20px dots on a thin track. Phase comes only from the raw pipeline stage (`phaseOf`), never from the percent; it never moves backwards. A phase before the current one is done (green dot, check), the current one has a ring dot and bold text, later ones are `white/20`. Nothing is marked current before the first stage arrives.
+- **Status card** (`#1a1a1a`, `white/[0.07]` border, 10px radius): the honest stage text. The whole row toggles the detail line only when the pipeline sent one; otherwise it is a plain row (no chevron, no pointer). Never write detail text the pipeline did not send.
+
 ### Stall pulse (Render screen, #140/#141)
 
-When a real pipeline signal (`pipeline-progress`/`pipeline-stage`) hasn't arrived for >8s, the determinate bar switches to a subtle "still alive" pulse instead of sitting visually frozen — Tailwind's built-in `animate-pulse` on the existing fill, no custom keyframes. The reassurance text lives inline next to the stage label (not below the bar) so nothing ever shifts when it appears/disappears:
+When a real pipeline signal (`pipeline-progress`/`pipeline-stage`) hasn't arrived for >8s, the progress ring (formerly a flat bar) switches to a subtle "still alive" pulse instead of sitting visually frozen — Tailwind's built-in `animate-pulse` on the ring arc, no custom keyframes. The reassurance text lives inline next to the stage label (not below the bar) so nothing ever shifts when it appears/disappears:
 
 ```tsx
 <div className="flex justify-between items-baseline text-sm gap-2">
@@ -221,14 +229,8 @@ When a real pipeline signal (`pipeline-progress`/`pipeline-stage`) hasn't arrive
       {" · Still working"}
     </span>
   </span>
-  <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono shrink-0">{progress}%</span>
 </div>
-<div className="h-2 bg-white/10 rounded-full overflow-hidden">
-  <div
-    className={`h-full bg-[#22c55e] rounded-full transition-all duration-500 ${barPulsing ? "animate-pulse" : ""}`}
-    style={{ width: `${progress}%` }}
-  />
-</div>
+{/* #267: the percentage now lives in the ring (ProgressRing); the pulse is on the ring arc. */}
 ```
 
 **Rule (learned live, #140):** never replace the real stage label with the reassurance text — a first pass did this and the user lost their place in the process. The stage label must always stay visible; the reassurance is additive.

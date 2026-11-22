@@ -15,6 +15,7 @@ import { getRenderPref, setRenderPref, removeRenderPref } from "@/utils/renderSt
 import { absoluteDateTime } from "@/utils/timeAgo";
 import { upgradeNoticeText } from "@/utils/upgradeNotice";
 import { resLabel, durationLabel, formatFileSize } from "@/utils/jobMeta";
+import { PHASES, phaseOf } from "@/utils/exportPhase";
 
 // T5: metadata shown on the film/done view. `iso` is the render timestamp,
 // `analysisDuration` is the pipeline-reported duration used only as a fallback
@@ -85,6 +86,39 @@ function splitStage(raw: string): { primary: string; detail: string | null } {
   return { primary: raw.slice(0, at), detail: raw.slice(at + STAGE_DETAIL_SEP.length) || null };
 }
 
+// #267: circular progress. `progress-bar` marks the ring root (specs use it as the "export UI
+// is up" signal); `progress-pct` holds ONLY the number (specs parse it).
+function ProgressRing({ pct, pulsing, elapsed }: { pct: number; pulsing: boolean; elapsed: string }) {
+  const r = 62;
+  const c = 2 * Math.PI * r;
+  return (
+    <div
+      data-testid="progress-bar"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+      className="relative w-[150px] h-[150px] mx-auto"
+    >
+      <svg width="150" height="150" viewBox="0 0 150 150" className="-rotate-90" aria-hidden="true">
+        <circle cx="75" cy="75" r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="9" />
+        <circle
+          cx="75" cy="75" r={r} fill="none" stroke="#22c55e" strokeWidth="9" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - pct / 100)}
+          className={`transition-all duration-500 motion-reduce:transition-none ${pulsing ? "animate-pulse" : ""}`}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <div className="flex items-baseline">
+          <span data-testid="progress-pct" className="text-[34px] font-bold leading-none text-[#e5e5e5]">{pct}</span>
+          <span className="text-[34px] font-bold leading-none text-[#e5e5e5]" aria-hidden="true">%</span>
+        </div>
+        <span data-testid="elapsed-timer" className="text-xs text-[#a3a3a3] mt-1">{elapsed} elapsed</span>
+      </div>
+    </div>
+  );
+}
+
 // #268: the pipeline emits the "cards" stage and the "Mixing music" label on every export. The
 // display (not the pipeline contract) decides whether they describe real work: cards need at
 // least one non-blank card, music needs a chosen mood. Same predicates as pipeline/render.py
@@ -142,11 +176,11 @@ export default function Render() {
   // #191: click-to-expand second status line; per-view only, never persisted.
   const [detailOpen, setDetailOpen] = useState(false);
   const { primary: stagePrimary, detail: stageDetail } = splitStage(stage);
-  // #142: "Step N of M" indicator, alongside the existing stage label. Both
-  // null until the first STAGE line carrying step info arrives (or on reattach,
-  // seeded from the persisted job row).
-  const [stepIndex, setStepIndex] = useState<number | null>(null);
-  const [stepTotal, setStepTotal] = useState<number | null>(null);
+  // #267: an expanded detail belongs to the stage it was opened on; a new stage starts collapsed.
+  useEffect(() => { setDetailOpen(false); }, [stagePrimary]);
+  // #267: highest phase seen so far (monotonic; -1 = no stage event yet). Replaces the #142
+  // "Step N of M" text (its event fields and DB columns are untouched).
+  const [phaseIdx, setPhaseIdx] = useState(-1);
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string>(_cached?.name ?? "");
@@ -369,10 +403,8 @@ export default function Render() {
       setStage("Starting up the magic...");
       setDetailOpen(false);
       setProgress(0);
-      // #142: a fresh render has no step data yet -- clear any leftover N/M
-      // from a previous render on this same screen instance.
-      setStepIndex(null);
-      setStepTotal(null);
+      // #267: a fresh render has seen no phase yet.
+      setPhaseIdx(-1);
       // U1: seed the timer start for a brand-new render. The timer effect no
       // longer resets startTimeRef on entering "rendering" (so re-attach can
       // continue the original timer) -- fresh starts seed it here instead.
@@ -471,10 +503,8 @@ export default function Render() {
     setProgress(0);
     setStage("Starting up the magic...");
     setDetailOpen(false);
-    // #142: clear any leftover N/M so a subsequent render's own step count is
-    // never confused with the previous render's.
-    setStepIndex(null);
-    setStepTotal(null);
+    // #267: a subsequent render starts with no phase seen.
+    setPhaseIdx(-1);
     setErrorMsg(null);
     setElapsedLabel("0s");
     completedRef.current = false;
@@ -550,9 +580,9 @@ export default function Render() {
         // human label only when stage is genuinely unknown (job started, no
         // STAGE: line emitted yet).
         setStage(stageLabel(status.active_job.current_stage ?? "", projectId) || "Starting up...");
-        // #142: restore the step counter from the persisted job row.
-        setStepIndex(status.active_job.current_stage_step ?? null);
-        setStepTotal(status.active_job.current_stage_total ?? null);
+        // #267: seed the phase from the persisted raw stage (earlier phases show done only
+        // because a later stage is present).
+        setPhaseIdx(phaseOf(status.active_job.current_stage ?? "") ?? -1);
         const startedAt = Date.parse(status.active_job.created_at);
         startTimeRef.current = Number.isNaN(startedAt) ? Date.now() : startedAt;
         // Show the continued elapsed value immediately (avoid a 1s "0s" flash).
@@ -638,16 +668,13 @@ export default function Render() {
     const unlistenStage = listen<{ jobId: string; stage: string; stepIndex?: number | null; stepTotal?: number | null }>("pipeline-stage", (event) => {
       if (event.payload.jobId !== jobId) return;
       const nextLabel = stageLabel(event.payload.stage, projectId);
-      // #268: "" = a stage that does no work for this film (no cards): leave label AND
-      // counter untouched so they keep agreeing.
+      // #268: "" = a stage that does no work for this film (no cards): leave the label
+      // untouched.
       if (nextLabel) setStage(nextLabel);
-      // #142: only update when both are present -- an untagged STAGE line
-      // (no step info) leaves the last-known N/M on screen rather than
-      // flashing it away for one tick.
-      if (nextLabel && event.payload.stepIndex != null && event.payload.stepTotal != null) {
-        setStepIndex(event.payload.stepIndex);
-        setStepTotal(event.payload.stepTotal);
-      }
+      // #267: the phase follows the RAW stage, so a hidden no-work stage (no zoom) still
+      // moves the bar on. Monotonic; an unrecognised stage leaves it unchanged.
+      const ph = phaseOf(event.payload.stage);
+      if (ph != null) setPhaseIdx((cur) => Math.max(cur, ph));
       resetActivityTimer();
       // U4f: the cold zoom stage encodes silently (no PROGRESS) -- extend the stall
       // threshold to 1 min/clip (floor 360s, cap 600s) so it never trips falsely.
@@ -988,68 +1015,89 @@ export default function Render() {
 
           {/* Rendering */}
           {phase === "rendering" && (
-            <div className="space-y-2">
-              <div className="flex justify-between items-baseline text-sm gap-2">
-                {/* #141: reassurance text now lives inline with the stage label
-                    (same flex sub-group so justify-between still only splits
-                    stage-side vs. percent-side) instead of a separate line below
-                    the progress bar -- the old placement caused the elapsed-timer
-                    line to jump when the note appeared/disappeared. The real
-                    stage string still stays visible at all times (#140 lesson:
-                    user lost their place when it was swapped out). The note span
-                    is permanently mounted and only opacity/visibility-toggled --
-                    never conditionally mounted -- so nothing reflows when it
-                    fades in/out; `noteVisible` delays `invisible` until the
-                    opacity fade-out finishes so hiding isn't an instant cut. */}
-                <span className="flex items-baseline min-w-0">
-                  {/* #142: orientation cue paired with the existing % bar below --
-                      only rendered once both values are known (see the listener's
-                      both-present guard), so there's no flash of "Step null of null". */}
-                  {stepIndex != null && stepTotal != null && (
-                    <span data-testid="step-counter" className="text-[#a3a3a3] shrink-0">
-                      {`Step ${stepIndex} of ${stepTotal} · `}
-                    </span>
-                  )}
-                  <span data-testid="stage-label" className="text-[#a3a3a3] truncate" title={stagePrimary}>
-                    {stagePrimary}
-                  </span>
-                  {/* #191: always mounted (like still-working-note) so the row never reflows;
-                      hidden and inert in stages that send no detail line. */}
-                  <button
-                    type="button"
-                    data-testid="stage-detail-toggle"
-                    aria-expanded={detailOpen}
-                    aria-label={detailOpen ? "Hide status details" : "Show status details"}
-                    disabled={!stageDetail}
-                    tabIndex={stageDetail ? 0 : -1}
-                    onClick={() => setDetailOpen((o) => !o)}
-                    className={`ml-1 shrink-0 self-center text-[#a3a3a3] hover:text-[#e5e5e5] transition-colors ${stageDetail ? "visible" : "invisible"}`}
-                  >
-                    <ChevronDown className={`w-4 h-4 transition-transform duration-200 motion-reduce:transition-none ${detailOpen ? "rotate-180" : ""}`} aria-hidden="true" />
-                  </button>
-                  <span
-                    data-testid="still-working-note"
-                    aria-hidden={!barPulsing}
-                    className={`italic text-[#a3a3a3] whitespace-nowrap shrink-0 transition-opacity duration-500 motion-reduce:transition-none ${
-                      barPulsing ? "opacity-100" : "opacity-0"
-                    } ${noteVisible ? "visible" : "invisible"}`}
-                  >
-                    {" · Still working"}
-                  </span>
-                </span>
-                <span data-testid="progress-pct" className="text-[#e5e5e5] font-mono shrink-0">{progress}%</span>
+            <div className="space-y-5 max-w-sm">
+              {/* #267: ring = how far (largest), phase bar = which phase (secondary), card =
+                  what RushCut is doing (understated). The phase follows the raw pipeline stage,
+                  never the percent. A phase before the current one shows done. */}
+              <ProgressRing pct={progress} pulsing={barPulsing} elapsed={elapsedLabel} />
+
+              <div data-testid="phase-bar" className="relative grid grid-cols-3 text-center">
+                <div className="absolute top-[9px] left-[16.667%] right-[16.667%] h-0.5 bg-white/10" aria-hidden="true">
+                  <div
+                    className="h-full bg-[#22c55e] transition-all duration-500 motion-reduce:transition-none"
+                    style={{ width: `${Math.max(0, phaseIdx) * 50}%` }}
+                  />
+                </div>
+                {PHASES.map((name, i) => {
+                  const state = i < phaseIdx ? "done" : i === phaseIdx ? "current" : "pending";
+                  return (
+                    <div
+                      key={name}
+                      data-testid={`phase-step-${i}`}
+                      data-state={state}
+                      aria-current={state === "current" ? "step" : undefined}
+                      className={`relative text-xs ${state === "current" ? "text-[#e5e5e5] font-semibold" : "text-[#a3a3a3]"}`}
+                    >
+                      <span
+                        className={`mx-auto mb-1.5 flex w-5 h-5 items-center justify-center rounded-full border-2 ${
+                          state === "done" ? "bg-[#22c55e] border-[#22c55e] text-[#0a0a0a]"
+                            : state === "current" ? "bg-[#0a0a0a] border-[#22c55e]" : "bg-[#0a0a0a] border-white/20"
+                        }`}
+                      >
+                        {state === "done" && <Check size={12} strokeWidth={3} aria-hidden="true" />}
+                        {state === "current" && <span className="w-2 h-2 rounded-full bg-[#e5e5e5]" />}
+                      </span>
+                      {name}
+                    </div>
+                  );
+                })}
               </div>
-              {detailOpen && (
-                <p data-testid="stage-detail" className="text-xs text-[#a3a3a3] min-h-4">{stageDetail ?? " "}</p>
-              )}
-              <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                <div
-                  data-testid="progress-bar"
-                  className={`h-full bg-[#22c55e] rounded-full transition-all duration-500 ${barPulsing ? "animate-pulse" : ""}`}
-                  style={{ width: `${progress}%` }}
-                />
+
+              {/* Status card: the #191/#265/#268/#269 text. The whole row toggles the detail,
+                  but only when the pipeline sent one -- otherwise it is a plain row (nothing
+                  faked). still-working-note stays mounted (opacity only) so nothing reflows (#141). */}
+              <div className="rounded-[10px] border border-white/[0.07] bg-[#1a1a1a] px-4 py-3">
+                {(() => {
+                  const row = (
+                    <>
+                      <span className="min-w-0 flex-1 text-left">
+                        <span data-testid="stage-label" className="block text-[15px] font-semibold text-[#e5e5e5] truncate" title={stagePrimary}>
+                          {stagePrimary}
+                        </span>
+                        <span
+                          data-testid="still-working-note"
+                          aria-hidden={!barPulsing}
+                          className={`block italic text-xs text-[#a3a3a3] transition-opacity duration-500 motion-reduce:transition-none ${
+                            barPulsing ? "opacity-100" : "opacity-0"
+                          } ${noteVisible ? "visible" : "invisible"}`}
+                        >
+                          Still working
+                        </span>
+                      </span>
+                      {stageDetail && (
+                        <ChevronDown className={`w-4 h-4 shrink-0 text-[#a3a3a3] transition-transform duration-200 motion-reduce:transition-none ${detailOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+                      )}
+                    </>
+                  );
+                  return stageDetail ? (
+                    <button
+                      type="button"
+                      data-testid="stage-detail-toggle"
+                      aria-expanded={detailOpen}
+                      aria-label={detailOpen ? "Hide status details" : "Show status details"}
+                      onClick={() => setDetailOpen((o) => !o)}
+                      className="flex w-full items-center gap-3 cursor-pointer"
+                    >
+                      {row}
+                    </button>
+                  ) : (
+                    <div className="flex w-full items-center gap-3">{row}</div>
+                  );
+                })()}
+                {detailOpen && stageDetail && (
+                  <p data-testid="stage-detail" className="mt-2 border-t border-white/[0.07] pt-2 text-xs text-[#a3a3a3]">{stageDetail}</p>
+                )}
               </div>
-              <p data-testid="elapsed-timer" className="text-xs text-[#a3a3a3]">{elapsedLabel} elapsed</p>
 
               {/* U4g: cancel the in-flight render. Secondary/destructive style
                   per DESIGN.md -- outlined, NOT peach (peach = positive CTA). */}
