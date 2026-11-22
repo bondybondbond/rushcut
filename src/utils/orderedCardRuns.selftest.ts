@@ -12,7 +12,7 @@
  * anchor, multiple interleaved anchors, empty inFilm, delete-one-of-many, plus
  * the "NEVER sort the run" and orphaned-anchor->end invariants.
  */
-import { orderedCardRuns, type PlacedCard } from "./buildJobConfig";
+import { orderedCardRuns, reanchorEndCards, type PlacedCard } from "./buildJobConfig";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -97,6 +97,22 @@ const ids = (arr: { id: string }[]) => arr.map((c) => c.id).join(",");
   const r = orderedCardRuns(cards, ["a", "b"]);
   const total = [...r.before.values()].reduce((s, run) => s + run.length, 0) + r.end.length;
   check("count invariant: sum of runs == input length", total === cards.length, `${total} != ${cards.length}`);
+}
+
+// #181: reanchorEndCards -- an appended clip must land AFTER end cards
+{
+  const film = ["a", "b"];
+  const r = reanchorEndCards([card("e1", null), card("e2", null), card("m", "b")], film, "c");
+  const runs = orderedCardRuns(r, [...film, "c"]);
+  check("#181: end cards now before new clip", ids(runs.before.get("c") ?? []) === "e1,e2");
+  check("#181: no end cards remain", runs.end.length === 0);
+  check("#181: mid card untouched", ids(runs.before.get("b") ?? []) === "m");
+  const none = [card("m", "b")];
+  check("#181: no end card -> same array", reanchorEndCards(none, film, "c") === none);
+  const orphan = reanchorEndCards([card("o", "gone")], film, "c");
+  check("#181: orphan anchor re-anchored", orphan[0].beforeClipId === "c");
+  const open = reanchorEndCards([card("op", "a")], film, "c");
+  check("#181: opening card untouched", open[0].beforeClipId === "a");
 }
 
 if (failed > 0) {

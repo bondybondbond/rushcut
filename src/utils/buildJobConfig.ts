@@ -178,6 +178,22 @@ export function orderedCardRuns<T extends { beforeClipId: string | null }>(
 }
 
 /**
+ * #181: a new clip appended to the film must not jump past a card that sits at the
+ * end. End cards (null anchor or orphaned anchor) are re-anchored before the new
+ * clip, so the film reads [..., card, newClip]. Cards are positional, never "pinned
+ * to the end". Pure; array order is preserved (orderedCardRuns never sorts).
+ */
+export function reanchorEndCards(
+  cards: PlacedCard[],
+  inFilmClipIdsBeforeAdd: string[],
+  newClipId: string,
+): PlacedCard[] {
+  const endIds = new Set(orderedCardRuns(cards, inFilmClipIdsBeforeAdd).end.map((c) => c.id));
+  if (endIds.size === 0) return cards;
+  return cards.map((c) => (endIds.has(c.id) ? { ...c, beforeClipId: newClipId } : c));
+}
+
+/**
  * Card count for the duration model (#149 generalizes #74's two-flag {open, close}
  * shape to a plain count -- every placed card adds CARD_DUR_MS + one xfade overlap
  * regardless of where it sits). Consumers that need live in-memory state instead

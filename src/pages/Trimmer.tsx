@@ -11,7 +11,7 @@ import { TrimBar } from "@/components/trimmer/TrimBar";
 import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
-import { readTransitionConfig, cardDurationFlags, readPlacedCards, orderedCardRuns, cardEdges } from "@/utils/buildJobConfig";
+import { readTransitionConfig, cardDurationFlags, readPlacedCards, savePlacedCards, reanchorEndCards, orderedCardRuns, cardEdges } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
 import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, cardDurMs, cardCuts, edgeFadesOf } from "@/utils/filmDuration";
 import {
@@ -77,6 +77,9 @@ export default function Trimmer() {
   // fires, or the user manually skips ahead). null when nothing is pending (idle, or the
   // hold was set by a manual seek instead, which has no pending promotion).
   const pendingCardAdvanceIdxRef = useRef<number | null>(null);
+  // #181: latest known in-film clip ids, kept current synchronously by add-cut so two
+  // overlapping adds never see a stale list (reanchorEndCards needs the true film).
+  const filmIdsRef = useRef<string[]>([]);
   // #184: cards still to auto-hold in the CURRENT run before the pending promotion.
   // advanceFilmClip fills this with run.slice(1) (card[0] is held immediately);
   // continueFromCardHold shifts one per hold and only promotes once it is empty.
@@ -504,6 +507,18 @@ export default function Trimmer() {
     }
   }
 
+  // #181: re-anchor end cards before a clip just appended to the film end (cards are
+  // positional; see reanchorEndCards). Reads the saved cards, so it needs no live state.
+  function holdEndCardsBefore(newClipId: string, appendedAtEnd: boolean) {
+    if (!projectId) return;
+    const before = filmIdsRef.current;
+    filmIdsRef.current = [...before, newClipId];
+    if (!appendedAtEnd) return;
+    const cards = readPlacedCards(projectId);
+    const next = reanchorEndCards(cards, before, newClipId);
+    if (next !== cards) savePlacedCards(projectId, next);
+  }
+
   async function handleAddCutForClip(targetClip: Clip, cutInMs: number, cutOutMs: number) {
     const isDuplicate = clips.some(
       c =>
@@ -527,6 +542,7 @@ export default function Trimmer() {
         outMs: cutOutMs < targetClip.duration_ms ? cutOutMs : null,
       });
       setClips(prev => [...prev, newCut]);
+      holdEndCardsBefore(newCut.id, true); // #181: appended cut must not jump past an end card
       // #11: a fresh cut clones the source's thumbnail (the 1s frame). Re-extract at the
       // cut's own in-point so the film-strip tile shows the cut's true start frame.
       invoke("regenerate_thumbnail_at_cmd", {
@@ -595,6 +611,10 @@ export default function Trimmer() {
     const merged = withNewCut.map((c) => (orderSet.has(c.id) ? reorderedFilm[k++] : c));
     const next = merged.map((c, i) => ({ ...c, sort_order: i }));
 
+    // #181: re-anchor BEFORE setClips so the strip never renders the card past the new cut.
+    const cardsBeforeDrop = projectId ? readPlacedCards(projectId) : [];
+    const filmIdsBeforeDrop = filmIdsRef.current;
+    holdEndCardsBefore(newCut.id, insertIndex >= orderedInFilmIds.length - 1);
     setClips(next);
     if (projectId) projectCache.set(projectId, { name: projectName, clips: next });
 
@@ -603,7 +623,8 @@ export default function Trimmer() {
     } catch (err) {
       console.error("[trimmer] drop-add reorder failed, rolling back whole add", err);
       setClips(previous);
-      if (projectId) projectCache.set(projectId, { name: projectName, clips: previous });
+      if (projectId) { projectCache.set(projectId, { name: projectName, clips: previous }); savePlacedCards(projectId, cardsBeforeDrop); }
+      filmIdsRef.current = filmIdsBeforeDrop;
       invoke("delete_clip_cmd", { clipId: newCut.id }).catch(() => {});
       return;
     }
@@ -1910,6 +1931,7 @@ export default function Trimmer() {
 
   const sourceClips = clips.filter(c => c.include === 0);
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
+  filmIdsRef.current = inFilm.map((c) => c.id);
   inFilmRef.current = inFilm;
   const inFilmCount = inFilm.length;
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
