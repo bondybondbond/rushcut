@@ -12,7 +12,7 @@
  * anchor, multiple interleaved anchors, empty inFilm, delete-one-of-many, plus
  * the "NEVER sort the run" and orphaned-anchor->end invariants.
  */
-import { orderedCardRuns, reanchorEndCards, type PlacedCard } from "./buildJobConfig";
+import { orderedCardRuns, reanchorEndCards, resolveCardPositions, type PlacedCard } from "./buildJobConfig";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -113,6 +113,15 @@ const ids = (arr: { id: string }[]) => arr.map((c) => c.id).join(",");
   check("#181: orphan anchor re-anchored", orphan[0].beforeClipId === "c");
   const open = reanchorEndCards([card("op", "a")], film, "c");
   check("#181: opening card untouched", open[0].beforeClipId === "a");
+}
+
+// #181: the render manifest position (resolveCardPositions) agrees with the strip order
+{
+  const film = ["a", "b", "c"];
+  const cards = reanchorEndCards([card("e", null)], ["a", "b"], "c");
+  const pos = resolveCardPositions(cards, film).map((s) => s.position);
+  check("#181: render position = index of the new clip (card before c)", pos.length === 1 && pos[0] === 2, String(pos));
+  check("#181: strip order has the card before c, none at end", ids(orderedCardRuns(cards, film).before.get("c") ?? []) === "e" && orderedCardRuns(cards, film).end.length === 0);
 }
 
 if (failed > 0) {
