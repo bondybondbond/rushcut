@@ -37,7 +37,7 @@ This is a project rule for how the agents in this repo should behave. It is not 
 
 **Default: full autonomy inside those limits.** Take a change from understanding to verified delivery without asking permission for ordinary technical decisions.
 
-**Commits and docs:** work on `main` only (no branches, no worktree branches, no PRs). The deliver skill commits locally; **push, issue close and board sync need the owner's typed "approved"**. Changes to `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*`, settings, hooks, `docs/PRD-DEV.md`, `docs/agent_plan.md` or the strategy file need the owner's explicit approval of the wording. An explicit restriction always wins.
+**Commits and docs:** work on `main` only (no branches, no worktree branches, no PRs). The deliver skill commits locally; **push, issue close and board sync need the owner's typed "approved"**. Changes to `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*`, settings, hooks, `docs/PRD-DEV.md`, `docs/agent_plan.md` or the strategy file need the owner's explicit approval of the wording (exception, owner 2026-11-22: the CPO may update factual "Current position" entries in the strategy file: evidence, dates, results). An explicit restriction always wins.
 
 **ChatGPT unreachable (owner, 2026-11-11):** when the `research` agent returns OBJECTION because ChatGPT cannot be reached, a T2 change carries on with the web findings, flagged `FALLBACK-WEBSEARCH` (not cross-model independent) in the change record and the handoff. A T3 change stops and asks the owner. No other model, no faked pass.
 
