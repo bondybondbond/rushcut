@@ -246,9 +246,6 @@ export default function Upload() {
               </button>
             </div>
             <UploadZone onFolderPath={scanFolder} disabled={false} />
-            <p className="text-xs text-[#e5e5e5]/50">
-              Output: 1080p &middot; <span className="text-[#C9A96E]">4K coming soon</span>
-            </p>
           </div>
 
           {/* Right: Resume a Project */}
