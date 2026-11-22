@@ -55,8 +55,11 @@ export function durationLabel(job: Pick<Job, "analysis_summary">): string | null
 
 /** Bytes -> human-readable file size (issue #14). Decimal SI units (1 GB = 1000 MB =
  * 1,000,000,000 bytes), matching FCP/Premiere/DaVinci/HandBrake convention -- not binary
- * GiB. Whole-number MB under 1 GB, one-decimal GB at/above 1 GB. */
+ * GiB. Whole-number KB under ~1 MB (#145), whole-number MB under 1 GB, one-decimal GB
+ * at/above 1 GB. The KB cutover is on the rounded value so 999,500+ bytes read "1 MB",
+ * never "1000 KB". */
 export function formatFileSize(bytes: number): string {
+  if (bytes < 999_500) return `${Math.round(bytes / 1000)} KB`;
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
   return `${Math.round(bytes / 1_000_000)} MB`;
 }
