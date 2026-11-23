@@ -3100,6 +3100,18 @@ fn upgrade_active_in_process() -> bool {
     proxy_upgrades().lock().map(|g| !g.0.is_empty()).unwrap_or(true)
 }
 
+/// The vacuum's in-flight probe: an upgrade in this process wins (the DB cannot see it, so the
+/// DB is not even asked); otherwise the shared-DB answer, errors included, is passed through.
+/// `upgrade_active` is true for an upgrade that has started encoding or is already registered
+/// (jobs still waiting in the deferred list are not registered yet; they re-encode from the
+/// source clip, so the worst case is a wasted re-encode, never a lost file).
+fn in_flight_probe(
+    upgrade_active: bool,
+    db_probe: impl FnOnce() -> Result<bool, rusqlite::Error>,
+) -> Result<bool, rusqlite::Error> {
+    if upgrade_active { Ok(true) } else { db_probe() }
+}
+
 /// Testable core of the proxy vacuum. `in_flight` is probed before the listing, again right
 /// before the DB sets are read, and again before every single removal; an Err counts as in
 /// flight. Returns Err(reason) when it must not delete, else (orphans, stale, bytes).
@@ -3150,7 +3162,7 @@ fn vacuum_proxies_cmd() -> String {
 
     let swept = vacuum_run(
         &proxy_dir,
-        &|| if upgrade_active_in_process() { Ok(true) } else { db::any_work_in_flight() },
+        &|| in_flight_probe(upgrade_active_in_process(), db::any_work_in_flight),
         &|| db::get_proxy_refs_for_vacuum(VACUUM_ACTIVE_DAYS).ok().map(|(all, act)| (
             all.into_iter().map(|p| p.to_lowercase()).collect(),
             act.into_iter().map(|p| p.to_lowercase()).collect(),
@@ -4357,6 +4369,55 @@ mod vacuum_tests {
         assert_eq!((o, s), (1, 0));
         assert!(std::path::Path::new(&live).exists());
         assert!(!std::path::Path::new(&orphan).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // The probe the real command passes: an in-process upgrade short-circuits the DB; a DB
+    // answer or error is passed through unchanged.
+    #[test]
+    fn real_probe_prefers_upgrade_and_passes_db_answers_through() {
+        use super::in_flight_probe;
+        assert!(in_flight_probe(true, || panic!("DB must not be asked while an upgrade runs")).unwrap());
+        assert!(in_flight_probe(false, || Ok(true)).unwrap());
+        assert!(!in_flight_probe(false, || Ok(false)).unwrap());
+        assert!(in_flight_probe(false, || Err(dberr())).is_err());
+        // upgrade_active_in_process() really reflects a registered upgrade
+        let p = format!("rc287-probe-{}", std::process::id());
+        let g = super::try_begin_upgrade(&p).expect("registered");
+        assert!(super::upgrade_active_in_process());
+        drop(g);
+    }
+
+    // The junk loop (.mp4.bak / .tmp.mp4) goes through the same per-removal probe.
+    #[test]
+    fn work_that_starts_mid_loop_stops_junk_removals_too() {
+        let d = scratch("g7");
+        mk(&d, "00000000000000e1.mp4.bak");
+        mk(&d, "00000000000000e2.mp4.bak");
+        mk(&d, "00000000000000e3.tmp.mp4");
+        let calls = std::cell::Cell::new(0u32);
+        let probe = || { calls.set(calls.get() + 1); Ok(calls.get() >= 4) }; // start, DB read, 1st removal idle
+        let refs = || Some((HashSet::new(), HashSet::new()));
+        let (o, _, _) = run_with(&d, &probe, &refs).unwrap();
+        assert_eq!(o, 1, "only the junk removal made before the work started");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // Same size, different mtime (an upgrade that happens to produce the same byte count).
+    #[test]
+    fn a_same_size_file_with_a_new_mtime_is_not_removed() {
+        let d = scratch("g8");
+        let idle_only = mk(&d, "00000000000000f8.mp4");
+        let path = d.join("00000000000000f8.mp4");
+        let refs = || {
+            let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_modified(std::time::SystemTime::now() + Duration::from_secs(60)).unwrap();
+            Some((set(&[&idle_only]), HashSet::new()))
+        };
+        let (o, s, _) = run_with(&d, &|| Ok(false), &refs).unwrap();
+        assert_eq!((o, s), (0, 0));
+        assert!(path.exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
