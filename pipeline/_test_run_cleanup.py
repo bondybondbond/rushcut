@@ -70,9 +70,49 @@ def test_failure_path_end_to_end():
         assert not w.exists(), "failed render left the work dir"
 
 
-def test_cancel_mid_render_leaves_nothing_and_no_orphans():
-    """SIGTERM the process group of a real render (as cancel_render_cmd does).
-    Needs one real clip under /mnt/c/clips (read-only use); skipped without one."""
+def _first_clip():
+    return next((p for p in sorted(Path("/mnt/c/clips").glob("*")) if p.suffix.lower() == ".mp4"), None) \
+        if Path("/mnt/c/clips").exists() else None
+
+
+def test_real_forced_failure_after_scratch_exists():
+    """A REAL render that fails mid-run: a truncated copy of a real clip makes ffmpeg fail
+    after the pipeline has created its scratch dirs. Both must be gone afterwards."""
+    clip = _first_clip()
+    if clip is None:
+        global CANCEL_SKIPPED
+        CANCEL_SKIPPED = True
+        print("SKIP real-failure test: no clip in /mnt/c/clips")
+        return
+    with tempfile.TemporaryDirectory() as base:
+        bad = Path(base) / "truncated.mp4"
+        with open(clip, "rb") as src, open(bad, "wb") as dst:
+            dst.write(src.read(300_000))  # head only: no moov / cut mid-stream
+        job = str(uuid.uuid4())
+        manifest = Path(base) / f"{job}.json"
+        manifest.write_text(json.dumps({
+            "job_id": job, "mode": "final",
+            "clips": [{"local_path": "C:\\" + str(bad)[len("/mnt/c/"):].replace("/", "\\")
+                       if str(bad).startswith("/mnt/c/") else str(bad),
+                       "duration_ms": 20000, "in_ms": 0, "out_ms": 8000, "include": 1,
+                       "clip_volume": 1.0, "zoom_mode": "none"}],
+            "settings": {"output_resolution": "1080p"}, "output_path": f"{base}/out.mp4",
+        }))
+        r = subprocess.run([sys.executable, str(REPO / "pipeline" / "run.py"),
+                            "--job-id", job, "--manifest-path", str(manifest)],
+                           capture_output=True, text=True)
+        assert r.returncode != 0 and "ERROR:" in r.stdout, (r.returncode, r.stdout[-300:])
+        # proof the failure happened AFTER the pipeline set up its scratch dirs
+        log = (Path(base) / f"pipeline-{job}.log").read_text()
+        assert "tmp(tmpfs)=" in log, "failed before scratch existed: not a real mid-run failure"
+        assert not (Path("/tmp") / job).exists(), "real failure left /tmp/<job_id>"
+        assert not (Path(base) / job).exists(), "real failure left the work dir"
+        assert not (Path(base) / "out.mp4").exists()
+
+
+def test_cancel_mid_render_leaves_nothing_and_no_orphans(repeat=5):
+    """SIGTERM the process group of a real render (as cancel_render_cmd does), `repeat`
+    times in a row. Needs one real clip under /mnt/c/clips (read-only use)."""
     import os, signal, time
     clips = sorted(p for p in Path("/mnt/c/clips").glob("*") if p.suffix.lower() == ".mp4") \
         if Path("/mnt/c/clips").exists() else []
@@ -83,6 +123,12 @@ def test_cancel_mid_render_leaves_nothing_and_no_orphans():
         return
     c = str(clips[0])
     win_clip = "C:\\" + c[len("/mnt/c/"):].replace("/", "\\")
+    for _ in range(repeat):
+        _cancel_once(win_clip)
+
+
+def _cancel_once(win_clip):
+    import os, signal, time
     with tempfile.TemporaryDirectory() as base:
         job = str(uuid.uuid4())
         manifest = Path(base) / f"{job}.json"
@@ -116,6 +162,7 @@ if __name__ == "__main__":
     test_helper()
     test_guard_refuses_bad_ids()
     test_failure_path_end_to_end()
+    test_real_forced_failure_after_scratch_exists()
     test_cancel_mid_render_leaves_nothing_and_no_orphans()
     if CANCEL_SKIPPED:
         print("PARTIAL: cancel test was SKIPPED (no source clip); other tests passed")

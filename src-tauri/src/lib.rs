@@ -3099,7 +3099,9 @@ fn vacuum_proxies_cmd() -> String {
         Ok(v) => v,
         Err(_) => return "error=APPDATA not set".to_string(),
     };
-    if has_active_job().unwrap_or(true) {
+    // #287: any render OR background proxy encode/upgrade claim in the shared DB (either
+    // app instance) makes the vacuum skip; an unreadable DB counts as in flight.
+    if db::any_work_in_flight().unwrap_or(true) {
         proxy_bg_log("[vacuum] skipped=render_active");
         return "skipped=render_active".to_string();
     }
@@ -3122,7 +3124,7 @@ fn vacuum_proxies_cmd() -> String {
         || {
             // Re-check right before the DB read: a render started since the first check
             // makes this run give up (delete nothing) instead of racing it.
-            if has_active_job().unwrap_or(true) { return None; }
+            if db::any_work_in_flight().unwrap_or(true) { return None; }
             db::get_proxy_refs_for_vacuum(VACUUM_ACTIVE_DAYS).ok().map(|(all, act)| (
                 all.into_iter().map(|p| p.to_lowercase()).collect(),
                 act.into_iter().map(|p| p.to_lowercase()).collect(),
