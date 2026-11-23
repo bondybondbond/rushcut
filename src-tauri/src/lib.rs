@@ -3016,14 +3016,15 @@ fn vacuum_dir(
     grace: std::time::Duration,
     junk_grace: std::time::Duration,
     remove_stale: bool,
+    proceed: &dyn Fn() -> bool,
     load: impl FnOnce() -> Option<(HashSet<String>, HashSet<String>)>,
 ) -> Option<(u32, u32, u64)> {
     let now = std::time::SystemTime::now();
-    let mut listed: Vec<(std::path::PathBuf, u64, std::time::Duration)> = Vec::new();
+    let mut listed: Vec<(std::path::PathBuf, u64, std::time::Duration, Option<std::time::SystemTime>)> = Vec::new();
     // #287: abandoned `<16hex>.mp4.bak` backups and `<16hex>.tmp.mp4` fresh-encode staging
     // files older than `junk_grace` (24 h: no live encode or swap lasts that long).
     // `*.upg.tmp.mp4` is NOT included: sweep_orphan_upgrade_temps owns it.
-    let mut junk: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    let mut junk: Vec<(std::path::PathBuf, u64, Option<std::time::SystemTime>)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(proxy_dir) {
         for entry in rd.filter_map(|e| e.ok()) {
             let path = entry.path();
@@ -3040,7 +3041,7 @@ fn vacuum_dir(
                         if md.is_file() {
                             let newest = [md.modified().ok(), md.created().ok()].into_iter().flatten().max();
                             let age = newest.and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
-                            if age >= junk_grace { junk.push((path.clone(), md.len())); }
+                            if age >= junk_grace { junk.push((path.clone(), md.len(), md.modified().ok())); }
                         }
                     }
                 }
@@ -3060,21 +3061,31 @@ fn vacuum_dir(
             // temp file's mtime; a copy can reset either).
             let newest = [md.modified().ok(), md.created().ok()].into_iter().flatten().max();
             let age = newest.and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
-            listed.push((path, md.len(), age));
+            listed.push((path, md.len(), age, md.modified().ok()));
         }
     }
     // None = the DB could not be read: delete NOTHING (never infer "orphan" from a failed read).
     let (referenced, active) = load()?;
     let (mut orphans, mut stale, mut bytes) = (0u32, 0u32, 0u64);
-    for (path, len) in junk {
-        if std::fs::remove_file(&path).is_ok() { orphans += 1; bytes += len; }
+    // #287: just before EACH removal the caller's in-flight probe runs again (a render or
+    // encode that starts mid-loop stops the sweep), and the file must be unchanged since it
+    // was listed (an upgrade that renamed a new proxy onto this path is never deleted).
+    let remove_unchanged = |path: &std::path::Path, len: u64, mtime: Option<std::time::SystemTime>| -> bool {
+        if !proceed() { return false; }
+        match std::fs::metadata(path) {
+            Ok(m) if m.len() == len && m.modified().ok() == mtime => std::fs::remove_file(path).is_ok(),
+            _ => false,
+        }
+    };
+    for (path, len, mtime) in junk {
+        if remove_unchanged(&path, len, mtime) { orphans += 1; bytes += len; }
     }
-    for (path, len, age) in listed {
+    for (path, len, age, mtime) in listed {
         if age < grace { continue; }
         let key = path.to_string_lossy().to_lowercase();
         let is_orphan = !referenced.contains(&key);
         let is_stale = remove_stale && !is_orphan && !active.contains(&key);
-        if (is_orphan || is_stale) && std::fs::remove_file(&path).is_ok() {
+        if (is_orphan || is_stale) && remove_unchanged(&path, len, mtime) {
             if is_orphan { orphans += 1 } else { stale += 1 }
             bytes += len;
         }
@@ -3082,11 +3093,38 @@ fn vacuum_dir(
     Some((orphans, stale, bytes))
 }
 
+/// True while a background proxy upgrade is queued or running IN THIS PROCESS (an upgrade keeps
+/// no DB claim, so the shared-DB check cannot see it). The other rushcut.exe's upgrades remain
+/// invisible: a two-instance dev setup, accepted and documented on #287.
+fn upgrade_active_in_process() -> bool {
+    proxy_upgrades().lock().map(|g| !g.0.is_empty()).unwrap_or(true)
+}
+
+/// Testable core of the proxy vacuum. `in_flight` is probed before the listing, again right
+/// before the DB sets are read, and again before every single removal; an Err counts as in
+/// flight. Returns Err(reason) when it must not delete, else (orphans, stale, bytes).
+fn vacuum_run(
+    proxy_dir: &std::path::Path,
+    in_flight: &dyn Fn() -> Result<bool, rusqlite::Error>,
+    refs: &dyn Fn() -> Option<(HashSet<String>, HashSet<String>)>,
+    remove_stale: bool,
+    grace: std::time::Duration,
+    junk_grace: std::time::Duration,
+) -> Result<(u32, u32, u64), &'static str> {
+    let busy = || in_flight().unwrap_or(true);
+    if busy() { return Err("render_active"); }
+    vacuum_dir(proxy_dir, grace, junk_grace, remove_stale, &|| !busy(), || {
+        if busy() { return None; }
+        refs()
+    }).ok_or("db_unreadable_or_busy")
+}
+
 /// #241: remove proxies no project needs. Keeps every proxy referenced by a project active
 /// in the last 90 days (age of the file is irrelevant); removes orphans and proxies only
 /// referenced by stale projects. Refuses to run under RUSHCUT_DATA_DIR (an isolated QA
 /// instance sees a scratch DB but the REAL proxy dir, so every real proxy looks orphaned)
-/// and while any render is pending/processing. Runs at startup and after a render;
+/// and while any render or proxy encode claim is in flight (#287, shared DB, both instances)
+/// or an upgrade runs in this process. Runs at startup and after a render;
 /// result goes to proxy-bg.log (the app's stderr is not visible on a direct launch).
 #[tauri::command]
 fn vacuum_proxies_cmd() -> String {
@@ -3099,12 +3137,6 @@ fn vacuum_proxies_cmd() -> String {
         Ok(v) => v,
         Err(_) => return "error=APPDATA not set".to_string(),
     };
-    // #287: any render OR background proxy encode/upgrade claim in the shared DB (either
-    // app instance) makes the vacuum skip; an unreadable DB counts as in flight.
-    if db::any_work_in_flight().unwrap_or(true) {
-        proxy_bg_log("[vacuum] skipped=render_active");
-        return "skipped=render_active".to_string();
-    }
     if VACUUM_RUNNING.swap(true, Ordering::SeqCst) {
         proxy_bg_log("[vacuum] skipped=already_running");
         return "skipped=already_running".to_string();
@@ -3116,26 +3148,22 @@ fn vacuum_proxies_cmd() -> String {
     let proxy_dir = std::path::PathBuf::from(format!(r"{}\rushcut\proxies", appdata));
     let _ = std::fs::create_dir_all(&proxy_dir);
 
-    let swept = vacuum_dir(
+    let swept = vacuum_run(
         &proxy_dir,
+        &|| if upgrade_active_in_process() { Ok(true) } else { db::any_work_in_flight() },
+        &|| db::get_proxy_refs_for_vacuum(VACUUM_ACTIVE_DAYS).ok().map(|(all, act)| (
+            all.into_iter().map(|p| p.to_lowercase()).collect(),
+            act.into_iter().map(|p| p.to_lowercase()).collect(),
+        )),
+        VACUUM_REMOVE_STALE,
         std::time::Duration::from_secs(VACUUM_GRACE_SECS),
         std::time::Duration::from_secs(VACUUM_JUNK_GRACE_SECS),
-        VACUUM_REMOVE_STALE,
-        || {
-            // Re-check right before the DB read: a render started since the first check
-            // makes this run give up (delete nothing) instead of racing it.
-            if db::any_work_in_flight().unwrap_or(true) { return None; }
-            db::get_proxy_refs_for_vacuum(VACUUM_ACTIVE_DAYS).ok().map(|(all, act)| (
-                all.into_iter().map(|p| p.to_lowercase()).collect(),
-                act.into_iter().map(|p| p.to_lowercase()).collect(),
-            ))
-        },
     );
     let (orphans, stale, bytes) = match swept {
-        Some(t) => t,
-        None => {
-            proxy_bg_log("[vacuum] skipped=db_unreadable");
-            return "skipped=db_unreadable".to_string();
+        Ok(t) => t,
+        Err(why) => {
+            proxy_bg_log(&format!("[vacuum] skipped={}", why));
+            return format!("skipped={}", why);
         }
     };
     let result = format!(
@@ -4211,7 +4239,7 @@ mod vacuum_tests {
         let tmp = mk(&d, "00000000000000a5.tmp.mp4");         // in-flight staging
         let upg = mk(&d, "00000000000000a6.upg.tmp.mp4");
         let foreign = mk(&d, "notes_not_a_proxy.mp4"); // not a RushCut proxy name: never touched
-        let (o, s, b) = vacuum_dir(&d, Duration::ZERO, DAY, true, || {
+        let (o, s, b) = vacuum_dir(&d, Duration::ZERO, DAY, true, &|| true, || {
             Some((set(&[&shared, &live, &dead]), set(&[&shared, &live])))
         }).unwrap();
         assert_eq!((o, s, b), (1, 1, 4096));
@@ -4232,7 +4260,7 @@ mod vacuum_tests {
         let old = std::time::SystemTime::now() - Duration::from_secs(200 * 24 * 3600);
         f.set_modified(old).unwrap();
         drop(f);
-        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, true, || Some((set(&[&p]), set(&[&p])))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, true, &|| true, || Some((set(&[&p]), set(&[&p])))).unwrap();
         assert_eq!((o, s), (0, 0));
         assert!(std::path::Path::new(&p).exists());
         let _ = std::fs::remove_dir_all(&d);
@@ -4243,7 +4271,7 @@ mod vacuum_tests {
         let d = scratch("nostale");
         let dead = mk(&d, "00000000000000e1.mp4");   // referenced, project stale
         let orphan = mk(&d, "00000000000000e2.mp4"); // referenced by nothing
-        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, false, || Some((set(&[&dead]), HashSet::new()))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, false, &|| true, || Some((set(&[&dead]), HashSet::new()))).unwrap();
         assert_eq!((o, s), (1, 0));
         assert!(std::path::Path::new(&dead).exists());
         assert!(!std::path::Path::new(&orphan).exists());
@@ -4254,8 +4282,98 @@ mod vacuum_tests {
     fn unreadable_db_deletes_nothing() {
         let d = scratch("nodb");
         let p = mk(&d, "00000000000000d1.mp4");
-        assert!(vacuum_dir(&d, Duration::ZERO, Duration::ZERO, true, || None).is_none());
+        assert!(vacuum_dir(&d, Duration::ZERO, Duration::ZERO, true, &|| true, || None).is_none());
         assert!(std::path::Path::new(&p).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // #287 guard wiring: these drive `vacuum_run`, the function the real command calls, with an
+    // injected in-flight probe. Removing a check, or reading a probe error as "not in flight",
+    // makes one of them fail.
+    fn run_with(d: &std::path::Path, probe: &dyn Fn() -> Result<bool, rusqlite::Error>,
+                refs: &dyn Fn() -> Option<(HashSet<String>, HashSet<String>)>) -> Result<(u32, u32, u64), &'static str> {
+        super::vacuum_run(d, probe, refs, true, Duration::ZERO, Duration::ZERO)
+    }
+    fn dberr() -> rusqlite::Error { rusqlite::Error::InvalidQuery }
+
+    #[test]
+    fn in_flight_work_stops_the_vacuum_before_anything_is_listed() {
+        let d = scratch("g1");
+        let orphan = mk(&d, "00000000000000c1.mp4");
+        let bak = mk(&d, "00000000000000c2.mp4.bak");
+        let refs = || Some((HashSet::new(), HashSet::new()));
+        assert_eq!(run_with(&d, &|| Ok(true), &refs), Err("render_active"));
+        assert!(std::path::Path::new(&orphan).exists() && std::path::Path::new(&bak).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unreadable_in_flight_probe_counts_as_in_flight() {
+        let d = scratch("g2");
+        let orphan = mk(&d, "00000000000000c3.mp4");
+        let refs = || Some((HashSet::new(), HashSet::new()));
+        assert_eq!(run_with(&d, &|| Err(dberr()), &refs), Err("render_active"));
+        assert!(std::path::Path::new(&orphan).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn work_that_starts_before_the_db_read_stops_the_run() {
+        let d = scratch("g3");
+        let orphan = mk(&d, "00000000000000c4.mp4");
+        let calls = std::cell::Cell::new(0u32);
+        // 1st probe (before listing): idle. 2nd (right before the DB read): busy.
+        let probe = || { calls.set(calls.get() + 1); Ok(calls.get() >= 2) };
+        let refs = || Some((HashSet::new(), HashSet::new()));
+        assert_eq!(run_with(&d, &probe, &refs), Err("db_unreadable_or_busy"));
+        assert!(std::path::Path::new(&orphan).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn work_that_starts_mid_loop_stops_further_removals() {
+        let d = scratch("g4");
+        mk(&d, "00000000000000c5.mp4");
+        mk(&d, "00000000000000c6.mp4");
+        mk(&d, "00000000000000c7.mp4");
+        let calls = std::cell::Cell::new(0u32);
+        // probes 1 and 2 (start, DB read) idle; 3rd (first removal) idle; 4th onward busy.
+        let probe = || { calls.set(calls.get() + 1); Ok(calls.get() >= 4) };
+        let refs = || Some((HashSet::new(), HashSet::new()));
+        let (o, _, _) = run_with(&d, &probe, &refs).unwrap();
+        assert_eq!(o, 1, "only the removal made before the work started");
+        let left = std::fs::read_dir(&d).unwrap().count();
+        assert_eq!(left, 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn idle_probe_still_deletes_orphans_and_keeps_referenced() {
+        let d = scratch("g5");
+        let live = mk(&d, "00000000000000c8.mp4");
+        let orphan = mk(&d, "00000000000000c9.mp4");
+        let refs = || Some((set(&[&live]), set(&[&live])));
+        let (o, s, _) = run_with(&d, &|| Ok(false), &refs).unwrap();
+        assert_eq!((o, s), (1, 0));
+        assert!(std::path::Path::new(&live).exists());
+        assert!(!std::path::Path::new(&orphan).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // An upgrade that renames a fresh proxy onto the listed path between the listing and the
+    // removal must not lose the new file.
+    #[test]
+    fn a_file_replaced_after_listing_is_not_removed() {
+        let d = scratch("g6");
+        let idle_only = mk(&d, "00000000000000d9.mp4"); // stale project's proxy
+        let path = d.join("00000000000000d9.mp4");
+        let refs = || {
+            std::fs::write(&path, vec![1u8; 9000]).unwrap(); // "upgrade swapped in a new proxy"
+            Some((set(&[&idle_only]), HashSet::new()))
+        };
+        let (o, s, _) = run_with(&d, &|| Ok(false), &refs).unwrap();
+        assert_eq!((o, s), (0, 0));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 9000);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -4271,11 +4389,11 @@ mod vacuum_tests {
         let foreign_bak = mk(&d, "notes.mp4.bak");
         let foreign_tmp = mk(&d, "notes.tmp.mp4");
         // fresh files + a 24 h grace: nothing junk goes
-        let (o, _, _) = vacuum_dir(&d, Duration::from_secs(3600), DAY, true, || Some((set(&[&live]), set(&[&live])))).unwrap();
+        let (o, _, _) = vacuum_dir(&d, Duration::from_secs(3600), DAY, true, &|| true, || Some((set(&[&live]), set(&[&live])))).unwrap();
         assert_eq!(o, 0);
         assert!(std::path::Path::new(&bak).exists() && std::path::Path::new(&tmp).exists());
         // zero grace stands in for "older than 24 h"
-        let (o, s, b) = vacuum_dir(&d, Duration::from_secs(3600), Duration::ZERO, true, || Some((set(&[&live]), set(&[&live])))).unwrap();
+        let (o, s, b) = vacuum_dir(&d, Duration::from_secs(3600), Duration::ZERO, true, &|| true, || Some((set(&[&live]), set(&[&live])))).unwrap();
         assert_eq!((o, s, b), (2, 0, 4096));
         assert!(!std::path::Path::new(&bak).exists());
         assert!(!std::path::Path::new(&tmp).exists());
@@ -4284,7 +4402,7 @@ mod vacuum_tests {
         assert!(std::path::Path::new(&foreign_bak).exists() && std::path::Path::new(&foreign_tmp).exists());
         // an unreadable DB deletes no junk either
         let _ = mk(&d, "00000000000000f5.mp4.bak");
-        assert!(vacuum_dir(&d, Duration::ZERO, Duration::ZERO, true, || None).is_none());
+        assert!(vacuum_dir(&d, Duration::ZERO, Duration::ZERO, true, &|| true, || None).is_none());
         assert!(d.join("00000000000000f5.mp4.bak").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -4297,7 +4415,7 @@ mod vacuum_tests {
         let d = scratch("a4");
         let shared = mk(&d, "00000000000000a1.mp4");
         let idle_only = mk(&d, "00000000000000b2.mp4");
-        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, super::VACUUM_REMOVE_STALE, || {
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, super::VACUUM_REMOVE_STALE, &|| true, || {
             Some((set(&[&shared, &idle_only]), set(&[&shared])))
         }).unwrap();
         assert_eq!((o, s), (0, 1));
@@ -4310,7 +4428,7 @@ mod vacuum_tests {
     fn young_files_are_skipped_by_grace() {
         let d = scratch("grace");
         let p = mk(&d, "00000000000000c1.mp4");
-        let (o, s, _) = vacuum_dir(&d, Duration::from_secs(3600), DAY, true, || Some((HashSet::new(), HashSet::new()))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::from_secs(3600), DAY, true, &|| true, || Some((HashSet::new(), HashSet::new()))).unwrap();
         assert_eq!((o, s), (0, 0));
         assert!(std::path::Path::new(&p).exists());
         let _ = std::fs::remove_dir_all(&d);
