@@ -69,6 +69,63 @@ def on_analysis(data: str) -> None:
     print(f"ANALYSIS:{data}", flush=True)
 
 
+def cleanup_job_scratch(job_id: str, ntfs_tmp_base: str) -> None:
+    """#287: remove this job's scratch on EVERY exit path (done, failed, cancelled).
+
+    /tmp/<job_id> is on the WSL root ext4 disk (NOT tmpfs), so every leaked byte
+    grows ext4.vhdx permanently. Also removes the NTFS work dir (render.mp4 +
+    u1g_seg_*), resolved via the SAME function render.py uses (#86). Best-effort:
+    a cleanup error must never mask the real result.
+    """
+    for p in _scratch_paths(job_id, ntfs_tmp_base):
+        try:
+            shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _scratch_paths(job_id: str, ntfs_tmp_base: str) -> list:
+    """The two per-job scratch dirs, or [] for an id that is not a plain name."""
+    job_id = str(job_id)
+    # Guard: only ever a plain job-id name (never empty, never a path).
+    if not job_id or "/" in job_id or "\\" in job_id or job_id in (".", ".."):
+        return []
+    paths = [f"/tmp/{job_id}"]
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from pipeline.render import _resolve_render_work_dir
+        paths.append(str(_resolve_render_work_dir(job_id, ntfs_tmp_base)))
+    except Exception:
+        pass
+    return paths
+
+
+def _install_sigterm_handler(job_id: str, ntfs_tmp_base: str) -> None:
+    # #287: cancel_render_cmd sends SIGTERM to the process group (the ffmpeg children get it
+    # too). Default SIGTERM kills Python without running `finally`, leaking /tmp/<job_id>.
+    # Do NOT unwind via SystemExit: ThreadPoolExecutor.__exit__ would wait for the queued
+    # clips, and their ffmpeg children (started after the signal) would run on as orphans.
+    # Instead hand the removal to a detached `rm -rf` (own session, survives us) and exit
+    # at once: no new child can be spawned.
+    import signal
+    import subprocess
+
+    def _term(signum, frame):
+        paths = _scratch_paths(job_id, ntfs_tmp_base)
+        if paths:
+            try:
+                subprocess.Popen(["rm", "-rf", "--", *paths], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        os._exit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _term)
+    except (ValueError, OSError):
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
@@ -129,6 +186,7 @@ def main() -> None:
     # TODO: replace with user-configurable render scratch-disk setting (see #XX). This
     # is scratch only -- final exports still land in C:\clips\processed (output_path).
     ntfs_tmp_base = str(manifest_path.parent)
+    _install_sigterm_handler(job_id, ntfs_tmp_base)
 
     # Build job dict with nested config matching render.py expectations
     job = {
@@ -210,12 +268,7 @@ def main() -> None:
         tmp_output = run_pipeline(job, clips, clip_paths, on_progress=on_progress, on_stage=on_stage, on_analysis=on_analysis)
 
         shutil.copy2(str(tmp_output), str(output_wsl))
-        # Clean up WSL2 /tmp/<job_id>/ — intermediates are no longer needed after copy.
-        # This frees 1-3 GB per render from the WSL2 tmpfs immediately.
-        shutil.rmtree(f"/tmp/{job_id}", ignore_errors=True)
-        # #86: also remove the NTFS scratch dir (render.mp4 + u1g_seg_* live here now).
-        # Resolve via the SAME function render.py uses so the path can never diverge.
-        shutil.rmtree(str(_resolve_render_work_dir(job_id, ntfs_tmp_base)), ignore_errors=True)
+        # #287: scratch cleanup now runs in the `finally` below (success, failure AND cancel).
 
         # Timing log — skip for draft/preview runs to avoid polluting benchmark data
         if manifest.get("mode", "final") != "draft":
@@ -267,6 +320,8 @@ def main() -> None:
     except Exception as e:
         print(f"ERROR:{e}", flush=True)
         sys.exit(1)
+    finally:
+        cleanup_job_scratch(job_id, ntfs_tmp_base)
 
 
 if __name__ == "__main__":

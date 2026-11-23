@@ -2998,10 +2998,13 @@ const VACUUM_GRACE_SECS: u64 = 3600;
 /// proxies (if no active project shares them) may go. Re-making a proxy is cheap.
 const VACUUM_ACTIVE_DAYS: u32 = 90;
 
-/// #241 owner decision 2026-11-16: do NOT delete proxies of stale-but-referenced projects yet
-/// (the Stagecoach 2025 benchmark project must keep its proxies until it is finished). Orphan
-/// removal and every guard stay on. Flip to true to enable the 90-day rule (tested).
-const VACUUM_REMOVE_STALE: bool = false;
+/// #287 owner decision 2026-11-23 (A4 approved): the 90-day stale-proxy rule is ON. A project
+/// with no DB activity for VACUUM_ACTIVE_DAYS loses the proxies no active project shares; a
+/// proxy shared with an active project is never removed (tested). Supersedes the 2026-11-16
+/// "off" decision (made so the Stagecoach 2025 benchmark kept its proxies).
+const VACUUM_REMOVE_STALE: bool = true;
+/// #287: `*.mp4.bak` and abandoned `*.tmp.mp4` younger than this are never removed.
+const VACUUM_JUNK_GRACE_SECS: u64 = 24 * 3600;
 
 static VACUUM_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -3011,17 +3014,41 @@ static VACUUM_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 fn vacuum_dir(
     proxy_dir: &std::path::Path,
     grace: std::time::Duration,
+    junk_grace: std::time::Duration,
     remove_stale: bool,
     load: impl FnOnce() -> Option<(HashSet<String>, HashSet<String>)>,
 ) -> Option<(u32, u32, u64)> {
     let now = std::time::SystemTime::now();
     let mut listed: Vec<(std::path::PathBuf, u64, std::time::Duration)> = Vec::new();
+    // #287: abandoned `<16hex>.mp4.bak` backups and `<16hex>.tmp.mp4` fresh-encode staging
+    // files older than `junk_grace` (24 h: no live encode or swap lasts that long).
+    // `*.upg.tmp.mp4` is NOT included: sweep_orphan_upgrade_temps owns it.
+    let mut junk: Vec<(std::path::PathBuf, u64)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(proxy_dir) {
         for entry in rd.filter_map(|e| e.ok()) {
             let path = entry.path();
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let is_hex16 = |s: &str| s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit());
+            let junk_stem = if name.ends_with(".upg.tmp.mp4") {
+                None
+            } else {
+                name.strip_suffix(".mp4.bak").or_else(|| name.strip_suffix(".tmp.mp4"))
+            };
+            if let Some(stem) = junk_stem {
+                if is_hex16(stem) {
+                    if let Ok(md) = entry.metadata() {
+                        if md.is_file() {
+                            let newest = [md.modified().ok(), md.created().ok()].into_iter().flatten().max();
+                            let age = newest.and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
+                            if age >= junk_grace { junk.push((path.clone(), md.len())); }
+                        }
+                    }
+                }
+                continue;
+            }
             if path.extension().and_then(|e| e.to_str()) != Some("mp4") { continue; }
-            // In-flight staging files (*.tmp.mp4, *.upg.tmp.mp4) are never touched.
-            if path.file_name().and_then(|s| s.to_str()).map(|n| n.ends_with(".tmp.mp4")).unwrap_or(false) { continue; }
+            // In-flight staging files (*.tmp.mp4, *.upg.tmp.mp4) are never touched here.
+            if name.ends_with(".tmp.mp4") { continue; }
             // Only RushCut's own proxy names ({016x} hash of the source path): the vacuum can never
             // become a general cleaner of whatever lands in this folder.
             let stem_ok = path.file_stem().and_then(|s| s.to_str())
@@ -3039,6 +3066,9 @@ fn vacuum_dir(
     // None = the DB could not be read: delete NOTHING (never infer "orphan" from a failed read).
     let (referenced, active) = load()?;
     let (mut orphans, mut stale, mut bytes) = (0u32, 0u32, 0u64);
+    for (path, len) in junk {
+        if std::fs::remove_file(&path).is_ok() { orphans += 1; bytes += len; }
+    }
     for (path, len, age) in listed {
         if age < grace { continue; }
         let key = path.to_string_lossy().to_lowercase();
@@ -3087,6 +3117,7 @@ fn vacuum_proxies_cmd() -> String {
     let swept = vacuum_dir(
         &proxy_dir,
         std::time::Duration::from_secs(VACUUM_GRACE_SECS),
+        std::time::Duration::from_secs(VACUUM_JUNK_GRACE_SECS),
         VACUUM_REMOVE_STALE,
         || {
             // Re-check right before the DB read: a render started since the first check
@@ -3110,6 +3141,205 @@ fn vacuum_proxies_cmd() -> String {
         orphans, stale, bytes / (1024 * 1024)
     );
     proxy_bg_log(&format!("[vacuum] {}", result));
+    result
+}
+
+// ---------------------------------------------------------------------------
+// #287: startup sweep of %TEMP%\rushcut (job scratch) and WSL /tmp
+// ---------------------------------------------------------------------------
+
+/// Retention (named constants on purpose: a silent retention change is the known failure of
+/// age-based cleanup). Work items = per-job manifest, pid file, segment work dir.
+const TEMP_SWEEP_WORK_SECS: u64 = 7 * 24 * 3600;
+/// Per-job pipeline logs (`pipeline-<uuid>.log`) are the only diagnostics of a failed render.
+const TEMP_SWEEP_LOG_SECS: u64 = 30 * 24 * 3600;
+
+static TEMP_SWEEP_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `8-4-4-4-12` lowercase/uppercase hex, the only id shape RushCut gives a job.
+fn is_job_uuid(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 36 { return false; }
+    b.iter().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => *c == b'-',
+        _ => c.is_ascii_hexdigit(),
+    })
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum TempKind { Work, Log }
+
+/// Map a directory entry name to (job id, kind) or None. ONLY these shapes are ever swept:
+/// `<uuid>.json`, `<uuid>.pid`, `<uuid>/` (Work) and `pipeline-<uuid>.log` (Log), plus a
+/// `.sweep` claim left by an interrupted earlier sweep of one of those. Everything else
+/// (render-timing-log.jsonl, proxy-bg.log, playback-trace.log, proxy-timing.json,
+/// pipeline-latest.log, `<clip>-thumb.jpg`, ...) returns None and is never touched.
+fn classify_temp_item(name: &str, is_dir: bool) -> Option<(String, TempKind)> {
+    let base = name.strip_suffix(".sweep").unwrap_or(name);
+    if is_dir {
+        return if is_job_uuid(base) { Some((base.to_lowercase(), TempKind::Work)) } else { None };
+    }
+    if let Some(id) = base.strip_suffix(".json").or_else(|| base.strip_suffix(".pid")) {
+        if is_job_uuid(id) { return Some((id.to_lowercase(), TempKind::Work)); }
+    }
+    if let Some(id) = base.strip_prefix("pipeline-").and_then(|r| r.strip_suffix(".log")) {
+        if is_job_uuid(id) { return Some((id.to_lowercase(), TempKind::Log)); }
+    }
+    None
+}
+
+fn dir_size(p: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(p) {
+        for e in rd.filter_map(|e| e.ok()) {
+            if let Ok(ft) = e.file_type() {
+                if ft.is_symlink() { continue; }
+                if ft.is_dir() { total += dir_size(&e.path()); }
+                else if let Ok(md) = e.metadata() { total += md.len(); }
+            }
+        }
+    }
+    total
+}
+
+/// Pure sweep of one temp folder (testable on a scratch dir). Order matters, as in
+/// `vacuum_dir`: LIST first, THEN read the DB via `load`, so an item created after the
+/// listing is never considered. `load` returns the ids of LIVE jobs (pending/processing and
+/// not past the crash limit); every other id, terminal or unknown to the DB, is eligible once
+/// past its retention. `None` = the DB could not be read: delete NOTHING.
+/// Each item is claimed by renaming it to `<name>.sweep` before it is deleted; a rename that
+/// fails (another process holds it) skips the item. Symlinks are never followed or removed.
+/// Returns (removed, bytes_freed); counts only successful removals.
+fn sweep_temp_dir(
+    dir: &std::path::Path,
+    work_retention: std::time::Duration,
+    log_retention: std::time::Duration,
+    load: impl FnOnce() -> Option<HashSet<String>>,
+) -> Option<(u32, u64)> {
+    let now = std::time::SystemTime::now();
+    let mut listed: Vec<(std::path::PathBuf, String, bool, TempKind, u64)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            let ft = match entry.file_type() { Ok(t) => t, Err(_) => continue };
+            if ft.is_symlink() { continue; }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let (id, kind) = match classify_temp_item(&name, ft.is_dir()) { Some(x) => x, None => continue };
+            let md = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+            let newest = [md.modified().ok(), md.created().ok()].into_iter().flatten().max();
+            let age = newest.and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
+            let retention = if kind == TempKind::Log { log_retention } else { work_retention };
+            if age < retention { continue; }
+            listed.push((entry.path(), id, ft.is_dir(), kind, md.len()));
+        }
+    }
+    let live = load()?;
+    let (mut removed, mut bytes) = (0u32, 0u64);
+    for (path, id, is_dir, _kind, len) in listed {
+        if live.contains(&id) { continue; }
+        // Belt and braces: the item must sit directly in `dir`.
+        if path.parent() != Some(dir) { continue; }
+        let claimed = if path.extension().and_then(|e| e.to_str()) == Some("sweep") {
+            path.clone() // already claimed by an interrupted earlier sweep
+        } else {
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(".sweep");
+            let target = dir.join(name);
+            if std::fs::rename(&path, &target).is_err() { continue; }
+            target
+        };
+        let size = if is_dir { dir_size(&claimed) } else { len };
+        let ok = if is_dir { std::fs::remove_dir_all(&claimed).is_ok() } else { std::fs::remove_file(&claimed).is_ok() };
+        if ok { removed += 1; bytes += size; }
+    }
+    Some((removed, bytes))
+}
+
+/// A temp folder is safe to sweep from an isolated QA instance only when it lives under the
+/// same root as that instance's own data dir (wdio.qa.conf.ts puts `data` and `temp` side by
+/// side under one run folder). Otherwise the instance has a scratch DB but the LIVE temp
+/// folder, so every real job would look unknown to it: refuse.
+fn temp_belongs_to_data_dir(temp: &std::path::Path, data_dir: &std::path::Path) -> bool {
+    match data_dir.parent() {
+        // >= 3 components: prefix + root + at least one named folder, never a bare drive root.
+        Some(root) if root.components().count() >= 3 => temp.starts_with(root),
+        _ => false,
+    }
+}
+
+/// #287: remove finished-job scratch from %TEMP%\rushcut and stale scratch inside WSL.
+/// Runs once per launch on a background thread; result goes to proxy-bg.log.
+/// Nothing is removed while any render or proxy encode is in flight (checked against the
+/// shared DB, so the second rushcut.exe is covered); an unreadable DB deletes nothing.
+fn sweep_scratch_cmd() -> String {
+    use std::sync::atomic::Ordering;
+    let temp = std::env::temp_dir().join("rushcut");
+    let data_override = std::env::var("RUSHCUT_DATA_DIR").ok().filter(|v| !v.trim().is_empty());
+    let isolated = data_override.is_some();
+    if let Some(d) = &data_override {
+        if !temp_belongs_to_data_dir(&temp, std::path::Path::new(d)) {
+            proxy_bg_log("[sweep] skipped=temp_not_isolated");
+            return "skipped=temp_not_isolated".to_string();
+        }
+    }
+    match db::any_work_in_flight() {
+        Ok(false) => {}
+        Ok(true) => { proxy_bg_log("[sweep] skipped=work_in_flight"); return "skipped=work_in_flight".to_string(); }
+        Err(_) => { proxy_bg_log("[sweep] skipped=db_unreadable"); return "skipped=db_unreadable".to_string(); }
+    }
+    if TEMP_SWEEP_RUNNING.swap(true, Ordering::SeqCst) {
+        return "skipped=already_running".to_string();
+    }
+    struct RunGuard;
+    impl Drop for RunGuard { fn drop(&mut self) { TEMP_SWEEP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst); } }
+    let _guard = RunGuard;
+
+    let swept = sweep_temp_dir(
+        &temp,
+        std::time::Duration::from_secs(TEMP_SWEEP_WORK_SECS),
+        std::time::Duration::from_secs(TEMP_SWEEP_LOG_SECS),
+        || {
+            // Re-check right before the read: a render started since the first check makes
+            // this run give up instead of racing it.
+            if db::any_work_in_flight().unwrap_or(true) { return None; }
+            db::live_job_ids().ok().map(|v| v.into_iter().map(|s| s.to_lowercase()).collect())
+        },
+    );
+    let mut result = match swept {
+        Some((n, bytes)) => format!("temp_removed={},temp_freed_mb={}", n, bytes / (1024 * 1024)),
+        None => { proxy_bg_log("[sweep] skipped=db_unreadable_or_busy"); return "skipped=db_unreadable_or_busy".to_string(); }
+    };
+    // WSL side: never from an isolated instance (WSL /tmp is shared with the live one).
+    if !isolated && !db::any_work_in_flight().unwrap_or(true) {
+        // Never boot the WSL VM just to sweep it: `wsl -l --running` does not start anything
+        // (its output is UTF-16, so NULs are stripped before matching).
+        let mut list = std::process::Command::new("wsl");
+        list.args(["-l", "--running"]);
+        let mut sweep = std::process::Command::new("wsl");
+        sweep.args(["-d", "Ubuntu-24.04", "-u", "root", "--", "bash", "/mnt/c/apps/rushcut/pipeline/wsl_sweep.sh"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            list.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            sweep.creation_flags(0x0800_0000);
+        }
+        let running = list.output().map(|o| {
+            String::from_utf8_lossy(&o.stdout).replace('\0', "").contains("Ubuntu-24.04")
+        }).unwrap_or(false);
+        let out = if running { sweep.output() } else {
+            result.push_str(",wsl=not_running");
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "wsl not running"))
+        };
+        match out {
+            Ok(o) if o.status.success() => {
+                let line = String::from_utf8_lossy(&o.stdout).lines().last().unwrap_or("").trim().to_string();
+                result.push_str(&format!(",wsl=[{}]", line));
+            }
+            Ok(o) => result.push_str(&format!(",wsl=exit_{}", o.status.code().unwrap_or(-1))),
+            Err(_) if !running => {} // already noted as wsl=not_running
+            Err(_) => result.push_str(",wsl=unavailable"),
+        }
+    }
+    proxy_bg_log(&format!("[sweep] {}", result));
     result
 }
 
@@ -3260,6 +3490,9 @@ pub fn run() {
                     }
                 }
                 vacuum_proxies_cmd();
+                // #287: finished-job scratch in %TEMP%\rushcut and stale scratch in WSL /tmp.
+                // Background only (never blocks startup); skips while any work is in flight.
+                sweep_scratch_cmd();
             });
 
             // Batch U1c: self-heal jobs left stuck in 'processing' when the binary was
@@ -3950,6 +4183,8 @@ mod vacuum_tests {
     use super::vacuum_dir;
     use std::collections::HashSet;
     use std::time::Duration;
+    /// junk grace used by the pre-#287 tests: fresh staging files must survive
+    const DAY: Duration = Duration::from_secs(24 * 3600);
 
     fn scratch(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("rc_vacuum_{}_{}", tag, std::process::id()));
@@ -3974,7 +4209,7 @@ mod vacuum_tests {
         let tmp = mk(&d, "00000000000000a5.tmp.mp4");         // in-flight staging
         let upg = mk(&d, "00000000000000a6.upg.tmp.mp4");
         let foreign = mk(&d, "notes_not_a_proxy.mp4"); // not a RushCut proxy name: never touched
-        let (o, s, b) = vacuum_dir(&d, Duration::ZERO, true, || {
+        let (o, s, b) = vacuum_dir(&d, Duration::ZERO, DAY, true, || {
             Some((set(&[&shared, &live, &dead]), set(&[&shared, &live])))
         }).unwrap();
         assert_eq!((o, s, b), (1, 1, 4096));
@@ -3995,7 +4230,7 @@ mod vacuum_tests {
         let old = std::time::SystemTime::now() - Duration::from_secs(200 * 24 * 3600);
         f.set_modified(old).unwrap();
         drop(f);
-        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, true, || Some((set(&[&p]), set(&[&p])))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, true, || Some((set(&[&p]), set(&[&p])))).unwrap();
         assert_eq!((o, s), (0, 0));
         assert!(std::path::Path::new(&p).exists());
         let _ = std::fs::remove_dir_all(&d);
@@ -4006,7 +4241,7 @@ mod vacuum_tests {
         let d = scratch("nostale");
         let dead = mk(&d, "00000000000000e1.mp4");   // referenced, project stale
         let orphan = mk(&d, "00000000000000e2.mp4"); // referenced by nothing
-        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, false, || Some((set(&[&dead]), HashSet::new()))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, false, || Some((set(&[&dead]), HashSet::new()))).unwrap();
         assert_eq!((o, s), (1, 0));
         assert!(std::path::Path::new(&dead).exists());
         assert!(!std::path::Path::new(&orphan).exists());
@@ -4017,8 +4252,55 @@ mod vacuum_tests {
     fn unreadable_db_deletes_nothing() {
         let d = scratch("nodb");
         let p = mk(&d, "00000000000000d1.mp4");
-        assert!(vacuum_dir(&d, Duration::ZERO, true, || None).is_none());
+        assert!(vacuum_dir(&d, Duration::ZERO, Duration::ZERO, true, || None).is_none());
         assert!(std::path::Path::new(&p).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // #287: orphan *.mp4.bak and abandoned *.tmp.mp4 go once past the junk grace; fresh ones,
+    // *.upg.tmp.mp4 and non-proxy names stay; a live proxy is never touched.
+    #[test]
+    fn junk_bak_and_tmp_removed_only_when_old_enough() {
+        let d = scratch("junk");
+        let live = mk(&d, "00000000000000f1.mp4");
+        let bak = mk(&d, "00000000000000f2.mp4.bak");
+        let tmp = mk(&d, "00000000000000f3.tmp.mp4");
+        let upg = mk(&d, "00000000000000f4.upg.tmp.mp4");
+        let foreign_bak = mk(&d, "notes.mp4.bak");
+        let foreign_tmp = mk(&d, "notes.tmp.mp4");
+        // fresh files + a 24 h grace: nothing junk goes
+        let (o, _, _) = vacuum_dir(&d, Duration::from_secs(3600), DAY, true, || Some((set(&[&live]), set(&[&live])))).unwrap();
+        assert_eq!(o, 0);
+        assert!(std::path::Path::new(&bak).exists() && std::path::Path::new(&tmp).exists());
+        // zero grace stands in for "older than 24 h"
+        let (o, s, b) = vacuum_dir(&d, Duration::from_secs(3600), Duration::ZERO, true, || Some((set(&[&live]), set(&[&live])))).unwrap();
+        assert_eq!((o, s, b), (2, 0, 4096));
+        assert!(!std::path::Path::new(&bak).exists());
+        assert!(!std::path::Path::new(&tmp).exists());
+        assert!(std::path::Path::new(&live).exists());
+        assert!(std::path::Path::new(&upg).exists(), "*.upg.tmp.mp4 belongs to sweep_orphan_upgrade_temps");
+        assert!(std::path::Path::new(&foreign_bak).exists() && std::path::Path::new(&foreign_tmp).exists());
+        // an unreadable DB deletes no junk either
+        let _ = mk(&d, "00000000000000f5.mp4.bak");
+        assert!(vacuum_dir(&d, Duration::ZERO, Duration::ZERO, true, || None).is_none());
+        assert!(d.join("00000000000000f5.mp4.bak").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // #287 (A4): with the 90-day rule ON, an idle project's unshared proxy goes and a proxy
+    // shared with an active project stays.
+    #[test]
+    fn stale_rule_is_on_and_keeps_shared_proxies() {
+        assert!(super::VACUUM_REMOVE_STALE, "A4 approved 2026-11-23");
+        let d = scratch("a4");
+        let shared = mk(&d, "00000000000000a1.mp4");
+        let idle_only = mk(&d, "00000000000000b2.mp4");
+        let (o, s, _) = vacuum_dir(&d, Duration::ZERO, DAY, super::VACUUM_REMOVE_STALE, || {
+            Some((set(&[&shared, &idle_only]), set(&[&shared])))
+        }).unwrap();
+        assert_eq!((o, s), (0, 1));
+        assert!(std::path::Path::new(&shared).exists());
+        assert!(!std::path::Path::new(&idle_only).exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -4026,7 +4308,7 @@ mod vacuum_tests {
     fn young_files_are_skipped_by_grace() {
         let d = scratch("grace");
         let p = mk(&d, "00000000000000c1.mp4");
-        let (o, s, _) = vacuum_dir(&d, Duration::from_secs(3600), true, || Some((HashSet::new(), HashSet::new()))).unwrap();
+        let (o, s, _) = vacuum_dir(&d, Duration::from_secs(3600), DAY, true, || Some((HashSet::new(), HashSet::new()))).unwrap();
         assert_eq!((o, s), (0, 0));
         assert!(std::path::Path::new(&p).exists());
         let _ = std::fs::remove_dir_all(&d);
@@ -4071,5 +4353,148 @@ mod vacuum_tests {
         assert!(act.contains("P_SHARED") && act.contains("P_JOB") && act.contains("P_ENC"));
         assert!(act.contains("P_SIB_OLD") && act.contains("P_SIB_NEW"), "sibling-clip activity must keep the whole project");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// #287: sweep of %TEMP%\rushcut (scratch dir only; no env mutation, no real DB).
+#[cfg(test)]
+mod temp_sweep_tests {
+    use super::{classify_temp_item, is_job_uuid, sweep_temp_dir, temp_belongs_to_data_dir, TempKind};
+    use std::collections::HashSet;
+    use std::path::Path;
+    use std::time::Duration;
+
+    const A: &str = "aaaaaaaa-1111-2222-3333-444444444444"; // terminal job
+    const B: &str = "bbbbbbbb-1111-2222-3333-444444444444"; // live job
+    const C: &str = "cccccccc-1111-2222-3333-444444444444"; // unknown to the DB
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rc_tsweep_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+    fn file(d: &Path, n: &str) { std::fs::write(d.join(n), vec![0u8; 1024]).unwrap(); }
+    fn job_dir(d: &Path, n: &str) {
+        std::fs::create_dir_all(d.join(n)).unwrap();
+        std::fs::write(d.join(n).join("u1g_seg_0.mp4"), vec![0u8; 4096]).unwrap();
+    }
+    fn live(ids: &[&str]) -> HashSet<String> { ids.iter().map(|s| s.to_string()).collect() }
+    fn sweep(d: &Path, work: Duration, log: Duration, ids: &[&str]) -> (u32, u64) {
+        sweep_temp_dir(d, work, log, || Some(live(ids))).unwrap()
+    }
+
+    #[test]
+    fn only_job_shaped_names_are_classified() {
+        assert!(is_job_uuid(A));
+        assert!(!is_job_uuid("render-timing-log"));
+        assert_eq!(classify_temp_item(&format!("{}.json", A), false), Some((A.into(), TempKind::Work)));
+        assert_eq!(classify_temp_item(&format!("{}.pid", A), false), Some((A.into(), TempKind::Work)));
+        assert_eq!(classify_temp_item(A, true), Some((A.into(), TempKind::Work)));
+        assert_eq!(classify_temp_item(&format!("pipeline-{}.log", A), false), Some((A.into(), TempKind::Log)));
+        assert_eq!(classify_temp_item(&format!("{}.json.sweep", A), false), Some((A.into(), TempKind::Work)));
+        for never in ["render-timing-log.jsonl", "proxy-bg.log", "playback-trace.log", "proxy-timing.json",
+                      "pipeline-latest.log", "notes.txt", "abc-thumb.jpg", "x.json"] {
+            assert_eq!(classify_temp_item(never, false), None, "{}", never);
+        }
+        // a FILE named like a job dir, and a dir named like a manifest, are not job items
+        assert_eq!(classify_temp_item(A, false), None);
+        assert_eq!(classify_temp_item(&format!("{}.json", A), true), None);
+    }
+
+    #[test]
+    fn terminal_and_unknown_removed_live_recent_and_foreign_kept() {
+        let d = scratch("rules");
+        for id in [A, B, C] { file(&d, &format!("{}.json", id)); file(&d, &format!("{}.pid", id)); job_dir(&d, id); }
+        file(&d, &format!("pipeline-{}.log", A));
+        for keep in ["render-timing-log.jsonl", "proxy-bg.log", "playback-trace.log", "proxy-timing.json", "stuff.bin"] { file(&d, keep); }
+        let (n, bytes) = sweep(&d, Duration::ZERO, Duration::ZERO, &[B]);
+        // A and C: json + pid + dir each (6) + A's log (1)
+        assert_eq!(n, 7);
+        assert_eq!(bytes, 2 * (1024 + 1024 + 4096) + 1024);
+        for id in [A, C] {
+            assert!(!d.join(format!("{}.json", id)).exists() && !d.join(id).exists(), "{}", id);
+        }
+        for id in [B] {
+            assert!(d.join(format!("{}.json", id)).exists() && d.join(format!("{}.pid", id)).exists() && d.join(id).exists(), "live job kept");
+        }
+        for keep in ["render-timing-log.jsonl", "proxy-bg.log", "playback-trace.log", "proxy-timing.json", "stuff.bin"] {
+            assert!(d.join(keep).exists(), "{} must survive", keep);
+        }
+        // no .sweep claim is left behind
+        assert!(std::fs::read_dir(&d).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".sweep")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn retention_and_log_vs_work_windows() {
+        let d = scratch("ret");
+        file(&d, &format!("{}.json", A));
+        file(&d, &format!("pipeline-{}.log", A));
+        // everything is brand new: a real retention keeps all of it
+        assert_eq!(sweep(&d, Duration::from_secs(7 * 86400), Duration::from_secs(30 * 86400), &[]).0, 0);
+        // work window passed, log window not: only the work item goes
+        let (n, _) = sweep(&d, Duration::ZERO, Duration::from_secs(30 * 86400), &[]);
+        assert_eq!(n, 1);
+        assert!(!d.join(format!("{}.json", A)).exists());
+        assert!(d.join(format!("pipeline-{}.log", A)).exists(), "per-job log outlives work files");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn old_file_is_removed_by_age_real_mtime() {
+        let d = scratch("mtime");
+        file(&d, &format!("{}.json", A));
+        file(&d, &format!("{}.json", C));
+        let f = std::fs::OpenOptions::new().write(true).open(d.join(format!("{}.json", A))).unwrap();
+        f.set_modified(std::time::SystemTime::now() - Duration::from_secs(8 * 86400)).unwrap();
+        drop(f);
+        // creation time of a freshly written file is "now", so age uses the NEWER stamp: this
+        // proves the guard errs towards keeping. Zero-retention covers the remove path above.
+        let (n, _) = sweep(&d, Duration::from_secs(7 * 86400), Duration::from_secs(30 * 86400), &[]);
+        assert_eq!(n, 0, "newer of mtime/created decides: a recreated file is not old");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unreadable_db_deletes_nothing() {
+        let d = scratch("nodb");
+        file(&d, &format!("{}.json", A));
+        assert!(sweep_temp_dir(&d, Duration::ZERO, Duration::ZERO, || None).is_none());
+        assert!(d.join(format!("{}.json", A)).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn interrupted_claim_is_finished_and_live_claim_is_not() {
+        let d = scratch("claim");
+        file(&d, &format!("{}.json.sweep", A)); // earlier sweep renamed it, then died
+        file(&d, &format!("{}.json.sweep", B)); // live job: never
+        let (n, _) = sweep(&d, Duration::ZERO, Duration::ZERO, &[B]);
+        assert_eq!(n, 1);
+        assert!(!d.join(format!("{}.json.sweep", A)).exists());
+        assert!(d.join(format!("{}.json.sweep", B)).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn missing_dir_is_a_clean_noop() {
+        let d = std::env::temp_dir().join(format!("rc_tsweep_missing_{}", std::process::id()));
+        assert_eq!(sweep_temp_dir(&d, Duration::ZERO, Duration::ZERO, || Some(HashSet::new())), Some((0, 0)));
+    }
+
+    // QA isolation: a QA instance may sweep only a temp folder under its own run root.
+    #[test]
+    fn qa_instance_cannot_sweep_the_live_temp_folder() {
+        let live_temp = Path::new(r"C:\Users\someone\AppData\Local\Temp\rushcut");
+        let qa_data = Path::new(r"C:\rcqa\run1\data");
+        // DB-only isolation: scratch DB but the LIVE temp -> refused
+        assert!(!temp_belongs_to_data_dir(live_temp, qa_data));
+        // QA_ISOLATE_RENDER=1: temp lives beside data under the run root -> allowed
+        assert!(temp_belongs_to_data_dir(Path::new(r"C:\rcqa\run1\temp\rushcut"), qa_data));
+        // a sibling run is not "its own"
+        assert!(!temp_belongs_to_data_dir(Path::new(r"C:\rcqa\run2\temp\rushcut"), qa_data));
+        // a data dir directly under a drive root would make the whole drive "own": refused
+        assert!(!temp_belongs_to_data_dir(live_temp, Path::new(r"C:\data")));
     }
 }

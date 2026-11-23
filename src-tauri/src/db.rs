@@ -990,6 +990,62 @@ pub fn has_active_job() -> Result<bool, rusqlite::Error> {
     Ok(n > 0)
 }
 
+/// [#287] A job left 'pending'/'processing' by a crash counts as finished once it has been
+/// idle this long (a live pipeline refreshes updated_at with every STAGE/PROGRESS line).
+/// Bounds how long a dead row can block the temp/WSL sweeps. Named constant on purpose:
+/// a silent retention change is the known failure of age-based cleanup.
+pub const CRASHED_JOB_LIMIT_SECS: i64 = 6 * 3600;
+/// [#287] A proxy encode claim younger than this is a live encode (same figure as the startup
+/// claim reset, reset_all_encoding_claims(900)).
+const PROXY_CLAIM_FRESH_SECS: i64 = 900;
+
+/// [#287] Ids of jobs that are genuinely in flight: pending/processing AND not yet past
+/// `limit_secs` idle. A row whose timestamps cannot be parsed is treated as live (the
+/// conservative reading: never infer "dead" from garbage).
+fn live_job_ids_on(conn: &Connection, limit_secs: i64) -> Result<Vec<String>, rusqlite::Error> {
+    let clause = format!("-{} seconds", limit_secs);
+    let mut stmt = conn.prepare(
+        "SELECT id FROM jobs WHERE status IN ('pending','processing')
+           AND (COALESCE(datetime(updated_at), datetime(created_at)) IS NULL
+                OR COALESCE(datetime(updated_at), datetime(created_at)) > datetime('now', ?1))",
+    )?;
+    let rows = stmt.query_map(params![clause], |r| r.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// [#287] Connection-level body of [`any_work_in_flight`] (testable on a scratch connection):
+/// a live render job, OR a background proxy encode/upgrade with a fresh claim.
+fn any_work_in_flight_on(conn: &Connection, limit_secs: i64) -> Result<bool, rusqlite::Error> {
+    if !live_job_ids_on(conn, limit_secs)?.is_empty() {
+        return Ok(true);
+    }
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM clips WHERE proxy_status IN ('queued','encoding')
+           AND proxy_claimed_at IS NOT NULL
+           AND proxy_claimed_at > CAST(strftime('%s','now') AS INTEGER) - ?1",
+        params![PROXY_CLAIM_FRESH_SECS],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// [#287] True while ANY render or background proxy work is in flight, read from the shared
+/// DB (not in-memory state), so the second rushcut.exe is covered. Err = unreadable: callers
+/// must treat that as "in flight" and delete nothing.
+pub fn any_work_in_flight() -> Result<bool, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    any_work_in_flight_on(&conn, CRASHED_JOB_LIMIT_SECS)
+}
+
+/// [#287] Job ids the temp sweep must leave alone (live pending/processing jobs). Every other
+/// job id, terminal or unknown to the DB, is eligible once past retention.
+pub fn live_job_ids() -> Result<Vec<String>, rusqlite::Error> {
+    let conn = Connection::open(db_path())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    live_job_ids_on(&conn, CRASHED_JOB_LIMIT_SECS)
+}
+
 /// Batch U1c: every job still marked 'processing' that is older than `min_age_secs`.
 /// Used by the startup self-heal in setup() to reconcile jobs whose binary was killed
 /// mid-render while the WSL pipeline kept running. ONE param, called twice by the caller:
@@ -1324,5 +1380,78 @@ mod terminal_state_tests {
         assert!(update_job_error_on(&c, "j", "ffmpeg died", "t").unwrap());
         assert!(!update_job_error_on(&c, "j", "Pipeline exited with status: 1", "t").unwrap());
         assert_eq!(st(&c, "j").2.as_deref(), Some("ffmpeg died"));
+    }
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    use super::{any_work_in_flight_on, live_job_ids_on, CRASHED_JOB_LIMIT_SECS};
+    use rusqlite::Connection;
+
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, project_id TEXT, status TEXT, created_at TEXT, updated_at TEXT);
+             CREATE TABLE clips (id TEXT PRIMARY KEY, proxy_status TEXT, proxy_claimed_at INTEGER);",
+        ).unwrap();
+        c
+    }
+    fn ago(c: &Connection, secs: i64) -> String {
+        c.query_row(&format!("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now','-{} seconds')", secs), [], |r| r.get(0)).unwrap()
+    }
+    fn job(c: &Connection, id: &str, status: &str, created: &str, updated: &str) {
+        c.execute("INSERT INTO jobs VALUES (?1,'p',?2,?3,?4)", rusqlite::params![id, status, created, updated]).unwrap();
+    }
+    fn claim(c: &Connection, id: &str, status: &str, claimed_ago: Option<i64>) {
+        let at: Option<i64> = claimed_ago.map(|s| c.query_row(
+            &format!("SELECT CAST(strftime('%s','now') AS INTEGER) - {}", s), [], |r| r.get(0)).unwrap());
+        c.execute("INSERT INTO clips VALUES (?1,?2,?3)", rusqlite::params![id, status, at]).unwrap();
+    }
+
+    #[test]
+    fn idle_db_is_not_in_flight() {
+        let c = db();
+        job(&c, "done", "done", &ago(&c, 99999), &ago(&c, 99999));
+        job(&c, "failed", "failed", &ago(&c, 99999), &ago(&c, 99999));
+        assert!(!any_work_in_flight_on(&c, CRASHED_JOB_LIMIT_SECS).unwrap());
+        assert!(live_job_ids_on(&c, CRASHED_JOB_LIMIT_SECS).unwrap().is_empty());
+    }
+
+    #[test]
+    fn live_and_crashed_jobs_either_side_of_the_limit() {
+        let c = db();
+        let limit = CRASHED_JOB_LIMIT_SECS;
+        job(&c, "live", "processing", &ago(&c, limit * 2), &ago(&c, 60));         // old row, still emitting
+        job(&c, "young", "pending", &ago(&c, limit - 600), &ago(&c, limit - 600)); // just inside the limit
+        job(&c, "crashed", "processing", &ago(&c, limit + 600), &ago(&c, limit + 600)); // past the limit
+        let mut live = live_job_ids_on(&c, limit).unwrap();
+        live.sort();
+        assert_eq!(live, vec!["live".to_string(), "young".to_string()]);
+        assert!(any_work_in_flight_on(&c, limit).unwrap());
+    }
+
+    #[test]
+    fn only_a_crashed_job_does_not_block_forever() {
+        let c = db();
+        job(&c, "crashed", "processing", &ago(&c, CRASHED_JOB_LIMIT_SECS + 600), &ago(&c, CRASHED_JOB_LIMIT_SECS + 600));
+        assert!(!any_work_in_flight_on(&c, CRASHED_JOB_LIMIT_SECS).unwrap());
+    }
+
+    #[test]
+    fn unparseable_timestamps_count_as_live() {
+        let c = db();
+        job(&c, "garbage", "processing", "garbage", "garbage");
+        assert!(any_work_in_flight_on(&c, CRASHED_JOB_LIMIT_SECS).unwrap());
+    }
+
+    #[test]
+    fn proxy_work_counts_only_with_a_fresh_claim() {
+        let c = db();
+        claim(&c, "stale", "encoding", Some(5000));   // abandoned claim
+        claim(&c, "nullq", "queued", None);           // queued, never claimed
+        claim(&c, "donec", "done", Some(10));         // finished
+        assert!(!any_work_in_flight_on(&c, CRASHED_JOB_LIMIT_SECS).unwrap());
+        claim(&c, "fresh", "encoding", Some(30));
+        assert!(any_work_in_flight_on(&c, CRASHED_JOB_LIMIT_SECS).unwrap());
     }
 }
