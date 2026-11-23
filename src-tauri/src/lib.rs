@@ -3093,9 +3093,30 @@ fn vacuum_dir(
     Some((orphans, stale, bytes))
 }
 
+/// An upgrade staging file touched within this many seconds means an encode is live. Same
+/// figure `sweep_orphan_upgrade_temps` uses at startup to call a staging file abandoned.
+const UPGRADE_STAGING_LIVE_SECS: u64 = 600;
+
+/// True when any `*.upg.tmp.mp4` in `proxy_dir` was modified or created within `live_secs`.
+/// Normal launches are single-instance (tauri-plugin-single-instance); a second rushcut.exe
+/// exists only as the isolated QA instance (RUSHCUT_DATA_DIR set), which can share this
+/// proxy folder. This file-based check sees ITS upgrades for the whole encode.
+fn live_upgrade_staging(proxy_dir: &std::path::Path, live_secs: u64) -> bool {
+    let now = std::time::SystemTime::now();
+    let rd = match std::fs::read_dir(proxy_dir) { Ok(r) => r, Err(_) => return false };
+    rd.filter_map(|e| e.ok()).any(|e| {
+        e.file_name().to_string_lossy().ends_with(".upg.tmp.mp4")
+            && e.metadata().ok().map(|m| {
+                let newest = [m.modified().ok(), m.created().ok()].into_iter().flatten().max();
+                newest.and_then(|t| now.duration_since(t).ok())
+                    .map(|a| a.as_secs() < live_secs).unwrap_or(true)
+            }).unwrap_or(true)
+    })
+}
+
 /// True while a background proxy upgrade is queued or running IN THIS PROCESS (an upgrade keeps
-/// no DB claim, so the shared-DB check cannot see it). The other rushcut.exe's upgrades remain
-/// invisible: a two-instance dev setup, accepted and documented on #287.
+/// no DB claim, so the shared-DB check cannot see it). An upgrade in the other process is
+/// covered by `live_upgrade_staging`.
 fn upgrade_active_in_process() -> bool {
     proxy_upgrades().lock().map(|g| !g.0.is_empty()).unwrap_or(true)
 }
@@ -3125,6 +3146,10 @@ fn vacuum_run(
 ) -> Result<(u32, u32, u64), &'static str> {
     let busy = || in_flight().unwrap_or(true);
     if busy() { return Err("render_active"); }
+    // Cross-process signal for an upgrade in the OTHER rushcut.exe (no DB claim, no in-memory
+    // flag we can see): a live upgrade encode writes its `<hash>.upg.tmp.mp4` staging file
+    // continuously, so a fresh one means "an upgrade is running somewhere": do not vacuum.
+    if live_upgrade_staging(proxy_dir, UPGRADE_STAGING_LIVE_SECS) { return Err("upgrade_staging_active"); }
     vacuum_dir(proxy_dir, grace, junk_grace, remove_stale, &|| !busy(), || {
         if busy() { return None; }
         refs()
@@ -4369,6 +4394,23 @@ mod vacuum_tests {
         assert_eq!((o, s), (1, 0));
         assert!(std::path::Path::new(&live).exists());
         assert!(!std::path::Path::new(&orphan).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // An upgrade encode in the OTHER process shows only as a fresh *.upg.tmp.mp4: the vacuum
+    // must delete nothing while one exists. (The "abandoned file stops blocking" side is the
+    // window argument: with a 0 s window no file counts as live; the real 600 s window needs
+    // a file older than 10 minutes, which sweep_orphan_upgrade_temps handles at startup.)
+    #[test]
+    fn a_live_upgrade_staging_file_blocks_the_vacuum() {
+        let d = scratch("g9");
+        let orphan = mk(&d, "00000000000000a9.mp4");
+        mk(&d, "00000000000000b9.upg.tmp.mp4");
+        let refs = || Some((HashSet::new(), HashSet::new()));
+        assert_eq!(run_with(&d, &|| Ok(false), &refs), Err("upgrade_staging_active"));
+        assert!(std::path::Path::new(&orphan).exists());
+        assert!(!super::live_upgrade_staging(&d, 0), "a 0 s window never counts a file as live");
+        assert!(super::live_upgrade_staging(&d, 600));
         let _ = std::fs::remove_dir_all(&d);
     }
 
