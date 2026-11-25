@@ -56,9 +56,8 @@ from .transitions import (
     build_open_close_audio_fc,
     plan_video_batches,
     resolve_cut_names,
-    clamp_xfade_dur,
+    resolve_cuts,
     card_duration_s,
-    card_cuts,
 )
 from .trim import trim  # partial-GOP trim_smart() (#104) explored and removed --
                           # 19-31% real-render regression under contention, see #104
@@ -192,6 +191,13 @@ def _fps_to_tbn(fps_raw: str) -> str:
     6.1.1 rejects the filter with 'timebase mismatch' (exit 234).
     """
     return f"1/{fps_raw.split('/')[0]}"
+
+
+def _fps_float(fps_raw: str) -> float:
+    if "/" in fps_raw:
+        num, den = fps_raw.split("/")
+        return float(num) / float(den)
+    return float(fps_raw)
 
 
 def round_to_standard_fps(r_frame_rate: str) -> int:
@@ -1001,51 +1007,56 @@ def run_pipeline(
     # repeated splicing) so multiple cards land in declared order, not
     # accidental insertion order.
     n_items = len(items)
-    # #190: a card keeps CARD_VISIBLE_S fully visible between its crossfades, so its length is
-    # CARD_VISIBLE_S + one crossfade per neighbouring cut (2 inside the film, 1 at the very
-    # start or end of the film); CARD_PLAIN_S with no transition. Needs the card's final
-    # element index, so resolve every card's slot first.
-    _xf_active = (config.get("transition", "none") != "none") or config.get("shuffle_between", False)
-    _clip_durs = [get_duration(p) for p in current_paths]
-    _slots: "list[int]" = []
-    for c in cards_config:
-        pos = c.get("position", -1)
-        _slots.append(n_items if pos == -1 else max(0, min(int(pos), n_items)))
-    _total_elems = n_items + len(cards_config)
-    cards_by_slot: "dict[int, list[ClipItem]]" = {}
+    # #284: transition lengths are decided ONCE, here, over the film's elements in order
+    # (clips + cards) and passed on to every graph. A card's own length derives from its two
+    # cuts (CARD_VISIBLE_S fully visible between them, #190); with no between-clips
+    # transition it is a fixed CARD_PLAIN_S and limits an opening/closing fade like a clip.
+    _between_on = (config.get("transition", "none") != "none") or config.get("shuffle_between", False)
+    cards_by_slot: "dict[int, list[tuple[int, dict]]]" = {}
     for card_num, c in enumerate(cards_config, start=1):
+        pos = c.get("position", -1)
+        idx = n_items if pos == -1 else max(0, min(int(pos), n_items))
         log.info("[render] Step 4: card %d/%d at position=%s", card_num, len(cards_config), c.get("position"))
-        idx = _slots[card_num - 1]
-        _rank = sum(1 for s in _slots[:card_num - 1] if s == idx)
-        _elem_idx = idx + sum(1 for s in _slots if s < idx) + _rank
-        card_dur_s = card_duration_s(
-            _clip_durs, _xf_active,
-            card_cuts(_elem_idx, _total_elems,
-                      config.get("opening_transition", "none") != "none",
-                      config.get("closing_transition", "none") != "none"),
-        )
+        cards_by_slot.setdefault(idx, []).append((card_num, c))
+
+    # Film order: ("clip", clip index, None) / ("card", card number, card config).
+    order: "list[tuple[str, int, dict | None]]" = []
+    for i in range(n_items + 1):
+        order.extend(("card", num, c) for num, c in cards_by_slot.get(i, []))
+        if i < n_items:
+            order.append(("clip", i, None))
+    card_len = None if _between_on else card_duration_s(None, 0, False)
+    cut_plan = resolve_cuts(
+        [get_duration(items[ref].path) if kind == "clip" else card_len for kind, ref, _ in order],
+        _between_on,
+        config.get("opening_transition", "none") != "none",
+        config.get("closing_transition", "none") != "none",
+        _fps_float(target_fps_raw),
+    )
+    log.info(
+        "[transitions] cut plan: open=%.3f between=[%s] close=%.3f",
+        cut_plan.open_s, ", ".join(f"{t:.3f}" for t in cut_plan.between_s), cut_plan.close_s,
+    )
+
+    new_items: "list[ClipItem]" = []
+    for elem_idx, (kind, ref, c) in enumerate(order):
+        if kind == "clip":
+            new_items.append(items[ref])
+            continue
+        card_dur_s = card_duration_s(cut_plan, elem_idx, _between_on)
         log.info("[render] Step 4: card %d duration %.3fs (element %d of %d, xfade_active=%s)",
-                 card_num, card_dur_s, _elem_idx, _total_elems, _xf_active)
+                 ref, card_dur_s, elem_idx, len(order), _between_on)
         card_path = make_card(
             text=c["text"],
             color=c.get("color", "#000000"),
             duration_s=card_dur_s,
-            out_path=tmp / f"card_{card_num}.mp4",
+            out_path=tmp / f"card_{ref}.mp4",
             size=card_size,
             subtitle=c.get("subtitle", ""),
             target_fps=target_fps_raw,
         )
-        cards_by_slot.setdefault(idx, []).append(
-            ClipItem(path=card_path, volume=1.0, zoom_vf=None, kind="card")
-        )
-
-    if cards_by_slot:
-        new_items: "list[ClipItem]" = []
-        for i in range(n_items + 1):
-            new_items.extend(cards_by_slot.get(i, []))
-            if i < n_items:
-                new_items.append(items[i])
-        items = new_items
+        new_items.append(ClipItem(path=card_path, volume=1.0, zoom_vf=None, kind="card"))
+    items = new_items
 
     # Unzip back to flat lists right where they're needed -- the only place
     # current_paths/clip_volumes/zoom_vfs are (re)constructed from here on.
@@ -1147,6 +1158,11 @@ def run_pipeline(
     transition = config.get("transition", "none")
     opening_transition = config.get("opening_transition", "none")
     closing_transition = config.get("closing_transition", "none")
+    # #284: a fade below the frame floor (very short first/last element) is dropped outright.
+    if cut_plan.open_s <= 0:
+        opening_transition = "none"
+    if cut_plan.close_s <= 0:
+        closing_transition = "none"
     has_open = opening_transition != "none"
     has_close = closing_transition != "none"
     boundary_reencode_s = [0.0]
@@ -1237,28 +1253,22 @@ def run_pipeline(
         seg_tmp = render_work
         seg_tmp.mkdir(parents=True, exist_ok=True)
         log.info("[U1g] segment work dir: %s", seg_tmp)
-        xf = clamp_xfade_dur(durations)
         per_cut_names = resolve_cut_names(
             len(current_paths), transition, shuffle_between, cache_sig
         )
         # May raise ValueError if a boundary clip has no solo region.
-        plan, total = plan_video_batches(durations, batch_size=BATCH_SIZE, xfade_dur=xf)
+        plan, total = plan_video_batches(durations, cut_plan.between_s, batch_size=BATCH_SIZE)
         progress["total"] = len(plan)
         progress_est_duration_s[0] = total
         log.info(
-            "[U1g] segmented render: %d batches total=%.3fs xfade_dur=%.3f",
-            len(plan), total, xf,
+            "[U1g] segmented render: %d batches total=%.3fs",
+            len(plan), total,
         )
 
         # FPS for exact frame-count segmentation. Using -frames:v with counts
         # derived from the GLOBAL frame grid makes the per-segment counts
         # telescope to exactly round(total*fps) -- so boundary rounding cannot
         # accumulate into progressive A/V drift across batches.
-        def _fps_float(raw: str) -> float:
-            if "/" in raw:
-                a, c = raw.split("/")
-                return float(a) / float(c)
-            return float(raw)
         fps_f = _fps_float(target_fps_raw)
         total_frames_expected = round(total * fps_f)
 
@@ -1274,7 +1284,11 @@ def run_pipeline(
             # batch's cuts are the global cuts idxs[0]..idxs[-2].
             bnames = [per_cut_names[k] for k in idxs[:-1]]
             bzoom = [zoom_vfs[k] for k in idxs] if zoom_vfs else None
-            vfc, v_out_b = build_batch_video_fc(bdurs, bnames, mode, output_resolution, xf, zoom_vfs=bzoom)
+            bcuts = [cut_plan.between_s[k] for k in idxs[:-1]]
+            vfc, v_out_b = build_batch_video_fc(
+                bdurs, bnames, mode, output_resolution, bcuts, zoom_vfs=bzoom,
+                target_fps_raw=target_fps_raw, clip_tbn_str=_fps_to_tbn(target_fps_raw),
+            )
 
             # Drop the leading (pre-window) part INSIDE the filter graph -- a
             # "-c copy" trim snaps to GOP keyframes and drifts whole seconds
@@ -1433,7 +1447,8 @@ def run_pipeline(
                 target_fps_raw=target_fps_raw,
                 opening_transition=opening_transition if is_open else "none",
                 closing_transition=closing_transition if is_close else "none",
-                xfade_dur=xf,
+                open_dur=cut_plan.open_s,
+                close_dur=cut_plan.close_s,
                 clip_tbn_str=_fps_to_tbn(target_fps_raw),
             )
             tag = "_".join(t for t, on in (("open", is_open), ("close", is_close)) if on)
@@ -1550,7 +1565,9 @@ def run_pipeline(
         # V4.1: no loudnorm here -- Step 5 is the clean, cacheable intermediate;
         # loudnorm is deferred to the final _apply_audio_treatment step.
         ln = None
-        afc, a_out_lbl = build_audio_only_fc(durations, audio_flags, clip_volumes, xf, ln)
+        afc, a_out_lbl = build_audio_only_fc(
+            durations, audio_flags, clip_volumes, cut_plan.between_s, ln
+        )
 
         # Video already carries the open/close fade (baked into the boundary
         # segment(s) above, pre-concat when needs_open_close) -- mux straight
@@ -1569,7 +1586,8 @@ def run_pipeline(
             )
             if needs_open_close:
                 oc_afc, oc_amap = build_open_close_audio_fc(
-                    opening_transition, closing_transition, xf
+                    opening_transition, closing_transition,
+                    cut_plan.open_s, cut_plan.close_s,
                 )
                 audio_full_oc = seg_tmp / "u1g_audio_full_oc.m4a"
                 ffmpeg_run([
@@ -1683,7 +1701,7 @@ def run_pipeline(
         # Monolithic single-graph path: small projects (<= BATCH_SIZE), the
         # "none"/concat path, or a segmented fallback.
         fc, v_out, a_out = build_filter_complex(
-            current_paths, durations, audio_flags,
+            current_paths, durations, audio_flags, cut_plan,
             transition=transition,
             mode=mode,
             output_resolution=output_resolution,
@@ -1733,11 +1751,10 @@ def run_pipeline(
 
         # #119: interior progress ticks during the monolithic multi-clip
         # encode. total_duration_s mirrors the same overlap-subtraction
-        # plan_video_batches() uses for U1g (xfade shortens the joined
-        # output by xfade_dur per cut).
+        # plan_video_batches() uses for U1g (each cut shortens the joined
+        # output by its own length; 0 when there is no between-clips transition).
         _multi_total_s = (
-            sum(durations) - (len(current_paths) - 1) * clamp_xfade_dur(durations)
-            if has_xfade else sum(durations)
+            sum(durations) - sum(cut_plan.between_s)
         )
         progress_est_duration_s[0] = _multi_total_s
         _multi_lo, _multi_hi = checkpoints["cards"], checkpoints["render"]

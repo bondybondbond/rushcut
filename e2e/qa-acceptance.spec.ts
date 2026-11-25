@@ -32,6 +32,7 @@ const ENV = {
   brk: process.env.RC_ACCEPT_BREAK ?? "",
   cuts: Number(process.env.RC_ACCEPT_CUTS ?? 20),
   sources: Number(process.env.RC_ACCEPT_SOURCES ?? 6),
+  short: process.env.RC_ACCEPT_SHORT ?? "",   // #284: "position:ms,..." cuts shorter than CUT_MS
   runId: process.env.RC_ACCEPT_RUNID ?? "run",
   keep: process.env.RC_ACCEPT_KEEP === "1",
 };
@@ -160,9 +161,13 @@ describe("#237 reusable acceptance run", function () {
           }
         }
         expect(plan.length).toBe(ENV.cuts);
-        for (const { srcId, slot } of plan) {
+        const short = new Map(ENV.short.split(",").filter(Boolean).map((p) => p.split(":").map(Number) as [number, number]));
+        for (const [pos, ms] of short) {
+          if (!(Number.isInteger(pos) && pos >= 0 && pos < ENV.cuts && ms > 0 && ms <= CUT_MS)) throw new Error(`bad --short entry ${pos}:${ms}`);
+        }
+        for (const [pos, { srcId, slot }] of plan.entries()) {
           const inMs = slot * CUT_MS;
-          const cut = await invoke<any>("add_clip_cut_cmd", { projectId, sourceClipId: srcId, inMs, outMs: inMs + CUT_MS });
+          const cut = await invoke<any>("add_clip_cut_cmd", { projectId, sourceClipId: srcId, inMs, outMs: inMs + (short.get(pos) ?? CUT_MS) });
           cutIds.push(cut.id);
         }
         await invoke("reorder_clips_cmd", { clipIds: cutIds });          // stable order (e2e.md tied sort_order trap)
@@ -366,6 +371,7 @@ describe("#237 reusable acceptance run", function () {
       "Run id": ENV.runId,
       "Resolution": ENV.res,
       "Cuts / sources": `${ENV.cuts} cuts from ${ENV.sources} excerpts of the owner's footage (read-only; excerpts are stream copies)`,
+      "Short cuts": ENV.short || "none",
       "Negative control": ENV.brk ? `--break ${ENV.brk}` : "none",
       "Phases": phases.map((p) => `${p.name} ${p.seconds}s${p.ok ? "" : " FAILED: " + p.error}`).join("; "),
       "Render-cache entry": `${cacheOwnership.file || "none"} (${cacheOwnership.ok ? "owned by this run, safe to remove" : "NOT removed: " + cacheOwnership.reason})`,

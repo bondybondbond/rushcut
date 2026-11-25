@@ -11,9 +11,9 @@ import { TrimBar } from "@/components/trimmer/TrimBar";
 import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/components/StickyFilmStrip";
 import { EditorShell } from "@/components/EditorShell";
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
-import { readTransitionConfig, cardDurationFlags, readPlacedCards, savePlacedCards, reanchorEndCards, orderedCardRuns, cardEdges } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readPlacedCards, savePlacedCards, reanchorEndCards, orderedCardRuns } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, filmTimeAtClipStart, cardRegionMs, cardDurMs, cardCuts, edgeFadesOf } from "@/utils/filmDuration";
+import { effectiveFilmMs, CARD_PLAIN_MS } from "@/utils/filmDuration";
 import {
   buildSequence,
   advanceSequenceClock,
@@ -22,6 +22,8 @@ import {
   itemToFilm,
   filmToItem,
   cardTimingAt,
+  clipItem,
+  clipRegionStartMs,
   type Sequence,
   type ClockState,
 } from "@/utils/sequenceClock";
@@ -1200,7 +1202,7 @@ export default function Trimmer() {
     }
     // #197: clip -> clip with a transition = the incoming clip fades in over the outgoing one,
     // which keeps playing. (From a card the card overlay does the dissolving instead.)
-    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const xfadeMs = clipItem(filmSeqRef.current, nextIdx)?.fadeInMs ?? 0; // #284: this cut
     const overlapFade = xfadeMs > 0 && !fromCard && !!nextV && !!prevV && !prevV.paused;
 
     // Pause current slot (not while it is still playing under a fade-in)
@@ -1277,7 +1279,7 @@ export default function Trimmer() {
     // #190: this card's own length (depends on how many crossfades touch it).
     // #197: hold for the card's RULER width (not its full played length): the next clip starts
     // fading in over the card's last overlap, like the render. With no transition they are equal.
-    const holdDurMs = cardTimingAt(filmSeqRef.current, baseFilmMs)?.regionMs ?? cardRegionMs(filmXfadeOverlapMs);
+    const holdDurMs = cardTimingAt(filmSeqRef.current, baseFilmMs)?.regionMs ?? CARD_PLAIN_MS;
     if (cardHoldTickerRef.current !== null) clearInterval(cardHoldTickerRef.current);
     cardHoldTickerRef.current = setInterval(() => {
       const elapsed = performance.now() - cardHoldStartAtRef.current;
@@ -1384,7 +1386,7 @@ export default function Trimmer() {
     }
     // #197: with a transition the next clip fades in OVER the card: keep a purely visual copy of
     // the card on screen for one overlap, fading out, while the clip underneath starts.
-    const cardFadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const cardFadeMs = clipItem(filmSeqRef.current, pendingIdx)?.fadeInMs ?? 0; // #284: this cut
     if (cardFadeMs > 0 && lastCardFaceRef.current) {
       setFadingCard({ ...lastCardFaceRef.current, ms: cardFadeMs });
       if (fadingCardTimerRef.current !== null) clearTimeout(fadingCardTimerRef.current);
@@ -1406,7 +1408,7 @@ export default function Trimmer() {
     // clip (its own timeupdate, or the error handler) must be a no-op once one has fired.
     if (!viaClock && advanceFiredIdxRef.current === filmPlayIdxRef.current) return;
     advanceFiredIdxRef.current = filmPlayIdxRef.current;
-    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const xfadeMs = clipItem(filmSeqRef.current, filmPlayIdxRef.current)?.fadeOutMs ?? 0; // #284
     const overlap = xfadeMs > 0;
 
     const nextIdx = filmPlayIdxRef.current + 1;
@@ -1585,104 +1587,63 @@ export default function Trimmer() {
     anchorSeqClock(filmMs);
     resetFilmPlaybackRate();
     const clips_ = inFilmRef.current;
-    const xfadeMs = clampedXfadeMs(clips_, readTransitionConfig(projectId ?? ""), cardEdges(readPlacedCards(projectId ?? ""), clips_.map((c) => c.id)).count);
 
-    // #74/#149: cards bracket/interleave the film as first-class 3s elements. `filmMs` from
-    // the strip is card-inclusive, so walk clip-by-clip, checking for a card immediately
-    // before EACH clip (generalizes the old open-card-only special case) plus a trailing end
-    // card — mirroring StickyFilmStrip's own segment layout exactly so the two can never
-    // disagree. Every element but the very last one loses one xfade to the next element's
-    // cut (same telescoping rule as filmTimeAtClipStart/effectiveFilmMs). Clicking a card
-    // region parks the playhead + shows the colour overlay; it must NOT mis-seek a video
+    // #74/#149/#284: cards interleave the film as first-class elements and every cut has its
+    // own length, so walk the SAME sequence the strip ruler draws. `filmMs` is telescoped
+    // card-inclusive render time; the last element catches anything past the end. Clicking a
+    // card region parks the playhead + shows the colour overlay; it must NOT mis-seek a video
     // (B-lite — no autoplay-through-card here).
     const placedCards = clips_.length > 0 ? readPlacedCards(projectId ?? "") : [];
-    const runs = orderedCardRuns(placedCards, clips_.map((c) => c.id));
+    const { items } = buildSequence(clips_, readTransitionConfig(projectId ?? ""), placedCards);
+    const hit = items.find((it, k) => filmMs < it.filmEndMs || k === items.length - 1);
+    if (!hit) return;
 
-    let elapsed = 0;
-    for (let i = 0; i < clips_.length; i++) {
-      // #184: a run of >=0 cards precedes this clip; each telescopes (a clip always
-      // follows), so park on whichever the seek time lands in.
-      const run = runs.before.get(clips_[i].id) ?? [];
-      for (let k = 0; k < run.length; k++) {
-        // #190: the card before clip 0 is the film's first element (one neighbouring cut).
-        const cardMs = cardRegionMs(xfadeMs, i === 0 && k === 0 ? cardCuts(0, 2, edgeFadesOf(readTransitionConfig(projectId ?? ""))) : 2, false);
-        if (filmMs < elapsed + cardMs) {
-          activeFilmVideo()?.pause();
-          setIsPlaying(false);
-          // #150: a manual seek that lands on a card must resume the SAME way an
-          // auto-advance-triggered hold does — pressing play promotes into clip[i]
-          // (B-lite: a manual park does NOT auto-walk the rest of the run).
-          pendingCardAdvanceIdxRef.current = i;
-          pendingCardRunRef.current = [];
-          stopCardHoldTicker();
-          setCardHoldElapsedMs(0);
-          cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
-          setCardHold({ filmMs, color: run[k].color, text: run[k].text, subtitle: run[k].subtitle });
-          return;
-        }
-        elapsed += cardMs;
-      }
-
-      const trimmed = Math.max(
-        0,
-        (clips_[i].out_ms ?? clips_[i].duration_ms) - (clips_[i].in_ms ?? 0)
-      );
-      // A clip telescopes unless it is the very last film element (last clip AND no end run).
-      const isLastElement = i === clips_.length - 1 && runs.end.length === 0;
-      const clipMs = Math.max(0, trimmed - (!isLastElement ? xfadeMs : 0));
-      if (filmMs < elapsed + clipMs || (i === clips_.length - 1 && runs.end.length === 0)) {
-        setCardHold(null); // leaving any card region
-        pendingCardAdvanceIdxRef.current = null; // #150: any pending hold/promotion is now moot
-        pendingCardRunRef.current = [];
-        stopCardHoldTicker();
-        setCardHoldElapsedMs(0);
-        cardHoldAutoplayRef.current = false;
-        const offsetInClip = Math.max(0, filmMs - elapsed);
-        const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
-        filmModeRef.current = true;
-        isSeekingRef.current = true;
-
-        if (filmPlayIdxRef.current === i && activeFilmSlotRef.current) {
-          // Same clip — just seek within it; onSeeked resets isSeekingRef.
-          const v = getFilmVideo(activeFilmSlotRef.current);
-          if (v) {
-            v.currentTime = seekToMs / 1000;
-            setCurrentMs(seekToMs); // cursor jumps to click position immediately
-            // #150: mirror crossSeekToClip's shouldPlay->setIsPlaying(true) reconciliation —
-            // needed when wasPlaying comes from forcePlay (restart-from-stop) rather than an
-            // already-true isPlaying, so the same-clip case flips state too, not just the video.
-            if (wasPlaying) v.play().then(() => setIsPlaying(true)).catch(() => {});
-          }
-        } else {
-          // Different clip — Option H: cross-slot load with rVFC mediaTime gate.
-          // Loads into the OPPOSITE slot while outgoing frame stays visible;
-          // swap only when the new slot's compositor frame is at/near seekTo.
-          // onReady resets isSeekingRef and reconciles play state.
-          crossSeekToClip(i, seekToMs, wasPlaying);
-        }
-        return;
-      }
-      elapsed += clipMs;
+    if (hit.kind === "card" && hit.card) {
+      activeFilmVideo()?.pause();
+      setIsPlaying(false);
+      // #150: a manual seek that lands on a card must resume the SAME way an
+      // auto-advance-triggered hold does — pressing play promotes into the next clip
+      // (B-lite: a manual park does NOT auto-walk the rest of the run). A trailing end
+      // card has no next clip: clips_.length means "nothing to promote to."
+      const nextClip = items.slice(hit.segIndex + 1).find((it) => it.kind === "clip");
+      pendingCardAdvanceIdxRef.current = nextClip ? nextClip.index : clips_.length;
+      pendingCardRunRef.current = [];
+      stopCardHoldTicker();
+      setCardHoldElapsedMs(0);
+      cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
+      setCardHold({ filmMs, color: hit.card.color, text: hit.card.text, subtitle: hit.card.subtitle });
+      return;
     }
 
-    // Past the last clip — the trailing end run (#184: >=0 cards). Park on whichever
-    // card the seek lands in; the last end card is the film's final element (no telescope).
-    for (let k = 0; k < runs.end.length; k++) {
-      const isLast = k === runs.end.length - 1;
-      const cardMs = cardRegionMs(xfadeMs, isLast ? cardCuts(1, 2, edgeFadesOf(readTransitionConfig(projectId ?? ""))) : 2, isLast);
-      if (filmMs < elapsed + cardMs || isLast) {
-        activeFilmVideo()?.pause();
-        setIsPlaying(false);
-        // #150: trailing end-card sentinel — clips_.length means "nothing to promote to."
-        pendingCardAdvanceIdxRef.current = clips_.length;
-        pendingCardRunRef.current = [];
-        stopCardHoldTicker();
-        setCardHoldElapsedMs(0);
-        cardHoldAutoplayRef.current = false; // manual seek — B-lite park, no countdown
-        setCardHold({ filmMs, color: runs.end[k].color, text: runs.end[k].text, subtitle: runs.end[k].subtitle });
-        return;
+    const i = hit.index;
+    setCardHold(null); // leaving any card region
+    pendingCardAdvanceIdxRef.current = null; // #150: any pending hold/promotion is now moot
+    pendingCardRunRef.current = [];
+    stopCardHoldTicker();
+    setCardHoldElapsedMs(0);
+    cardHoldAutoplayRef.current = false;
+    const offsetInClip = Math.max(0, filmMs - hit.filmStartMs);
+    const seekToMs = (clips_[i].in_ms ?? 0) + offsetInClip;
+    filmModeRef.current = true;
+    isSeekingRef.current = true;
+
+    if (filmPlayIdxRef.current === i && activeFilmSlotRef.current) {
+      // Same clip — just seek within it; onSeeked resets isSeekingRef.
+      const v = getFilmVideo(activeFilmSlotRef.current);
+      if (v) {
+        v.currentTime = seekToMs / 1000;
+        setCurrentMs(seekToMs); // cursor jumps to click position immediately
+        // #150: mirror crossSeekToClip's shouldPlay->setIsPlaying(true) reconciliation —
+        // needed when wasPlaying comes from forcePlay (restart-from-stop) rather than an
+        // already-true isPlaying, so the same-clip case flips state too, not just the video.
+        if (wasPlaying) v.play().then(() => setIsPlaying(true)).catch(() => {});
       }
-      elapsed += cardMs;
+    } else {
+      // Different clip — Option H: cross-slot load with rVFC mediaTime gate.
+      // Loads into the OPPOSITE slot while outgoing frame stays visible;
+      // swap only when the new slot's compositor frame is at/near seekTo.
+      // onReady resets isSeekingRef and reconciles play state.
+      crossSeekToClip(i, seekToMs, wasPlaying);
     }
   }
 
@@ -1697,12 +1658,10 @@ export default function Trimmer() {
     const target = filmPlayIdxRef.current + dir;
     if (target < 0 || target >= list.length) return;
     diagLog(`film-nav dir=${dir} target=${target}`);
-    // Render-time start of the target clip — seekFilmTo consumes card-inclusive telescoped
-    // render-time (#71/#74/#149), so pass the same per-clip card map filmTimeAtClipStart needs.
-    const xfadeMs = clampedXfadeMs(list, readTransitionConfig(projectId ?? ""), cardEdges(readPlacedCards(projectId ?? ""), list.map((c) => c.id)).count);
+    // Render-time start of the target clip's region — seekFilmTo consumes card-inclusive
+    // telescoped render time (#71/#74/#149), so read it off the same sequence.
     const placedCards = list.length > 0 ? readPlacedCards(projectId ?? "") : [];
-    const cardsBeforeClip = list.map((c) => placedCards.some((p) => p.beforeClipId === c.id));
-    seekFilmTo(filmTimeAtClipStart(list, target, xfadeMs, cardsBeforeClip, edgeFadesOf(readTransitionConfig(projectId ?? ""))));
+    seekFilmTo(clipRegionStartMs(buildSequence(list, readTransitionConfig(projectId ?? ""), placedCards), target));
   }
 
   // #74/#150: a card-region hold is a film-mode-only state (autoplay holds keep isPlaying
@@ -1870,10 +1829,11 @@ export default function Trimmer() {
         ) {
           const av = getFilmVideo(activeFilmSlotRef.current);
           const ac = inFilmRef.current[filmPlayIdxRef.current];
-          const followed = seq.xfadeMs <= 0 || activeItem.filmEndMs < seq.totalMs - 1;
+          // The last item is only followed here in a film with no fades at all (#284: per cut).
+          const followed = activeItem.filmEndMs < seq.totalMs - 1 || seq.items.every((it) => it.fadeOutMs <= 0);
           if (
             followed && !!av && !!ac && av.dataset.clipId === ac.id && !av.paused && av.readyState >= 2 &&
-            av.currentTime >= (ac.out_ms ?? ac.duration_ms) / 1000 - seq.xfadeMs / 1000 - 0.02
+            av.currentTime >= (ac.out_ms ?? ac.duration_ms) / 1000 - activeItem.fadeOutMs / 1000 - 0.02
           ) {
             advanceFiredIdxRef.current = filmPlayIdxRef.current;
             advanceRef.current(true);
@@ -1945,14 +1905,9 @@ export default function Trimmer() {
   inFilmRef.current = inFilm;
   const inFilmCount = inFilm.length;
   // #62: displayed runtime subtracts transition overlap (telescoped, like the render).
-  const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardDurationFlags(projectId ?? "", inFilm.map((c) => c.id)));
+  const totalMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), readPlacedCards(projectId ?? ""));
 
-  // Render-time (telescoped) overlap per cut — shared by the playhead, seek + ruler (#71).
-  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""), cardEdges(readPlacedCards(projectId ?? ""), inFilm.map((c) => c.id)).count);
-
-  // #74/#149: card tiles for the filmstrip + the per-clip "card precedes this clip" map
-  // used by filmTimeAtClipStart below (generalizes the old single hasOpenCard boolean to
-  // arbitrary mid-roll positions). Cards are edited on Arrange and persisted to the store,
+  // #74/#149: card tiles for the filmstrip. Cards are edited on Arrange and persisted to the store,
   // so Trimmer reads them via readPlacedCards (no live in-memory state here).
   const filmPlacedCards = readPlacedCards(projectId ?? "");
   const filmCardsForStrip: PositionedCard[] = filmPlacedCards.map((c) => ({
@@ -1976,9 +1931,7 @@ export default function Trimmer() {
   // (that wall-clock -> telescoped remap is card-specific; the clock is paused while
   // parked on a card and re-anchored to the next clip's start when the hold ends).
   // #190: the held card's own telescoped width (depends on its position), not one shared value.
-  const filmCardRegionMs = cardHold
-    ? (cardTimingAt(filmSeq, cardHold.filmMs)?.regionMs ?? cardRegionMs(filmXfadeOverlapMs))
-    : cardRegionMs(filmXfadeOverlapMs);
+  const filmCardRegionMs = (cardHold && cardTimingAt(filmSeq, cardHold.filmMs)?.regionMs) || CARD_PLAIN_MS;
   const filmPositionMs = viewMode === "film"
     ? (cardHold
         // #150 animate the needle across the autoplay hold; #163 clamp to the card-region
@@ -2162,8 +2115,7 @@ export default function Trimmer() {
           onReorder={handleReorder}
           playheadMs={filmPositionMs}
           onSeek={viewMode === "film" ? seekFilmTo : undefined}
-          xfadeOverlapMs={filmXfadeOverlapMs}
-          edgeFades={edgeFadesOf(readTransitionConfig(projectId ?? ""))}
+          transitionConfig={readTransitionConfig(projectId ?? "")}
           cards={filmCardsForStrip}
           onDropCut={viewMode === "clip" ? handleDropCutAtIndex : undefined}
         />

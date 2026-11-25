@@ -22,13 +22,13 @@
  *   - reconcile: 3 zones; NO backward seqTimeMs correction for |drift| < hardBack
  */
 import type { Clip } from "@/types/project";
-import { cardEdges, type PlacedCard } from "@/utils/buildJobConfig";
+import type { PlacedCard } from "@/utils/buildJobConfig";
 import type { TransitionConfig } from "@/utils/buildJobConfig";
-import { cardDurMs, cardRegionMs, clampedXfadeMs, effectiveFilmMs } from "./filmDuration";
+import { effectiveFilmMs } from "./filmDuration";
 import {
   advanceSequenceClock,
   buildSequence,
-  buildSequenceCore,
+  cardTimingAt,
   filmToItem,
   filmToMedia,
   filmToNaive,
@@ -69,22 +69,27 @@ const D = clip("d", 0, 6_000);
 // AC2 has two halves:
 //   (a) buildSequence.totalMs ALWAYS equals an independent recomputation of the
 //       StickyFilmStrip renderMsArr telescoped sum -- the "needle matches ruler"
-//       contract (holds for every n, including n<2 where clampedXfadeMs is 0).
+//       contract (holds for every n).
 //   (b) for n>=2, or n==1 with at least one card (#243: cards are elements, so
-//       clampedXfadeMs counts them like effectiveFilmMs and the render do), that also
+//       effectiveFilmMs and the render count them), that also
 //       equals effectiveFilmMs minus the +100ms/black-fade net. Only n==1 with NO card is
 //       skipped (nothing to overlap).
 {
-  // Independent strip-total recompute (mirrors StickyFilmStrip renderMsArr).
+  // Independent strip-total recompute. Every clip here is longer than 4.5s, so (#284) each cut
+  // must be exactly 1500ms with a between transition and 0 without, and a card 1500 + its two
+  // cuts (3000 plain). Nothing is read back from the item's own fade fields.
   function stripTotal(film: Clip[], tc: TransitionConfig, cards: PlacedCard[]): number {
-    const seq = buildSequence(film, tc, cards); // reuse item native widths + xfade
-    const nativeArr = seq.items.map((it) =>
-      it.naiveEndMs - it.naiveStartMs,
-    );
-    return nativeArr.reduce(
-      (sum, m, i) => sum + Math.max(0, m - (i < nativeArr.length - 1 ? seq.xfadeMs : 0)),
-      0,
-    );
+    const on = tc.between !== "none" || tc.shuffleBetween;
+    const seq = buildSequence(film, tc, cards); // item ORDER only
+    const n = seq.items.length;
+    return seq.items.reduce((sum, it, i) => {
+      const left = i > 0 || tc.opening !== "none" ? 1500 : 0;
+      const right = i < n - 1 || tc.closing !== "none" ? 1500 : 0;
+      const native = it.clip
+        ? (it.clip.out_ms ?? it.clip.duration_ms) - (it.clip.in_ms ?? 0)
+        : on ? 1500 + left + right : 3000;
+      return sum + native - (on && i < n - 1 ? 1500 : 0);
+    }, 0);
   }
 
   const cases: Array<{ film: Clip[]; cards: PlacedCard[] }> = [
@@ -124,7 +129,7 @@ const D = clip("d", 0, 6_000);
         check(
           `AC2b totalMs == effectiveFilmMs - blackNet (${label})`,
           Math.abs(seq.totalMs - expected) < 1e-6,
-          `seq.totalMs=${seq.totalMs} expected=${expected} effectiveFilmMs=${effectiveFilmMs(film, tc, cardEdges(cards, film.map((c) => c.id)))}`,
+          `seq.totalMs=${seq.totalMs} expected=${expected} effectiveFilmMs=${effectiveFilmMs(film, tc, cards)}`,
         );
       }
     }
@@ -132,8 +137,10 @@ const D = clip("d", 0, 6_000);
 }
 
 // --- #243: 1 clip, no card never overlaps; 1 clip + a card does (negative + positive) ----
-check("#243 1 clip, no card, crossfade -> overlap 0", clampedXfadeMs([A], tcfg({ between: "crossfade" }), 0) === 0);
-check("#243 1 clip + 1 card, crossfade -> overlap 1500", clampedXfadeMs([A], tcfg({ between: "crossfade" }), 1) === 1500);
+check("#243 1 clip, no card, crossfade -> no overlap",
+  buildSequence([A], tcfg({ between: "crossfade" }), []).items.every((i) => i.fadeInMs === 0 && i.fadeOutMs === 0));
+check("#243 1 clip + 1 card, crossfade -> overlap 1500",
+  buildSequence([A], tcfg({ between: "crossfade" }), [card("k0", "a")]).items[0].fadeOutMs === 1500);
 
 // --- AC1: round-trip filmToItem <-> itemToFilm, offset-bounded ---------------
 {
@@ -379,37 +386,14 @@ check("#243 1 clip + 1 card, crossfade -> overlap 1500", clampedXfadeMs([A], tcf
   check("reconcile: NO backward seqTimeMs correction for |drift| < hardBack (#164 signature)", !anyBackstep);
 }
 
-// --- #174 Phase D: buildSequenceCore == buildSequence, one resolver ---------
-{
-  const cases: Array<[Clip[], TransitionConfig, PlacedCard[]]> = [
-    [[A, B, C], tcfg({ between: "crossfade" }), [card("k1", "b")]],
-    [[A, B, C, D], tcfg({ between: "crossfade" }), [card("k0", "a"), card("k1", "b"), card("kE", null)]],
-    [[A, B], tcfg(), []],
-    [[A], tcfg({ between: "crossfade" }), [card("kE", null)]],
-  ];
-  for (const [film, tc, cards] of cases) {
-    const viaWrapper = buildSequence(film, tc, cards);
-    const viaCore = buildSequenceCore(film, clampedXfadeMs(film, tc, cardEdges(cards, film.map((c) => c.id)).count), cards);
-    const label = `n=${film.length} cards=${cards.length} ${tc.between}`;
-    check(
-      `Phase D: buildSequenceCore geometry identical to buildSequence (${label})`,
-      JSON.stringify(viaCore.items.map((i) => [i.filmStartMs, i.filmEndMs, i.naiveStartMs, i.naiveEndMs, i.kind, i.index])) ===
-        JSON.stringify(viaWrapper.items.map((i) => [i.filmStartMs, i.filmEndMs, i.naiveStartMs, i.naiveEndMs, i.kind, i.index])) &&
-        viaCore.totalMs === viaWrapper.totalMs &&
-        viaCore.naiveTotalMs === viaWrapper.naiveTotalMs &&
-        viaCore.xfadeMs === viaWrapper.xfadeMs,
-    );
-  }
-}
-
 // --- #184: multiple cards per anchor -- ordered runs, count invariant ------
-// buildSequenceCore emits EVERY card in a run as its own SeqItem, in persisted
+// buildSequence emits EVERY card in a run as its own SeqItem, in persisted
 // array order, and the strip's independent segment walk agrees exactly (Gate 3
 // #2: all consumers derive one identical flattened card order).
 {
   // The strip builds `segments` by: for each clip, push its before-run cards in
   // order, then the clip; after all clips, push the end-run cards in order. This
-  // recomputes that flattened CARD id order independently of buildSequenceCore.
+  // recomputes that flattened CARD id order independently of buildSequence.
   function stripCardOrder(film: Clip[], cards: PlacedCard[]): string[] {
     const inFilmIds = new Set(film.map((c) => c.id));
     const before = new Map<string, PlacedCard[]>();
@@ -432,9 +416,9 @@ check("#243 1 clip + 1 card, crossfade -> overlap 1500", clampedXfadeMs([A], tcf
     ["3 stacked at end", [A], tcfg(), [card("e1", null), card("e2", null), card("e3", null)]],
   ];
   for (const [label, film, tc, cards] of cases) {
-    const seq = buildSequenceCore(film, clampedXfadeMs(film, tc, cardEdges(cards, film.map((c) => c.id)).count), cards);
+    const seq = buildSequence(film, tc, cards);
     const seqCardIds = seq.items.filter((i) => i.kind === "card").map((i) => i.card!.id);
-    check(`#184 ${label}: buildSequenceCore card order == strip card order`,
+    check(`#184 ${label}: buildSequence card order == strip card order`,
       JSON.stringify(seqCardIds) === JSON.stringify(stripCardOrder(film, cards)),
       `seq=${seqCardIds} strip=${stripCardOrder(film, cards)}`);
     check(`#184 ${label}: every placed card emits exactly one card SeqItem`,
@@ -447,22 +431,22 @@ check("#243 1 clip + 1 card, crossfade -> overlap 1500", clampedXfadeMs([A], tcf
 
 // --- #174 / #160: music fade-out anchor counts mid-roll card seconds --------
 // The Sound Master tab anchors the fade at `filmSeq.totalMs - fadeMs`. A film
-// with a mid-roll card must have that anchor sit exactly `cardRegionMs` later
+// with a mid-roll card must have that anchor sit exactly the card's region later
 // than the same film without the card -- i.e. the card's on-screen seconds ARE
 // part of the total the fade is measured back from (the #160 bug was Sound using
 // a naive raw-clip sum that omitted them).
 {
   const FADE_MS = 2_000;
   const tc = tcfg({ between: "crossfade" });
-  const xf = clampedXfadeMs([A, B, C], tc);
   const noCard = buildSequence([A, B, C], tc, []);
   const withCard = buildSequence([A, B, C], tc, [card("k1", "b")]);
   const anchorNoCard = noCard.totalMs - FADE_MS;
   const anchorWithCard = withCard.totalMs - FADE_MS;
+  const region = cardTimingAt(withCard, withCard.items.find((i) => i.kind === "card")!.filmStartMs)!.regionMs;
   check(
-    "#160 fade anchor shifts later by exactly cardRegionMs when a mid-roll card is present",
-    Math.abs((anchorWithCard - anchorNoCard) - cardRegionMs(xf)) < 1e-6,
-    `delta=${anchorWithCard - anchorNoCard} cardRegionMs=${cardRegionMs(xf)}`,
+    "#160 fade anchor shifts later by exactly the card region when a mid-roll card is present",
+    region === 3_000 && Math.abs((anchorWithCard - anchorNoCard) - region) < 1e-6,
+    `delta=${anchorWithCard - anchorNoCard} region=${region}`,
   );
   check(
     "#160 fade anchor is inside (0, totalMs) for the carded film",

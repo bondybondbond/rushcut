@@ -2,7 +2,7 @@
  * run-acceptance.ts (#237) -- ONE command for the mechanical acceptance run.
  *
  *   pnpm accept -- --clips <folder> [--res 4k|1080p] [--out <dir>] [--break stale-proxy]
- *                  [--cuts 20] [--sources 6] [--keep]
+ *                  [--cuts 20] [--sources 6] [--short 3:2000,6:900] [--keep]
  *
  * --clips   folder of raw footage (read-only; only stream-copy excerpts are ever written).
  *           Also taken from RC_ACCEPT_CLIPS. Never committed anywhere.
@@ -11,6 +11,8 @@
  * --break   stale-proxy: strip the version tag from one finished proxy (the real negative control).
  *           The run must exit non-zero with the 'Proxy version and height' row FAILed.
  *           (A deleted proxy is not a valid control: the app regenerates it before rendering.)
+ * --short   position:milliseconds pairs: cut number `position` (0-based film order) is that long instead
+ *           of 4500 ms (#284: short clips on the render's batch boundaries are positions 3, 6, 9, ...).
  * --keep    leave the QA root (DB, proxies, logs, excerpts) for a post-mortem.
  *
  * Exit code: 0 PASS or WARN, 1 on any FAIL, a run error, or a missing verdict. No retries.
@@ -79,6 +81,7 @@ const env = {
   RC_ACCEPT_BREAK: brk,
   RC_ACCEPT_CUTS: arg("cuts") ?? "20",
   RC_ACCEPT_SOURCES: arg("sources") ?? "6",
+  RC_ACCEPT_SHORT: arg("short") ?? "",
   RC_ACCEPT_RUNID: runId,
   RC_ACCEPT_KEEP: keep ? "1" : "",
 };

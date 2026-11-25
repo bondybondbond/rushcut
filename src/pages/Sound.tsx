@@ -10,9 +10,9 @@ import { StickyFilmStrip, cardTextColor, type PositionedCard } from "@/component
 import { useConfiguredTabs } from "@/hooks/useConfiguredTabs";
 import { fmtMs } from "@/utils/fmtMs";
 import { projectCache } from "@/utils/projectCache";
-import { readTransitionConfig, readPlacedCards, orderedCardRuns, cardEdges } from "@/utils/buildJobConfig";
+import { readTransitionConfig, readPlacedCards, orderedCardRuns } from "@/utils/buildJobConfig";
 import type { PlacedCard } from "@/utils/buildJobConfig";
-import { effectiveFilmMs, clampedXfadeMs, cardRegionMs, cardDurMs, edgeFadesOf } from "@/utils/filmDuration";
+import { effectiveFilmMs, CARD_PLAIN_MS } from "@/utils/filmDuration";
 import {
   buildSequence,
   advanceSequenceClock,
@@ -21,6 +21,7 @@ import {
   filmToMedia,
   itemToFilm,
   cardTimingAt,
+  clipItem,
   type Sequence,
   type ClockState,
 } from "@/utils/sequenceClock";
@@ -243,7 +244,7 @@ export default function Sound() {
   const inFilm = clips.filter((c) => c.include === 1).sort((a, b) => a.sort_order - b.sort_order);
   const clipCount = inFilm.length;
   const placedCards = readPlacedCards(projectId ?? "");
-  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), cardEdges(placedCards, inFilm.map((c) => c.id)));
+  const effectiveMs = effectiveFilmMs(inFilm, readTransitionConfig(projectId ?? ""), placedCards);
 
   // #174: the ONE canonical timeline for the Master tab -- same inputs the
   // StickyFilmStrip ruler uses, so the needle and ruler cannot geometrically
@@ -256,11 +257,8 @@ export default function Sound() {
   const filmSeq = buildSequence(inFilm, readTransitionConfig(projectId ?? ""), placedCards);
   filmSeqRef.current = filmSeq;
   const totalMs = filmSeq.totalMs;
-  const filmXfadeOverlapMs = clampedXfadeMs(inFilm, readTransitionConfig(projectId ?? ""), cardEdges(placedCards, inFilm.map((c) => c.id)).count);
   // #190: the held card's own telescoped width (depends on its position).
-  const filmCardRegionMs = cardHold
-    ? (cardTimingAt(filmSeq, cardHold.filmMs)?.regionMs ?? cardRegionMs(filmXfadeOverlapMs))
-    : cardRegionMs(filmXfadeOverlapMs);
+  const filmCardRegionMs = (cardHold && cardTimingAt(filmSeq, cardHold.filmMs)?.regionMs) || CARD_PLAIN_MS;
 
   // Keep inFilmRef current so playback callbacks always read the latest clip list
   // without needing to re-subscribe on every render.
@@ -430,10 +428,11 @@ export default function Sound() {
         ) {
           const av = getFilmVideo(activeFilmSlotRef.current);
           const ac = inFilmRef.current[filmPlayIdxRef.current];
-          const followed = seq.xfadeMs <= 0 || activeItem.filmEndMs < seq.totalMs - 1;
+          // The last item is only followed here in a film with no fades at all (#284: per cut).
+          const followed = activeItem.filmEndMs < seq.totalMs - 1 || seq.items.every((it) => it.fadeOutMs <= 0);
           if (
             followed && !!av && !!ac && av.dataset.clipId === ac.id && !av.paused && av.readyState >= 2 &&
-            av.currentTime >= (ac.out_ms ?? ac.duration_ms) / 1000 - seq.xfadeMs / 1000 - 0.02
+            av.currentTime >= (ac.out_ms ?? ac.duration_ms) / 1000 - activeItem.fadeOutMs / 1000 - 0.02
           ) {
             advanceFiredIdxRef.current = filmPlayIdxRef.current;
             advanceRoughRef.current(true);
@@ -801,7 +800,7 @@ export default function Sound() {
     if (!nextV || !nextClip) return;
     // #197: clip -> clip with a transition = the incoming clip fades in over the outgoing one,
     // which is still playing. (From a card the card overlay does the dissolving instead.)
-    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const xfadeMs = clipItem(filmSeqRef.current, nextIdx)?.fadeInMs ?? 0; // #284: this cut
     const overlapFade = xfadeMs > 0 && !fromCard;
     finishFadeEarly(); // a clip about two overlaps long can advance while the previous fade still runs
 
@@ -900,7 +899,7 @@ export default function Sound() {
     // (rAF loop, viaClock) normally starts the advance one overlap before the media ends; a
     // second trigger for the same clip (its own `timeupdate`/`ended`, or a missed clock tick)
     // must be a no-op once one has fired.
-    const xfadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const xfadeMs = clipItem(filmSeqRef.current, filmPlayIdxRef.current)?.fadeOutMs ?? 0; // #284
     const overlap = xfadeMs > 0;
     // Same guard with no transition: the clip's own `timeupdate` AND `ended` used to re-enter this
     // for one boundary (the double advance seen in the #197 trace).
@@ -1361,7 +1360,7 @@ export default function Sound() {
     }
     // #197: with a transition the next clip fades in OVER the card: keep a purely visual copy of
     // the card on screen for one overlap, fading out, while the clip underneath starts.
-    const cardFadeMs = filmSeqRef.current?.xfadeMs ?? 0;
+    const cardFadeMs = clipItem(filmSeqRef.current, pendingIdx)?.fadeInMs ?? 0; // #284: this cut
     if (cardFadeMs > 0 && lastCardFaceRef.current) {
       setFadingCard({ ...lastCardFaceRef.current, ms: cardFadeMs });
       if (fadingCardTimerRef.current !== null) clearTimeout(fadingCardTimerRef.current);
@@ -1754,8 +1753,7 @@ export default function Sound() {
         <StickyFilmStrip
           clips={clips}
           projectId={projectId!}
-          xfadeOverlapMs={filmXfadeOverlapMs}
-          edgeFades={edgeFadesOf(readTransitionConfig(projectId ?? ""))}
+          transitionConfig={readTransitionConfig(projectId ?? "")}
           cards={placedCards.map((c): PositionedCard => ({
             card: { id: c.id, color: c.color, text: c.text },
             beforeClipId: c.beforeClipId,

@@ -6,14 +6,16 @@
  *
  * Exit 0 = all invariants hold, exit 1 = a failure (prints which).
  *
- * #174 (Phase D): `filmPlayheadAtClip` was deleted -- the film-mode needle is now
- * a projection of the authoritative sequence clock, and its card-seam monotonicity
- * is covered by `sequenceClock.selftest.ts` (AC3). What remains here is the
- * `filmTimeAtClipStart` / `cardRegionMs` contract still consumed by Trimmer's
- * `seekFilmTo`/`gotoFilmClip` and Arrange's static playhead.
+ * #284: transition lengths are per cut. `resolveCuts` is held to the same table as the
+ * pipeline (pipeline/fixtures/cut_cases.json, also run by pipeline/_test_cuts.py), then the
+ * film layout / runtime label built on it, and `clipRegionStartMs` (Trimmer clip nav and
+ * Arrange's static playhead).
  */
+import { readFileSync } from "node:fs";
 import type { Clip } from "@/types/project";
-import { cardRegionMs, filmTimeAtClipStart, cardDurMs, cardCuts, CARD_VISIBLE_MS, CARD_PLAIN_MS, XFADE_DUR_MS } from "./filmDuration";
+import type { PlacedCard, TransitionConfig } from "@/utils/buildJobConfig";
+import { cardDurMs, effectiveFilmMs, layoutFilm, resolveCuts, CARD_VISIBLE_MS, CARD_PLAIN_MS, XFADE_DUR_MS } from "./filmDuration";
+import { buildSequence, clipRegionStartMs } from "./sequenceClock";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -35,63 +37,85 @@ const C = clip("c", 0, 12_000);
 const D = clip("d", 0, 6_000);
 const film = [A, B, C, D];
 
-// --- filmTimeAtClipStart is monotonic non-decreasing in `index` ------------
-for (const xf of [0, XFADE_DUR_MS]) {
-  for (const cards of [
-    [false, false, false, false],
-    [false, true, false, false],
-    [true, true, false, true],
-    [true, false, true, false],
-  ]) {
+const tc = (over: Partial<TransitionConfig> = {}): TransitionConfig =>
+  ({ between: "none", opening: "none", closing: "none", shuffleBetween: false, ...over });
+const card = (id: string, beforeClipId: string | null): PlacedCard =>
+  ({ id, text: id, subtitle: "", color: "#000000", animation: "none", beforeClipId });
+const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+
+// --- #284: the shared pipeline/renderer table -------------------------------
+interface Case {
+  name: string; fps: string; between: boolean; open: boolean; close: boolean;
+  elements: (number | null)[];
+  expect: { open: number | "full"; between: (number | "full")[]; close: number | "full" };
+}
+const table = JSON.parse(
+  readFileSync(new URL("../../pipeline/fixtures/cut_cases.json", import.meta.url), "utf8"),
+) as { cases: Case[] };
+check("shared table is not empty", table.cases.length >= 19, String(table.cases.length));
+for (const c of table.cases) {
+  const [num, den] = c.fps.split("/");
+  const fps = Number(num) / Number(den ?? 1);
+  const ms = (v: number | "full") => (v === "full" ? XFADE_DUR_MS : (v * 1000) / fps);
+  const p = resolveCuts(c.elements, c.between, c.open, c.close, fps);
+  const got = [p.openMs, ...p.betweenMs, p.closeMs];
+  const want = [ms(c.expect.open), ...c.expect.between.map(ms), ms(c.expect.close)];
+  check(`shared table: ${c.name}`, got.length === want.length && got.every((g, i) => near(g, want[i])),
+    `got=${got.map((v) => v.toFixed(2))} want=${want.map((v) => v.toFixed(2))}`);
+}
+
+// --- card length: its own two cuts (#190/#284) ------------------------------
+check("no transition: card stays 3000ms", cardDurMs(0, 0, false) === CARD_PLAIN_MS);
+check("interior card between long clips is 4500ms", cardDurMs(XFADE_DUR_MS, XFADE_DUR_MS, true) === 4500);
+check("first card (one cut) is 3000ms", cardDurMs(0, XFADE_DUR_MS, true) === 3000);
+check("card keeps the same visible time between unequal cuts",
+  cardDurMs(400, XFADE_DUR_MS, true) - 400 - XFADE_DUR_MS === CARD_VISIBLE_MS);
+
+// --- long clips: same timing as before #284 ---------------------------------
+{
+  const x = tc({ between: "crossfade" });
+  check("all >= 4.5s: every cut 1500", layoutFilm(film, x, []).elements.slice(0, -1).every((e) => e.fadeOutMs === 1500));
+  check("all >= 4.5s: runtime = naive - 3 x 1500", effectiveFilmMs(film, x, []) === 36_000 - 4_500);
+  check("all >= 4.5s with opening card + open/close: 36000 + 4500 - 4 x 1500 + 200",
+    effectiveFilmMs(film, tc({ between: "crossfade", opening: "crossfade", closing: "crossfade" }), [card("k", "a")])
+      === 36_000 + 4_500 - 6_000 + 200);
+}
+
+// --- one short clip changes only its own two cuts ---------------------------
+{
+  const S = clip("s", 0, 2_302);
+  const l = layoutFilm([A, S, C, D], tc({ between: "crossfade" }), []);
+  const short = (17 * 1000 * 1001) / 30000;
+  const outs = l.elements.map((e) => e.fadeOutMs);
+  check("short clip: only the cuts beside it shorten",
+    near(outs[0], short) && near(outs[1], short) && outs[2] === 1500 && outs[3] === 0, String(outs));
+  check("short clip keeps >= half of itself", l.elements[1].nativeMs - 2 * short >= 2_302 / 2);
+  check("runtime subtracts each cut's own length",
+    near(effectiveFilmMs([A, S, C, D], tc({ between: "crossfade" }), []), 30_302 - 2 * short - 1500));
+  const tiny = layoutFilm([A, clip("t", 0, 400), C], tc({ between: "crossfade" }), []);
+  check("a 0.4s clip gets hard cuts", tiny.elements[0].fadeOutMs === 0 && tiny.elements[1].fadeOutMs === 0);
+  const opened = layoutFilm([clip("f", 0, 300), C], tc({ opening: "dip_to_black" }), []);
+  check("a 0.3s first clip drops the opening fade (no +100ms)",
+    opened.openMs === 0 && effectiveFilmMs([clip("f", 0, 300), C], tc({ opening: "dip_to_black" }), []) === 12_300);
+}
+
+// --- clipRegionStartMs: card-region start, monotonic ------------------------
+for (const t of [tc(), tc({ between: "crossfade" })]) {
+  for (const cards of [[], [card("1", "b")], [card("0", "a"), card("1", "b"), card("3", "d")], [card("1", "b"), card("2", "b")]]) {
+    const seq = buildSequence(film, t, cards);
     let prev = -Infinity;
     let ok = true;
-    let worst = "";
-    for (let i = 0; i <= film.length; i++) {
-      const t = filmTimeAtClipStart(film, i, xf, cards);
-      if (t < prev - 1e-6) { ok = false; worst = `i=${i}: ${prev} -> ${t}`; break; }
-      prev = t;
+    for (let i = 0; i < film.length; i++) {
+      const at = clipRegionStartMs(seq, i);
+      const first = seq.items.find((x) => x.filmStartMs === at);
+      const anchored = cards.some((k) => k.beforeClipId === film[i].id);
+      if (at < prev || !first || first.kind !== (anchored ? "card" : "clip")) ok = false;
+      prev = at;
     }
-    check(`filmTimeAtClipStart monotonic in index (xfade=${xf}, cards=${cards.join("")})`, ok, worst);
+    check(`clipRegionStartMs monotonic + enters on the card (${t.between}, ${cards.map((k) => k.id).join("")})`,
+      ok && clipRegionStartMs(seq, 0) === 0);
   }
 }
-
-// --- filmTimeAtClipStart(0) is always 0 -----------------------------------
-check("filmTimeAtClipStart(_, 0) === 0 (no card)", filmTimeAtClipStart(film, 0, XFADE_DUR_MS, [false, false, false, false]) === 0);
-check("filmTimeAtClipStart(_, 0) === 0 (open card -- returns the CARD-region start, still 0)",
-  filmTimeAtClipStart(film, 0, XFADE_DUR_MS, [true, false, false, false]) === 0);
-
-// --- each card preceding a clip adds exactly one card-region of lead -------
-for (const xf of [0, XFADE_DUR_MS]) {
-  const noCards = filmTimeAtClipStart(film, 3, xf, [false, false, false, false]);
-  const oneCard = filmTimeAtClipStart(film, 3, xf, [false, true, false, false]);
-  const twoCards = filmTimeAtClipStart(film, 3, xf, [true, true, false, false]);
-  check(
-    `filmTimeAtClipStart: an interior card adds cardDurMs(xf,2) - xfade, the film-first card cardDurMs(xf,1) - xfade (xfade=${xf})`,
-    Math.abs((oneCard - noCards) - (cardDurMs(xf, 2) - xf)) < 1e-6 &&
-      Math.abs((twoCards - oneCard) - (cardDurMs(xf, 1) - xf)) < 1e-6,
-    `no=${noCards} one=${oneCard} two=${twoCards}`,
-  );
-}
-
-// --- cardRegionMs -------------------------------------------------------------
-check("cardDurMs(0) === 3000 (no transition: card unchanged)", cardDurMs(0) === CARD_PLAIN_MS);
-check("cardDurMs(1500) === 4500 (#190: 1.5s visible + 2 x 1.5s, interior card)", cardDurMs(XFADE_DUR_MS) === 4500);
-check("cardDurMs(1500, 1) === 3000 (first/last card: one neighbouring crossfade)", cardDurMs(XFADE_DUR_MS, 1) === 3000);
-check("cardCuts: first=1, interior=2, last=1, sole=0",
-  cardCuts(0, 5) === 1 && cardCuts(2, 5) === 2 && cardCuts(4, 5) === 1 && cardCuts(0, 1) === 0);
-check("cardCuts with opening+closing fades: first and last element count the fade as a cut",
-  cardCuts(0, 5, { open: true, close: true }) === 2 && cardCuts(4, 5, { open: true, close: true }) === 2 &&
-  cardCuts(0, 5, { open: true, close: false }) === 2 && cardCuts(4, 5, { open: true, close: false }) === 1 &&
-  cardCuts(2, 5, { open: true, close: true }) === 2);
-for (const cuts of [0, 1, 2]) {
-  check(`every card keeps exactly ${CARD_VISIBLE_MS}ms fully visible (cuts=${cuts})`, cardDurMs(XFADE_DUR_MS, cuts) - cuts * XFADE_DUR_MS === CARD_VISIBLE_MS);
-}
-check("no transition: every card stays 3000ms whatever its position", cardDurMs(0, 0) === 3000 && cardDurMs(0, 1) === 3000 && cardDurMs(0, 2) === 3000);
-check("cardRegionMs(0) === 3000", cardRegionMs(0) === CARD_PLAIN_MS);
-check("cardRegionMs(xfade) interior === visible + 2 x xfade - xfade", cardRegionMs(XFADE_DUR_MS) === CARD_VISIBLE_MS + XFADE_DUR_MS);
-check("cardRegionMs last element keeps its full length (no outgoing cut)", cardRegionMs(XFADE_DUR_MS, 1, true) === CARD_VISIBLE_MS + XFADE_DUR_MS);
-check("interior card keeps exactly the visible time between two crossfades", cardDurMs(XFADE_DUR_MS) - 2 * XFADE_DUR_MS === CARD_VISIBLE_MS);
-check("shorter crossfade (800ms): same visible time", cardDurMs(800) - 2 * 800 === CARD_VISIBLE_MS);
 
 if (failed > 0) {
   console.log(`\n${failed} check(s) FAILED`);

@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 # short-lived _CACHE_VER=2 + `animation` signature field wrote cache entries
 # during that work; the bump is retained so those entries are orphaned rather
 # than risking a stale hit. The signature payload no longer carries `animation`.
-_CACHE_VER = 5  # #190: card length = 1.5s + one crossfade per neighbouring cut (3s with no transition)
+_CACHE_VER = 6  # #284: transition length is per cut (5 = #190 card length rule)
 
 _PRUNE_KEEP = 20
 _PRUNE_MAX_AGE_DAYS = 7

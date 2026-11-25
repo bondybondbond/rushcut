@@ -1,7 +1,6 @@
 import type { CardSpec, JobConfig, TransitionValue } from "@/types/project";
 import { getRenderPref, setRenderPref } from "@/utils/renderStore";
 import { projectCache } from "@/utils/projectCache";
-import type { CardEdges } from "@/utils/filmDuration";
 
 export const VALID_MOODS = ["none", "cinematic", "upbeat", "chill", "electronic", "custom"] as const;
 export const VALID_VOLUMES = ["subtle", "balanced", "prominent"] as const;
@@ -129,7 +128,7 @@ export function resolveCardPositions(cards: PlacedCard[], inFilmClipIds: string[
 /**
  * Ordered card runs by anchor -- THE single resolver for "which cards sit at
  * which anchor, in what order" (#184). Every consumer that interleaves cards with
- * clips (buildSequenceCore, StickyFilmStrip segments, Trimmer advanceFilmClip /
+ * clips (buildSequence, StickyFilmStrip segments, Trimmer advanceFilmClip /
  * seekFilmTo, Sound Master playback) MUST derive its card iteration from this, so
  * the strip ruler, the playback needle and the render can never disagree on card
  * order or count (the #164/#174 ruler-vs-needle failure class).
@@ -194,37 +193,8 @@ export function reanchorEndCards(
 }
 
 /**
- * Card count for the duration model (#149 generalizes #74's two-flag {open, close}
- * shape to a plain count -- every placed card adds CARD_DUR_MS + one xfade overlap
- * regardless of where it sits). Consumers that need live in-memory state instead
- * (Arrange's Cards tab, as it's being edited) read their own PlacedCard[] directly.
- */
-export function cardDurationFlags(projectId: string, inFilmClipIds: string[]): CardEdges {
-  return cardEdges(readPlacedCards(projectId), inFilmClipIds);
-}
-
-/**
- * Card count plus whether a card is the film's first / last ELEMENT (#190): a card's length
- * is its fully-visible time plus one crossfade per neighbouring cut, and the first/last
- * element has only one. Resolved through orderedCardRuns, the single card-order resolver.
- */
-export function cardEdges(
-  cards: readonly { beforeClipId: string | null }[],
-  inFilmClipIds: string[],
-): CardEdges {
-  const runs = orderedCardRuns(cards, inFilmClipIds);
-  const first = inFilmClipIds[0];
-  return {
-    count: cards.length,
-    leading: first !== undefined && (runs.before.get(first)?.length ?? 0) > 0,
-    trailing: runs.end.length > 0,
-  };
-}
-
-/**
- * Per-clip "does a card sit immediately before this clip" map, for
- * filmTimeAtClipStart (#149 generalizes the old single hasOpenCard boolean to
- * arbitrary mid-roll positions). `inFilmClipIds` must be the current in-film clip
+ * Per-clip "does a card sit immediately before this clip" map (#149 generalizes the
+ * old single hasOpenCard boolean to arbitrary mid-roll positions). `inFilmClipIds` must be the current in-film clip
  * order (same list the caller uses everywhere else). Also reports whether a card
  * sits at the very end, folding in any orphaned-anchor card (its clip was deleted)
  * the same way resolveCardPositions does.

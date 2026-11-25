@@ -153,7 +153,7 @@ export function isPersistenceDegraded(): boolean {
 // `set_setting_cmd` and then call this to force the in-memory cache to re-read
 // from the DB without a full page reload (reloads fight Vite's HMR socket in
 // WebView2 — see e2e.md). Absent from production (`tauri build`) bundles.
-if (import.meta.env.DEV && typeof window !== "undefined") {
+if (import.meta.env?.DEV && typeof window !== "undefined") { // ?. : self-tests import this under Node
   (window as unknown as { __rcRehydrateRenderPrefs?: () => Promise<void> }).__rcRehydrateRenderPrefs =
     () => {
       hydrated = false;

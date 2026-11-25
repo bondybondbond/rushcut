@@ -28,11 +28,8 @@
  * (`pnpm dlx tsx src/utils/sequenceClock.selftest.ts`).
  */
 import type { Clip } from "@/types/project";
-import { cardEdges, orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
-import type { TransitionConfig } from "@/utils/buildJobConfig";
-import { cardCuts, cardDurMs, clampedXfadeMs, edgeFadesOf, NO_EDGE_FADES, type EdgeFades, effectiveFilmMs, trimmedMs } from "@/utils/filmDuration";
-
-export { cardDurMs };
+import type { PlacedCard, TransitionConfig } from "@/utils/buildJobConfig";
+import { BLACK_FADE_NET_MS, effectiveFilmMs, layoutFilm } from "@/utils/filmDuration";
 
 // ---------------------------------------------------------------------------
 // Sequence structure
@@ -46,6 +43,9 @@ export interface SeqItem {
   index: number;
   /** Position in the flat `items` array. */
   segIndex: number;
+  /** Overlap with the previous / next item in ms (0 = hard cut or film edge), per cut (#284). */
+  fadeInMs: number;
+  fadeOutMs: number;
   /** Telescoped (render-time) span -- half-open [filmStartMs, filmEndMs). */
   filmStartMs: number;
   filmEndMs: number;
@@ -66,117 +66,56 @@ export interface Sequence {
   totalMs: number;
   /** Non-telescoped sum of item widths (ms). Backs naive px geometry. */
   naiveTotalMs: number;
-  /** Per-cut crossfade overlap consumed at every seam (0 when no crossfade). */
-  xfadeMs: number;
 }
 
 /**
- * Build the flat ordered item list for a film. Card placement matches the
- * StickyFilmStrip / seekFilmTo model exactly: cards with `beforeClipId === c.id`
- * sit immediately before clip `c`; cards with `beforeClipId === null` (or an
- * orphaned anchor) are the trailing end run. Multiple cards may share one anchor
- * (#184); order + count come from `orderedCardRuns` -- the one resolver every
- * interleaving consumer shares.
+ * The single canonical film-timeline resolver (#174 Phase D): the flat ordered item list with
+ * each item's telescoped span, built on `layoutFilm` (order + per-cut lengths, #284). The strip
+ * ruler, the seek walk and the playback needle all read this, so they cannot disagree.
  *
- * Telescoping rule (identical to `StickyFilmStrip.tsx` `renderMsArr`): every
- * element but the LAST loses one `xfadeMs` off its tail to the crossfade into
- * the next element. `totalMs` therefore == the telescoped, card-inclusive
- * runtime -- NOT the display label value from `effectiveFilmMs`, which
- * additionally nets +100ms per open/close-to-black transition (a black-fade
- * artifact the preview does not traverse). Use `effectiveFilmMs` for the
- * runtime LABEL; use `Sequence.totalMs` for the playback CLOCK domain.
+ * Telescoping rule: every element loses its own outgoing cut off its tail. `totalMs` therefore
+ * == the telescoped, card-inclusive runtime -- NOT the display label value from
+ * `effectiveFilmMs`, which additionally nets +100ms per open/close-to-black transition (a
+ * black-fade artifact the preview does not traverse). Use `effectiveFilmMs` for the runtime
+ * LABEL; use `Sequence.totalMs` for the playback CLOCK domain.
  */
 export function buildSequence(
   inFilm: Clip[],
   tc: TransitionConfig,
   placedCards: PlacedCard[],
-  edge: EdgeFades = NO_EDGE_FADES,
 ): Sequence {
-  const cardCount = cardEdges(placedCards, inFilm.map((c) => c.id)).count;
-  return buildSequenceCore(inFilm, clampedXfadeMs(inFilm, tc, cardCount), placedCards, edgeFadesOf(tc));
-}
+  const { elements } = layoutFilm(inFilm, tc, placedCards);
 
-/**
- * The single canonical film-timeline resolver (#174 Phase D). `buildSequence`
- * above is the convenience entry that derives `xfadeMs` from a `TransitionConfig`;
- * `StickyFilmStrip` already holds the clamped overlap as a prop, so it calls this
- * core directly. Both entry points share the one telescoping / prefix-sum
- * implementation here -- given the same `xfadeMs` they produce byte-identical
- * geometry, so the strip ruler and the playback needle cannot geometrically
- * disagree. (Callers must pass `clampedXfadeMs(inFilm, tc, cardCount)` for that `xfadeMs` --
- * `buildSequence` does; `StickyFilmStrip`'s parent passes it as `xfadeOverlapMs`.)
- *
- * `cards` need only carry `id` + `beforeClipId`; `color`/`text`/`subtitle` are
- * copied onto `SeqItem.card` when present but are never read for geometry.
- */
-export function buildSequenceCore(
-  inFilm: Clip[],
-  xfadeMs: number,
-  placedCards: PlacedCard[],
-  edge: EdgeFades = NO_EDGE_FADES,
-): Sequence {
-  // #184: multiple cards may share one anchor. `orderedCardRuns` is the single
-  // resolver for card order/count -- every interleaving consumer derives from it
-  // so the ruler, the needle and the render can't disagree.
-  const runs = orderedCardRuns(
-    placedCards,
-    inFilm.map((c) => c.id),
-  );
-
-  // 1. Flat native-width segment list (clips + cards interleaved).
-  type Raw =
-    | { kind: "clip"; nativeMs: number; clip: Clip; index: number }
-    | { kind: "card"; nativeMs: number; card: PlacedCard };
-  const raw: Raw[] = [];
-  let cardOrdinal = 0;
-  const cardOrdinalOf = new Map<PlacedCard, number>();
-  const pushCardRun = (run: PlacedCard[] | undefined) => {
-    for (const card of run ?? []) {
-      cardOrdinalOf.set(card, cardOrdinal++);
-      raw.push({ kind: "card", nativeMs: 0, card }); // length set below, once its position is known
-    }
-  };
-  inFilm.forEach((c, i) => {
-    pushCardRun(runs.before.get(c.id));
-    raw.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c, index: i });
-  });
-  pushCardRun(runs.end);
-
-  // #190: a card's length depends on how many crossfades touch it (2 inside the film, 1 at
-  // the very start/end), so set it now that every element's position is known.
-  raw.forEach((r, i) => {
-    if (r.kind === "card") r.nativeMs = cardDurMs(xfadeMs, cardCuts(i, raw.length, edge));
-  });
-
-  // 2. Telescoped + naive prefix sums.
+  // Telescoped + naive prefix sums.
   const items: SeqItem[] = [];
   let filmCur = 0;
   let naiveCur = 0;
-  raw.forEach((r, i) => {
-    const isLast = i === raw.length - 1;
-    const telescopedMs = Math.max(0, r.nativeMs - (isLast ? 0 : xfadeMs));
+  elements.forEach((e, i) => {
+    const telescopedMs = Math.max(0, e.nativeMs - e.fadeOutMs);
     const item: SeqItem = {
-      kind: r.kind,
-      index: r.kind === "clip" ? r.index : (cardOrdinalOf.get(r.card) ?? 0),
+      kind: e.kind,
+      index: e.index,
       segIndex: i,
+      fadeInMs: e.fadeInMs,
+      fadeOutMs: e.fadeOutMs,
       filmStartMs: filmCur,
       filmEndMs: filmCur + telescopedMs,
       naiveStartMs: naiveCur,
-      naiveEndMs: naiveCur + r.nativeMs,
+      naiveEndMs: naiveCur + e.nativeMs,
     };
-    if (r.kind === "clip") {
-      item.clip = r.clip;
-      item.sourceInMs = r.clip.in_ms ?? 0;
-      item.sourceOutMs = r.clip.out_ms ?? r.clip.duration_ms;
+    if (e.clip) {
+      item.clip = e.clip;
+      item.sourceInMs = e.clip.in_ms ?? 0;
+      item.sourceOutMs = e.clip.out_ms ?? e.clip.duration_ms;
     } else {
-      item.card = r.card;
+      item.card = e.card;
     }
     items.push(item);
     filmCur += telescopedMs;
-    naiveCur += r.nativeMs;
+    naiveCur += e.nativeMs;
   });
 
-  // #184 DEV invariant: buildSequenceCore emits ONLY clip + card items (no
+  // #184 DEV invariant: buildSequence emits ONLY clip + card items (no
   // transition/gap items), so the count is exact -- one item per in-film clip
   // plus one per placed card (valid or orphaned anchor, all counted by
   // orderedCardRuns). A mismatch means a card was silently dropped or doubled,
@@ -192,7 +131,25 @@ export function buildSequenceCore(
     }
   }
 
-  return { items, totalMs: filmCur, naiveTotalMs: naiveCur, xfadeMs };
+  return { items, totalMs: filmCur, naiveTotalMs: naiveCur };
+}
+
+/** The clip item for clip `index` (index in `inFilm`), if any. */
+export function clipItem(seq: Sequence | null | undefined, index: number): SeqItem | undefined {
+  return seq?.items.find((it) => it.kind === "clip" && it.index === index);
+}
+
+/**
+ * Film time at which clip `index`'s REGION starts: the first card of the run sitting
+ * immediately before it, else the clip itself (#163: a card-preceded clip is entered on its
+ * card). 0 when there is no such clip.
+ */
+export function clipRegionStartMs(seq: Sequence, index: number): number {
+  const clip = clipItem(seq, index);
+  if (!clip) return 0;
+  let seg = clip.segIndex;
+  while (seg > 0 && seq.items[seg - 1].kind === "card") seg--;
+  return seq.items[seg].filmStartMs;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,8 +192,7 @@ export function cardTimingAt(
  * HALF-OPEN: a film-time exactly on a boundary (`item.filmEndMs`) belongs to the
  * NEXT item, never the one ending there.
  *
- * ZERO-WIDTH INVARIANT (#165 Gate 3 F6/F7): a card telescoped to
- * `CARD_DUR_MS - xfadeMs`, or a pathological zero-trim clip, can produce
+ * ZERO-WIDTH INVARIANT (#165 Gate 3 F6/F7): a pathological zero-trim clip can produce
  * `filmStartMs === filmEndMs`. Such items are kept in `seq.items` for index
  * alignment but are NEVER returned here -- a sub-frame item that never gets a
  * playhead is not a bug, it is a segment with no screen time.
@@ -549,8 +505,7 @@ export function playbackTotalFromEffective(
   tc: TransitionConfig,
   placedCards: PlacedCard[],
 ): number {
-  const black =
-    (tc.opening && tc.opening !== "none" ? 100 : 0) +
-    (tc.closing && tc.closing !== "none" ? 100 : 0);
-  return effectiveFilmMs(inFilm, tc, cardEdges(placedCards, inFilm.map((c) => c.id))) - black;
+  const { openMs, closeMs } = layoutFilm(inFilm, tc, placedCards);
+  const black = (openMs > 0 ? BLACK_FADE_NET_MS : 0) + (closeMs > 0 ? BLACK_FADE_NET_MS : 0);
+  return effectiveFilmMs(inFilm, tc, placedCards) - black;
 }

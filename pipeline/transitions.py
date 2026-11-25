@@ -9,9 +9,10 @@ Key constraints (from CLAUDE.md + plan fixes):
   Named labels [sv0],[sv1],... applied to ALL inputs — both "none" path and xfade path.
   This prevents dimension-mismatch crashes when mixing portrait and landscape clips.
 - scale=-2:{h} is NO LONGER used inside filter_complex — replaced by fixed-canvas pre-scale.
-- xfade offset formula (ported verbatim from spike):
-    offset = cumulative + duration[i-1] - xfade_dur * i
-- Audio: pairwise chained acrossfade for ALL N>=2 clips.
+- Transition length is PER CUT (#284, resolve_cuts): XFADE_DUR, shortened only beside a short
+  element; below FADE_FLOOR_FRAMES the cut is a real hard cut (concat), never a 0 s xfade.
+  offset[i] = sum(duration[0..i-1]) - sum(cut[0..i-1]); cut[i-1] is the cut INTO element i.
+- Audio: pairwise chained acrossfade for ALL N>=2 clips (concat at a hard cut).
          apad=whole_dur makes each clip's audio exactly durations[i] seconds, so
          acrossfade transitions align with xfade visual offsets — no hard-cut lag.
          (concat was previously used for 3+ clips but caused clip audio to start
@@ -27,7 +28,9 @@ Key constraints (from CLAUDE.md + plan fixes):
 """
 
 import logging
+import math
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -65,7 +68,7 @@ _TRANSITION_MAP = {
 # SYNC: keep in sync with SHUFFLE_POOL in src/pages/Arrange.tsx (same members, different names).
 _SHUFFLE_POOL = ["fade", "fadeblack", "wipeleft", "wipedown", "squeezev", "hrslice"]
 
-XFADE_DUR = 1.5  # seconds
+XFADE_DUR = 1.5  # seconds -- the longest any single cut can be
 
 
 def resolve_cut_names(
@@ -84,43 +87,80 @@ def resolve_cut_names(
     return [name] * max(n - 1, 0)
 
 
-def clamp_xfade_dur(durations: list[float], xfade_dur: float = XFADE_DUR) -> float:
-    """Clamp xfade_dur to half the shortest clip (matches build_filter_complex)."""
-    if not durations:
-        return xfade_dur
-    return min(xfade_dur, min(durations) / 2.0)
-
-
+KEEP_OWN_S = 1.5       # #284 (owner 2026-11-24): every element keeps min(1.5 s, half itself) un-faded
+FADE_FLOOR_FRAMES = 6  # #284: a fade shorter than this (output frames) becomes a hard cut
 CARD_VISIBLE_S = 1.5   # fully-visible time every card keeps between its crossfades (#190, owner 2026-11-17)
-CARD_PLAIN_S = 3.0     # card length when no transition is active
+CARD_PLAIN_S = 3.0     # card length when no between-clips transition is active
 
 
-def card_cuts(element_index: int, element_count: int, open_on: bool = False, close_on: bool = False) -> int:
-    """Crossfades touching the element at `element_index` of `element_count` (0, 1 or 2):
-    one on each side. The film's own start/end has none, unless the opening/closing
-    transition (fade from/to black, which uses the same crossfade length) is on.
-    SYNC: filmDuration.ts cardCuts()."""
-    left = 1 if (element_index > 0 or open_on) else 0
-    right = 1 if (element_index < element_count - 1 or close_on) else 0
-    return left + right
+@dataclass(frozen=True)
+class CutPlan:
+    """Transition length in seconds of every cut of one film; 0.0 = hard cut / no fade."""
+    open_s: float
+    between_s: "list[float]"  # len == element count - 1; between_s[i] joins element i and i+1
+    close_s: float
 
 
-def card_duration_s(clip_durations: list[float], has_xfade: bool, cuts: int = 2) -> float:
-    """Card length = CARD_VISIBLE_S + one crossfade per neighbouring cut (#190); CARD_PLAIN_S with none.
+def resolve_cuts(
+    lengths: "list[float | None]", between_on: bool, open_on: bool, close_on: bool, fps: float
+) -> CutPlan:
+    """#284: the ONE place transition lengths are decided. SYNC: filmDuration.ts resolveCuts(),
+    both held to pipeline/fixtures/cut_cases.json.
 
-    A card sits in the xfade chain, so each neighbouring cut eats one xfade of it.
-    `cuts` = neighbouring cuts (2 inside the film, 1 for the first/last element), so every
-    card keeps the same CARD_VISIBLE_S. No transition leaves the card at CARD_PLAIN_S (3s).
-    SYNC: src/utils/filmDuration.ts cardDurMs() / cardCuts().
-    Uses real-clip durations only (cards are never the shortest element).
+    `lengths` = seconds of every element (clips and cards) in film order. None = a card whose
+    length is derived FROM its cuts (card_duration_s), so it never limits them.
+
+    Rule: an element keeps min(KEEP_OWN_S, half itself) of its own; the rest is split equally
+    over the sides that fade (a neighbour, or the film's opening/closing fade). A cut takes the
+    smaller of what its two elements allow, at most XFADE_DUR. Shortened cuts are planned in
+    whole output frames; under FADE_FLOOR_FRAMES they become 0 (hard cut).
     """
-    if not has_xfade or not clip_durations:
+    n = len(lengths)
+    if n == 0:
+        return CutPlan(0.0, [], 0.0)
+    full_frames = XFADE_DUR * fps
+    keep_frames = math.ceil(KEEP_OWN_S * fps - 1e-9)
+
+    def side_limit(i: int) -> "int | None":
+        """Frames element i allows on each of its fading sides; None = no limit."""
+        d = lengths[i]
+        if d is None:
+            return None
+        sides = int(open_on if i == 0 else between_on) + int(close_on if i == n - 1 else between_on)
+        # Long enough for full-length fades on every side (half a frame of tolerance).
+        if sides == 0 or d + 0.5 / fps >= KEEP_OWN_S + sides * XFADE_DUR:
+            return None
+        frames = math.floor(d * fps + 0.5)
+        keep = min(keep_frames, (frames + 1) // 2)
+        return max(frames - keep, 0) // sides
+
+    def cut(*elements: int) -> float:
+        limits = [v for v in (side_limit(i) for i in elements) if v is not None]
+        if not limits or min(limits) >= full_frames:
+            return XFADE_DUR
+        frames = min(limits)
+        return frames / fps if frames >= FADE_FLOOR_FRAMES else 0.0
+
+    return CutPlan(
+        open_s=cut(0) if open_on else 0.0,
+        between_s=[cut(i, i + 1) if between_on else 0.0 for i in range(n - 1)],
+        close_s=cut(n - 1) if close_on else 0.0,
+    )
+
+
+def card_duration_s(cuts: "CutPlan | None", element_index: int, between_on: bool) -> float:
+    """Card length = CARD_VISIBLE_S + its own two cuts (#190/#284); CARD_PLAIN_S when no
+    between-clips transition is active (then `cuts` is not needed).
+    SYNC: src/utils/filmDuration.ts cardDurMs()."""
+    if not between_on or cuts is None:
         return CARD_PLAIN_S
-    return CARD_VISIBLE_S + cuts * clamp_xfade_dur(clip_durations)
+    left = cuts.open_s if element_index == 0 else cuts.between_s[element_index - 1]
+    right = cuts.close_s if element_index == len(cuts.between_s) else cuts.between_s[element_index]
+    return CARD_VISIBLE_S + left + right
 
 
 def plan_video_batches(
-    durations: list[float], batch_size: int = 4, xfade_dur: float = XFADE_DUR
+    durations: list[float], cuts: list[float], batch_size: int = 4
 ) -> "tuple[list[dict], float]":
     """Plan overlap-by-one video batches for a memory-bounded segmented xfade render.
 
@@ -128,7 +168,7 @@ def plan_video_batches(
     lossless hard concat placed in the SOLO region (no active xfade) of that shared
     clip -- invisible because both sides are the same continuous footage.
 
-    `xfade_dur` MUST already be clamped (pass clamp_xfade_dur(durations)).
+    `cuts` = the between-element lengths from resolve_cuts() (len == len(durations) - 1).
 
     Returns (batches, total_duration). Each batch dict:
         clip_indices      [global clip indices in this batch]
@@ -145,12 +185,12 @@ def plan_video_batches(
     prefix = [0.0]
     for d in durations:
         prefix.append(prefix[-1] + d)
-    # offset[i] = output-timeline start of xfade i = prefix[i] - i*xfade_dur ; offset[0]=0
-    offset = [prefix[i] - i * xfade_dur for i in range(n)]
-    total = prefix[n] - (n - 1) * xfade_dur
+    # offset[i] = output-timeline start of element i (where its incoming cut begins); offset[0]=0
+    offset = [prefix[i] - sum(cuts[:i]) for i in range(n)]
+    total = prefix[n] - sum(cuts[: n - 1])
 
     def solo(k: int) -> "tuple[float, float]":
-        lo = (offset[k] + xfade_dur) if k > 0 else 0.0
+        lo = (offset[k] + cuts[k - 1]) if k > 0 else 0.0
         hi = offset[k + 1] if k < n - 1 else total
         return lo, hi
 
@@ -203,7 +243,7 @@ def plan_video_batches(
 
         def local_offset(k: int) -> float:
             li = k - s
-            return lprefix[li] - li * xfade_dur
+            return lprefix[li] - sum(cuts[s:k])
 
         # clip k frame f: global=offset[k]+f, local=local_offset(k)+f
         #   => local = global - offset[k] + local_offset(k)
@@ -239,6 +279,21 @@ def _force_yuv420p_tail(fc: str, v_out: str) -> str:
     head, _, tail = fc.rpartition(v_out)        # tail is "" for a terminal label
     rewritten = (head + "[vpix]" + tail).rstrip("; ")
     return f"{rewritten}; [vpix]format=yuv420p{v_out}"
+
+
+def _video_join(prev: str, nxt: str, out: str, name: str, dur: float, offset: float,
+                fps_raw: str, tbn: str) -> str:
+    """One cut: xfade of `dur` seconds, or a real hard cut when dur is 0 (#284). concat does
+    not keep a frame rate or timebase, which a following xfade requires -- pin both."""
+    if dur > 0:
+        return f"{prev}{nxt}xfade=transition={name}:duration={dur:.4f}:offset={offset:.4f}{out}"
+    return f"{prev}{nxt}concat=n=2:v=1:a=0,fps={fps_raw},settb={tbn}{out}"
+
+
+def _audio_join(prev: str, nxt: str, out: str, dur: float) -> str:
+    if dur > 0:
+        return f"{prev}{nxt}acrossfade=d={dur:.4f}{out}"
+    return f"{prev}{nxt}concat=n=2:v=0:a=1{out}"
 
 
 def _sv_node(
@@ -291,15 +346,18 @@ def build_batch_video_fc(
     per_cut_names: list[str],
     mode: str,
     output_resolution: str,
-    xfade_dur: float = XFADE_DUR,
+    cuts: list[float],
     zoom_vfs: "list[str | None] | None" = None,
+    target_fps_raw: str = "30000/1001",
+    clip_tbn_str: str = "1/30000",
 ) -> "tuple[str, str]":
     """Video-only filter_complex for ONE batch of clips (U1g segmented render).
 
     No audio, no opening/closing black frames. `durations` are batch-LOCAL; offsets
     use the same formula as build_filter_complex so a batch reproduces the exact
-    transitions it would have in the monolithic graph. `per_cut_names` is the GLOBAL
-    transition-name list sliced to this batch's cuts (len == len(durations)-1).
+    transitions it would have in the monolithic graph. `per_cut_names` and `cuts` are the
+    GLOBAL lists sliced to this batch's cuts (len == len(durations)-1). The timebase is
+    pinned on the inputs only when the batch has a hard cut (see _video_join).
 
     Returns (fc, v_out_label).
     """
@@ -317,27 +375,23 @@ def build_batch_video_fc(
         f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
     v_out = "[vout]"
-    # #138 (verified 2026-07-21, not applicable): NOT passing clip_tbn_str here
-    # (unlike build_filter_complex) -- confirmed via a real 8-clip/3-batch render
-    # (zoom, incl. dynamic kb_in_* Ken Burns, in every batch + crossfade) that this
-    # path never hits the #137 exit-234 bug. See _sv_node's docstring for the root
-    # cause: #137 requires wrapping a zoom/xfade chain's output in a SECOND xfade
-    # layer (open/close), which this per-batch chain never does -- U1g's open/close
-    # is handled separately by build_open_close_post_fc(), already settb-fixed.
-    parts = [_sv_node(i, canvas, zoom_vfs) for i in range(n)]
+    # #138 (verified 2026-07-21): a batch of crossfades needs no timebase pin -- the #137
+    # exit-234 bug needs a zoom/xfade chain's output wrapped in a SECOND xfade layer
+    # (open/close), handled separately here by build_open_close_post_fc(). #284: a batch
+    # with a HARD cut joins with concat, whose timebase must be pinned back before the next
+    # xfade, so only then are the inputs pinned to the same value (see _video_join).
+    sv_tbn = clip_tbn_str if any(c <= 0 for c in cuts) else None
+    parts = [_sv_node(i, canvas, zoom_vfs, sv_tbn) for i in range(n)]
     if n == 1:
         parts.append(f"[sv0]null{v_out}")
         return _force_yuv420p_tail("; ".join(parts), v_out), v_out
     prev = "[sv0]"
     cumulative = 0.0
     for i in range(1, n):
-        offset = cumulative + durations[i - 1] - xfade_dur * i
+        offset = cumulative + durations[i - 1] - sum(cuts[:i])
         out_label = v_out if i == n - 1 else f"[v{i:02d}]"
-        parts.append(
-            f"{prev}[sv{i}]"
-            f"xfade=transition={per_cut_names[i - 1]}:duration={xfade_dur}:offset={offset:.4f}"
-            f"{out_label}"
-        )
+        parts.append(_video_join(prev, f"[sv{i}]", out_label, per_cut_names[i - 1],
+                                 cuts[i - 1], offset, target_fps_raw, clip_tbn_str))
         prev = out_label
         cumulative += durations[i - 1]
     return _force_yuv420p_tail("; ".join(parts), v_out), v_out
@@ -347,7 +401,7 @@ def build_audio_only_fc(
     durations: list[float],
     audio_flags: list[bool],
     clip_volumes: "list[float] | None",
-    xfade_dur: float = XFADE_DUR,
+    cuts: list[float],
     loudnorm_str: "str | None" = None,
 ) -> "tuple[str, str]":
     """Audio-only filter_complex over ALL clips (U1g single-pass audio).
@@ -372,7 +426,7 @@ def build_audio_only_fc(
         prev_a = "[pa0]"
         for i in range(1, n):
             a_lbl = "[aout]" if i == n - 1 else f"[ac{i}]"
-            chain.append(f"{prev_a}[pa{i}]acrossfade=d={xfade_dur:.4f}{a_lbl}")
+            chain.append(_audio_join(prev_a, f"[pa{i}]", a_lbl, cuts[i - 1]))
             prev_a = a_lbl
         body = f"{pre_vol}; {pre_pad}; " + "; ".join(chain)
     a_out = "[aout]"
@@ -415,7 +469,8 @@ def build_open_close_post_fc(
     target_fps_raw: str,
     opening_transition: str = "none",
     closing_transition: str = "none",
-    xfade_dur: float = XFADE_DUR,
+    open_dur: float = XFADE_DUR,
+    close_dur: float = XFADE_DUR,
     clip_tbn_str: str = "1/30000",
 ) -> "tuple[str, str, str]":
     """Wrap a single pre-rendered inner clip with open/close-to-black xfade.
@@ -434,20 +489,23 @@ def build_open_close_post_fc(
 
     Returns (fc, v_out_label, a_out_label). a_out is "" when has_audio is False.
     """
-    has_open = opening_transition != "none"
-    has_close = closing_transition != "none"
+    has_open = opening_transition != "none" and open_dur > 0
+    has_close = closing_transition != "none" and close_dur > 0
     if not has_open and not has_close:
         raise ValueError("build_open_close_post_fc called with no open/close transition")
 
     # +0.1s buffer for black-frame sources: xfade offset must be < input duration.
-    black_dur = xfade_dur + 0.1
+    open_black = open_dur + 0.1
+    close_black = close_dur + 0.1
+
     # format=yuv420p,setsar=1 on the black source so it matches the decoded inner
     # stream exactly (xfade rejects mismatched pixel format / SAR). Defensive vs the
     # monolithic graph where every input shares the in-graph canvas filter.
-    black = (
-        f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r={target_fps_raw},"
-        f"format=yuv420p,setsar=1,settb={clip_tbn_str}"
-    )
+    def black(d: float) -> str:
+        return (
+            f"color=c=black:s={scale_w}x{scale_h}:d={d:.4f}:r={target_fps_raw},"
+            f"format=yuv420p,setsar=1,settb={clip_tbn_str}"
+        )
     parts: list[str] = []
     v_inner = "[0:v]"
     a_inner = "[0:a]"
@@ -458,16 +516,16 @@ def build_open_close_post_fc(
     total_after_open = inner_duration
     if has_open:
         open_name = _TRANSITION_MAP.get(opening_transition, "fade")
-        parts.append(f"{black}[sv_bopen]")
+        parts.append(f"{black(open_black)}[sv_bopen]")
         parts.append(
             f"[sv_bopen]{v_inner}"
-            f"xfade=transition={open_name}:duration={xfade_dur:.4f}:offset=0"
+            f"xfade=transition={open_name}:duration={open_dur:.4f}:offset=0"
             f"{v_after_open}"
         )
-        total_after_open = inner_duration + 0.1  # black_dur - xfade_dur
+        total_after_open = inner_duration + 0.1  # open_black - open_dur
         if has_audio:
-            parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abo]")
-            parts.append(f"[abo]{a_inner}acrossfade=d={xfade_dur:.4f}{a_after_open}")
+            parts.append(f"aevalsrc=0:c=stereo:d={open_black:.4f}:s=48000[abo]")
+            parts.append(f"[abo]{a_inner}acrossfade=d={open_dur:.4f}{a_after_open}")
     else:
         v_after_open = v_inner
         a_after_open = a_inner
@@ -475,16 +533,16 @@ def build_open_close_post_fc(
     # --- Closing xfade: content -> black ---
     if has_close:
         close_name = _TRANSITION_MAP.get(closing_transition, "fade")
-        closing_offset = total_after_open - xfade_dur
-        parts.append(f"{black}[sv_bclose]")
+        closing_offset = total_after_open - close_dur
+        parts.append(f"{black(close_black)}[sv_bclose]")
         parts.append(
             f"{v_after_open}[sv_bclose]"
-            f"xfade=transition={close_name}:duration={xfade_dur:.4f}:offset={closing_offset:.4f}"
+            f"xfade=transition={close_name}:duration={close_dur:.4f}:offset={closing_offset:.4f}"
             f"[vout]"
         )
         if has_audio:
-            parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abc]")
-            parts.append(f"{a_after_open}[abc]acrossfade=d={xfade_dur:.4f}[aout]")
+            parts.append(f"aevalsrc=0:c=stereo:d={close_black:.4f}:s=48000[abc]")
+            parts.append(f"{a_after_open}[abc]acrossfade=d={close_dur:.4f}[aout]")
 
     a_out = "[aout]" if has_audio else ""
     return _force_yuv420p_tail("; ".join(parts), "[vout]"), "[vout]", a_out
@@ -493,7 +551,8 @@ def build_open_close_post_fc(
 def build_open_close_audio_fc(
     opening_transition: str = "none",
     closing_transition: str = "none",
-    xfade_dur: float = XFADE_DUR,
+    open_dur: float = XFADE_DUR,
+    close_dur: float = XFADE_DUR,
 ) -> "tuple[str, str]":
     """#65 Phase B: audio-only counterpart to build_open_close_post_fc.
 
@@ -507,25 +566,24 @@ def build_open_close_audio_fc(
 
     Input is FFmpeg input index 0 ([0:a]). Returns (fc, a_out_label).
     """
-    has_open = opening_transition != "none"
-    has_close = closing_transition != "none"
+    has_open = opening_transition != "none" and open_dur > 0
+    has_close = closing_transition != "none" and close_dur > 0
     if not has_open and not has_close:
         raise ValueError("build_open_close_audio_fc called with no open/close transition")
 
-    black_dur = xfade_dur + 0.1
     parts: list[str] = []
     a_inner = "[0:a]"
 
     a_after_open = "[awrap]" if has_close else "[aout]"
     if has_open:
-        parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abo]")
-        parts.append(f"[abo]{a_inner}acrossfade=d={xfade_dur:.4f}{a_after_open}")
+        parts.append(f"aevalsrc=0:c=stereo:d={open_dur + 0.1:.4f}:s=48000[abo]")
+        parts.append(f"[abo]{a_inner}acrossfade=d={open_dur:.4f}{a_after_open}")
     else:
         a_after_open = a_inner
 
     if has_close:
-        parts.append(f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abc]")
-        parts.append(f"{a_after_open}[abc]acrossfade=d={xfade_dur:.4f}[aout]")
+        parts.append(f"aevalsrc=0:c=stereo:d={close_dur + 0.1:.4f}:s=48000[abc]")
+        parts.append(f"{a_after_open}[abc]acrossfade=d={close_dur:.4f}[aout]")
 
     return "; ".join(parts), "[aout]"
 
@@ -534,9 +592,9 @@ def build_filter_complex(
     clip_paths: list[Path],
     durations: list[float],
     audio_flags: list[bool],
+    cuts: CutPlan,
     transition: str = "crossfade",
     mode: str = "draft",
-    xfade_dur: float = XFADE_DUR,
     output_resolution: str = "1080p",
     clip_volumes: list[float] | None = None,
     shuffle_between: bool = False,
@@ -556,7 +614,7 @@ def build_filter_complex(
         audio_flags:         Whether each clip has audio (all True after inject_silence_where_needed).
         transition:          "crossfade" | "dip_to_black" | "wipe" | "zoom" | "none"
         mode:                "draft" (360p) | "final" (1080p)
-        xfade_dur:           Crossfade duration in seconds.
+        cuts:                Per-cut lengths from resolve_cuts() (#284).
         shuffle_between:     If True, pick a random transition per cut from _SHUFFLE_POOL.
                              The `transition` arg is ignored when this is True.
         seed:                Stable per-render signature (the render cache's cache_sig)
@@ -564,9 +622,9 @@ def build_filter_complex(
                              NOT the job ID, which changes every render (#83). Unused when
                              shuffle_between is False.
         opening_transition:  Transition to apply from a synthetic black frame into clip 0.
-                             "none" = skip (default). Uses same xfade_dur.
+                             "none" (default) or cuts.open_s == 0 = skip.
         closing_transition:  Transition to apply from the last clip out to a synthetic black
-                             frame. "none" = skip (default). Uses same xfade_dur.
+                             frame. "none" (default) or cuts.close_s == 0 = skip.
 
     Returns:
         (filter_complex_str, video_out_label, audio_out_label)
@@ -579,8 +637,8 @@ def build_filter_complex(
         This function assumes those extra inputs are already present in the FFmpeg command.
     """
     n = len(clip_paths)
-    has_open = opening_transition != "none"
-    has_close = closing_transition != "none"
+    has_open = opening_transition != "none" and cuts.open_s > 0
+    has_close = closing_transition != "none" and cuts.close_s > 0
 
     # scale_w/scale_h define the fixed canvas for ALL clips (portrait+landscape mixing).
     # Must use exact WxH — NOT scale=-2:h — so all inputs are the same size before concat/xfade.
@@ -619,20 +677,6 @@ def build_filter_complex(
         )
 
     v_out = "[vout]"
-
-    # --- Clamp xfade_dur (applies to between-clip and open/close transitions) ---
-    if transition != "none" or has_open or has_close:
-        min_dur = min(durations)
-        effective_dur = min(xfade_dur, min_dur / 2.0)
-        if effective_dur < xfade_dur:
-            log.warning(
-                "[transitions] xfade_dur clamped %.3fs -> %.3fs (shortest clip=%.3fs)",
-                xfade_dur, effective_dur, min_dur,
-            )
-        xfade_dur = effective_dur
-
-    # +0.1s buffer for black-frame sources: xfade offset must be < input duration.
-    black_dur = xfade_dur + 0.1
 
     # --- Build per-cut xfade names for between-clips (M2: shuffle support) ---
     if shuffle_between and n > 1:
@@ -706,22 +750,20 @@ def build_filter_complex(
         cumulative = 0.0
         for i in range(1, n):
             cut_name = per_cut_names[i - 1]
-            offset = cumulative + durations[i - 1] - xfade_dur * i
+            consumed = sum(cuts.between_s[:i])
+            offset = cumulative + durations[i - 1] - consumed
             log.info(
                 "[transitions] xfade offset[%d] = %.4fs  "
-                "(cumulative=%.4fs - %.4fs)",
-                i, offset, cumulative + durations[i - 1], xfade_dur * i,
+                "(cumulative=%.4fs - %.4fs) length=%.4fs",
+                i, offset, cumulative + durations[i - 1], consumed, cuts.between_s[i - 1],
             )
             # Last xfade in the between-clip chain
             out_label = v_raw if i == n - 1 else f"[v{i:02d}]"
-            all_parts.append(
-                f"{prev_label}[sv{i}]"
-                f"xfade=transition={cut_name}:duration={xfade_dur}:offset={offset:.4f}"
-                f"{out_label}"
-            )
+            all_parts.append(_video_join(prev_label, f"[sv{i}]", out_label, cut_name,
+                                         cuts.between_s[i - 1], offset, target_fps_raw, clip_tbn_str))
             prev_label = out_label
             cumulative += durations[i - 1]
-        total_between = sum(durations) - (n - 1) * xfade_dur
+        total_between = sum(durations) - sum(cuts.between_s)
 
     all_parts.append(f"{v_raw}settb={clip_tbn_str}{v_inner}")
 
@@ -740,10 +782,10 @@ def build_filter_complex(
             chain: list[str] = []
             prev_a = "[pa0]"
             for i in range(1, n):
-                # Use uniform xfade_dur for audio acrossfade regardless of which video
-                # xfade type was chosen (audio crossfade is always a dissolve).
+                # Same length as the video cut; audio crossfade is always a dissolve
+                # whatever video xfade type was chosen.
                 a_lbl = a_inner if i == n - 1 else f"[ac{i}]"
-                chain.append(f"{prev_a}[pa{i}]acrossfade=d={xfade_dur:.4f}{a_lbl}")
+                chain.append(_audio_join(prev_a, f"[pa{i}]", a_lbl, cuts.between_s[i - 1]))
                 prev_a = a_lbl
             all_parts.append(f"{pre_vol}; {pre_pad}; " + "; ".join(chain))
 
@@ -753,23 +795,24 @@ def build_filter_complex(
         open_name = _TRANSITION_MAP.get(opening_transition, "fade")
         # Inline color source for black opening frame (no extra -i input needed).
         # +0.1s buffer: xfade offset must be < input duration.
+        open_black = cuts.open_s + 0.1
         all_parts.append(
-            f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r={target_fps_raw},settb={clip_tbn_str}[sv_bopen]"
+            f"color=c=black:s={scale_w}x{scale_h}:d={open_black:.4f}:r={target_fps_raw},settb={clip_tbn_str}[sv_bopen]"
         )
         all_parts.append(
             f"[sv_bopen]{v_inner}"
-            f"xfade=transition={open_name}:duration={xfade_dur}:offset=0"
+            f"xfade=transition={open_name}:duration={cuts.open_s:.4f}:offset=0"
             f"{v_after_open}"
         )
-        total_after_open = total_between + 0.1  # black_dur - xfade_dur = 0.1
+        total_after_open = total_between + 0.1  # open_black - cuts.open_s = 0.1
         if any_audio:
             # Inline silence for opening black frame audio
             a_after_open = "[awrap]" if has_close else "[aout]"
             all_parts.append(
-                f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abo]"
+                f"aevalsrc=0:c=stereo:d={open_black:.4f}:s=48000[abo]"
             )
             all_parts.append(
-                f"[abo]{a_inner}acrossfade=d={xfade_dur:.4f}{a_after_open}"
+                f"[abo]{a_inner}acrossfade=d={cuts.open_s:.4f}{a_after_open}"
             )
     else:
         total_after_open = total_between
@@ -779,23 +822,24 @@ def build_filter_complex(
     # --- Closing xfade: [v_after_open] → inline black source → [vout] ---
     if has_close:
         close_name = _TRANSITION_MAP.get(closing_transition, "fade")
-        # Closing xfade starts xfade_dur before the end of the content stream.
+        # Closing xfade starts cuts.close_s before the end of the content stream.
         # +0.1s buffer: xfade offset must be < input duration.
-        closing_offset = total_after_open - xfade_dur
+        close_black = cuts.close_s + 0.1
+        closing_offset = total_after_open - cuts.close_s
         all_parts.append(
-            f"color=c=black:s={scale_w}x{scale_h}:d={black_dur:.4f}:r={target_fps_raw},settb={clip_tbn_str}[sv_bclose]"
+            f"color=c=black:s={scale_w}x{scale_h}:d={close_black:.4f}:r={target_fps_raw},settb={clip_tbn_str}[sv_bclose]"
         )
         all_parts.append(
             f"{v_after_open}[sv_bclose]"
-            f"xfade=transition={close_name}:duration={xfade_dur}:offset={closing_offset:.4f}"
+            f"xfade=transition={close_name}:duration={cuts.close_s:.4f}:offset={closing_offset:.4f}"
             f"{v_out}"
         )
         if any_audio:
             all_parts.append(
-                f"aevalsrc=0:c=stereo:d={black_dur:.4f}:s=48000[abc]"
+                f"aevalsrc=0:c=stereo:d={close_black:.4f}:s=48000[abc]"
             )
             all_parts.append(
-                f"{a_after_open}[abc]acrossfade=d={xfade_dur:.4f}[aout]"
+                f"{a_after_open}[abc]acrossfade=d={cuts.close_s:.4f}[aout]"
             )
 
     if not any_audio:

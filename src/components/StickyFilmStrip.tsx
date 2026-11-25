@@ -16,11 +16,13 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "@/types/project";
-import { orderedCardRuns, type PlacedCard } from "@/utils/buildJobConfig";
+import { orderedCardRuns, type PlacedCard, type TransitionConfig } from "@/utils/buildJobConfig";
 import { fmtMs } from "@/utils/fmtMs";
 import { zoomLabel } from "@/utils/zoom";
-import { trimmedMs, NO_EDGE_FADES, type EdgeFades } from "@/utils/filmDuration";
-import { buildSequenceCore } from "@/utils/sequenceClock";
+import { trimmedMs } from "@/utils/filmDuration";
+import { buildSequence } from "@/utils/sequenceClock";
+
+const NO_TRANSITIONS: TransitionConfig = { between: "none", opening: "none", closing: "none", shuffleBetween: false };
 
 /** Resolved card data for a strip card tile (#74, generalized to any position in #149). */
 export interface StripCard {
@@ -72,16 +74,13 @@ interface StickyFilmStripProps {
   /** Called when user clicks a position in the timeline; arg is film-time ms. */
   onSeek?: (filmMs: number) => void;
   /**
-   * Per-cut crossfade overlap in ms (#71). When > 0 the ruler/playhead/seek geometry is
-   * telescoped so the timeline reads true render time instead of the naive sum of clip
-   * durations. The caller computes this once via clampedXfadeMs(inFilm, tc, cardCount) and passes the
-   * final number — this component does no transition reasoning. Default 0 (no overlap).
+   * The film's transition settings. When any is on the ruler/playhead/seek geometry is
+   * telescoped (#71) by each cut's own length (#284, `buildSequence`), so the timeline reads
+   * true render time instead of the naive sum of clip durations. Default: no transitions.
    * NOTE: this makes the strip time-correct, NOT overlap-visual-correct: tiles narrow to
    * their telescoped contribution but do not draw the overlap shape (that is #74).
    */
-  xfadeOverlapMs?: number;
-  /** #190: opening/closing fade-to-black is on (consumes the first/last element like a cut). */
-  edgeFades?: EdgeFades;
+  transitionConfig?: TransitionConfig;
   /**
    * All positioned text cards (#74, generalized to any position in #149). Each 3s card
    * tile is spliced into the strip at its resolved gap and the ruler/playhead/seek
@@ -363,8 +362,7 @@ export function StickyFilmStrip({
   onReorder,
   playheadMs,
   onSeek,
-  xfadeOverlapMs = 0,
-  edgeFades = NO_EDGE_FADES,
+  transitionConfig = NO_TRANSITIONS,
   cards = [],
   activeCardId = null,
   onSelectCard,
@@ -419,7 +417,7 @@ export function StickyFilmStrip({
   // in #149). Each card is anchored by clip id (`beforeClipId`); #184 lifted the old
   // "<=1 card per gap" assumption — multiple cards can share an anchor and render as a
   // run of adjacent tiles. `orderedCardRuns` is the ONE resolver for card order/count,
-  // shared with buildSequenceCore / Trimmer / Sound so ruler and needle can't disagree.
+  // shared with buildSequence / Trimmer / Sound so ruler and needle can't disagree.
   const cardsActive = inFilm.length > 0 ? cards : [];
   const cardRuns = orderedCardRuns(
     cardsActive,
@@ -428,7 +426,7 @@ export function StickyFilmStrip({
   const cardsBeforeClip = (clipId: string): PositionedCard[] => cardRuns.before.get(clipId) ?? [];
   const endCards: PositionedCard[] = cardRuns.end;
 
-  // #174 Phase D: adapt the strip's PositionedCard[] to the shape buildSequenceCore
+  // #174 Phase D: adapt the strip's PositionedCard[] to the shape buildSequence
   // wants. Only `id` + `beforeClipId` drive geometry; `color`/`text` are carried
   // through, `subtitle`/`animation` are filled with inert defaults (never read for
   // ruler/px math).
@@ -442,9 +440,9 @@ export function StickyFilmStrip({
   }));
 
   // #159: targeted change signal for card add / remove / reposition ONLY. Container resize
-  // stays owned by the ResizeObserver effects; card duration is the fixed CARD_DUR_MS
-  // constant; tile widths carry no font/text-content dependence — so this key never needs
-  // to observe pixel geometry. A deliberate model-level approximation (Gate 3 F12).
+  // stays owned by the ResizeObserver effects; a card's length depends only on its neighbours
+  // and the transition settings, and tile widths carry no font/text-content dependence — so
+  // this key never needs to observe pixel geometry. A deliberate model-level approximation (Gate 3 F12).
   const cardCount = cardsActive.length;
   const cardsKey = cardsActive
     .map((p) => `${p.card.id}:${p.beforeClipId ?? "END"}`)
@@ -460,7 +458,7 @@ export function StickyFilmStrip({
   const clipSegIndex: number[] = [];
   for (const c of inFilm) {
     for (const p of cardsBeforeClip(c.id)) {
-      segments.push({ kind: "card", nativeMs: 0, card: p.card }); // real length comes from buildSequenceCore (seqItems)
+      segments.push({ kind: "card", nativeMs: 0, card: p.card }); // real length comes from buildSequence (seqItems)
     }
     clipSegIndex.push(segments.length);
     segments.push({ kind: "clip", nativeMs: trimmedMs(c), clip: c });
@@ -470,13 +468,13 @@ export function StickyFilmStrip({
   }
 
   // #174 Phase D: the telescoped (render-time) geometry is NO LONGER computed here.
-  // `buildSequenceCore` is the ONE resolver -- it produces the identical flat
+  // `buildSequence` is the ONE resolver -- it produces the identical flat
   // clip+card item list (same interleave order this component builds `segments`
   // in) with each item's half-open telescoped `[filmStartMs, filmEndMs)` span, so
   // the strip ruler and the film-mode playback needle can never geometrically
   // disagree (they now literally share the resolver). This component keeps only
   // the px mapping on top of those spans.
-  const filmSeq = buildSequenceCore(inFilm, xfadeOverlapMs, cardsForSeq, edgeFades);
+  const filmSeq = buildSequence(inFilm, transitionConfig, cardsForSeq);
   const seqItems = filmSeq.items; // 1:1 with `segments` by construction (same order)
 
   // Per-SEGMENT telescoped width in ms, straight off the resolver's spans.
